@@ -125,9 +125,31 @@
   .code-block {
     @apply font-mono text-sm;
     @apply bg-surface-100 dark:bg-surface-800;
+    @apply text-surface-800 dark:text-surface-200;
     @apply border border-surface-200 dark:border-surface-700;
     @apply rounded-lg p-4;
     @apply overflow-x-auto;
+  }
+
+  /*
+   * Override Tailwind Typography (prose) code/pre colors.
+   * The prose plugin assumes its own dark pre background with light text,
+   * but we use a light bg in light mode and dark bg in dark mode,
+   * so we must set explicit text colors for proper contrast.
+   */
+  .prose pre {
+    @apply bg-surface-100 dark:bg-surface-800;
+    @apply text-surface-800 dark:text-surface-200;
+    @apply border border-surface-200 dark:border-surface-700;
+  }
+
+  .prose pre code {
+    @apply text-inherit;
+  }
+
+  .prose :not(pre) > code {
+    @apply text-surface-800 dark:text-surface-200;
+    @apply bg-surface-100 dark:bg-surface-700;
   }
 
   /* Message styling */
