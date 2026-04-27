@@ -21,6 +21,10 @@ const ANSI_PATTERNS = {
   CONTROL: /\x1b[PX^_][^\x1b]*\x1b\\/g,
   /** Other single-character escapes */
   SINGLE: /\x1b./g,
+  /** Backspace characters used by spinners — a char followed by \b overwrites it */
+  BACKSPACE_OVERWRITE: /[^\n\x08]\x08/g,
+  /** Any remaining standalone backspace characters */
+  BACKSPACE: /\x08/g,
 } as const;
 
 /**
@@ -53,6 +57,13 @@ export function stripAnsi(str: string): string {
   clean = clean.replace(ANSI_PATTERNS.CONTROL, '');
   // Other single-char escapes
   clean = clean.replace(ANSI_PATTERNS.SINGLE, '');
+  // Backspace overwrites (spinner animations: char + \b = erase) — loop until stable
+  let prev;
+  do {
+    prev = clean;
+    clean = clean.replace(ANSI_PATTERNS.BACKSPACE_OVERWRITE, '');
+  } while (clean !== prev);
+  clean = clean.replace(ANSI_PATTERNS.BACKSPACE, '');
   return clean;
 }
 

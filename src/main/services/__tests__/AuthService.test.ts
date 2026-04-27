@@ -172,8 +172,8 @@ describe('AuthService', () => {
       // Wait a tick for PTY setup
       await vi.advanceTimersByTimeAsync(50);
 
-      // Emit OAuth URL
-      mockPty.emitData('Visit https://claude.ai/oauth/authorize?code=test123\n');
+      // Emit OAuth URL (claude.com/cai/ format from CLI v2.1.107+)
+      mockPty.emitData('Visit https://claude.com/cai/oauth/authorize?code=test123\n');
       mockPty.emitData('Paste code:\n');
 
       await vi.advanceTimersByTimeAsync(100);
@@ -181,7 +181,7 @@ describe('AuthService', () => {
       const result = await flowPromise;
 
       expect(mockPtySpawn).toHaveBeenCalled();
-      expect(result.authUrl).toContain('claude.ai/oauth/authorize');
+      expect(result.authUrl).toContain('oauth/authorize');
     });
 
     it('should fall back to npx when CLI not found', async () => {
@@ -194,7 +194,7 @@ describe('AuthService', () => {
 
       await vi.advanceTimersByTimeAsync(50);
 
-      mockPty.emitData('Visit https://claude.ai/oauth/authorize?code=test123\n');
+      mockPty.emitData('Visit https://claude.com/cai/oauth/authorize?code=test123\n');
       mockPty.emitData('Paste code:\n');
 
       await vi.advanceTimersByTimeAsync(100);
@@ -230,7 +230,7 @@ describe('AuthService', () => {
 
       await vi.advanceTimersByTimeAsync(50);
 
-      mockPty.emitData('https://claude.ai/oauth/authorize?code=test\n');
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test\n');
       mockPty.emitData('Paste code:\n');
 
       await vi.advanceTimersByTimeAsync(100);
@@ -250,7 +250,7 @@ describe('AuthService', () => {
       );
     });
 
-    it('should extract OAuth URL from PTY output', async () => {
+    it('should extract OAuth URL from PTY output (claude.ai)', async () => {
       const flowPromise = service.startOAuthFlow();
 
       await vi.advanceTimersByTimeAsync(50);
@@ -262,7 +262,23 @@ describe('AuthService', () => {
 
       const result = await flowPromise;
 
-      expect(result.authUrl).toContain('claude.ai/oauth/authorize');
+      expect(result.authUrl).toContain('oauth/authorize');
+      expect(result.error).toBeUndefined();
+    });
+
+    it('should extract OAuth URL from PTY output (claude.com/cai/)', async () => {
+      const flowPromise = service.startOAuthFlow();
+
+      await vi.advanceTimersByTimeAsync(50);
+
+      mockPty.emitData('Please visit:\nhttps://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&redirect_uri=xyz\n');
+      mockPty.emitData('Enter the code:\n');
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      const result = await flowPromise;
+
+      expect(result.authUrl).toBe('https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&redirect_uri=xyz');
       expect(result.error).toBeUndefined();
     });
 
@@ -271,10 +287,7 @@ describe('AuthService', () => {
 
       await vi.advanceTimersByTimeAsync(50);
 
-      // Reproduce production bug: PTY uses cursor positioning (CSI H) between
-      // the URL and prompt text. Without proper handling, stripAnsi removes
-      // the CSI sequence leaving no whitespace, causing \S+ to capture both.
-      const realUrl = 'https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a&state=xKnTIIm35i2_test';
+      const realUrl = 'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&state=xKnTIIm35i2_test';
       mockPty.emitData(realUrl + '\x1b[2;1HPaste code here if prompted>\n');
 
       await vi.advanceTimersByTimeAsync(100);
@@ -290,8 +303,7 @@ describe('AuthService', () => {
 
       await vi.advanceTimersByTimeAsync(50);
 
-      // Erase line (CSI K) followed by cursor position (CSI G) — common PTY pattern
-      const realUrl = 'https://claude.ai/oauth/authorize?code=true&state=abc123';
+      const realUrl = 'https://claude.com/cai/oauth/authorize?code=true&state=abc123';
       mockPty.emitData(realUrl + '\x1b[0K\x1b[1G<Enter code here>\n');
 
       await vi.advanceTimersByTimeAsync(100);
@@ -307,15 +319,14 @@ describe('AuthService', () => {
 
       await vi.advanceTimersByTimeAsync(50);
 
-      // URL with ANSI color codes
-      mockPty.emitData('\x1b[32mhttps://claude.ai/oauth/authorize?code=test\x1b[0m\n');
+      mockPty.emitData('\x1b[32mhttps://claude.com/cai/oauth/authorize?code=test\x1b[0m\n');
       mockPty.emitData('Paste:\n');
 
       await vi.advanceTimersByTimeAsync(100);
 
       const result = await flowPromise;
 
-      expect(result.authUrl).toContain('claude.ai/oauth/authorize');
+      expect(result.authUrl).toContain('oauth/authorize');
     });
 
     it('should timeout if no URL received', async () => {
@@ -335,7 +346,7 @@ describe('AuthService', () => {
 
       await vi.advanceTimersByTimeAsync(50);
 
-      mockPty.emitData('https://claude.ai/oauth/authorize?code=test\n');
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test\n');
       mockPty.emitData('Paste:\n');
 
       await vi.advanceTimersByTimeAsync(100);
@@ -349,7 +360,7 @@ describe('AuthService', () => {
       // Start first flow
       const flow1 = service.startOAuthFlow();
       await vi.advanceTimersByTimeAsync(50);
-      mockPty.emitData('https://claude.ai/oauth/authorize?code=test1\n');
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test1\n');
       mockPty.emitData('Paste:\n');
       await vi.advanceTimersByTimeAsync(100);
       await flow1;
@@ -363,7 +374,7 @@ describe('AuthService', () => {
       // Start second flow
       const flow2 = service.startOAuthFlow();
       await vi.advanceTimersByTimeAsync(50);
-      mockPty.emitData('https://claude.ai/oauth/authorize?code=test2\n');
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test2\n');
       mockPty.emitData('Paste:\n');
       await vi.advanceTimersByTimeAsync(100);
       await flow2;
@@ -408,7 +419,7 @@ describe('AuthService', () => {
       // Start a flow first
       const flowPromise = service.startOAuthFlow();
       await vi.advanceTimersByTimeAsync(50);
-      mockPty.emitData('https://claude.ai/oauth/authorize?code=test\n');
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test\n');
       mockPty.emitData('Paste:\n');
       await vi.advanceTimersByTimeAsync(100);
       await flowPromise;
@@ -589,10 +600,10 @@ describe('AuthService', () => {
   // ===========================================================================
   describe('openAuthUrl', () => {
     it('should open URL in external browser', () => {
-      service.openAuthUrl('https://claude.ai/oauth/authorize?code=test');
+      service.openAuthUrl('https://claude.com/cai/oauth/authorize?code=test');
 
       expect(mockShellOpenExternal).toHaveBeenCalledWith(
-        'https://claude.ai/oauth/authorize?code=test'
+        'https://claude.com/cai/oauth/authorize?code=test'
       );
     });
   });
@@ -604,7 +615,7 @@ describe('AuthService', () => {
     it('should kill PTY process', async () => {
       const flowPromise = service.startOAuthFlow();
       await vi.advanceTimersByTimeAsync(50);
-      mockPty.emitData('https://claude.ai/oauth/authorize?code=test\n');
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test\n');
       mockPty.emitData('Paste:\n');
       await vi.advanceTimersByTimeAsync(100);
       await flowPromise;
@@ -617,7 +628,7 @@ describe('AuthService', () => {
     it('should clear pending state', async () => {
       const flowPromise = service.startOAuthFlow();
       await vi.advanceTimersByTimeAsync(50);
-      mockPty.emitData('https://claude.ai/oauth/authorize?code=test\n');
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test\n');
       mockPty.emitData('Paste:\n');
       await vi.advanceTimersByTimeAsync(100);
       await flowPromise;
@@ -633,7 +644,7 @@ describe('AuthService', () => {
     it.skip('should schedule temp directory cleanup', async () => {
       const flowPromise = service.startOAuthFlow();
       await vi.advanceTimersByTimeAsync(50);
-      mockPty.emitData('https://claude.ai/oauth/authorize?code=test\n');
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test\n');
       mockPty.emitData('Paste:\n');
       await vi.advanceTimersByTimeAsync(100);
       await flowPromise;
@@ -657,7 +668,7 @@ describe('AuthService', () => {
     it('should handle PTY already terminated', async () => {
       const flowPromise = service.startOAuthFlow();
       await vi.advanceTimersByTimeAsync(50);
-      mockPty.emitData('https://claude.ai/oauth/authorize?code=test\n');
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test\n');
       mockPty.emitData('Paste:\n');
       await vi.advanceTimersByTimeAsync(100);
       await flowPromise;
@@ -680,28 +691,26 @@ describe('AuthService', () => {
       const flowPromise = service.startOAuthFlow();
       await vi.advanceTimersByTimeAsync(50);
 
-      // URL with cursor movement codes
-      mockPty.emitData('\x1b[2Khttps://claude.ai/oauth/authorize?test=1\x1b[0m\n');
+      mockPty.emitData('\x1b[2Khttps://claude.com/cai/oauth/authorize?test=1\x1b[0m\n');
       mockPty.emitData('Code:\n');
 
       await vi.advanceTimersByTimeAsync(100);
 
       const result = await flowPromise;
-      expect(result.authUrl).toContain('claude.ai/oauth/authorize');
+      expect(result.authUrl).toContain('oauth/authorize');
     });
 
     it.skip('should strip OSC sequences', async () => {
       const flowPromise = service.startOAuthFlow();
       await vi.advanceTimersByTimeAsync(50);
 
-      // URL with OSC (Operating System Command) sequences
-      mockPty.emitData('\x1b]0;Title\x07https://claude.ai/oauth/authorize?x=1\n');
+      mockPty.emitData('\x1b]0;Title\x07https://claude.com/cai/oauth/authorize?x=1\n');
       mockPty.emitData('Code:\n');
 
       await vi.advanceTimersByTimeAsync(100);
 
       const result = await flowPromise;
-      expect(result.authUrl).toContain('claude.ai/oauth/authorize');
+      expect(result.authUrl).toContain('oauth/authorize');
     });
   });
 });

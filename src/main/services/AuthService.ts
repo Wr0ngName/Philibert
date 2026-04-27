@@ -428,8 +428,8 @@ export class AuthService {
           // Remove ANSI escape codes for parsing
           const clean = stripAnsi(output);
 
-          // Look for the OAuth URL
-          const urlMatch = clean.match(/(https:\/\/claude\.ai\/oauth\/authorize\S+)/);
+          // Look for the OAuth URL (domain-agnostic to handle claude.ai, claude.com/cai/, etc.)
+          const urlMatch = clean.match(/(https:\/\/\S+\/oauth\/authorize\S*)/);
           if (urlMatch && !authUrl) {
             authUrl = urlMatch[1];
             logger.info(`Found OAuth URL (length=${authUrl.length})`);
