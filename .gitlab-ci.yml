@@ -150,6 +150,10 @@ build:linux:manual:
         -e CLINE_ONLINE_BUILD=false \
         electronuserland/builder:wine-mono \
         bash -c "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs bzip2 && npm ci && ./scripts/download-node-windows.sh && ./scripts/download-git-bash-windows.sh && npm run make -- --platform=win32"
+    - echo "=== Artifact sizes ==="
+    - du -sh out/make/squirrel.windows/x64/* 2>/dev/null || true
+    - du -sh out/make/squirrel.windows/x64/ 2>/dev/null || true
+    - df -h "$CI_PROJECT_DIR" || true
 
 # Windows ONLINE build template (smaller, downloads deps during install)
 .build_windows_online:
