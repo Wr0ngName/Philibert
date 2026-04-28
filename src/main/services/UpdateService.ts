@@ -1,18 +1,15 @@
 /**
- * Auto-update service using Electron's built-in autoUpdater (Squirrel.Windows)
+ * Auto-update service using electron-updater with NSIS installer
  *
- * Uses Squirrel's native update mechanism instead of electron-updater:
  * 1. Query GitLab Releases API to find the latest release tag
- * 2. Point Squirrel at the version's package directory (RELEASES + nupkg)
- * 3. Squirrel's Update.exe (already installed) applies the nupkg delta
- *
- * This avoids the "dummy update.exe" problem that occurs when electron-updater
- * tries to run cross-compiled Setup.exe files (Mono can't embed PE resources).
+ * 2. Point electron-updater at that version's package directory
+ * 3. electron-updater downloads the NSIS Setup exe and runs it silently
  */
 
-import { BrowserWindow, app, autoUpdater, net } from 'electron';
+import { BrowserWindow, app, net } from 'electron';
+import { autoUpdater, UpdateInfo as ElectronUpdateInfo } from 'electron-updater';
 
-import { IPC_CHANNELS, UpdateInfo } from '../../shared/types';
+import { IPC_CHANNELS, UpdateInfo, UpdateProgress } from '../../shared/types';
 import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
@@ -25,55 +22,71 @@ const PACKAGES_API = `${GITLAB_HOST}/api/v4/projects/${GITLAB_PROJECT_ID}/packag
 export class UpdateService {
   private isCheckingForUpdates = false;
   private send: (channel: string, ...args: unknown[]) => boolean;
-  private latestUpdateInfo: UpdateInfo | null = null;
 
   constructor(getMainWindow: () => BrowserWindow | null) {
     this.send = createSender(getMainWindow);
     this.configureUpdater();
-    logger.info('UpdateService initialized (Squirrel-native)');
+    logger.info('UpdateService initialized');
   }
 
   private configureUpdater(): void {
-    if (process.platform !== 'win32') {
-      logger.info('Squirrel auto-updater only available on Windows');
-      return;
-    }
+    const currentVersion = app.getVersion();
 
-    autoUpdater.on('checking-for-update', () => {
-      logger.info('Squirrel checking for updates...');
+    autoUpdater.setFeedURL({
+      provider: 'generic',
+      url: `${PACKAGES_API}/${currentVersion}`,
     });
 
-    autoUpdater.on('update-available', () => {
-      logger.info('Squirrel: update available');
-      if (this.latestUpdateInfo) {
-        this.emitUpdateAvailable(this.latestUpdateInfo);
-      }
+    const updateToken = process.env.GITLAB_UPDATE_TOKEN;
+    if (updateToken) {
+      autoUpdater.requestHeaders = { 'Private-Token': updateToken };
+    }
+
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on('checking-for-update', () => {
+      logger.info('Checking for updates...');
+    });
+
+    autoUpdater.on('update-available', (info: ElectronUpdateInfo) => {
+      logger.info('Update available', { version: info.version });
+      this.emitUpdateAvailable({
+        version: info.version,
+        releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
+        releaseDate: info.releaseDate,
+      });
     });
 
     autoUpdater.on('update-not-available', () => {
-      logger.info('Squirrel: no updates available');
+      logger.info('No updates available');
     });
 
-    autoUpdater.on('update-downloaded', (_event, releaseNotes, releaseName, _releaseDate, _updateURL) => {
-      logger.info('Squirrel: update downloaded', { releaseName });
-      if (this.latestUpdateInfo) {
-        this.latestUpdateInfo.releaseNotes = releaseNotes || undefined;
-      }
+    autoUpdater.on('download-progress', (progress) => {
+      logger.debug('Download progress', { percent: progress.percent });
+      this.emitProgress({
+        percent: progress.percent,
+        bytesPerSecond: progress.bytesPerSecond,
+        total: progress.total,
+        transferred: progress.transferred,
+      });
+    });
+
+    autoUpdater.on('update-downloaded', () => {
+      logger.info('Update downloaded');
       this.emitDownloaded();
     });
 
     autoUpdater.on('error', (error) => {
-      const msg = error?.message || '';
-      if (msg.includes('404') || msg.includes('RELEASES')) {
-        logger.info('No Squirrel updates available (RELEASES not found)');
+      const errorMessage = error?.message || '';
+      if (errorMessage.includes('404') || errorMessage.includes('Cannot find channel')) {
+        logger.info('No updates available (404 - no releases published yet)');
       } else {
-        logger.error('Squirrel update error', error);
+        logger.error('Update error', error);
       }
     });
 
-    logger.info('Squirrel auto-updater configured', {
-      currentVersion: app.getVersion(),
-    });
+    logger.info('Auto-updater configured', { currentVersion, hasAuth: !!updateToken });
   }
 
   private async fetchLatestReleaseTag(): Promise<string | null> {
@@ -140,11 +153,6 @@ export class UpdateService {
   }
 
   async checkForUpdates(): Promise<UpdateInfo | null> {
-    if (process.platform !== 'win32') {
-      logger.info('Auto-update check skipped (not Windows)');
-      return null;
-    }
-
     if (this.isCheckingForUpdates) {
       logger.warn('Already checking for updates');
       return null;
@@ -167,20 +175,31 @@ export class UpdateService {
         return null;
       }
 
-      // Point Squirrel at the version's package directory containing RELEASES + nupkg
       const feedUrl = `${PACKAGES_API}/${latestVersion}`;
-      logger.info('Setting Squirrel feed URL', { feedUrl, latestTag });
+      logger.info('Setting feed URL for update check', { feedUrl, latestTag });
 
-      this.latestUpdateInfo = {
-        version: latestVersion,
-        releaseDate: new Date().toISOString(),
-      };
+      autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl });
 
-      autoUpdater.setFeedURL({ url: feedUrl });
-      autoUpdater.checkForUpdates();
+      const result = await autoUpdater.checkForUpdates();
 
-      return this.latestUpdateInfo;
+      if (result?.updateInfo) {
+        return {
+          version: result.updateInfo.version,
+          releaseNotes:
+            typeof result.updateInfo.releaseNotes === 'string'
+              ? result.updateInfo.releaseNotes
+              : undefined,
+          releaseDate: result.updateInfo.releaseDate,
+        };
+      }
+
+      return null;
     } catch (error) {
+      const errorMessage = (error as Error)?.message || '';
+      if (errorMessage.includes('404') || errorMessage.includes('Cannot find channel')) {
+        logger.info('No releases published to package registry yet');
+        return null;
+      }
       logger.error('Failed to check for updates', error);
       return null;
     } finally {
@@ -188,22 +207,26 @@ export class UpdateService {
     }
   }
 
-  /**
-   * Download the available update.
-   * With Squirrel, download starts automatically after checkForUpdates finds one.
-   * This method is kept for API compatibility but is a no-op.
-   */
   async downloadUpdate(): Promise<void> {
-    logger.info('Squirrel handles download automatically after check');
+    try {
+      await autoUpdater.downloadUpdate();
+    } catch (error) {
+      logger.error('Failed to download update', error);
+      throw error;
+    }
   }
 
   installUpdate(): void {
-    logger.info('Installing update and restarting via Squirrel');
+    logger.info('Installing update and restarting');
     autoUpdater.quitAndInstall();
   }
 
   private emitUpdateAvailable(info: UpdateInfo): void {
     this.send(IPC_CHANNELS.UPDATE_AVAILABLE, info);
+  }
+
+  private emitProgress(progress: UpdateProgress): void {
+    this.send(IPC_CHANNELS.UPDATE_PROGRESS, progress);
   }
 
   private emitDownloaded(): void {

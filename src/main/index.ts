@@ -1,53 +1,14 @@
 /**
  * Main process entry point for Cline GUI
- *
- * CRITICAL: JavaScript hoists ALL static imports - they execute before any code.
- * We MUST use dynamic imports to truly defer loading after Squirrel check.
- * Only electron-squirrel-startup and debugLog are safe to import statically
- * (they use only Node built-ins).
  */
 
-// These imports are safe - they only use Node built-ins
-import started from 'electron-squirrel-startup';
-
 import { debugLog } from './utils/debugLog';
-import { downloadDependenciesForOnlineInstall } from './utils/downloadDependencies';
-import { extractGitBashOnInstall } from './utils/gitBashExtractor';
-import { SquirrelPaths } from './utils/resourcePaths';
 
 debugLog('=== App starting ===');
 debugLog(`process.execPath: ${process.execPath}`);
 debugLog(`process.argv: ${JSON.stringify(process.argv)}`);
 debugLog(`process.cwd(): ${process.cwd()}`);
 debugLog(`__dirname: ${__dirname}`);
-debugLog(`electron-squirrel-startup returned: ${started}`);
-
-// Handle Squirrel install/update events (before electron-squirrel-startup exits)
-// For online bundles: download Node.js and Git first
-// For all bundles: extract git-bash from tar.bz2 archive
-if (process.platform === 'win32' && process.argv[1]?.startsWith('--squirrel-')) {
-  const squirrelEvent = process.argv[1];
-  if (squirrelEvent === '--squirrel-install' || squirrelEvent === '--squirrel-updated') {
-    const isOnlineBundle = SquirrelPaths.isOnlineBundle();
-    debugLog(`Bundle type: ${isOnlineBundle ? 'online' : 'offline'}`);
-
-    // For online bundles, download Node.js and Git first
-    if (isOnlineBundle) {
-      debugLog('Online bundle detected - downloading dependencies...');
-      downloadDependenciesForOnlineInstall();
-    }
-
-    // Extract git-bash from archive (works for both online and offline)
-    debugLog(`Extracting git-bash on ${squirrelEvent}...`);
-    extractGitBashOnInstall();
-  }
-}
-
-if (started) {
-  // Squirrel event handled (install/update/uninstall), exit immediately
-  debugLog('Squirrel event handled, exiting');
-  process.exit(0);
-}
 
 // Only NOW dynamically import everything else - this runs at runtime, not module load time
 async function main(): Promise<void> {
@@ -144,6 +105,12 @@ async function main(): Promise<void> {
       const config = await configService.getConfig();
       const mainWindow = await createWindow({ logLevel: config.logLevel });
       debugLog(`Window created: ${mainWindow ? 'success' : 'null'}`);
+
+      // Windows: ensure bundled dependencies are ready (download for online, extract git-bash)
+      if (process.platform === 'win32') {
+        const { setupWindowsDependencies } = await import('./utils/windowsSetup');
+        await setupWindowsDependencies(mainWindow);
+      }
 
       const lastWorkingDir = await configService.getWorkingDirectory();
       if (lastWorkingDir) {

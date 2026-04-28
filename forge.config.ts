@@ -1,5 +1,4 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
-import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerRpm } from '@electron-forge/maker-rpm';
@@ -168,12 +167,14 @@ const config: ForgeConfig = {
     force: true,
   },
   makers: [
-    new MakerSquirrel({
-      name: 'cline-gui',
-      authors: 'wrongname',
-      description: 'Desktop GUI for Claude Code - AI-powered coding assistant',
-      setupIcon: './resources/icons/icon.ico',
-    }),
+    {
+      name: '@electron-addons/electron-forge-maker-nsis',
+      config: {
+        updater: {
+          url: 'https://dev.web.wr0ng.name/api/v4/projects/wrongname%2Fcline-gui/packages/generic/releases',
+        },
+      },
+    },
     new MakerZIP({}, ['darwin']),
     new MakerRpm({
       options: {
