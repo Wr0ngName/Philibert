@@ -95,29 +95,29 @@ const config: ForgeConfig = {
       const claudeCodeVersion = rootPkgLock.packages?.['node_modules/@anthropic-ai/claude-code']?.version;
       const arch = 'x64'; // all current builds target x64
       const platformPkg = `@anthropic-ai/claude-code-${platform}-${arch}`;
-      if (claudeCodeVersion) {
-        pinnedModules.push(`${platformPkg}@${claudeCodeVersion}`);
-      }
 
       console.log('Installing external modules:', pinnedModules);
 
-      await new Promise<void>((resolve, reject) => {
-        const npm = spawn('npm', ['install', '--no-package-lock', '--no-save', ...pinnedModules], {
+      const runNpm = (args: string[]) => new Promise<void>((resolve, reject) => {
+        const npm = spawn('npm', args, {
           cwd: buildPath,
           stdio: 'inherit',
           shell: true,
         });
-
-        npm.on('close', (code) => {
-          if (code === 0) {
-            resolve();
-          } else {
-            reject(new Error(`npm install exited with code: ${code}`));
-          }
-        });
-
+        npm.on('close', (code) => code === 0 ? resolve() : reject(new Error(`npm install exited with code: ${code}`)));
         npm.on('error', reject);
       });
+
+      await runNpm(['install', '--no-package-lock', '--no-save', ...pinnedModules]);
+
+      // Platform-specific binary packages have os/cpu restrictions that npm rejects
+      // during cross-compilation (e.g. installing win32 package on Linux).
+      // Use --force to bypass the platform check.
+      if (claudeCodeVersion) {
+        const crossPlatformPkg = `${platformPkg}@${claudeCodeVersion}`;
+        console.log(`Installing cross-platform binary: ${crossPlatformPkg}`);
+        await runNpm(['install', '--no-package-lock', '--no-save', '--force', crossPlatformPkg]);
+      }
 
       // After install, the postinstall may have placed the HOST platform's binary
       // (e.g. Linux) into bin/claude.exe. Overwrite with the TARGET platform binary.
