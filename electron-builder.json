@@ -5,6 +5,7 @@
   "directories": {
     "output": "out/make/nsis"
   },
+  "executableName": "Cline GUI",
   "win": {
     "target": [
       {

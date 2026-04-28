@@ -136,7 +136,7 @@ const config: ForgeConfig = {
   },
   packagerConfig: {
     name: 'Cline GUI',
-    executableName: 'cline-gui',
+    executableName: isWindowsBuild ? 'Cline GUI' : 'cline-gui',
     asar: {
       unpack: '**/node_modules/{node-pty,@anthropic-ai,@img}/**/*',
     },
