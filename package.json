@@ -1,7 +1,7 @@
 {
   "name": "cline-gui",
   "productName": "ClineGUI",
-  "version": "0.10.8",
+  "version": "0.10.9",
   "description": "Desktop GUI for Claude Code - AI-powered coding assistant for non-technical users",
   "main": ".vite/build/index.js",
   "private": true,

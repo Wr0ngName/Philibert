@@ -99,13 +99,21 @@ function getModelDisplayName(modelValue: string): string {
   return model?.displayName || formatModelId(modelValue);
 }
 
-// User confirmed model change - clear session and apply
+// User confirmed model change - kill active session and apply new model
 async function confirmModelChange(): Promise<void> {
   showConfirmDialog.value = false;
   if (pendingModelValue.value === null) return;
 
   try {
     const displayName = getModelDisplayName(pendingModelValue.value);
+    const currentConvId = conversationsStore.currentConversationId;
+
+    // Abort the active SDK session on the main process so the next message
+    // creates a fresh session with the newly selected model
+    if (currentConvId) {
+      await window.electron.claude.abort(currentConvId);
+    }
+
     conversationsStore.clearCurrentSdkSessionId();
     await applyModelChange(pendingModelValue.value);
     chatStore.addSystemMessage(`Model changed to ${displayName} — new session started`);

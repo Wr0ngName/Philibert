@@ -1149,6 +1149,127 @@ describe('PermissionManager', () => {
       expect(cache.isAllowed(conversationId, 'Bash', {})).toBe(false);
     });
 
+    it('should auto-resolve other pending permissions after always-allow updates cache', async () => {
+      const cache = new SessionPermissionCache();
+      const conversationId = 'conv-1';
+      const capturedActions: PendingAction[] = [];
+      const executedActionIds: string[] = [];
+
+      const pm = new PermissionManager(
+        mockConfigService,
+        (action: PendingAction) => { capturedActions.push(action); },
+        cache,
+        conversationId,
+        (actionId: string) => { executedActionIds.push(actionId); },
+      );
+
+      const canUseTool = pm.createCanUseToolCallback();
+      const abortController = new AbortController();
+
+      const suggestions: PermissionUpdate[] = [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash' }],
+          behavior: 'allow',
+          destination: 'session',
+        },
+      ];
+
+      // Create 3 pending Bash permission requests (simulating batched tool calls)
+      const promise1 = canUseTool('Bash', { command: 'ls' }, {
+        signal: abortController.signal,
+        toolUseID: 'id-1',
+        suggestions,
+      });
+      const promise2 = canUseTool('Bash', { command: 'pwd' }, {
+        signal: abortController.signal,
+        toolUseID: 'id-2',
+        suggestions,
+      });
+      const promise3 = canUseTool('Bash', { command: 'date' }, {
+        signal: abortController.signal,
+        toolUseID: 'id-3',
+        suggestions,
+      });
+
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(capturedActions).toHaveLength(3);
+      expect(pm.getPendingCount()).toBe(3);
+
+      // User approves first with alwaysAllow
+      pm.handleActionResponse({
+        conversationId,
+        actionId: capturedActions[0].id,
+        approved: true,
+        alwaysAllow: true,
+      });
+
+      // All three should resolve
+      const [result1, result2, result3] = await Promise.all([promise1, promise2, promise3]);
+
+      expect(result1.behavior).toBe('allow');
+      expect(result2.behavior).toBe('allow');
+      expect(result3.behavior).toBe('allow');
+      expect(pm.getPendingCount()).toBe(0);
+
+      // Auto-resolved actions should emit toolExecuted for UI update
+      expect(executedActionIds).toContain(capturedActions[1].id);
+      expect(executedActionIds).toContain(capturedActions[2].id);
+    });
+
+    it('should NOT auto-resolve pending permissions for different tools', async () => {
+      const cache = new SessionPermissionCache();
+      const conversationId = 'conv-1';
+      const capturedActions: PendingAction[] = [];
+
+      const pm = new PermissionManager(
+        mockConfigService,
+        (action: PendingAction) => { capturedActions.push(action); },
+        cache,
+        conversationId,
+      );
+
+      const canUseTool = pm.createCanUseToolCallback();
+      const abortController = new AbortController();
+
+      const bashSuggestions: PermissionUpdate[] = [
+        {
+          type: 'addRules',
+          rules: [{ toolName: 'Bash' }],
+          behavior: 'allow',
+          destination: 'session',
+        },
+      ];
+
+      // Create pending Bash and Write permissions
+      canUseTool('Bash', { command: 'ls' }, {
+        signal: abortController.signal,
+        toolUseID: 'id-1',
+        suggestions: bashSuggestions,
+      });
+      canUseTool('Write', { file_path: '/test.txt', content: 'hi' }, {
+        signal: abortController.signal,
+        toolUseID: 'id-2',
+        suggestions: undefined,
+      });
+
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(capturedActions).toHaveLength(2);
+
+      // Approve Bash with alwaysAllow
+      pm.handleActionResponse({
+        conversationId,
+        actionId: capturedActions[0].id,
+        approved: true,
+        alwaysAllow: true,
+      });
+
+      // Write should still be pending (different tool)
+      expect(pm.getPendingCount()).toBe(1);
+    });
+
     it('should work without cache (backward compatibility)', async () => {
       // Create PermissionManager without cache args
       const permissionManager = new PermissionManager(

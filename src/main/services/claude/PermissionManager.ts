@@ -39,21 +39,29 @@ interface PendingPermission {
 type ToolUseEmitter = (action: PendingAction) => void;
 
 /**
+ * Callback for notifying the renderer that a tool execution started (auto-approved)
+ */
+type ToolExecutedEmitter = (actionId: string) => void;
+
+/**
  * Manages tool permission requests and user approval flow
  */
 export class PermissionManager {
   private configService: ConfigService;
   private pendingPermissions: Map<string, PendingPermission> = new Map();
   private emitToolUse: ToolUseEmitter;
+  private emitToolExecuted?: ToolExecutedEmitter;
 
   constructor(
     configService: ConfigService,
     emitToolUse: ToolUseEmitter,
     private sessionPermissionCache?: SessionPermissionCache,
     private conversationId?: string,
+    emitToolExecuted?: ToolExecutedEmitter,
   ) {
     this.configService = configService;
     this.emitToolUse = emitToolUse;
+    this.emitToolExecuted = emitToolExecuted;
   }
 
   /**
@@ -525,6 +533,11 @@ export class PermissionManager {
       }
 
       pending.resolve(result);
+
+      // Auto-resolve other pending permissions now covered by the updated cache
+      if (response.alwaysAllow && this.sessionPermissionCache && this.conversationId) {
+        this.autoResolveCachedPermissions();
+      }
     } else {
       logger.info('Action rejected by user', {
         actionId: response.actionId,
@@ -537,6 +550,34 @@ export class PermissionManager {
         message: response.denyMessage || 'User rejected this action',
         interrupt: !response.denyMessage, // Interrupt if no guidance provided
       });
+    }
+  }
+
+  /**
+   * Auto-resolve any pending permissions that are now covered by the session cache.
+   * Called after an "always allow" approval updates the cache.
+   */
+  private autoResolveCachedPermissions(): void {
+    const toResolve: PendingPermission[] = [];
+
+    for (const [actionId, pending] of this.pendingPermissions) {
+      if (this.sessionPermissionCache!.isAllowed(this.conversationId!, pending.toolName, pending.input)) {
+        toResolve.push(pending);
+        this.pendingPermissions.delete(actionId);
+      }
+    }
+
+    for (const pending of toResolve) {
+      pending.cleanupAbortHandler?.();
+      logger.info('Auto-resolved pending permission from cache', {
+        actionId: pending.actionId,
+        toolName: pending.toolName,
+      });
+      pending.resolve({
+        behavior: 'allow',
+        updatedInput: pending.input,
+      });
+      this.emitToolExecuted?.(pending.actionId);
     }
   }
 

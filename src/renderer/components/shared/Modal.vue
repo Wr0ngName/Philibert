@@ -165,7 +165,7 @@ const sizeClasses = {
             </div>
 
             <!-- Body -->
-            <div class="px-6 py-4">
+            <div class="px-6 py-4 overflow-y-auto max-h-[calc(100vh-12rem)]">
               <slot />
             </div>
 

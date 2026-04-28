@@ -384,6 +384,7 @@ export class ClaudeCodeService {
       (action: PendingAction) => this.emitToolUse(conversationId, action),
       this.sessionPermissionCache,
       conversationId,
+      (actionId: string) => this.emitToolExecuted(conversationId, actionId),
     );
 
     // Create session ready promise (resolves when we get session_id from init)
