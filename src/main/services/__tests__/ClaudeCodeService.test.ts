@@ -38,6 +38,18 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: mockQuery,
 }));
 
+// Mock resourcePaths (uses electron's app which isn't available in tests)
+vi.mock('../../utils/resourcePaths', () => ({
+  ClaudeCliPaths: {
+    findBundledCli: vi.fn(() => null),
+  },
+  WindowsPaths: {
+    hasBundledGitBash: vi.fn(() => false),
+    getBashExe: vi.fn(() => ''),
+    buildEnhancedPath: vi.fn(() => ''),
+  },
+}));
+
 // Mock logger
 vi.mock('../../utils/logger', () => ({
   default: {

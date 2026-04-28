@@ -53,7 +53,7 @@ import {
 import { AsyncChannel } from '../utils/AsyncChannel';
 import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
-import { WindowsPaths } from '../utils/resourcePaths';
+import { ClaudeCliPaths, WindowsPaths } from '../utils/resourcePaths';
 
 import ConfigService from './ConfigService';
 import NotificationService from './NotificationService';
@@ -471,6 +471,7 @@ export class ClaudeCodeService {
           cwd: workingDirectory,
           abortController,
           env: authEnv,
+          pathToClaudeCodeExecutable: ClaudeCliPaths.findBundledCli() || undefined,
           canUseTool: permissionManager.createCanUseToolCallback(),
           includePartialMessages: true,
           ...(selectedModel ? { model: selectedModel } : {}),
@@ -650,11 +651,11 @@ export class ClaudeCodeService {
    * Spawn the SDK process with platform-specific handling
    */
   private spawnSDKProcess(options: SpawnOptions, conversationId: string): SpawnedProcess {
-    let spawnFile: string = process.execPath;
+    let spawnFile: string = options.command;
     let spawnArgs: string[] = options.args;
-    let extraEnv: Record<string, string> = { ELECTRON_RUN_AS_NODE: '1' };
+    let extraEnv: Record<string, string> = {};
 
-    // On Windows, use bundled Node.js executable instead of ELECTRON_RUN_AS_NODE
+    // On Windows, configure bundled Git Bash and Node.js paths
     if (process.platform === 'win32') {
       const result = this.getWindowsSpawnConfig(options, spawnArgs);
       spawnFile = result.spawnFile;
@@ -687,57 +688,29 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Get Windows-specific spawn configuration
+   * Get Windows-specific spawn configuration.
+   * Adds bundled Git Bash paths to the environment (required by Claude Code CLI).
+   * Uses the SDK-provided command (native binary) directly.
    */
   private getWindowsSpawnConfig(
-    _options: SpawnOptions,
+    options: SpawnOptions,
     originalArgs: string[]
   ): { spawnFile: string; spawnArgs: string[]; extraEnv: Record<string, string> } {
-    const bundledNodeExe = WindowsPaths.getBundledNodeExe();
-    const bundledGitBash = WindowsPaths.getBashExe();
     const extraEnv: Record<string, string> = {};
 
-    // Check for bundled Git Bash (required by Claude Code CLI on Windows)
     if (WindowsPaths.hasBundledGitBash()) {
+      const bundledGitBash = WindowsPaths.getBashExe();
       logger.info('Windows: using bundled Git Bash', { bundledGitBash });
       extraEnv.CLAUDE_CODE_GIT_BASH_PATH = bundledGitBash;
-
-      // Add Git Bash bin directories to PATH so cygpath and other utilities are found
-      // The SDK spawns bash but doesn't set up the PATH correctly
       extraEnv.PATH = WindowsPaths.buildEnhancedPath();
-      logger.info('Windows: added Git Bash to PATH', {
-        gitBashBinDir: WindowsPaths.getGitBashBinDir(),
-        gitBashMingwBin: WindowsPaths.getGitBashMingwBin()
-      });
     } else {
-      logger.warn('Windows: bundled Git Bash not found', { expectedPath: bundledGitBash });
+      logger.warn('Windows: bundled Git Bash not found');
     }
-
-    if (WindowsPaths.hasBundledNode()) {
-      logger.info('Windows: using bundled Node.js for SDK spawn', { bundledNodeExe });
-
-      const spawnArgs = originalArgs.map(arg => {
-        if (typeof arg === 'string' && arg.includes('app.asar') && !arg.includes('app.asar.unpacked')) {
-          return arg.replace(/app\.asar([/\\])/g, 'app.asar.unpacked$1');
-        }
-        return arg;
-      });
-
-      return {
-        spawnFile: bundledNodeExe,
-        spawnArgs,
-        extraEnv,
-      };
-    }
-
-    logger.warn('Windows: bundled Node.js not found, falling back to ELECTRON_RUN_AS_NODE', {
-      expectedPath: bundledNodeExe,
-    });
 
     return {
-      spawnFile: process.execPath,
+      spawnFile: options.command,
       spawnArgs: originalArgs,
-      extraEnv: { ELECTRON_RUN_AS_NODE: '1', ...extraEnv },
+      extraEnv,
     };
   }
 
