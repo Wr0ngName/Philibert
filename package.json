@@ -1,7 +1,7 @@
 {
   "name": "cline-gui",
   "productName": "ClineGUI",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "description": "Desktop GUI for Claude Code - AI-powered coding assistant for non-technical users",
   "main": ".vite/build/index.js",
   "private": true,
@@ -69,7 +69,7 @@
     "vue-tsc": "^2.1.10"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.29",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.121",
     "@anthropic-ai/claude-code": "^2.1.121",
     "@anthropic-ai/sdk": "^0.72.1",
     "@tailwindcss/typography": "^0.5.19",
