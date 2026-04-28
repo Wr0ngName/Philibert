@@ -9,6 +9,7 @@ import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 // Check if we're building for Windows (either native or cross-compiling)
 // The make command sets --platform=win32 which we can detect via npm_config_platform
@@ -77,10 +78,19 @@ const config: ForgeConfig = {
       // Filter out 'electron' as it's provided by the runtime
       const modulesToInstall = external.filter((m: string) => m !== 'electron');
 
-      console.log('Installing external modules:', modulesToInstall);
+      // Pin each module to the exact version from our package-lock.json so that
+      // a newer release with breaking structural changes (e.g. cli.js → native
+      // binary) doesn't slip in during the build.
+      const rootPkgLock = JSON.parse(fs.readFileSync(path.join(__dirname, 'package-lock.json'), 'utf8'));
+      const pinnedModules = modulesToInstall.map((m: string) => {
+        const locked = rootPkgLock.packages?.[`node_modules/${m}`]?.version;
+        return locked ? `${m}@${locked}` : m;
+      });
+
+      console.log('Installing external modules:', pinnedModules);
 
       return new Promise<void>((resolve, reject) => {
-        const npm = spawn('npm', ['install', '--no-package-lock', '--no-save', ...modulesToInstall], {
+        const npm = spawn('npm', ['install', '--no-package-lock', '--no-save', ...pinnedModules], {
           cwd: buildPath,
           stdio: 'inherit',
           shell: true,
