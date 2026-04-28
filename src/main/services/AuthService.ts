@@ -238,7 +238,8 @@ export class AuthService {
 
     const claudeCli = this.findClaudeCli();
     const isNpx = claudeCli === 'npx';
-    const isBundledCli = claudeCli.endsWith('cli.js');
+    const isNativeBinary = ClaudeCliPaths.isNativeBinary(claudeCli);
+    const isNodeScript = claudeCli.endsWith('.js') || claudeCli.endsWith('.cjs');
 
     // Build command and args - spawn DIRECTLY, not through a shell (like mautrix-claude sidecar)
     let spawnFile: string;
@@ -251,54 +252,25 @@ export class AuthService {
       spawnArgs = process.platform === 'win32'
         ? ['/c', 'npx @anthropic-ai/claude-code setup-token']
         : ['-c', 'npx @anthropic-ai/claude-code setup-token'];
-    } else if (isBundledCli) {
+    } else if (isNativeBinary) {
+      // v2.1.121+ native binary — spawn directly, no node.exe needed
+      spawnFile = claudeCli;
+      spawnArgs = ['setup-token'];
+      logger.info(`Using native Claude CLI binary: ${spawnFile}`);
+    } else if (isNodeScript) {
+      // Legacy cli.js or cli-wrapper.cjs — needs Node.js to execute
       if (process.platform === 'win32') {
-        // On Windows, use bundled Node.js executable instead of ELECTRON_RUN_AS_NODE
-        // Windows GUI apps (like Electron) have known stdout capture issues
-        // See: https://github.com/electron/electron/issues/4552
-        const resourcesPath = getResourcesPath();
         const bundledNodeExe = WindowsPaths.getBundledNodeExe();
-
-        // Log detailed info about bundled node.exe
         const nodeExeExists = WindowsPaths.hasBundledNode();
-        const nodeExeStat = this.safeFileStat(bundledNodeExe);
-        logger.info('Windows: checking bundled Node.js', {
-          bundledNodeExe,
-          exists: nodeExeExists,
-          stat: nodeExeStat,
+        logger.info('Windows: checking bundled Node.js for script execution', {
+          bundledNodeExe, exists: nodeExeExists,
         });
 
-        // Also check what's in the resources directory
-        try {
-          const resourcesContent = fs.readdirSync(resourcesPath);
-          logger.info('Resources directory contents', {
-            resourcesPath,
-            files: resourcesContent.slice(0, 20), // First 20 items
-            totalFiles: resourcesContent.length,
-          });
-        } catch (err) {
-          logger.error('Failed to read resources directory', { resourcesPath, error: String(err) });
-        }
-
         if (nodeExeExists) {
-          logger.info('Windows: using bundled Node.js');
           spawnFile = bundledNodeExe;
           spawnArgs = [claudeCli, 'setup-token'];
-
-          // Try to verify node.exe is actually executable by checking its version
-          try {
-            const nodeVersion = execSync(`"${bundledNodeExe}" --version`, {
-              encoding: 'utf8',
-              timeout: 5000,
-            }).trim();
-            logger.info('Bundled Node.js version', { nodeVersion });
-          } catch (err) {
-            logger.warn('Failed to get bundled Node.js version', { error: String(err) });
-          }
         } else {
-          // Fallback to ELECTRON_RUN_AS_NODE via PowerShell (may not capture output)
           logger.warn('Windows: bundled Node.js not found, falling back to ELECTRON_RUN_AS_NODE');
-          logger.warn(`Expected at: ${bundledNodeExe}`);
           spawnFile = 'powershell.exe';
           const escapeForPowerShell = (s: string): string => s.replace(/'/g, "''");
           const escapedExePath = escapeForPowerShell(process.execPath);
@@ -307,14 +279,13 @@ export class AuthService {
           spawnArgs = ['-NoProfile', '-Command', psCommand];
         }
       } else {
-        // On Linux/macOS, spawn Electron directly with env var (works fine)
         spawnFile = process.execPath;
         spawnArgs = [claudeCli, 'setup-token'];
         extraEnv = { ELECTRON_RUN_AS_NODE: '1' };
       }
-      logger.info(`Using bundled CLI: ${spawnFile} ${JSON.stringify(spawnArgs)}`);
+      logger.info(`Using Node.js script CLI: ${spawnFile} ${JSON.stringify(spawnArgs)}`);
     } else {
-      // System CLI: spawn directly
+      // System CLI (e.g. /usr/local/bin/claude): spawn directly
       spawnFile = claudeCli;
       spawnArgs = ['setup-token'];
     }

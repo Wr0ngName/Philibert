@@ -87,9 +87,21 @@ const config: ForgeConfig = {
         return locked ? `${m}@${locked}` : m;
       });
 
+      // claude-code v2.1.121+ ships a native binary via platform-specific optional
+      // deps (e.g. @anthropic-ai/claude-code-win32-x64). When cross-compiling
+      // (Linux Docker → win32), npm installs the host platform's binary, not the
+      // target's. Explicitly add the target platform package so the correct binary
+      // gets bundled.
+      const claudeCodeVersion = rootPkgLock.packages?.['node_modules/@anthropic-ai/claude-code']?.version;
+      const arch = 'x64'; // all current builds target x64
+      const platformPkg = `@anthropic-ai/claude-code-${platform}-${arch}`;
+      if (claudeCodeVersion) {
+        pinnedModules.push(`${platformPkg}@${claudeCodeVersion}`);
+      }
+
       console.log('Installing external modules:', pinnedModules);
 
-      return new Promise<void>((resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
         const npm = spawn('npm', ['install', '--no-package-lock', '--no-save', ...pinnedModules], {
           cwd: buildPath,
           stdio: 'inherit',
@@ -106,6 +118,21 @@ const config: ForgeConfig = {
 
         npm.on('error', reject);
       });
+
+      // After install, the postinstall may have placed the HOST platform's binary
+      // (e.g. Linux) into bin/claude.exe. Overwrite with the TARGET platform binary.
+      const binName = platform === 'win32' ? 'claude.exe' : 'claude';
+      const srcBin = path.join(buildPath, 'node_modules', platformPkg, binName);
+      const destBin = path.join(buildPath, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+      if (fs.existsSync(srcBin)) {
+        fs.copyFileSync(srcBin, destBin);
+        if (platform !== 'win32') {
+          fs.chmodSync(destBin, 0o755);
+        }
+        console.log(`Placed ${platform}-${arch} claude binary at bin/claude.exe`);
+      } else {
+        console.warn(`\x1b[33m⚠ WARNING: Platform binary not found at ${srcBin}\x1b[0m`);
+      }
     },
   },
   packagerConfig: {

@@ -216,40 +216,24 @@ export const SquirrelPaths = {
  */
 export const ClaudeCliPaths = {
   /**
-   * Get the path to bundled CLI in packaged app
-   */
-  getBundledCliPath(): string {
-    const resourcesPath = getResourcesPath();
-    return path.join(
-      resourcesPath,
-      'app.asar.unpacked',
-      'node_modules',
-      '@anthropic-ai',
-      'claude-code',
-      'cli.js'
-    );
-  },
-
-  /**
-   * Get the path to CLI in development
-   */
-  getDevCliPath(): string {
-    return path.join(
-      app.getAppPath(),
-      'node_modules',
-      '@anthropic-ai',
-      'claude-code',
-      'cli.js'
-    );
-  },
-
-  /**
-   * Get all possible bundled CLI paths (in order of preference)
+   * Get all possible bundled CLI paths (in order of preference).
+   * v2.1.121+ ships a native binary at bin/claude.exe; older versions used cli.js.
    */
   getBundledCliPaths(): string[] {
+    const resourcesPath = getResourcesPath();
+    const asarUnpacked = path.join(resourcesPath, 'app.asar.unpacked', 'node_modules', '@anthropic-ai', 'claude-code');
+    const devPath = path.join(app.getAppPath(), 'node_modules', '@anthropic-ai', 'claude-code');
+
     return [
-      this.getBundledCliPath(),
-      this.getDevCliPath(),
+      // v2.1.121+ native binary
+      path.join(asarUnpacked, 'bin', 'claude.exe'),
+      path.join(devPath, 'bin', 'claude.exe'),
+      // v2.1.121+ Node.js fallback wrapper
+      path.join(asarUnpacked, 'cli-wrapper.cjs'),
+      path.join(devPath, 'cli-wrapper.cjs'),
+      // Legacy cli.js (v2.1.31 and earlier)
+      path.join(asarUnpacked, 'cli.js'),
+      path.join(devPath, 'cli.js'),
     ];
   },
 
@@ -263,5 +247,12 @@ export const ClaudeCliPaths = {
       }
     }
     return null;
+  },
+
+  /**
+   * Check if a CLI path is a native binary (not a Node.js script).
+   */
+  isNativeBinary(cliPath: string): boolean {
+    return cliPath.endsWith('claude.exe') && !cliPath.endsWith('.cjs') && !cliPath.endsWith('.js');
   },
 };

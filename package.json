@@ -71,7 +71,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.29",
-    "@anthropic-ai/claude-code": "^2.1.29",
+    "@anthropic-ai/claude-code": "^2.1.121",
     "@anthropic-ai/sdk": "^0.72.1",
     "@tailwindcss/typography": "^0.5.19",
     "dompurify": "^3.3.1",
