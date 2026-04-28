@@ -135,8 +135,12 @@ build:linux:manual:
 #
 # Auto-update always downloads the OFFLINE (full) bundle for reliability
 
+# Windows build uses Forge for packaging + electron-builder for NSIS installer.
+# Forge handles Vite compilation, native module unpacking, extraResource bundling,
+# and the packageAfterPrune hook (external modules, cross-platform binaries).
+# electron-builder then creates the NSIS installer from the packaged app via --prepackaged.
+
 # Windows OFFLINE build template (bundles Node.js + Git)
-# Simple one-liner like the original working build, just with CLINE_ONLINE_BUILD env
 .build_windows_offline:
   stage: build
   tags:
@@ -149,10 +153,9 @@ build:linux:manual:
         -w /app \
         -e CLINE_ONLINE_BUILD=false \
         electronuserland/builder:wine-mono \
-        bash -c "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs bzip2 && npm ci && ./scripts/download-node-windows.sh && ./scripts/download-git-bash-windows.sh && npm run make -- --platform=win32"
+        bash -c "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs bzip2 && npm ci && ./scripts/download-node-windows.sh && ./scripts/download-git-bash-windows.sh && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Cline GUI-win32-x64' --publish never"
     - echo "=== Artifact sizes ==="
-    - du -sh out/make/nsis/x64/* 2>/dev/null || true
-    - du -sh out/make/nsis/x64/ 2>/dev/null || true
+    - du -sh out/make/nsis/*.exe 2>/dev/null || true
     - df -h "$CI_PROJECT_DIR" || true
 
 # Windows ONLINE build template (smaller, downloads deps during install)
@@ -168,7 +171,7 @@ build:linux:manual:
         -w /app \
         -e CLINE_ONLINE_BUILD=true \
         electronuserland/builder:wine-mono \
-        bash -c "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs bzip2 && npm ci && npm run make -- --platform=win32 && mkdir -p out-online && cp -r out/make/nsis out-online/"
+        bash -c "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs bzip2 && npm ci && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Cline GUI-win32-x64' --publish never && mkdir -p out-online/nsis && cp out/make/nsis/*.exe out-online/nsis/"
 
 # Windows OFFLINE build for tags (main installer for auto-updates)
 build:windows:
@@ -177,7 +180,7 @@ build:windows:
   artifacts:
     name: "cline-gui-windows-offline-${CI_COMMIT_REF_SLUG}"
     paths:
-      - out/make/nsis/x64/*.exe
+      - out/make/nsis/*.exe
     expire_in: 1 week
   rules:
     - if: $CI_COMMIT_TAG
@@ -189,7 +192,7 @@ build:windows:online:
   artifacts:
     name: "cline-gui-windows-online-${CI_COMMIT_REF_SLUG}"
     paths:
-      - out-online/nsis/x64/*.exe
+      - out-online/nsis/*.exe
     expire_in: 1 week
   rules:
     - if: $CI_COMMIT_TAG
@@ -291,7 +294,7 @@ publish:packages:
 
       # Upload Windows OFFLINE installer (replace spaces in filename with dashes for URL)
       # This is the main installer used for auto-updates
-      for file in out/make/nsis/x64/*.exe; do
+      for file in out/make/nsis/*.exe; do
         if [ -f "$file" ]; then
           WIN_NAME=$(basename "$file" | tr ' ' '-')
           WIN_URL="${PACKAGE_REGISTRY_URL}/releases/${VERSION}/${WIN_NAME}"
@@ -319,7 +322,7 @@ publish:packages:
       # Upload Windows ONLINE installer (from build:windows:online job)
       # Stored in out-online/ to avoid conflicts with offline build
       # Smaller download, downloads Node.js + Git during installation
-      for file in out-online/nsis/x64/*.exe; do
+      for file in out-online/nsis/*.exe; do
         if [ -f "$file" ]; then
           WIN_ONLINE_NAME=$(basename "$file" | tr ' ' '-' | sed 's/\.exe$/-online.exe/')
           WIN_ONLINE_URL="${PACKAGE_REGISTRY_URL}/releases/${VERSION}/${WIN_ONLINE_NAME}"
@@ -334,7 +337,7 @@ publish:packages:
 
       # Generate latest.yml for electron-updater auto-updates
       echo "Creating latest.yml..."
-      WIN_EXE=$(ls out/make/nsis/x64/*.exe 2>/dev/null | head -1)
+      WIN_EXE=$(ls out/make/nsis/*.exe 2>/dev/null | head -1)
       WIN_FILENAME=$(basename "$WIN_EXE" | tr ' ' '-')
       WIN_SHA512=$(sha512sum "$WIN_EXE" 2>/dev/null | cut -d' ' -f1 || echo "")
       RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")

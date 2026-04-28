@@ -17,7 +17,7 @@ const isWindowsBuild = process.platform === 'win32' ||
   process.argv.includes('--platform=win32');
 
 // Online bundle mode: Set CLINE_ONLINE_BUILD=true to build without bundled Node.js/Git
-// Online installers download these dependencies during Squirrel installation
+// Online installers download these dependencies on first run
 const isOnlineBuild = process.env.CLINE_ONLINE_BUILD === 'true';
 
 // Check if bundled Node.js exists for Windows builds
@@ -145,11 +145,11 @@ const config: ForgeConfig = {
     appCategoryType: 'public.app-category.developer-tools',
     // Bundle dependencies for Windows:
     // OFFLINE builds include Node.js and Git Bash in the bundle
-    // ONLINE builds download them during Squirrel installation
+    // ONLINE builds download them on first run
     //
     // - Node.js: Required because Windows GUI apps can't capture stdout from ELECTRON_RUN_AS_NODE
     // - Git Bash (as tar.bz2): Required by Claude Code CLI for Unix-style commands
-    //   Bundled as tar.bz2 directly; extracted during Squirrel install using Windows native tar
+    //   Bundled as tar.bz2 directly; extracted on first run using Windows native tar
     // Run scripts/download-node-windows.sh and scripts/download-git-bash-windows.sh before building
     // Also include app-update.yml for electron-updater and bundle-type.txt for online/offline detection
     extraResource: [
@@ -167,14 +167,8 @@ const config: ForgeConfig = {
     force: true,
   },
   makers: [
-    {
-      name: '@electron-addons/electron-forge-maker-nsis',
-      config: {
-        updater: {
-          url: 'https://dev.web.wr0ng.name/api/v4/projects/wrongname%2Fcline-gui/packages/generic/releases',
-        },
-      },
-    },
+    // Windows NSIS installer is built separately via electron-builder (see electron-builder.json)
+    // Forge handles packaging only; electron-builder creates the installer from the packaged app
     new MakerZIP({}, ['darwin']),
     new MakerRpm({
       options: {
