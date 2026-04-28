@@ -183,6 +183,35 @@ build:windows:
   rules:
     - if: $CI_COMMIT_TAG
 
+# Extract Squirrel nupkg as a separate artifact (too large to bundle with exe)
+# Runs on the same workspace as build:windows via resource_group ordering
+extract:squirrel-nupkg:
+  stage: build
+  tags:
+    - shell
+  resource_group: windows-build
+  needs:
+    - job: build:windows
+  script:
+    - |
+      echo "Extracting Squirrel nupkg for publish job..."
+      mkdir -p squirrel-update
+      cp out/make/squirrel.windows/x64/RELEASES squirrel-update/ 2>/dev/null || true
+      for file in out/make/squirrel.windows/x64/*.nupkg; do
+        if [ -f "$file" ]; then
+          cp "$file" squirrel-update/
+          echo "Found nupkg: $(basename "$file") ($(du -sh "$file" | cut -f1))"
+        fi
+      done
+      ls -la squirrel-update/
+  artifacts:
+    name: "cline-gui-squirrel-update-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - squirrel-update/
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_TAG
+
 # Windows ONLINE build for tags (smaller download option)
 build:windows:online:
   extends: .build_windows_online
@@ -250,6 +279,8 @@ publish:packages:
     - job: build:windows
       artifacts: true
     - job: build:windows:online
+      artifacts: true
+    - job: extract:squirrel-nupkg
       artifacts: true
   script:
     - |
@@ -333,24 +364,36 @@ publish:packages:
         fi
       done
 
-      # Create latest.yml for auto-updater (electron-updater expects this at the root)
-      # NOTE: path should NOT include version - the feed URL already points to version folder
-      # Auto-updater always uses the OFFLINE (full) bundle for reliability
-      echo "Creating latest.yml for auto-updater..."
+      # Upload Squirrel update files (RELEASES + nupkg) for native auto-update
+      # These come from the extract:squirrel-nupkg job (separate artifact)
+      echo "Uploading Squirrel update files..."
+      if [ -f "squirrel-update/RELEASES" ]; then
+        curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+             --upload-file "squirrel-update/RELEASES" \
+             "${PACKAGE_REGISTRY_URL}/releases/${VERSION}/RELEASES"
+        echo "Uploaded RELEASES"
+      fi
+      for file in squirrel-update/*.nupkg; do
+        if [ -f "$file" ]; then
+          NUPKG_NAME=$(basename "$file")
+          echo "Uploading nupkg: ${NUPKG_NAME}..."
+          curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+               --upload-file "$file" \
+               "${PACKAGE_REGISTRY_URL}/releases/${VERSION}/${NUPKG_NAME}"
+        fi
+      done
+
+      # Generate latest.yml for backward compatibility
+      echo "Creating latest.yml..."
       WIN_EXE=$(ls out/make/squirrel.windows/x64/*.exe 2>/dev/null | head -1)
       WIN_FILENAME=$(basename "$WIN_EXE" | tr ' ' '-')
       WIN_SHA512=$(sha512sum "$WIN_EXE" 2>/dev/null | cut -d' ' -f1 || echo "")
       RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       printf 'version: %s\npath: %s\nsha512: %s\nreleaseDate: %s\n' \
         "${VERSION}" "${WIN_FILENAME}" "${WIN_SHA512}" "${RELEASE_DATE}" > latest.yml
-
-      # Upload latest.yml to the version-specific location in Package Registry
-      echo "Uploading latest.yml to ${PACKAGE_REGISTRY_URL}/releases/${VERSION}/latest.yml"
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file latest.yml \
            "${PACKAGE_REGISTRY_URL}/releases/${VERSION}/latest.yml"
-
-      # Copy latest.yml to release-info for the update-info job
       cp latest.yml release-info/latest.yml
 
       echo "Packages published successfully!"

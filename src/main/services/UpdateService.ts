@@ -1,128 +1,84 @@
 /**
- * Auto-update service using electron-updater
- * Configured for GitLab using Job Artifacts API
+ * Auto-update service using Electron's built-in autoUpdater (Squirrel.Windows)
  *
- * Industry standard approach for GitLab:
- * 1. Query GitLab Releases API to find latest release tag
- * 2. Use Job Artifacts API to fetch latest.yml from that tag
- * 3. Configure electron-updater dynamically
+ * Uses Squirrel's native update mechanism instead of electron-updater:
+ * 1. Query GitLab Releases API to find the latest release tag
+ * 2. Point Squirrel at the version's package directory (RELEASES + nupkg)
+ * 3. Squirrel's Update.exe (already installed) applies the nupkg delta
+ *
+ * This avoids the "dummy update.exe" problem that occurs when electron-updater
+ * tries to run cross-compiled Setup.exe files (Mono can't embed PE resources).
  */
 
-import { BrowserWindow, app, net } from 'electron';
-import { autoUpdater, UpdateInfo as ElectronUpdateInfo } from 'electron-updater';
+import { BrowserWindow, app, autoUpdater, net } from 'electron';
 
-import { IPC_CHANNELS, UpdateInfo, UpdateProgress } from '../../shared/types';
+import { IPC_CHANNELS, UpdateInfo } from '../../shared/types';
 import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
-// GitLab server configuration
 const GITLAB_HOST = 'https://dev.web.wr0ng.name';
-const GITLAB_PROJECT_ID = 'wrongname%2Fcline-gui'; // URL-encoded project path
-// Note: Numeric project ID for some API calls is 200
+const GITLAB_PROJECT_ID = 'wrongname%2Fcline-gui';
 
-// API endpoints
 const RELEASES_API = `${GITLAB_HOST}/api/v4/projects/${GITLAB_PROJECT_ID}/releases`;
 const PACKAGES_API = `${GITLAB_HOST}/api/v4/projects/${GITLAB_PROJECT_ID}/packages/generic/releases`;
 
 export class UpdateService {
   private isCheckingForUpdates = false;
-  // Bound sender function for DRY IPC communication
   private send: (channel: string, ...args: unknown[]) => boolean;
+  private latestUpdateInfo: UpdateInfo | null = null;
 
   constructor(getMainWindow: () => BrowserWindow | null) {
-    // Create bound sender using the provided window getter
     this.send = createSender(getMainWindow);
     this.configureUpdater();
-    logger.info('UpdateService initialized');
+    logger.info('UpdateService initialized (Squirrel-native)');
   }
 
-  /**
-   * Configure the auto-updater base settings
-   */
   private configureUpdater(): void {
-    const currentVersion = app.getVersion();
-
-    // Initial configuration - will be updated dynamically when checking for updates
-    // Start with current version's package directory as fallback
-    autoUpdater.setFeedURL({
-      provider: 'generic',
-      url: `${PACKAGES_API}/${currentVersion}`,
-    });
-
-    // Configure authentication for private package registry (if needed)
-    const updateToken = process.env.GITLAB_UPDATE_TOKEN;
-    if (updateToken) {
-      autoUpdater.requestHeaders = {
-        'Private-Token': updateToken,
-      };
-      logger.info('Auto-updater configured with authentication');
-    } else {
-      logger.info('Auto-updater configured without authentication (public access only)');
+    if (process.platform !== 'win32') {
+      logger.info('Squirrel auto-updater only available on Windows');
+      return;
     }
 
-    logger.info('Auto-updater configured', {
-      currentVersion,
-      hasAuth: !!updateToken,
-    });
-
-    // Auto download updates
-    autoUpdater.autoDownload = false;
-    autoUpdater.autoInstallOnAppQuit = true;
-
-    // Set up event handlers
     autoUpdater.on('checking-for-update', () => {
-      logger.info('Checking for updates...');
+      logger.info('Squirrel checking for updates...');
     });
 
-    autoUpdater.on('update-available', (info: ElectronUpdateInfo) => {
-      logger.info('Update available', { version: info.version });
-      this.emitUpdateAvailable({
-        version: info.version,
-        releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
-        releaseDate: info.releaseDate,
-      });
+    autoUpdater.on('update-available', () => {
+      logger.info('Squirrel: update available');
+      if (this.latestUpdateInfo) {
+        this.emitUpdateAvailable(this.latestUpdateInfo);
+      }
     });
 
     autoUpdater.on('update-not-available', () => {
-      logger.info('No updates available');
+      logger.info('Squirrel: no updates available');
     });
 
-    autoUpdater.on('download-progress', (progress) => {
-      logger.debug('Download progress', { percent: progress.percent });
-      this.emitProgress({
-        percent: progress.percent,
-        bytesPerSecond: progress.bytesPerSecond,
-        total: progress.total,
-        transferred: progress.transferred,
-      });
-    });
-
-    autoUpdater.on('update-downloaded', () => {
-      logger.info('Update downloaded');
+    autoUpdater.on('update-downloaded', (_event, releaseNotes, releaseName, _releaseDate, _updateURL) => {
+      logger.info('Squirrel: update downloaded', { releaseName });
+      if (this.latestUpdateInfo) {
+        this.latestUpdateInfo.releaseNotes = releaseNotes || undefined;
+      }
       this.emitDownloaded();
     });
 
     autoUpdater.on('error', (error) => {
-      const errorMessage = error?.message || '';
-      if (errorMessage.includes('404') || errorMessage.includes('Cannot find channel')) {
-        // This is expected when no releases have been published yet
-        logger.info('No updates available (404 - no releases published yet)');
+      const msg = error?.message || '';
+      if (msg.includes('404') || msg.includes('RELEASES')) {
+        logger.info('No Squirrel updates available (RELEASES not found)');
       } else {
-        logger.error('Update error', error);
+        logger.error('Squirrel update error', error);
       }
+    });
+
+    logger.info('Squirrel auto-updater configured', {
+      currentVersion: app.getVersion(),
     });
   }
 
-
-  /**
-   * Fetch the latest release tag from GitLab Releases API
-   */
   private async fetchLatestReleaseTag(): Promise<string | null> {
     return new Promise((resolve) => {
-      const request = net.request({
-        method: 'GET',
-        url: RELEASES_API,
-      });
+      const request = net.request({ method: 'GET', url: RELEASES_API });
 
       const updateToken = process.env.GITLAB_UPDATE_TOKEN;
       if (updateToken) {
@@ -146,7 +102,6 @@ export class UpdateService {
           try {
             const releases = JSON.parse(responseData);
             if (Array.isArray(releases) && releases.length > 0) {
-              // Releases are sorted by released_at descending by default
               const latestRelease = releases[0];
               const tagName = latestRelease.tag_name;
               logger.info('Found latest release', { tagName, name: latestRelease.name });
@@ -171,78 +126,6 @@ export class UpdateService {
     });
   }
 
-  /**
-   * Check for updates
-   * First queries GitLab for the latest release, then checks via electron-updater
-   */
-  async checkForUpdates(): Promise<UpdateInfo | null> {
-    if (this.isCheckingForUpdates) {
-      logger.warn('Already checking for updates');
-      return null;
-    }
-
-    this.isCheckingForUpdates = true;
-
-    try {
-      // Step 1: Fetch the latest release tag from GitLab
-      const latestTag = await this.fetchLatestReleaseTag();
-
-      if (!latestTag) {
-        logger.info('No releases found on GitLab');
-        return null;
-      }
-
-      // Extract version from tag (remove 'v' prefix if present)
-      const latestVersion = latestTag.startsWith('v') ? latestTag.slice(1) : latestTag;
-      const currentVersion = app.getVersion();
-
-      // Quick version comparison before making more API calls
-      if (this.compareVersions(currentVersion, latestVersion) >= 0) {
-        logger.info('Already on latest version', { currentVersion, latestVersion });
-        return null;
-      }
-
-      // Step 2: Update the feed URL to point to the latest version's packages
-      const feedUrl = `${PACKAGES_API}/${latestVersion}`;
-      logger.info('Setting feed URL for update check', { feedUrl, latestTag });
-
-      autoUpdater.setFeedURL({
-        provider: 'generic',
-        url: feedUrl,
-      });
-
-      // Step 3: Check for updates using electron-updater
-      const result = await autoUpdater.checkForUpdates();
-
-      if (result && result.updateInfo) {
-        return {
-          version: result.updateInfo.version,
-          releaseNotes:
-            typeof result.updateInfo.releaseNotes === 'string'
-              ? result.updateInfo.releaseNotes
-              : undefined,
-          releaseDate: result.updateInfo.releaseDate,
-        };
-      }
-
-      return null;
-    } catch (error) {
-      const errorMessage = (error as Error)?.message || '';
-      if (errorMessage.includes('404') || errorMessage.includes('Cannot find channel')) {
-        logger.info('No releases published to package registry yet');
-        return null;
-      }
-      logger.error('Failed to check for updates', error);
-      return null;
-    } finally {
-      this.isCheckingForUpdates = false;
-    }
-  }
-
-  /**
-   * Compare two semantic versions
-   * Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
-   */
   private compareVersions(v1: string, v2: string): number {
     const parts1 = v1.split('.').map(Number);
     const parts2 = v2.split('.').map(Number);
@@ -256,43 +139,73 @@ export class UpdateService {
     return 0;
   }
 
-  /**
-   * Download the available update
-   */
-  async downloadUpdate(): Promise<void> {
+  async checkForUpdates(): Promise<UpdateInfo | null> {
+    if (process.platform !== 'win32') {
+      logger.info('Auto-update check skipped (not Windows)');
+      return null;
+    }
+
+    if (this.isCheckingForUpdates) {
+      logger.warn('Already checking for updates');
+      return null;
+    }
+
+    this.isCheckingForUpdates = true;
+
     try {
-      await autoUpdater.downloadUpdate();
+      const latestTag = await this.fetchLatestReleaseTag();
+      if (!latestTag) {
+        logger.info('No releases found on GitLab');
+        return null;
+      }
+
+      const latestVersion = latestTag.startsWith('v') ? latestTag.slice(1) : latestTag;
+      const currentVersion = app.getVersion();
+
+      if (this.compareVersions(currentVersion, latestVersion) >= 0) {
+        logger.info('Already on latest version', { currentVersion, latestVersion });
+        return null;
+      }
+
+      // Point Squirrel at the version's package directory containing RELEASES + nupkg
+      const feedUrl = `${PACKAGES_API}/${latestVersion}`;
+      logger.info('Setting Squirrel feed URL', { feedUrl, latestTag });
+
+      this.latestUpdateInfo = {
+        version: latestVersion,
+        releaseDate: new Date().toISOString(),
+      };
+
+      autoUpdater.setFeedURL({ url: feedUrl });
+      autoUpdater.checkForUpdates();
+
+      return this.latestUpdateInfo;
     } catch (error) {
-      logger.error('Failed to download update', error);
-      throw error;
+      logger.error('Failed to check for updates', error);
+      return null;
+    } finally {
+      this.isCheckingForUpdates = false;
     }
   }
 
   /**
-   * Install the downloaded update and restart
+   * Download the available update.
+   * With Squirrel, download starts automatically after checkForUpdates finds one.
+   * This method is kept for API compatibility but is a no-op.
    */
+  async downloadUpdate(): Promise<void> {
+    logger.info('Squirrel handles download automatically after check');
+  }
+
   installUpdate(): void {
-    logger.info('Installing update and restarting');
+    logger.info('Installing update and restarting via Squirrel');
     autoUpdater.quitAndInstall();
   }
 
-  /**
-   * Emit update available event
-   */
   private emitUpdateAvailable(info: UpdateInfo): void {
     this.send(IPC_CHANNELS.UPDATE_AVAILABLE, info);
   }
 
-  /**
-   * Emit download progress event
-   */
-  private emitProgress(progress: UpdateProgress): void {
-    this.send(IPC_CHANNELS.UPDATE_PROGRESS, progress);
-  }
-
-  /**
-   * Emit update downloaded event
-   */
   private emitDownloaded(): void {
     this.send(IPC_CHANNELS.UPDATE_DOWNLOADED);
   }
