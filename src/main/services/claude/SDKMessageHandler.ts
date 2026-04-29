@@ -499,8 +499,10 @@ export class SDKMessageHandler {
       }
     }
 
-    // Handle status messages (like compacting)
-    if (systemMsg.subtype === 'status' && systemMsg.status) {
+    // Handle status messages — only emit statuses that represent meaningful
+    // progress (e.g. "compacting"). Skip transient statuses like "requesting"
+    // which get superseded by streaming content and would pollute the message.
+    if (systemMsg.subtype === 'status' && systemMsg.status && systemMsg.status !== 'requesting') {
       this.callbacks.onChunk(`\n_${systemMsg.status}_\n`);
     }
 
