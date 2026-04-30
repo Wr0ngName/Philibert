@@ -74,27 +74,19 @@ async function applyModelChange(modelValue: string): Promise<void> {
 // Select a model - may require confirmation if conversation has an active session
 async function selectModel(modelValue: string): Promise<void> {
   isOpen.value = false;
+  if (modelValue === selectedModel.value) return;
 
-  // If the current conversation has an active SDK session, always show the
-  // confirmation dialog — even if the stored value matches. The active session
-  // may be running a different model than what's in config (e.g. CLI ignored
-  // --model during --resume), so the user must be able to force a restart.
+  // If the current conversation has an active SDK session, changing the model
+  // requires starting a fresh session (the CLI ignores --model during --resume).
+  // Warn the user that Claude will lose context of previous messages.
   if (conversationsStore.currentConversationHasSession()) {
     pendingModelValue.value = modelValue;
     showConfirmDialog.value = true;
     return;
   }
 
-  // No active session — skip if already set to avoid unnecessary work
-  if (modelValue === selectedModel.value) return;
-
   try {
-    const displayName = getModelDisplayName(modelValue);
-    // Clear any saved session ID so the next message starts a fresh session
-    // with the new model instead of resuming (CLI ignores --model during --resume)
-    conversationsStore.clearCurrentSdkSessionId();
     await applyModelChange(modelValue);
-    chatStore.addSystemMessage(`Model set to ${displayName}`);
   } catch (err) {
     logger.error('Failed to change model', err);
   }
@@ -107,16 +99,24 @@ function getModelDisplayName(modelValue: string): string {
   return model?.displayName || formatModelId(modelValue);
 }
 
-// User confirmed model change — save to config; the backend will call
-// setModel() on the next message to switch the active session's model.
+// User confirmed model change - kill active session and apply new model
 async function confirmModelChange(): Promise<void> {
   showConfirmDialog.value = false;
   if (pendingModelValue.value === null) return;
 
   try {
     const displayName = getModelDisplayName(pendingModelValue.value);
+    const currentConvId = conversationsStore.currentConversationId;
+
+    // Abort the active SDK session on the main process so the next message
+    // creates a fresh session with the newly selected model
+    if (currentConvId) {
+      await window.electron.claude.abort(currentConvId);
+    }
+
+    conversationsStore.clearCurrentSdkSessionId();
     await applyModelChange(pendingModelValue.value);
-    chatStore.addSystemMessage(`Model changed to ${displayName}`);
+    chatStore.addSystemMessage(`Model changed to ${displayName} — new session started`);
   } catch (err) {
     logger.error('Failed to change model', err);
   } finally {
@@ -289,11 +289,11 @@ onUnmounted(() => {
       :open="showConfirmDialog"
       title="Change model?"
       size="sm"
-      aria-description="Change the model used for subsequent responses in this conversation."
+      aria-description="Changing the model will start a fresh session. Claude will not have context of previous messages."
       @close="cancelModelChange"
     >
       <p class="text-sm text-surface-600 dark:text-surface-400">
-        The next message will use the selected model. Previous conversation context is preserved.
+        Changing the model requires starting a fresh session. Claude will not have context of previous messages in this conversation.
       </p>
 
       <template #footer>
