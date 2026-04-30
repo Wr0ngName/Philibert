@@ -110,6 +110,8 @@ interface SessionInstance {
   pendingSyntheticPolls: number;
   /** Timer for periodic background task notification flushing */
   pollTimer: ReturnType<typeof setInterval> | null;
+  /** Model that was used to start this session */
+  sessionModel: string;
 }
 
 /**
@@ -298,9 +300,32 @@ export class ClaudeCodeService {
       return;
     }
 
+    // Get selected model to apply to the session
+    const selectedModel = await this.configService.getSelectedModel();
+
     // Check for existing persistent session
     const existingSession = this.activeSessions.get(conversationId);
     if (existingSession && !existingSession.inputChannel.isClosed()) {
+      // If the model changed, use SDK's setModel() to switch mid-session
+      // (no need to kill the session — context is preserved)
+      if (selectedModel && existingSession.sessionModel !== selectedModel) {
+        try {
+          await existingSession.query.setModel(selectedModel);
+          existingSession.sessionModel = selectedModel;
+          logger.info('Model changed on existing session via setModel()', {
+            conversationId,
+            oldModel: existingSession.sessionModel || '(default)',
+            newModel: selectedModel,
+          });
+        } catch (error) {
+          logger.warn('Failed to setModel on existing session, will start new session', {
+            conversationId, error,
+          });
+          this.cleanupSession(conversationId);
+          await this.startNewSession(conversationId, message, workingDirectory, isSlashCommand, resumeSessionId);
+          return;
+        }
+      }
       // Reuse existing session — push message to channel
       await this.sendToExistingSession(existingSession, message, isSlashCommand);
       return;
@@ -442,6 +467,10 @@ export class ClaudeCodeService {
       // Get selected model from config
       const selectedModel = await this.configService.getSelectedModel();
 
+      // When a model is explicitly selected, skip resume because the CLI ignores
+      // --model during --resume. The user's model choice must take priority.
+      const effectiveResumeId = selectedModel ? undefined : resumeSessionId;
+
       logger.info('Starting new persistent session', {
         conversationId,
         messageLength: message.length,
@@ -450,6 +479,8 @@ export class ClaudeCodeService {
         model: selectedModel || '(SDK default)',
         activeSessions: this.activeSessions.size,
         hasResumeSessionId: !!resumeSessionId,
+        effectiveResume: !!effectiveResumeId,
+        resumeSkippedForModel: !!resumeSessionId && !effectiveResumeId,
       });
 
       // Set up authentication environment
@@ -475,7 +506,7 @@ export class ClaudeCodeService {
           canUseTool: permissionManager.createCanUseToolCallback(),
           includePartialMessages: true,
           ...(selectedModel ? { model: selectedModel } : {}),
-          ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+          ...(effectiveResumeId ? { resume: effectiveResumeId } : {}),
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {
             return this.spawnSDKProcess(options, conversationId);
           },
@@ -500,6 +531,7 @@ export class ClaudeCodeService {
         runningBackgroundTasks: new Map(),
         pendingSyntheticPolls: 0,
         pollTimer: null,
+        sessionModel: selectedModel,
       };
       this.activeSessions.set(conversationId, session);
       this.emitActiveQueryCount();
@@ -663,9 +695,10 @@ export class ClaudeCodeService {
       extraEnv = result.extraEnv;
     }
 
-    logger.debug('Spawning SDK process', {
+    logger.info('Spawning SDK process', {
       conversationId,
-      argsCount: spawnArgs.length,
+      command: spawnFile,
+      args: spawnArgs.filter(a => !a.startsWith('ANTHROPIC_API_KEY') && !a.startsWith('CLAUDE_CODE_OAUTH')),
       cwd: options.cwd,
       hasOAuthToken: !!options.env?.CLAUDE_CODE_OAUTH_TOKEN,
       hasApiKey: !!options.env?.ANTHROPIC_API_KEY,
@@ -1213,7 +1246,7 @@ export class ClaudeCodeService {
       }));
       logger.info('Cached models from SDK', {
         count: this.cachedModels.length,
-        models: this.cachedModels.map(m => m.displayName),
+        models: this.cachedModels.map(m => ({ value: m.value, displayName: m.displayName })),
       });
       this.send(IPC_CHANNELS.CLAUDE_MODEL_CHANGED, this.cachedModels);
     } catch (error) {

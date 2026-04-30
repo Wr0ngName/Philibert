@@ -1079,6 +1079,148 @@ describe('ClaudeCodeService', () => {
       await Promise.all(promises);
     });
   });
+
+  // ===========================================================================
+  // Model Selection
+  // ===========================================================================
+  describe('sendMessage - model selection', () => {
+    beforeEach(() => {
+      mockConfigService.getOAuthToken.mockResolvedValue(
+        'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
+      );
+    });
+
+    it('should pass selected model to SDK query options', async () => {
+      mockConfigService.getSelectedModel.mockResolvedValue('claude-opus-4-7');
+      const mockIterator = createMockQueryIterator([]);
+      mockQuery.mockReturnValue(mockIterator);
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.objectContaining({
+          options: expect.objectContaining({
+            model: 'claude-opus-4-7',
+          }),
+        })
+      );
+    });
+
+    it('should NOT pass model when selectedModel is empty (use SDK default)', async () => {
+      mockConfigService.getSelectedModel.mockResolvedValue('');
+      const mockIterator = createMockQueryIterator([]);
+      mockQuery.mockReturnValue(mockIterator);
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+      const queryOptions = mockQuery.mock.calls[0][0].options;
+      expect(queryOptions.model).toBeUndefined();
+    });
+
+    it('should skip resume when model is explicitly selected', async () => {
+      mockConfigService.getSelectedModel.mockResolvedValue('claude-opus-4-7');
+      const mockIterator = createMockQueryIterator([]);
+      mockQuery.mockReturnValue(mockIterator);
+
+      // Pass a resumeSessionId — but it should be ignored when model is set
+      await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', 'old-session-id');
+
+      const queryOptions = mockQuery.mock.calls[0][0].options;
+      expect(queryOptions.model).toBe('claude-opus-4-7');
+      expect(queryOptions.resume).toBeUndefined();
+    });
+
+    it('should use resume when no model is explicitly selected', async () => {
+      mockConfigService.getSelectedModel.mockResolvedValue('');
+      const mockIterator = createMockQueryIterator([]);
+      mockQuery.mockReturnValue(mockIterator);
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', 'old-session-id');
+
+      const queryOptions = mockQuery.mock.calls[0][0].options;
+      expect(queryOptions.model).toBeUndefined();
+      expect(queryOptions.resume).toBe('old-session-id');
+    });
+
+    it('should call setModel() on existing session when model changes', async () => {
+      // Start session with default model — use iterator that yields init then waits
+      mockConfigService.getSelectedModel.mockResolvedValue('');
+      let resolveFirst!: () => void;
+      const waitPromise = new Promise<void>((resolve) => { resolveFirst = resolve; });
+      const firstIterator = {
+        [Symbol.asyncIterator]: async function* () {
+          yield { type: 'system', subtype: 'init', session_id: 'test-session-456', slash_commands: [] };
+          await waitPromise;
+          yield { type: 'result', subtype: 'success' };
+        },
+        interrupt: vi.fn(),
+        supportedCommands: vi.fn().mockResolvedValue([]),
+        supportedModels: vi.fn().mockResolvedValue([]),
+        setModel: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn(),
+      };
+      mockQuery.mockReturnValue(firstIterator);
+
+      const firstPromise = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+      // Let the message loop process the init message
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+
+      // Change model to Opus
+      mockConfigService.getSelectedModel.mockResolvedValue('claude-opus-4-7');
+
+      // Send second message — should call setModel() on existing session
+      await service.sendMessage(TEST_CONV_ID, 'Second message', '/home/user');
+
+      // Should NOT have created a second query — reused existing session with setModel()
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+
+      // setModel should have been called with the new model
+      expect(firstIterator.setModel).toHaveBeenCalledWith('claude-opus-4-7');
+
+      // Clean up
+      resolveFirst();
+      await firstPromise.catch(() => {});
+    });
+
+    it('should reuse existing session when model has NOT changed', async () => {
+      // Start session with default model — use an iterator that yields init then waits
+      mockConfigService.getSelectedModel.mockResolvedValue('');
+      let resolveFirst!: () => void;
+      const waitPromise = new Promise<void>((resolve) => { resolveFirst = resolve; });
+      const firstIterator = {
+        [Symbol.asyncIterator]: async function* () {
+          // Yield an init message so sessionReady resolves
+          yield { type: 'system', subtype: 'init', session_id: 'test-session-123', slash_commands: [] };
+          // Then wait for cleanup
+          await waitPromise;
+          yield { type: 'result', subtype: 'success' };
+        },
+        interrupt: vi.fn(),
+        supportedCommands: vi.fn().mockResolvedValue([]),
+        supportedModels: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      };
+      mockQuery.mockReturnValue(firstIterator);
+
+      const firstPromise = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+      // Let the message loop process the init message
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Send second message with same model (still empty/default)
+      mockConfigService.getSelectedModel.mockResolvedValue('');
+
+      await service.sendMessage(TEST_CONV_ID, 'Follow-up', '/home/user');
+
+      // Should NOT have created a second query — reused existing session
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+
+      // Clean up
+      resolveFirst();
+      await firstPromise.catch(() => {});
+    });
+  });
 });
 
 // ===========================================================================
@@ -1098,6 +1240,8 @@ function createMockQueryIterator(messages: any[]) {
     },
     interrupt: vi.fn(),
     supportedCommands: vi.fn().mockResolvedValue([]),
+    supportedModels: vi.fn().mockResolvedValue([]),
+    setModel: vi.fn().mockResolvedValue(undefined),
     close: vi.fn(),
   };
 }
@@ -1118,6 +1262,8 @@ function createPendingIterator(onReady: (resolve: () => void) => void) {
     },
     interrupt: vi.fn(),
     supportedCommands: vi.fn().mockResolvedValue([]),
+    supportedModels: vi.fn().mockResolvedValue([]),
+    setModel: vi.fn().mockResolvedValue(undefined),
     close: vi.fn(),
   };
 }
@@ -1133,6 +1279,8 @@ function createThrowingIterator(error: Error) {
     },
     interrupt: vi.fn(),
     supportedCommands: vi.fn().mockResolvedValue([]),
+    supportedModels: vi.fn().mockResolvedValue([]),
+    setModel: vi.fn().mockResolvedValue(undefined),
     close: vi.fn(),
   };
 }
