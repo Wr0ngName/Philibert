@@ -62,10 +62,10 @@ See [plan.md](./plan.md) for detailed implementation roadmap.
 ## Installation (Future)
 
 ### Windows
-Download `Philibert-Setup.exe` from [Releases](https://dev.web.wr0ng.name/wrongname/cline-gui/-/releases) and run the installer.
+Download `Philibert-Setup.exe` from [Releases](https://dev.web.wr0ng.name/wrongname/philibert/-/releases) and run the installer.
 
 ### macOS
-Download `Philibert.dmg` from [Releases](https://dev.web.wr0ng.name/wrongname/cline-gui/-/releases), open it, and drag the app to Applications.
+Download `Philibert.dmg` from [Releases](https://dev.web.wr0ng.name/wrongname/philibert/-/releases), open it, and drag the app to Applications.
 
 ### Linux
 Download your preferred package:
@@ -91,7 +91,7 @@ Download your preferred package:
 ### Getting Started
 ```bash
 # Clone the repository
-git clone https://dev.web.wr0ng.name/wrongname/cline-gui.git
+git clone https://dev.web.wr0ng.name/wrongname/philibert.git
 cd philibert
 
 # Install dependencies

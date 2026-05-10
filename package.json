@@ -7,7 +7,7 @@
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://dev.web.wr0ng.name/wrongname/cline-gui.git"
+    "url": "https://dev.web.wr0ng.name/wrongname/philibert.git"
   },
   "scripts": {
     "start": "electron-forge start",
