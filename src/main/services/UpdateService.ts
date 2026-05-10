@@ -14,7 +14,7 @@ import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
 const GITLAB_HOST = 'https://dev.web.wr0ng.name';
-const GITLAB_PROJECT_ID = 'wrongname%2Fcline-gui';
+const GITLAB_PROJECT_ID = 'wrongname%2Fphilibert';
 
 const RELEASES_API = `${GITLAB_HOST}/api/v4/projects/${GITLAB_PROJECT_ID}/releases`;
 const PACKAGES_API = `${GITLAB_HOST}/api/v4/projects/${GITLAB_PROJECT_ID}/packages/generic/releases`;
