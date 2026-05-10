@@ -1,10 +1,10 @@
-# Cline GUI
+# Philibert
 
 A user-friendly desktop application that brings the power of Claude Code to non-technical users.
 
 ## Overview
 
-Cline GUI wraps the official [@anthropic-ai/claude-code](https://www.npmjs.com/package/@anthropic-ai/claude-code) CLI in a clean, intuitive graphical interface. No terminal required, no Node.js installation needed - just download, install, and start coding with Claude.
+Philibert wraps the official [@anthropic-ai/claude-code](https://www.npmjs.com/package/@anthropic-ai/claude-code) CLI in a clean, intuitive graphical interface. No terminal required, no Node.js installation needed - just download, install, and start coding with Claude.
 
 ## Features
 
@@ -62,20 +62,20 @@ See [plan.md](./plan.md) for detailed implementation roadmap.
 ## Installation (Future)
 
 ### Windows
-Download `Cline-GUI-Setup.exe` from [Releases](https://dev.web.wr0ng.name/wrongname/cline-gui/-/releases) and run the installer.
+Download `Philibert-Setup.exe` from [Releases](https://dev.web.wr0ng.name/wrongname/cline-gui/-/releases) and run the installer.
 
 ### macOS
-Download `Cline-GUI.dmg` from [Releases](https://dev.web.wr0ng.name/wrongname/cline-gui/-/releases), open it, and drag the app to Applications.
+Download `Philibert.dmg` from [Releases](https://dev.web.wr0ng.name/wrongname/cline-gui/-/releases), open it, and drag the app to Applications.
 
 ### Linux
 Download your preferred package:
-- `.deb` for Debian/Ubuntu: `sudo dpkg -i cline-gui_1.0.0_amd64.deb`
-- `.rpm` for Fedora/RHEL: `sudo rpm -i cline-gui-1.0.0.x86_64.rpm`
-- `.AppImage` for universal: `chmod +x Cline-GUI-1.0.0.AppImage && ./Cline-GUI-1.0.0.AppImage`
+- `.deb` for Debian/Ubuntu: `sudo dpkg -i philibert_1.0.0_amd64.deb`
+- `.rpm` for Fedora/RHEL: `sudo rpm -i philibert-1.0.0.x86_64.rpm`
+- `.AppImage` for universal: `chmod +x Philibert-1.0.0.AppImage && ./Philibert-1.0.0.AppImage`
 
 ## Usage (Future)
 
-1. Launch Cline GUI
+1. Launch Philibert
 2. Enter your Anthropic API key in Settings
 3. Select a working directory for your project
 4. Start chatting with Claude!
@@ -92,7 +92,7 @@ Download your preferred package:
 ```bash
 # Clone the repository
 git clone https://dev.web.wr0ng.name/wrongname/cline-gui.git
-cd cline-gui
+cd philibert
 
 # Install dependencies
 npm install

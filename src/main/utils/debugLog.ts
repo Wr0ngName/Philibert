@@ -10,7 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 /** Path to the debug log file in the system temp directory */
-export const DEBUG_LOG_PATH = path.join(os.tmpdir(), 'cline-gui-debug.log');
+export const DEBUG_LOG_PATH = path.join(os.tmpdir(), 'philibert-debug.log');
 
 /**
  * Write a debug message to the file-based log.

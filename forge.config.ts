@@ -16,9 +16,9 @@ const isWindowsBuild = process.platform === 'win32' ||
   process.env.npm_config_platform === 'win32' ||
   process.argv.includes('--platform=win32');
 
-// Online bundle mode: Set CLINE_ONLINE_BUILD=true to build without bundled Node.js/Git
+// Online bundle mode: Set PHILIBERT_ONLINE_BUILD=true to build without bundled Node.js/Git
 // Online installers download these dependencies on first run
-const isOnlineBuild = process.env.CLINE_ONLINE_BUILD === 'true';
+const isOnlineBuild = process.env.PHILIBERT_ONLINE_BUILD === 'true';
 
 // Check if bundled Node.js exists for Windows builds
 const nodeExePath = './vendor/node-win-x64/node.exe';
@@ -135,13 +135,13 @@ const config: ForgeConfig = {
     },
   },
   packagerConfig: {
-    name: 'Cline GUI',
-    executableName: isWindowsBuild ? 'Cline GUI' : 'cline-gui',
+    name: 'Philibert',
+    executableName: isWindowsBuild ? 'Philibert' : 'philibert',
     asar: {
       unpack: '**/node_modules/{node-pty,@anthropic-ai,@img}/**/*',
     },
     icon: './resources/icons/icon',
-    appBundleId: 'com.cline.gui',
+    appBundleId: 'com.philibert.app',
     appCategoryType: 'public.app-category.developer-tools',
     // Bundle dependencies for Windows:
     // OFFLINE builds include Node.js and Git Bash in the bundle
@@ -188,7 +188,7 @@ const config: ForgeConfig = {
         icon: './resources/icons/icon.png',
         categories: ['Development'],
         maintainer: 'wrongname',
-        homepage: 'https://dev.web.wr0ng.name/wrongname/cline-gui',
+        homepage: 'https://dev.web.wr0ng.name/wrongname/philibert',
         // Git is required by Claude Code CLI
         depends: ['git'],
         scripts: {

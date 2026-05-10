@@ -1,12 +1,12 @@
 #!/bin/bash
-# Post-removal script for Cline GUI (RPM)
+# Post-removal script for Philibert (RPM)
 
-APP_NAME="cline-gui"
+APP_NAME="philibert"
 
 if [ "$1" = "0" ]; then
     # Package is being removed (not upgraded)
     echo ""
-    echo "Cline GUI has been removed."
+    echo "Philibert has been removed."
     echo ""
     echo "Your configuration and conversation history have been preserved in:"
     echo "  ~/.config/$APP_NAME"

@@ -48,7 +48,7 @@ export async function createWindow(options: WindowOptions = {}): Promise<Browser
     height: MAIN_CONSTANTS.WINDOW.DEFAULT_HEIGHT,
     minWidth: MAIN_CONSTANTS.WINDOW.MIN_WIDTH,
     minHeight: MAIN_CONSTANTS.WINDOW.MIN_HEIGHT,
-    title: 'Cline GUI',
+    title: 'Philibert',
     backgroundColor: '#fafafa',
     show: false, // Don't show until ready
     frame: isDebugMode, // Hide title bar unless debug mode

@@ -39,4 +39,4 @@ app.config.warnHandler = (msg, instance, trace) => {
 app.mount('#app');
 
 // Log startup
-logger.info('Cline GUI renderer started');
+logger.info('Philibert renderer started');

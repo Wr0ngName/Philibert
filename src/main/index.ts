@@ -1,5 +1,5 @@
 /**
- * Main process entry point for Cline GUI
+ * Main process entry point for Philibert
  */
 
 import { debugLog } from './utils/debugLog';
@@ -130,7 +130,7 @@ async function main(): Promise<void> {
       logger.error('Critical error during app startup:', error);
       dialog.showErrorBox(
         'Startup Error',
-        `Cline GUI failed to start: ${error instanceof Error ? error.message : String(error)}`
+        `Philibert failed to start: ${error instanceof Error ? error.message : String(error)}`
       );
       app.quit();
     }

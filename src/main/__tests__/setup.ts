@@ -194,7 +194,7 @@ export const mockApp = {
   once: vi.fn(),
   whenReady: vi.fn().mockResolvedValue(undefined),
   isReady: vi.fn().mockReturnValue(true),
-  getName: vi.fn().mockReturnValue('cline-gui'),
+  getName: vi.fn().mockReturnValue('philibert'),
   getVersion: vi.fn().mockReturnValue('0.1.0'),
 };
 

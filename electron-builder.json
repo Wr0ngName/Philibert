@@ -1,11 +1,11 @@
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "com.cline.gui",
-  "productName": "Cline GUI",
+  "appId": "com.philibert.app",
+  "productName": "Philibert",
   "directories": {
     "output": "out/make/nsis"
   },
-  "executableName": "Cline GUI",
+  "executableName": "Philibert",
   "win": {
     "target": [
       {
@@ -20,7 +20,7 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "Cline GUI",
+    "shortcutName": "Philibert",
     "artifactName": "${productName}-Setup-${version}.${ext}"
   }
 }

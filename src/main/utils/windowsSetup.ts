@@ -30,17 +30,17 @@ export async function setupWindowsDependencies(mainWindow: BrowserWindow | null)
   try {
     if (isOnline) {
       debugLog('Online bundle: downloading dependencies...');
-      if (mainWindow) mainWindow.setTitle('Cline GUI — Downloading dependencies...');
+      if (mainWindow) mainWindow.setTitle('Philibert — Downloading dependencies...');
       downloadDependenciesForOnlineInstall();
     }
 
     debugLog('Extracting git-bash if needed...');
-    if (mainWindow && needsExtraction) mainWindow.setTitle('Cline GUI — Extracting Git Bash...');
+    if (mainWindow && needsExtraction) mainWindow.setTitle('Philibert — Extracting Git Bash...');
     extractGitBashIfNeeded();
   } finally {
     if (mainWindow) {
       mainWindow.setProgressBar(-1); // remove progress
-      mainWindow.setTitle('Cline GUI');
+      mainWindow.setTitle('Philibert');
     }
   }
 

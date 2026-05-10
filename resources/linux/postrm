@@ -1,15 +1,15 @@
 #!/bin/bash
-# Post-removal script for Cline GUI
+# Post-removal script for Philibert
 # Prompts user about removing configuration data
 
 set -e
 
-APP_NAME="cline-gui"
+APP_NAME="philibert"
 
 case "$1" in
     purge)
         # Called with 'apt purge' - remove all config without asking
-        echo "Purging Cline GUI configuration data..."
+        echo "Purging Philibert configuration data..."
 
         # Remove config for all users who have it
         for USER_HOME in /home/*; do
@@ -34,7 +34,7 @@ case "$1" in
     remove)
         # Called with 'apt remove' - ask user about keeping config
         echo ""
-        echo "Cline GUI has been removed."
+        echo "Philibert has been removed."
         echo ""
         echo "Your configuration and conversation history have been preserved in:"
         echo "  ~/.config/$APP_NAME"

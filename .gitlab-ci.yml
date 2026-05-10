@@ -1,4 +1,4 @@
-# GitLab CI/CD Pipeline for Cline GUI
+# GitLab CI/CD Pipeline for Philibert
 # Builds Electron app for Windows, macOS, and Linux
 # Uses shell executor with docker run for containerized builds
 
@@ -110,7 +110,7 @@ typecheck:
 build:linux:
   extends: .build_linux
   artifacts:
-    name: "cline-gui-linux-${CI_COMMIT_REF_SLUG}"
+    name: "philibert-linux-${CI_COMMIT_REF_SLUG}"
     paths:
       - out/make/**/*.deb
       - out/make/**/*.rpm
@@ -151,9 +151,9 @@ build:linux:manual:
       docker run --rm \
         -v "$CI_PROJECT_DIR:/app" \
         -w /app \
-        -e CLINE_ONLINE_BUILD=false \
+        -e PHILIBERT_ONLINE_BUILD=false \
         electronuserland/builder:wine-mono \
-        bash -c "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs bzip2 && npm ci && ./scripts/download-node-windows.sh && ./scripts/download-git-bash-windows.sh && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Cline GUI-win32-x64' --publish never"
+        bash -c "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs bzip2 && npm ci && ./scripts/download-node-windows.sh && ./scripts/download-git-bash-windows.sh && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never"
     - echo "=== Artifact sizes ==="
     - du -sh out/make/nsis/*.exe 2>/dev/null || true
     - df -h "$CI_PROJECT_DIR" || true
@@ -169,16 +169,16 @@ build:linux:manual:
       docker run --rm \
         -v "$CI_PROJECT_DIR:/app" \
         -w /app \
-        -e CLINE_ONLINE_BUILD=true \
+        -e PHILIBERT_ONLINE_BUILD=true \
         electronuserland/builder:wine-mono \
-        bash -c "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs bzip2 && npm ci && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Cline GUI-win32-x64' --publish never && mkdir -p out-online/nsis && cp out/make/nsis/*.exe out-online/nsis/"
+        bash -c "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs bzip2 && npm ci && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never && mkdir -p out-online/nsis && cp out/make/nsis/*.exe out-online/nsis/"
 
 # Windows OFFLINE build for tags (main installer for auto-updates)
 build:windows:
   extends: .build_windows_offline
   resource_group: windows-build
   artifacts:
-    name: "cline-gui-windows-offline-${CI_COMMIT_REF_SLUG}"
+    name: "philibert-windows-offline-${CI_COMMIT_REF_SLUG}"
     paths:
       - out/make/nsis/*.exe
     expire_in: 1 week
@@ -190,7 +190,7 @@ build:windows:online:
   extends: .build_windows_online
   resource_group: windows-build
   artifacts:
-    name: "cline-gui-windows-online-${CI_COMMIT_REF_SLUG}"
+    name: "philibert-windows-online-${CI_COMMIT_REF_SLUG}"
     paths:
       - out-online/nsis/*.exe
     expire_in: 1 week
@@ -225,7 +225,7 @@ build:windows:online:manual:
 #     - npm ci
 #     - npm run make -- --platform=darwin
 #   artifacts:
-#     name: "cline-gui-macos-${CI_COMMIT_REF_SLUG}"
+#     name: "philibert-macos-${CI_COMMIT_REF_SLUG}"
 #     paths:
 #       - out/make/**/*.dmg
 #       - out/make/**/*.zip
@@ -403,7 +403,7 @@ create:release:
 
       # Create description file with actual URLs
       cat > /tmp/release_description.md << DESCEOF
-      ## Cline GUI ${TAG}
+      ## Philibert ${TAG}
 
       ### Downloads
 
@@ -435,7 +435,7 @@ create:release:
         -v /tmp/release_description.md:/work/description.md:ro \
         -w /work \
         registry.gitlab.com/gitlab-org/release-cli:latest release-cli create \
-          --name "Cline GUI ${TAG}" \
+          --name "Philibert ${TAG}" \
           --tag-name "${TAG}" \
           --description description.md
   rules:

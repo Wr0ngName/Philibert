@@ -47,7 +47,7 @@ const canProceed = computed(() => {
 const stepTitle = computed(() => {
   switch (currentStep.value) {
     case 1:
-      return 'Welcome to Cline GUI';
+      return 'Welcome to Philibert';
     case 2:
       return 'Choose Your Project';
     case 3:

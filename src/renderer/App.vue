@@ -130,7 +130,7 @@ const isMac = window.electron?.platform === 'darwin';
           </svg>
         </div>
         <h1 class="text-lg font-semibold text-surface-800 dark:text-surface-200">
-          Cline GUI
+          Philibert
         </h1>
       </div>
 

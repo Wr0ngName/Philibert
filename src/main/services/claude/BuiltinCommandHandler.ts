@@ -340,7 +340,7 @@ export class BuiltinCommandHandler {
       response: '## Diagnostics\n\n' +
         '_Running diagnostics is not available in GUI mode._\n\n' +
         'For troubleshooting, check the application logs at:\n' +
-        '`~/.config/ClineGUI/logs/main.log`',
+        '`~/.config/Philibert/logs/main.log`',
     };
   }
 
@@ -366,9 +366,9 @@ export class BuiltinCommandHandler {
     return {
       handled: true,
       response: '## Report a Bug\n\n' +
-        'To report issues with ClineGUI:\n' +
+        'To report issues with Philibert:\n' +
         '- GitHub: [github.com/anthropics/claude-code/issues](https://github.com/anthropics/claude-code/issues)\n\n' +
-        'Include your log file from `~/.config/ClineGUI/logs/main.log`',
+        'Include your log file from `~/.config/Philibert/logs/main.log`',
     };
   }
 
