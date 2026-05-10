@@ -126,6 +126,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       // Update current conversation ID in both stores
       currentConversationId.value = id;
       chatStore.setCurrentConversation(id);
+      persistLastConversationId(id);
 
       // Check if this conversation has in-memory messages (was running in background)
       // These are more up-to-date than the saved file
@@ -395,6 +396,8 @@ export const useConversationsStore = defineStore('conversations', () => {
     currentConversationId.value = id;
     chatStore.setCurrentConversation(id);
 
+    persistLastConversationId(id);
+
     logger.info('Created new conversation', { id });
     return id;
   }
@@ -536,6 +539,15 @@ export const useConversationsStore = defineStore('conversations', () => {
   }
 
   /**
+   * Persist the last active conversation ID to config for auto-restore on startup.
+   */
+  function persistLastConversationId(id: string): void {
+    window.electron.config.set({ lastConversationId: id }).catch((err) => {
+      logger.error('Failed to persist last conversation ID', err);
+    });
+  }
+
+  /**
    * Initialize the store - load conversations and enable auto-save
    */
   async function initialize(): Promise<void> {
@@ -544,9 +556,26 @@ export const useConversationsStore = defineStore('conversations', () => {
     // Wait for conversation list to load before proceeding
     await loadConversationList();
 
-    // Create initial conversation if none exists
+    // Try to restore the last active conversation
     if (!currentConversationId.value) {
-      createNewConversation();
+      let restored = false;
+      try {
+        const config = await window.electron.config.get();
+        if (config.lastConversationId) {
+          const exists = conversations.value.some(
+            (c: Conversation) => c.id === config.lastConversationId
+          );
+          if (exists) {
+            restored = await loadConversation(config.lastConversationId);
+          }
+        }
+      } catch (err) {
+        logger.error('Failed to restore last conversation', err);
+      }
+
+      if (!restored) {
+        createNewConversation();
+      }
     }
 
     // Enable auto-save watchers (they're created at store creation time)

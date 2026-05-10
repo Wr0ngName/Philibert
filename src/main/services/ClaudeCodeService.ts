@@ -467,9 +467,9 @@ export class ClaudeCodeService {
       // Get selected model from config
       const selectedModel = await this.configService.getSelectedModel();
 
-      // When a model is explicitly selected, skip resume because the CLI ignores
-      // --model during --resume. The user's model choice must take priority.
-      const effectiveResumeId = selectedModel ? undefined : resumeSessionId;
+      // When resuming, don't pass --model (the CLI ignores it during --resume).
+      // Instead, resume first to restore context, then call setModel() after init.
+      const shouldResume = !!resumeSessionId;
 
       logger.info('Starting new persistent session', {
         conversationId,
@@ -479,8 +479,8 @@ export class ClaudeCodeService {
         model: selectedModel || '(SDK default)',
         activeSessions: this.activeSessions.size,
         hasResumeSessionId: !!resumeSessionId,
-        effectiveResume: !!effectiveResumeId,
-        resumeSkippedForModel: !!resumeSessionId && !effectiveResumeId,
+        willResume: shouldResume,
+        willSetModelAfterResume: shouldResume && !!selectedModel,
       });
 
       // Set up authentication environment
@@ -505,8 +505,8 @@ export class ClaudeCodeService {
           pathToClaudeCodeExecutable: ClaudeCliPaths.findBundledCli() || undefined,
           canUseTool: permissionManager.createCanUseToolCallback(),
           includePartialMessages: true,
-          ...(selectedModel ? { model: selectedModel } : {}),
-          ...(effectiveResumeId ? { resume: effectiveResumeId } : {}),
+          ...(!shouldResume && selectedModel ? { model: selectedModel } : {}),
+          ...(shouldResume ? { resume: resumeSessionId } : {}),
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {
             return this.spawnSDKProcess(options, conversationId);
           },
@@ -531,10 +531,31 @@ export class ClaudeCodeService {
         runningBackgroundTasks: new Map(),
         pendingSyntheticPolls: 0,
         pollTimer: null,
-        sessionModel: selectedModel,
+        sessionModel: shouldResume ? '' : selectedModel,
       };
       this.activeSessions.set(conversationId, session);
       this.emitActiveQueryCount();
+
+      // If resuming with an explicit model preference, apply it after session initializes.
+      // The first turn uses the resumed session's model; subsequent turns use the selected model.
+      if (shouldResume && selectedModel) {
+        sessionReady.then(async () => {
+          try {
+            await queryIterator.setModel(selectedModel);
+            session.sessionModel = selectedModel;
+            logger.info('Applied model preference after session resume', {
+              conversationId,
+              model: selectedModel,
+            });
+          } catch (err) {
+            logger.warn('Failed to set model after session resume', {
+              conversationId,
+              model: selectedModel,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        });
+      }
 
       // Start background message processing loop
       session.messageLoopPromise = this.processMessageLoop(conversationId, queryIterator, messageHandler);

@@ -26,6 +26,7 @@ interface StoredConfig {
   logLevel: LogLevel;
   selectedModel: string;
   enableNotifications: boolean;
+  lastConversationId: string;
 }
 
 /**
@@ -76,6 +77,7 @@ export class ConfigService {
           logLevel: 'warn',
           selectedModel: '',
           enableNotifications: true,
+          lastConversationId: '',
         },
       }) as unknown as TypedStore;
       this.isInitialized = true;

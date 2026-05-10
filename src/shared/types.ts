@@ -416,6 +416,8 @@ export interface AppConfig {
   showFilesSidebar: boolean;
   /** Whether to show native OS notifications when window is not focused */
   enableNotifications: boolean;
+  /** ID of the last active conversation (for auto-restore on startup) */
+  lastConversationId: string;
 }
 
 /**
@@ -436,6 +438,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   showHistorySidebar: true,
   showFilesSidebar: true,
   enableNotifications: true,
+  lastConversationId: '',
 };
 
 // Conversation types

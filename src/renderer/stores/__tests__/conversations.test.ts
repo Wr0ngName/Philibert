@@ -109,7 +109,9 @@ describe('useConversationsStore', () => {
       theme: 'system',
       fontSize: 14,
       autoApproveReads: true,
+      lastConversationId: '',
     });
+    mockElectron.config.set.mockResolvedValue(undefined);
 
     // Initialize stores
     store = useConversationsStore();
@@ -403,6 +405,22 @@ describe('useConversationsStore', () => {
       expect(store.error).toBe('Failed to load conversation');
     });
 
+    it('should persist the loaded conversation ID to config', async () => {
+      const conversation: Conversation = {
+        id: 'conv_persist',
+        title: 'Persist Test',
+        workingDirectory: '/home/user/project',
+        messages: [],
+        createdAt: 1000,
+        updatedAt: 2000,
+      };
+      mockElectron.conversation.get.mockResolvedValue(conversation);
+
+      await store.loadConversation('conv_persist');
+
+      expect(mockElectron.config.set).toHaveBeenCalledWith({ lastConversationId: 'conv_persist' });
+    });
+
     it('should handle large conversation history', async () => {
       const messages: ChatMessage[] = Array.from({ length: 50 }, (_, i) => ({
         id: `msg_${i}`,
@@ -471,6 +489,11 @@ describe('useConversationsStore', () => {
       const id = store.createNewConversation();
       expect(typeof id).toBe('string');
       expect(id.length).toBeGreaterThan(0);
+    });
+
+    it('should persist the new conversation ID to config', () => {
+      const id = store.createNewConversation();
+      expect(mockElectron.config.set).toHaveBeenCalledWith({ lastConversationId: id });
     });
   });
 
@@ -671,6 +694,8 @@ describe('useConversationsStore', () => {
     });
 
     it('should create initial conversation if none exists', async () => {
+      mockElectron.config.get.mockResolvedValue({ lastConversationId: '' });
+
       await store.initialize();
 
       expect(store.currentConversationId).toMatch(/^conv_/);
@@ -682,6 +707,47 @@ describe('useConversationsStore', () => {
       await store.initialize();
 
       expect(store.currentConversationId).toBe('existing_conv');
+    });
+
+    it('should restore last active conversation on startup', async () => {
+      const savedConversation: Conversation = {
+        id: 'conv_saved',
+        title: 'Saved',
+        workingDirectory: '/home/user/project',
+        messages: [{ id: 'msg_1', role: 'user', content: 'Hello', timestamp: 1000 }],
+        createdAt: 1000,
+        updatedAt: 2000,
+      };
+      mockElectron.conversation.list.mockResolvedValue([
+        { id: 'conv_saved', title: 'Saved', workingDirectory: '/home/user/project', messages: [], createdAt: 1000, updatedAt: 2000 },
+      ]);
+      mockElectron.conversation.get.mockResolvedValue(savedConversation);
+      mockElectron.config.get.mockResolvedValue({ lastConversationId: 'conv_saved' });
+
+      await store.initialize();
+
+      expect(store.currentConversationId).toBe('conv_saved');
+      expect(mockElectron.conversation.get).toHaveBeenCalledWith('conv_saved');
+    });
+
+    it('should create new conversation if last conversation not found in list', async () => {
+      mockElectron.conversation.list.mockResolvedValue([]);
+      mockElectron.config.get.mockResolvedValue({ lastConversationId: 'conv_missing' });
+
+      await store.initialize();
+
+      // Fallback: conversation not in list, so a new one is created
+      expect(store.currentConversationId).toMatch(/^conv_/);
+      expect(store.currentConversationId).not.toBe('conv_missing');
+    });
+
+    it('should create new conversation if config.get fails', async () => {
+      mockElectron.conversation.list.mockResolvedValue([]);
+      mockElectron.config.get.mockRejectedValue(new Error('Config read error'));
+
+      await store.initialize();
+
+      expect(store.currentConversationId).toMatch(/^conv_/);
     });
   });
 

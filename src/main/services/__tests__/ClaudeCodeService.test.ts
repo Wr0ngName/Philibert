@@ -1117,17 +1117,41 @@ describe('ClaudeCodeService', () => {
       expect(queryOptions.model).toBeUndefined();
     });
 
-    it('should skip resume when model is explicitly selected', async () => {
+    it('should resume session and defer model via setModel when model is explicitly selected', async () => {
       mockConfigService.getSelectedModel.mockResolvedValue('claude-opus-4-7');
-      const mockIterator = createMockQueryIterator([]);
+
+      // Create an iterator that yields init with session_id so sessionReady resolves
+      let resolveWait!: () => void;
+      const waitPromise = new Promise<void>((resolve) => { resolveWait = resolve; });
+      const mockIterator = {
+        [Symbol.asyncIterator]: async function* () {
+          yield { type: 'system', subtype: 'init', session_id: 'resumed-session-id', slash_commands: [] };
+          await waitPromise;
+          yield { type: 'result', subtype: 'success' };
+        },
+        interrupt: vi.fn(),
+        supportedCommands: vi.fn().mockResolvedValue([]),
+        supportedModels: vi.fn().mockResolvedValue([]),
+        setModel: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn(),
+      };
       mockQuery.mockReturnValue(mockIterator);
 
-      // Pass a resumeSessionId — but it should be ignored when model is set
-      await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', 'old-session-id');
+      const sendPromise = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', 'old-session-id');
+      // Let the message loop process the init message and setModel to be called
+      await new Promise(resolve => setTimeout(resolve, 50));
 
+      // Should have passed resume, NOT model
       const queryOptions = mockQuery.mock.calls[0][0].options;
-      expect(queryOptions.model).toBe('claude-opus-4-7');
-      expect(queryOptions.resume).toBeUndefined();
+      expect(queryOptions.resume).toBe('old-session-id');
+      expect(queryOptions.model).toBeUndefined();
+
+      // setModel should have been called after session init
+      expect(mockIterator.setModel).toHaveBeenCalledWith('claude-opus-4-7');
+
+      // Clean up
+      resolveWait();
+      await sendPromise.catch(() => {});
     });
 
     it('should use resume when no model is explicitly selected', async () => {
