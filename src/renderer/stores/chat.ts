@@ -179,7 +179,7 @@ export const useChatStore = defineStore('chat', () => {
   const contextWindowSize = computed(() => {
     if (!sessionUsage.value?.modelUsage) return 0;
     const models: ModelUsageInfo[] = Object.values(sessionUsage.value.modelUsage);
-    return models.length > 0 ? models[0].contextWindow : 0;
+    return models.length > 0 ? models[models.length - 1].contextWindow : 0;
   });
 
   const contextUsagePercent = computed(() => {

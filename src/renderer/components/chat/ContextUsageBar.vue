@@ -31,7 +31,7 @@ const totalTokensUsed = computed(() => {
 const contextWindowSize = computed(() => {
   if (!props.usage?.modelUsage) return 0;
   const models = Object.values(props.usage.modelUsage);
-  return models.length > 0 ? models[0].contextWindow : 0;
+  return models.length > 0 ? models[models.length - 1].contextWindow : 0;
 });
 
 /**
@@ -82,7 +82,7 @@ function formatCost(cost: number): string {
 const primaryModel = computed(() => {
   if (!props.usage?.modelUsage) return null;
   const models = Object.keys(props.usage.modelUsage);
-  return models.length > 0 ? models[0] : null;
+  return models.length > 0 ? models[models.length - 1] : null;
 });
 </script>
 
