@@ -118,7 +118,7 @@ export function migrateFromOldApp(): MigrationResult {
  * Phase 2: Called on restart with --migrate-credentials flag.
  * At this point app.setName('Cline GUI') was called before ready,
  * so safeStorage has the old encryption key loaded.
- * Decrypts credentials and writes plaintext to a temp file for phase 3.
+ * Decrypts credentials and writes plaintext to a temp file (mode 0600) for phase 3.
  */
 export function decryptOldCredentials(): void {
   const philibertPath = getPhilibertUserDataPath();
@@ -161,7 +161,7 @@ export function decryptOldCredentials(): void {
 
 /**
  * Phase 3: Called on normal launch after credential migration restart.
- * Reads plaintext from temp file, encrypts with new safeStorage key, updates config.
+ * Reads plaintext from temp file, deletes it immediately, then re-encrypts.
  */
 export function finishCredentialMigration(): void {
   const tempPath = path.join(app.getPath('userData'), CREDENTIAL_TEMP_FILE);
@@ -170,24 +170,15 @@ export function finishCredentialMigration(): void {
 
   debugLog('Migration phase 3: completing credential migration');
 
-  // Read and delete temp file immediately — plaintext credentials must not linger on disk
-  let decrypted: Record<string, string>;
-  try {
-    decrypted = JSON.parse(fs.readFileSync(tempPath, 'utf8'));
-  } finally {
-    try {
-      fs.unlinkSync(tempPath);
-    } catch {
-      // Last resort: overwrite with empty content then delete
-      try {
-        fs.writeFileSync(tempPath, '');
-        fs.unlinkSync(tempPath);
-      } catch {
-        debugLog('Migration phase 3: WARNING — failed to delete temp credential file');
-      }
+  // Read into memory and delete from disk immediately
+  const raw = fs.readFileSync(tempPath, 'utf8');
+  try { fs.unlinkSync(tempPath); } catch {
+    try { fs.writeFileSync(tempPath, ''); fs.unlinkSync(tempPath); } catch {
+      debugLog('Migration phase 3: WARNING — failed to delete temp credential file');
     }
   }
 
+  const decrypted: Record<string, string> = JSON.parse(raw);
   const configPath = path.join(app.getPath('userData'), 'config.json');
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
