@@ -119,8 +119,20 @@ export class ConfigService {
     if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_LOAD_FAILED);
 
     const storedConfig = this.store.store;
-    const apiKey = await this.getApiKey();
-    const oauthToken = await this.getOAuthToken();
+
+    let apiKey = '';
+    try {
+      apiKey = await this.getApiKey();
+    } catch (error) {
+      logger.warn('Failed to decrypt API key — re-authentication required', error);
+    }
+
+    let oauthToken = '';
+    try {
+      oauthToken = await this.getOAuthToken();
+    } catch (error) {
+      logger.warn('Failed to decrypt OAuth token — re-authentication required', error);
+    }
 
     return {
       ...DEFAULT_CONFIG,

@@ -176,6 +176,7 @@ const config: ForgeConfig = {
         categories: ['Development'],
         // Git is required by Claude Code CLI
         requires: ['git'],
+        obsoletes: ['cline-gui'],
         // scripts.postun: RPM post-uninstall script
         // @ts-expect-error MakerRpm supports scripts via electron-installer-redhat but types are incomplete
         scripts: {
@@ -191,6 +192,8 @@ const config: ForgeConfig = {
         homepage: 'https://dev.web.wr0ng.name/wrongname/philibert',
         // Git is required by Claude Code CLI
         depends: ['git'],
+        conflicts: ['cline-gui'],
+        replaces: ['cline-gui'],
         scripts: {
           postrm: './resources/linux/postrm',
         },
