@@ -170,9 +170,26 @@ export function finishCredentialMigration(): void {
 
   debugLog('Migration phase 3: completing credential migration');
 
+  // Read and delete temp file immediately — plaintext credentials must not linger on disk
+  let decrypted: Record<string, string>;
+  try {
+    decrypted = JSON.parse(fs.readFileSync(tempPath, 'utf8'));
+  } finally {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Last resort: overwrite with empty content then delete
+      try {
+        fs.writeFileSync(tempPath, '');
+        fs.unlinkSync(tempPath);
+      } catch {
+        debugLog('Migration phase 3: WARNING — failed to delete temp credential file');
+      }
+    }
+  }
+
   const configPath = path.join(app.getPath('userData'), 'config.json');
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  const decrypted: Record<string, string> = JSON.parse(fs.readFileSync(tempPath, 'utf8'));
 
   for (const [key, plaintext] of Object.entries(decrypted)) {
     if (safeStorage.isEncryptionAvailable()) {
@@ -185,7 +202,6 @@ export function finishCredentialMigration(): void {
   }
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-  fs.unlinkSync(tempPath);
   debugLog('Migration phase 3: credential migration complete');
 }
 
