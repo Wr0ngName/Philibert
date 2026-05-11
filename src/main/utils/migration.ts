@@ -21,6 +21,16 @@ function getPhilibertUserDataPath(): string {
   return path.join(path.dirname(app.getPath('userData')), NEW_APP_NAME);
 }
 
+function wipeTempFile(tempPath: string): void {
+  try {
+    fs.unlinkSync(tempPath);
+  } catch {
+    // Can't delete — at least wipe the content so plaintext doesn't stay on disk
+    try { fs.writeFileSync(tempPath, '', { mode: 0o000 }); } catch { /* exhausted */ }
+    debugLog(`Migration: CRITICAL — could not delete temp credential file at ${tempPath}`);
+  }
+}
+
 interface MigrationResult {
   needsCredentialRestart: boolean;
 }
@@ -29,8 +39,8 @@ interface MigrationResult {
  * Phase 1: Migrate user data from old "Cline GUI" app to new "Philibert" app.
  * Copies config.json and conversations, removes old directory, cleans up updater cache.
  *
- * Returns { needsCredentialRestart: true } on Linux when encrypted credentials exist
- * that require a restart to re-key (safeStorage encryption key is tied to app name
+ * Returns { needsCredentialRestart: true } on non-Windows when encrypted credentials
+ * exist that require a restart to re-key (safeStorage encryption key is tied to app name
  * in the OS keyring — only Windows DPAPI is user-scoped and works across renames).
  */
 export function migrateFromOldApp(): MigrationResult {
@@ -67,7 +77,7 @@ export function migrateFromOldApp(): MigrationResult {
         (key) => config[key] && !String(config[key]).startsWith('plain:')
       );
     } catch (err) {
-      debugLog(`Migration: failed to copy config.json: ${err}`);
+      debugLog(`Migration: failed to copy/parse config.json: ${err}`);
     }
   }
 
@@ -134,12 +144,19 @@ export function decryptOldCredentials(): void {
     return;
   }
 
-  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  let config: Record<string, unknown>;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (err) {
+    debugLog(`Migration phase 2: failed to read/parse config: ${err}`);
+    return;
+  }
+
   const decrypted: Record<string, string> = {};
 
   for (const key of CREDENTIAL_KEYS) {
     const value = config[key];
-    if (value && !String(value).startsWith('plain:')) {
+    if (value && typeof value === 'string' && !value.startsWith('plain:')) {
       try {
         decrypted[key] = safeStorage.decryptString(Buffer.from(value, 'base64'));
         debugLog(`Migration phase 2: decrypted ${key}`);
@@ -162,6 +179,7 @@ export function decryptOldCredentials(): void {
 /**
  * Phase 3: Called on normal launch after credential migration restart.
  * Reads plaintext from temp file, deletes it immediately, then re-encrypts.
+ * The temp file is ALWAYS deleted regardless of whether re-encryption succeeds.
  */
 export function finishCredentialMigration(): void {
   const tempPath = path.join(app.getPath('userData'), CREDENTIAL_TEMP_FILE);
@@ -170,17 +188,27 @@ export function finishCredentialMigration(): void {
 
   debugLog('Migration phase 3: completing credential migration');
 
-  // Read into memory and delete from disk immediately
-  const raw = fs.readFileSync(tempPath, 'utf8');
-  try { fs.unlinkSync(tempPath); } catch {
-    try { fs.writeFileSync(tempPath, ''); fs.unlinkSync(tempPath); } catch {
-      debugLog('Migration phase 3: WARNING — failed to delete temp credential file');
-    }
+  // Read and wipe temp file — always delete, even if read or parse fails
+  let decrypted: Record<string, string> | null = null;
+  try {
+    const raw = fs.readFileSync(tempPath, 'utf8');
+    decrypted = JSON.parse(raw);
+  } catch (err) {
+    debugLog(`Migration phase 3: failed to read/parse temp file: ${err}`);
+  } finally {
+    wipeTempFile(tempPath);
   }
 
-  const decrypted: Record<string, string> = JSON.parse(raw);
-  const configPath = path.join(app.getPath('userData'), 'config.json');
-  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  if (!decrypted || Object.keys(decrypted).length === 0) return;
+
+  let config: Record<string, unknown>;
+  try {
+    const configPath = path.join(app.getPath('userData'), 'config.json');
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (err) {
+    debugLog(`Migration phase 3: failed to read config.json: ${err}`);
+    return;
+  }
 
   for (const [key, plaintext] of Object.entries(decrypted)) {
     if (safeStorage.isEncryptionAvailable()) {
@@ -192,6 +220,7 @@ export function finishCredentialMigration(): void {
     }
   }
 
+  const configPath = path.join(app.getPath('userData'), 'config.json');
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   debugLog('Migration phase 3: credential migration complete');
 }
