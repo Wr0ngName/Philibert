@@ -4,14 +4,13 @@
 
 set -e
 
-APP_NAME="philibert"
+APP_NAME="Philibert"
+OLD_APP_NAME="Cline GUI"
 
 case "$1" in
     purge)
         # Called with 'apt purge' - remove all config without asking
         echo "Purging Philibert configuration data..."
-
-        OLD_APP_NAME="ClineGUI"
 
         # Remove config for all users who have it
         for USER_HOME in /home/*; do
@@ -43,11 +42,11 @@ case "$1" in
         echo "Philibert has been removed."
         echo ""
         echo "Your configuration and conversation history have been preserved in:"
-        echo "  ~/.config/$APP_NAME"
+        echo "  ~/.config/$APP_NAME/"
         echo ""
         echo "To completely remove all data, run:"
-        echo "  sudo apt purge $APP_NAME"
-        echo "  # or manually: rm -rf ~/.config/$APP_NAME"
+        echo "  sudo apt purge philibert"
+        echo "  # or manually: rm -rf ~/.config/$APP_NAME/"
         echo ""
         ;;
 
