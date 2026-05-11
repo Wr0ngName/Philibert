@@ -5,37 +5,12 @@ import { app } from 'electron';
 
 import { debugLog } from './debugLog';
 
-// Possible old directory names — depends on whether Electron resolved
-// productName ("Cline GUI") or package.json name ("cline-gui") for userData.
-// Check both rather than guessing.
-const OLD_APP_NAMES = ['Cline GUI', 'cline-gui'];
+// Electron prefers productName over name for app.getName() / app.getPath('userData')
+// https://www.electronjs.org/docs/latest/api/app#appgetname
+const OLD_APP_NAME = 'Cline GUI';
 
-function findOldUserDataPath(): string | null {
-  const parentDir = path.dirname(app.getPath('userData'));
-  for (const name of OLD_APP_NAMES) {
-    const candidate = path.join(parentDir, name);
-    if (fs.existsSync(candidate)) {
-      debugLog(`Migration: found old data directory at ${candidate}`);
-      return candidate;
-    }
-  }
-  return null;
-}
-
-function cleanupOldUpdaterCaches(): void {
-  if (process.platform !== 'win32' || !process.env.LOCALAPPDATA) return;
-
-  for (const name of OLD_APP_NAMES) {
-    const cachePath = path.join(process.env.LOCALAPPDATA, `${name}-updater`);
-    if (fs.existsSync(cachePath)) {
-      try {
-        fs.rmSync(cachePath, { recursive: true, force: true });
-        debugLog(`Migration: removed old updater cache at ${cachePath}`);
-      } catch (err) {
-        debugLog(`Migration: failed to remove updater cache ${cachePath} (non-critical): ${err}`);
-      }
-    }
-  }
+function getOldUserDataPath(): string {
+  return path.join(path.dirname(app.getPath('userData')), OLD_APP_NAME);
 }
 
 /**
@@ -50,19 +25,17 @@ function cleanupOldUpdaterCaches(): void {
  * On Windows, DPAPI is user-scoped so credentials migrate fine.
  */
 export function migrateFromOldApp(): void {
-  const oldPath = findOldUserDataPath();
+  const oldPath = getOldUserDataPath();
   const newPath = app.getPath('userData');
 
-  if (!oldPath) {
-    debugLog('Migration: no old Cline GUI data found, skipping');
-    cleanupOldUpdaterCaches();
+  if (!fs.existsSync(oldPath)) {
+    debugLog('Migration: no old "Cline GUI" data found, skipping');
     return;
   }
 
   const newConfig = path.join(newPath, 'config.json');
   if (fs.existsSync(newConfig)) {
     debugLog('Migration: Philibert config already exists, skipping');
-    cleanupOldUpdaterCaches();
     return;
   }
 
@@ -109,7 +82,18 @@ export function migrateFromOldApp(): void {
     debugLog(`Migration: failed to remove old directory (non-critical): ${err}`);
   }
 
-  cleanupOldUpdaterCaches();
+  // Windows: clean up old electron-updater cache
+  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
+    const updaterCache = path.join(process.env.LOCALAPPDATA, `${OLD_APP_NAME}-updater`);
+    if (fs.existsSync(updaterCache)) {
+      try {
+        fs.rmSync(updaterCache, { recursive: true, force: true });
+        debugLog(`Migration: removed old updater cache at ${updaterCache}`);
+      } catch (err) {
+        debugLog(`Migration: failed to remove updater cache (non-critical): ${err}`);
+      }
+    }
+  }
 
   debugLog('Migration: complete');
 }
