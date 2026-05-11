@@ -17,6 +17,27 @@ async function main(): Promise<void> {
   // Dynamic imports - these happen AFTER the Squirrel check above
   debugLog('Importing electron...');
   const { app, BrowserWindow, dialog } = await import('electron');
+
+  // Credential migration phase 2: restarted with old app name to decrypt credentials.
+  // Must happen before any other setup — this is a short-lived process that decrypts
+  // and restarts immediately.
+  if (process.argv.includes('--migrate-credentials')) {
+    debugLog('Credential migration phase 2: setting app name to old value');
+    app.setName('Cline GUI');
+    app.on('ready', async () => {
+      try {
+        const { decryptOldCredentials } = await import('./utils/migration');
+        decryptOldCredentials();
+      } catch (err) {
+        debugLog(`Credential migration phase 2 failed: ${err}`);
+      }
+      const args = process.argv.slice(1).filter((a) => a !== '--migrate-credentials');
+      app.relaunch({ args });
+      app.exit(0);
+    });
+    return;
+  }
+
   debugLog('Importing ipc...');
   const { setupIPC } = await import('./ipc');
   debugLog('Importing AuthService...');
@@ -82,9 +103,25 @@ async function main(): Promise<void> {
     try {
       logger.info('Application ready');
 
-      debugLog('Checking for ClineGUI data migration...');
-      const { migrateFromOldApp } = await import('./utils/migration');
-      migrateFromOldApp();
+      debugLog('Checking for credential migration completion...');
+      const { finishCredentialMigration, migrateFromOldApp } = await import('./utils/migration');
+      finishCredentialMigration();
+
+      debugLog('Checking for Cline GUI data migration...');
+      const migrationResult = migrateFromOldApp();
+      if (migrationResult.needsCredentialRestart) {
+        debugLog('Credential migration restart needed — showing dialog');
+        dialog.showMessageBoxSync({
+          type: 'info',
+          title: 'Migration',
+          message:
+            'Migrating your authentication from Cline GUI.\nThe app will restart once to complete the process.',
+          buttons: ['OK'],
+        });
+        app.relaunch({ args: [...process.argv.slice(1), '--migrate-credentials'] });
+        app.exit(0);
+        return;
+      }
 
       debugLog('Calling initializeServices()...');
 
