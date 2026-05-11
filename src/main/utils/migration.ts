@@ -5,20 +5,37 @@ import { app } from 'electron';
 
 import { debugLog } from './debugLog';
 
-// Electron uses productName for app.getName() → app.getPath('userData')
-// Old productName was "Cline GUI" (with space)
-const OLD_APP_NAME = 'Cline GUI';
+// Possible old directory names — depends on whether Electron resolved
+// productName ("Cline GUI") or package.json name ("cline-gui") for userData.
+// Check both rather than guessing.
+const OLD_APP_NAMES = ['Cline GUI', 'cline-gui'];
 
-function getOldUserDataPath(): string {
-  const currentPath = app.getPath('userData');
-  return path.join(path.dirname(currentPath), OLD_APP_NAME);
-}
-
-function getOldUpdaterCachePath(): string | null {
-  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
-    return path.join(process.env.LOCALAPPDATA, `${OLD_APP_NAME}-updater`);
+function findOldUserDataPath(): string | null {
+  const parentDir = path.dirname(app.getPath('userData'));
+  for (const name of OLD_APP_NAMES) {
+    const candidate = path.join(parentDir, name);
+    if (fs.existsSync(candidate)) {
+      debugLog(`Migration: found old data directory at ${candidate}`);
+      return candidate;
+    }
   }
   return null;
+}
+
+function cleanupOldUpdaterCaches(): void {
+  if (process.platform !== 'win32' || !process.env.LOCALAPPDATA) return;
+
+  for (const name of OLD_APP_NAMES) {
+    const cachePath = path.join(process.env.LOCALAPPDATA, `${name}-updater`);
+    if (fs.existsSync(cachePath)) {
+      try {
+        fs.rmSync(cachePath, { recursive: true, force: true });
+        debugLog(`Migration: removed old updater cache at ${cachePath}`);
+      } catch (err) {
+        debugLog(`Migration: failed to remove updater cache ${cachePath} (non-critical): ${err}`);
+      }
+    }
+  }
 }
 
 /**
@@ -27,21 +44,25 @@ function getOldUpdaterCachePath(): string | null {
  * Uses sync operations because this must complete before ConfigService reads config.
  *
  * On Linux, safeStorage encrypted credentials (API key, OAuth token) cannot be migrated
- * because the encryption key is tied to the app name in the OS keyring. Users will need
- * to re-authenticate. On Windows, DPAPI is user-scoped so credentials migrate fine.
+ * because the encryption key is loaded once at app startup from the OS keyring, keyed by
+ * app name. Changing the keyring lookup would require restarting the app or accessing the
+ * keyring directly via native bindings. Users will need to re-authenticate once.
+ * On Windows, DPAPI is user-scoped so credentials migrate fine.
  */
 export function migrateFromOldApp(): void {
-  const oldPath = getOldUserDataPath();
+  const oldPath = findOldUserDataPath();
   const newPath = app.getPath('userData');
 
-  if (!fs.existsSync(oldPath)) {
-    debugLog('Migration: no old "Cline GUI" data found, skipping');
+  if (!oldPath) {
+    debugLog('Migration: no old Cline GUI data found, skipping');
+    cleanupOldUpdaterCaches();
     return;
   }
 
   const newConfig = path.join(newPath, 'config.json');
   if (fs.existsSync(newConfig)) {
     debugLog('Migration: Philibert config already exists, skipping');
+    cleanupOldUpdaterCaches();
     return;
   }
 
@@ -83,21 +104,12 @@ export function migrateFromOldApp(): void {
 
   try {
     fs.rmSync(oldPath, { recursive: true, force: true });
-    debugLog('Migration: removed old "Cline GUI" userData directory');
+    debugLog(`Migration: removed old data directory at ${oldPath}`);
   } catch (err) {
-    debugLog(`Migration: failed to remove old userData directory (non-critical): ${err}`);
+    debugLog(`Migration: failed to remove old directory (non-critical): ${err}`);
   }
 
-  // Windows: clean up old electron-updater cache in %LOCALAPPDATA%
-  const oldUpdaterCache = getOldUpdaterCachePath();
-  if (oldUpdaterCache && fs.existsSync(oldUpdaterCache)) {
-    try {
-      fs.rmSync(oldUpdaterCache, { recursive: true, force: true });
-      debugLog(`Migration: removed old updater cache at ${oldUpdaterCache}`);
-    } catch (err) {
-      debugLog(`Migration: failed to remove old updater cache (non-critical): ${err}`);
-    }
-  }
+  cleanupOldUpdaterCaches();
 
   debugLog('Migration: complete');
 }
