@@ -81,6 +81,11 @@ async function main(): Promise<void> {
     debugLog('onReady() called');
     try {
       logger.info('Application ready');
+
+      debugLog('Checking for ClineGUI data migration...');
+      const { migrateFromOldApp } = await import('./utils/migration');
+      migrateFromOldApp();
+
       debugLog('Calling initializeServices()...');
 
       await initializeServices();

@@ -16,6 +16,7 @@
     "icon": "resources/icons/icon.ico"
   },
   "nsis": {
+    "guid": "com.cline.gui",
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,

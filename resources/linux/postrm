@@ -11,24 +11,30 @@ case "$1" in
         # Called with 'apt purge' - remove all config without asking
         echo "Purging Philibert configuration data..."
 
+        OLD_APP_NAME="ClineGUI"
+
         # Remove config for all users who have it
         for USER_HOME in /home/*; do
             if [ -d "$USER_HOME" ]; then
                 USER_NAME=$(basename "$USER_HOME")
-                CONFIG_DIR="$USER_HOME/.config/$APP_NAME"
 
-                if [ -d "$CONFIG_DIR" ]; then
-                    rm -rf "$CONFIG_DIR"
-                    echo "Removed configuration for user $USER_NAME"
-                fi
+                for DIR_NAME in "$APP_NAME" "$OLD_APP_NAME"; do
+                    CONFIG_DIR="$USER_HOME/.config/$DIR_NAME"
+                    if [ -d "$CONFIG_DIR" ]; then
+                        rm -rf "$CONFIG_DIR"
+                        echo "Removed $DIR_NAME configuration for user $USER_NAME"
+                    fi
+                done
             fi
         done
 
         # Also check root's config
-        if [ -d "/root/.config/$APP_NAME" ]; then
-            rm -rf "/root/.config/$APP_NAME"
-            echo "Removed configuration for root"
-        fi
+        for DIR_NAME in "$APP_NAME" "$OLD_APP_NAME"; do
+            if [ -d "/root/.config/$DIR_NAME" ]; then
+                rm -rf "/root/.config/$DIR_NAME"
+                echo "Removed $DIR_NAME configuration for root"
+            fi
+        done
         ;;
 
     remove)
