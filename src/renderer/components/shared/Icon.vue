@@ -15,6 +15,7 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   size: 'md',
+  class: undefined,
 });
 
 /** Size classes for each preset */
