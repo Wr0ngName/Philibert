@@ -184,7 +184,7 @@ onUnmounted(() => {
       <!-- Dirty indicator -->
       <span
         v-if="status.dirty > 0"
-        class="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0"
+        class="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"
         :title="`${status.dirty} uncommitted change${status.dirty !== 1 ? 's' : ''}`"
       />
     </div>
@@ -232,7 +232,7 @@ onUnmounted(() => {
           <input
             v-model="commitMessage"
             type="text"
-            class="w-full px-2.5 py-1.5 text-sm rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 text-surface-800 dark:text-surface-200 placeholder-surface-400 dark:placeholder-surface-500 focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+            class="w-full px-2.5 py-1.5 text-sm rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 text-surface-800 dark:text-surface-200 placeholder-surface-400 dark:placeholder-surface-500 focus:outline-hidden focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
             placeholder="Commit message..."
             :disabled="loadingCommit"
             @keydown="handleCommitKeydown"
@@ -243,7 +243,7 @@ onUnmounted(() => {
             <input
               v-model="stageAll"
               type="checkbox"
-              class="w-3.5 h-3.5 rounded border-surface-300 dark:border-surface-600 text-primary-500 focus:ring-primary-500"
+              class="w-3.5 h-3.5 rounded-sm border-surface-300 dark:border-surface-600 text-primary-500 focus:ring-primary-500"
             >
             <span class="text-xs text-surface-600 dark:text-surface-400">
               Stage all changes

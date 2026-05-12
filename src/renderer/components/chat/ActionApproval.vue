@@ -214,7 +214,7 @@ const shortcutHint = computed(() => {
 <template>
   <div
     ref="cardRef"
-    class="action-card animate-slide-up outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-surface-800"
+    class="action-card animate-slide-up outline-hidden focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-surface-800"
     role="alertdialog"
     :aria-labelledby="`action-title-${action.id}`"
     :aria-describedby="`action-desc-${action.id}`"
@@ -223,7 +223,7 @@ const shortcutHint = computed(() => {
     <!-- Header -->
     <div class="flex items-start gap-3 mb-3">
       <div
-        :class="['flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-yellow-100 dark:bg-yellow-900/30', actionColor]"
+        :class="['shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-yellow-100 dark:bg-yellow-900/30', actionColor]"
         aria-hidden="true"
       >
         <Icon
@@ -313,7 +313,7 @@ const shortcutHint = computed(() => {
         <Icon
           name="info"
           size="xs"
-          class="flex-shrink-0 mt-0.5"
+          class="shrink-0 mt-0.5"
         />
         <span>{{ desc }}</span>
       </div>

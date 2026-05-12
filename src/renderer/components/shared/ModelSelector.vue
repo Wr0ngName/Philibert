@@ -183,13 +183,13 @@ onUnmounted(() => {
       <Icon
         name="cpu"
         size="sm"
-        class="flex-shrink-0"
+        class="shrink-0"
       />
       <span class="max-w-[100px] truncate">{{ currentModelDisplay }}</span>
       <Icon
         :name="isOpen ? 'chevron-up' : 'chevron-down'"
         size="xs"
-        class="flex-shrink-0 opacity-60"
+        class="shrink-0 opacity-60"
       />
     </button>
 
@@ -228,7 +228,7 @@ onUnmounted(() => {
           >
             <div class="flex items-center gap-2">
               <span
-                class="flex-shrink-0 w-4 h-4 flex items-center justify-center"
+                class="shrink-0 w-4 h-4 flex items-center justify-center"
               >
                 <Icon
                   v-if="!selectedModel"
@@ -260,7 +260,7 @@ onUnmounted(() => {
           >
             <div class="flex items-center gap-2">
               <span
-                class="flex-shrink-0 w-4 h-4 flex items-center justify-center"
+                class="shrink-0 w-4 h-4 flex items-center justify-center"
               >
                 <Icon
                   v-if="selectedModel === model.value"

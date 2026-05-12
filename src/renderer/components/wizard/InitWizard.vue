@@ -147,7 +147,7 @@ onMounted(() => {
 <template>
   <div class="fixed inset-0 bg-surface-900/90 flex flex-col z-50">
     <!-- Title bar with drag region and window controls -->
-    <div class="h-10 w-full drag-region flex-shrink-0 flex items-center justify-end px-2">
+    <div class="h-10 w-full drag-region shrink-0 flex items-center justify-end px-2">
       <!-- Window controls (non-macOS) - white icons for dark background -->
       <div
         v-if="!isMac"
@@ -281,7 +281,7 @@ onMounted(() => {
             </div>
             <div class="space-y-4 text-left max-w-md mx-auto">
               <div class="flex items-start gap-3">
-                <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center shrink-0 mt-0.5">
                   <Icon
                     name="check"
                     size="xs"
@@ -293,7 +293,7 @@ onMounted(() => {
                 </p>
               </div>
               <div class="flex items-start gap-3">
-                <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center shrink-0 mt-0.5">
                   <Icon
                     name="check"
                     size="xs"
@@ -305,7 +305,7 @@ onMounted(() => {
                 </p>
               </div>
               <div class="flex items-start gap-3">
-                <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center shrink-0 mt-0.5">
                   <Icon
                     name="check"
                     size="xs"

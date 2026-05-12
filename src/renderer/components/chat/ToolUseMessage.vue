@@ -65,11 +65,11 @@ const showErrorIcon = computed(() => props.toolUse.status === 'rejected' || prop
     <Icon
       :name="toolIcon"
       size="xs"
-      class="text-surface-400 dark:text-surface-500 flex-shrink-0"
+      class="text-surface-400 dark:text-surface-500 shrink-0"
     />
 
     <!-- Tool name -->
-    <span class="text-xs font-medium text-surface-500 dark:text-surface-400 flex-shrink-0">
+    <span class="text-xs font-medium text-surface-500 dark:text-surface-400 shrink-0">
       {{ toolUse.toolName }}
     </span>
 
@@ -79,7 +79,7 @@ const showErrorIcon = computed(() => props.toolUse.status === 'rejected' || prop
     </span>
 
     <!-- Status indicator -->
-    <div class="ml-auto flex items-center gap-1 flex-shrink-0">
+    <div class="ml-auto flex items-center gap-1 shrink-0">
       <Spinner
         v-if="showSpinner"
         size="xs"

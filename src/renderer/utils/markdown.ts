@@ -30,7 +30,7 @@ const SANITIZE_CONFIG: Config = {
  */
 const CLASSES = {
   CODE_BLOCK: 'code-block',
-  INLINE_CODE: 'px-1 py-0.5 bg-surface-100 dark:bg-surface-700 text-surface-800 dark:text-surface-200 rounded text-sm font-mono',
+  INLINE_CODE: 'px-1 py-0.5 bg-surface-100 dark:bg-surface-700 text-surface-800 dark:text-surface-200 rounded-sm text-sm font-mono',
   LINK: 'text-primary-500 hover:underline',
 } as const;
 

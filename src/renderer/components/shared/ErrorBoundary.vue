@@ -90,6 +90,7 @@ function reload() {
 </template>
 
 <style scoped>
+@reference "../../assets/styles/main.css";
 .error-boundary {
   @apply fixed inset-0 flex items-center justify-center bg-surface-100 dark:bg-surface-900 p-4 z-50;
 }
@@ -123,7 +124,7 @@ function reload() {
 }
 
 .error-stack pre {
-  @apply whitespace-pre-wrap break-words text-surface-600 dark:text-surface-300;
+  @apply whitespace-pre-wrap wrap-break-word text-surface-600 dark:text-surface-300;
 }
 
 .error-actions {

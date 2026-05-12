@@ -40,7 +40,7 @@ async function selectDirectory() {
         <Icon
           name="folder"
           size="sm"
-          class="text-surface-400 flex-shrink-0"
+          class="text-surface-400 shrink-0"
         />
         <span
           :class="[

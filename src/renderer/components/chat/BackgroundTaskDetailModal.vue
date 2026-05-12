@@ -95,7 +95,7 @@ const statusDisplay = computed(() => {
     >
       <!-- Status & Description -->
       <div class="flex items-start gap-3">
-        <div :class="['flex-shrink-0 mt-0.5', statusDisplay.colorClass]">
+        <div :class="['shrink-0 mt-0.5', statusDisplay.colorClass]">
           <Spinner
             v-if="task.status === 'running'"
             size="sm"

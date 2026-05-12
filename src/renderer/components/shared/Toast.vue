@@ -74,7 +74,7 @@ const icons: Record<string, IconName> = {
     <Icon
       :name="icons[type]"
       size="md"
-      :class="['flex-shrink-0', typeStyles.icon]"
+      :class="['shrink-0', typeStyles.icon]"
     />
 
     <p class="flex-1 text-sm text-surface-700 dark:text-surface-300">
@@ -83,7 +83,7 @@ const icons: Record<string, IconName> = {
 
     <button
       v-if="dismissible"
-      class="btn-icon flex-shrink-0 -mr-2 -mt-1"
+      class="btn-icon shrink-0 -mr-2 -mt-1"
       aria-label="Dismiss"
       @click="emit('dismiss')"
     >

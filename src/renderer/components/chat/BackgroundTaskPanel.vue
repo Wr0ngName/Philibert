@@ -98,13 +98,13 @@ function formatDuration(task: BackgroundTask): string {
         <div class="flex items-center gap-2 flex-1 min-w-0">
           <Spinner
             size="xs"
-            class="text-blue-500 flex-shrink-0"
+            class="text-blue-500 shrink-0"
           />
           <span class="text-xs text-surface-700 dark:text-surface-300 truncate">
             {{ task.description }}
           </span>
         </div>
-        <span class="text-xs text-surface-400 flex-shrink-0">
+        <span class="text-xs text-surface-400 shrink-0">
           {{ formatDuration(task) }}
         </span>
       </div>
@@ -113,6 +113,7 @@ function formatDuration(task: BackgroundTask): string {
 </template>
 
 <style scoped>
+@reference "../../assets/styles/main.css";
 .background-task-panel {
   @apply bg-surface-50 dark:bg-surface-800 border border-surface-200 dark:border-surface-700 rounded-lg overflow-hidden;
 }

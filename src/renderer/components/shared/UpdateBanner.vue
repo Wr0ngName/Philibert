@@ -206,6 +206,7 @@ function formatBytes(bytes: number): string {
 </template>
 
 <style scoped>
+@reference "../../assets/styles/main.css";
 .update-banner {
   @apply flex items-center justify-between gap-4 px-4 py-2;
   @apply bg-primary-50 dark:bg-primary-900/30;

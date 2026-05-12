@@ -176,7 +176,7 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
             class="absolute inset-0 bg-red-50 dark:bg-red-900/20 flex items-center justify-center gap-2 z-10"
           >
             <button
-              class="px-2 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 rounded transition-colors"
+              class="px-2 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 rounded-sm transition-colors"
               :disabled="deletingId === conversation.id"
               @click="handleConfirmDelete(conversation.id)"
             >
@@ -186,7 +186,7 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
               <span v-else>Delete</span>
             </button>
             <button
-              class="px-2 py-1 text-xs font-medium text-surface-600 dark:text-surface-400 hover:bg-surface-200 dark:hover:bg-surface-700 rounded transition-colors"
+              class="px-2 py-1 text-xs font-medium text-surface-600 dark:text-surface-400 hover:bg-surface-200 dark:hover:bg-surface-700 rounded-sm transition-colors"
               @click="handleCancelDelete"
             >
               Cancel
@@ -202,7 +202,7 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
               :ref="(el) => setRenameInputRef(conversation.id, el as HTMLInputElement)"
               v-model="renameValue"
               type="text"
-              class="flex-1 px-2 py-1 text-sm border border-primary-300 dark:border-primary-600 rounded bg-white dark:bg-surface-700 text-surface-800 dark:text-surface-200 focus:outline-none focus:ring-1 focus:ring-primary-500"
+              class="flex-1 px-2 py-1 text-sm border border-primary-300 dark:border-primary-600 rounded-sm bg-white dark:bg-surface-700 text-surface-800 dark:text-surface-200 focus:outline-hidden focus:ring-1 focus:ring-primary-500"
               placeholder="Enter title..."
               @keydown="handleRenameKeydown($event, conversation.id)"
               @blur="handleRenameSubmit(conversation.id)"
@@ -242,7 +242,7 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
                 <div class="hidden group-hover:flex items-center gap-1">
                   <!-- Rename button -->
                   <button
-                    class="p-1 rounded hover:bg-surface-200 dark:hover:bg-surface-600 text-surface-400 hover:text-primary-500 dark:hover:text-primary-400 transition-colors"
+                    class="p-1 rounded-sm hover:bg-surface-200 dark:hover:bg-surface-600 text-surface-400 hover:text-primary-500 dark:hover:text-primary-400 transition-colors"
                     title="Rename conversation"
                     @click="handleRenameClick(conversation.id, conversation.title, $event)"
                   >
@@ -253,7 +253,7 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
                   </button>
                   <!-- Delete button -->
                   <button
-                    class="p-1 rounded hover:bg-surface-200 dark:hover:bg-surface-600 text-surface-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                    class="p-1 rounded-sm hover:bg-surface-200 dark:hover:bg-surface-600 text-surface-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
                     title="Delete conversation"
                     @click="handleDeleteClick(conversation.id, $event)"
                   >

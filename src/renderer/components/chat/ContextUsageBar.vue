@@ -164,6 +164,7 @@ const primaryModel = computed(() => {
 </template>
 
 <style scoped>
+@reference "../../assets/styles/main.css";
 .context-usage-bar {
   @apply px-3 py-2 bg-surface-50 dark:bg-surface-800 border-t border-surface-200 dark:border-surface-700;
 }

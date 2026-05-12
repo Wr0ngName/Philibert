@@ -168,7 +168,7 @@ onUnmounted(() => {
             :key="perm.id"
             class="flex items-center gap-2 px-3 py-2 hover:bg-surface-50 dark:hover:bg-surface-700 group"
           >
-            <div class="flex-shrink-0">
+            <div class="shrink-0">
               <span
                 class="inline-block w-2 h-2 rounded-full bg-blue-400"
                 title="Session scope"
@@ -186,7 +186,7 @@ onUnmounted(() => {
               </div>
             </div>
             <button
-              class="flex-shrink-0 p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30 text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+              class="shrink-0 p-1 rounded-sm hover:bg-red-100 dark:hover:bg-red-900/30 text-surface-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
               title="Revoke this permission"
               @click="revokePermission(perm.id)"
             >

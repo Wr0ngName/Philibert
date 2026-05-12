@@ -127,7 +127,7 @@ const sizeClasses = {
             ref="modalContentRef"
             tabindex="-1"
             :class="[
-              'relative w-full bg-white dark:bg-surface-800 rounded-xl shadow-xl outline-none',
+              'relative w-full bg-white dark:bg-surface-800 rounded-xl shadow-xl outline-hidden',
               sizeClasses[size],
             ]"
           >

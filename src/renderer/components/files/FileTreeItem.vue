@@ -74,7 +74,7 @@ function handleClick() {
   <div>
     <button
       :class="[
-        'w-full flex items-center gap-2 px-2 py-1 text-left text-sm rounded hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors',
+        'w-full flex items-center gap-2 px-2 py-1 text-left text-sm rounded-sm hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors',
         isSelected && !isDirectory ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300' : 'text-surface-700 dark:text-surface-300',
       ]"
       :style="{ paddingLeft: `${depth * 12 + 8}px` }"
@@ -86,7 +86,7 @@ function handleClick() {
         name="chevron-right"
         size="xs"
         :class="[
-          'transition-transform flex-shrink-0',
+          'transition-transform shrink-0',
           isExpanded ? 'rotate-90' : '',
         ]"
       />
@@ -100,7 +100,7 @@ function handleClick() {
         :name="icon"
         size="sm"
         :class="[
-          'flex-shrink-0',
+          'shrink-0',
           isDirectory ? 'text-yellow-500' : 'text-surface-400',
         ]"
       />
@@ -111,7 +111,7 @@ function handleClick() {
       <!-- Modified in last query indicator -->
       <span
         v-if="wasModifiedInLastQuery"
-        class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0 ml-auto"
+        class="w-2 h-2 rounded-full bg-blue-500 shrink-0 ml-auto"
         title="Modified in last query"
       />
     </button>

@@ -1,6 +1,229 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+@plugin '@tailwindcss/typography';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --color-primary-50: #fef7f0;
+  --color-primary-100: #fdecd9;
+  --color-primary-200: #fad5b1;
+  --color-primary-300: #f7b87f;
+  --color-primary-400: #f3914b;
+  --color-primary-500: #ef7427;
+  --color-primary-600: #e05a1d;
+  --color-primary-700: #ba4419;
+  --color-primary-800: #94371b;
+  --color-primary-900: #783019;
+
+  --color-surface-50: #fafafa;
+  --color-surface-100: #f5f5f5;
+  --color-surface-200: #e5e5e5;
+  --color-surface-300: #d4d4d4;
+  --color-surface-400: #a3a3a3;
+  --color-surface-500: #737373;
+  --color-surface-600: #525252;
+  --color-surface-700: #404040;
+  --color-surface-800: #262626;
+  --color-surface-900: #171717;
+
+  --font-sans: Inter, system-ui, -apple-system, sans-serif;
+  --font-mono: JetBrains Mono, Fira Code, Consolas, monospace;
+
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-fade-in: fadeIn 0.2s ease-in-out;
+  --animate-slide-up: slideUp 0.2s ease-out;
+
+  @keyframes fadeIn {
+    0% {
+      opacity: 0;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+  @keyframes slideUp {
+    0% {
+      transform: translateY(10px);
+      opacity: 0;
+    }
+    100% {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+}
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+}
+
+/* Component utilities */
+@utility card {
+  /* Card */
+  @apply bg-white dark:bg-surface-800;
+  @apply border border-surface-200 dark:border-surface-700;
+  @apply rounded-lg shadow-xs;
+}
+@utility input-base {
+  /* Input base */
+  @apply w-full px-3 py-2;
+  @apply bg-white dark:bg-surface-800;
+  @apply border border-surface-300 dark:border-surface-600;
+  @apply rounded-lg;
+  @apply text-surface-900 dark:text-surface-100;
+  @apply placeholder-surface-400 dark:placeholder-surface-500;
+  @apply focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent;
+  @apply transition-colors duration-150;
+}
+@utility btn {
+  /* Button base */
+  @apply inline-flex items-center justify-center;
+  @apply px-4 py-2 rounded-lg;
+  @apply font-medium text-sm;
+  @apply transition-all duration-150;
+  @apply focus:outline-hidden focus:ring-2 focus:ring-offset-2;
+  @apply disabled:opacity-50 disabled:cursor-not-allowed;
+}
+@utility btn-primary {
+  @apply btn;
+  @apply bg-primary-600 text-white;
+  @apply hover:bg-primary-700;
+  @apply focus:ring-primary-500;
+}
+@utility btn-secondary {
+  @apply btn;
+  @apply bg-surface-200 dark:bg-surface-700;
+  @apply text-surface-800 dark:text-surface-200;
+  @apply hover:bg-surface-300 dark:hover:bg-surface-600;
+  @apply focus:ring-surface-500;
+}
+@utility btn-ghost {
+  @apply btn;
+  @apply bg-transparent;
+  @apply text-surface-600 dark:text-surface-400;
+  @apply hover:bg-surface-100 dark:hover:bg-surface-800;
+  @apply focus:ring-surface-500;
+}
+@utility btn-danger {
+  @apply btn;
+  @apply bg-red-600 text-white;
+  @apply hover:bg-red-700;
+  @apply focus:ring-red-500;
+}
+@utility btn-success {
+  @apply btn;
+  @apply bg-green-600 text-white;
+  @apply hover:bg-green-700;
+  @apply focus:ring-green-500;
+}
+@utility btn-icon {
+  /* Icon button */
+  @apply p-2 rounded-lg;
+  @apply text-surface-500 dark:text-surface-400;
+  @apply hover:bg-surface-100 dark:hover:bg-surface-800;
+  @apply hover:text-surface-700 dark:hover:text-surface-200;
+  @apply transition-colors duration-150;
+  @apply focus:outline-hidden focus:ring-2 focus:ring-primary-500;
+}
+@utility code-block {
+  /* Code block styling */
+  @apply font-mono text-sm;
+  @apply bg-surface-100 dark:bg-surface-800;
+  @apply text-surface-800 dark:text-surface-200;
+  @apply border border-surface-200 dark:border-surface-700;
+  @apply rounded-lg p-4;
+  @apply overflow-x-auto;
+}
+/*
+ * Override Tailwind Typography (prose) code/pre colors.
+ * The prose plugin assumes its own dark pre background with light text,
+ * but we use a light bg in light mode and dark bg in dark mode,
+ * so we must set explicit text colors for proper contrast.
+ */
+.prose pre {
+  @apply bg-surface-100 dark:bg-surface-800;
+  @apply text-surface-800 dark:text-surface-200;
+  @apply border border-surface-200 dark:border-surface-700;
+}
+
+.prose pre code {
+  @apply text-inherit;
+}
+
+.prose :not(pre) > code {
+  @apply text-surface-800 dark:text-surface-200;
+  @apply bg-surface-100 dark:bg-surface-700;
+}
+@utility message-user {
+  /* Message styling */
+  @apply bg-primary-50 dark:bg-primary-900/20;
+  @apply border-l-4 border-primary-500;
+}
+@utility message-assistant {
+  @apply bg-white dark:bg-surface-800;
+  @apply border border-surface-200 dark:border-surface-700;
+}
+@utility action-card {
+  /* Action approval card */
+  @apply card p-4;
+  @apply border-l-4 border-yellow-500;
+  @apply bg-yellow-50 dark:bg-yellow-900/10;
+}
+@utility sidebar {
+  /* Sidebar styling */
+  @apply bg-surface-100 dark:bg-surface-800;
+  @apply border-r border-surface-200 dark:border-surface-700;
+}
+@utility header {
+  /* Header styling */
+  @apply bg-white dark:bg-surface-800;
+  @apply border-b border-surface-200 dark:border-surface-700;
+  @apply px-4 py-3;
+}
+
+/* Utility classes */
+@utility truncate-lines-2 {
+  /* Truncate text with ellipsis */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@utility truncate-lines-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@utility drag-region {
+  /* Drag region for window */
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+@utility no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+@utility no-select {
+  /* Prevent text selection */
+  -webkit-user-select: none;
+  user-select: none;
+}
 
 /* Base styles */
 @layer base {
@@ -40,181 +263,5 @@
   /* Selection */
   ::selection {
     @apply bg-primary-200 dark:bg-primary-800;
-  }
-}
-
-/* Component utilities */
-@layer components {
-  /* Card */
-  .card {
-    @apply bg-white dark:bg-surface-800;
-    @apply border border-surface-200 dark:border-surface-700;
-    @apply rounded-lg shadow-sm;
-  }
-
-  /* Input base */
-  .input-base {
-    @apply w-full px-3 py-2;
-    @apply bg-white dark:bg-surface-800;
-    @apply border border-surface-300 dark:border-surface-600;
-    @apply rounded-lg;
-    @apply text-surface-900 dark:text-surface-100;
-    @apply placeholder-surface-400 dark:placeholder-surface-500;
-    @apply focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent;
-    @apply transition-colors duration-150;
-  }
-
-  /* Button base */
-  .btn {
-    @apply inline-flex items-center justify-center;
-    @apply px-4 py-2 rounded-lg;
-    @apply font-medium text-sm;
-    @apply transition-all duration-150;
-    @apply focus:outline-none focus:ring-2 focus:ring-offset-2;
-    @apply disabled:opacity-50 disabled:cursor-not-allowed;
-  }
-
-  .btn-primary {
-    @apply btn;
-    @apply bg-primary-600 text-white;
-    @apply hover:bg-primary-700;
-    @apply focus:ring-primary-500;
-  }
-
-  .btn-secondary {
-    @apply btn;
-    @apply bg-surface-200 dark:bg-surface-700;
-    @apply text-surface-800 dark:text-surface-200;
-    @apply hover:bg-surface-300 dark:hover:bg-surface-600;
-    @apply focus:ring-surface-500;
-  }
-
-  .btn-ghost {
-    @apply btn;
-    @apply bg-transparent;
-    @apply text-surface-600 dark:text-surface-400;
-    @apply hover:bg-surface-100 dark:hover:bg-surface-800;
-    @apply focus:ring-surface-500;
-  }
-
-  .btn-danger {
-    @apply btn;
-    @apply bg-red-600 text-white;
-    @apply hover:bg-red-700;
-    @apply focus:ring-red-500;
-  }
-
-  .btn-success {
-    @apply btn;
-    @apply bg-green-600 text-white;
-    @apply hover:bg-green-700;
-    @apply focus:ring-green-500;
-  }
-
-  /* Icon button */
-  .btn-icon {
-    @apply p-2 rounded-lg;
-    @apply text-surface-500 dark:text-surface-400;
-    @apply hover:bg-surface-100 dark:hover:bg-surface-800;
-    @apply hover:text-surface-700 dark:hover:text-surface-200;
-    @apply transition-colors duration-150;
-    @apply focus:outline-none focus:ring-2 focus:ring-primary-500;
-  }
-
-  /* Code block styling */
-  .code-block {
-    @apply font-mono text-sm;
-    @apply bg-surface-100 dark:bg-surface-800;
-    @apply text-surface-800 dark:text-surface-200;
-    @apply border border-surface-200 dark:border-surface-700;
-    @apply rounded-lg p-4;
-    @apply overflow-x-auto;
-  }
-
-  /*
-   * Override Tailwind Typography (prose) code/pre colors.
-   * The prose plugin assumes its own dark pre background with light text,
-   * but we use a light bg in light mode and dark bg in dark mode,
-   * so we must set explicit text colors for proper contrast.
-   */
-  .prose pre {
-    @apply bg-surface-100 dark:bg-surface-800;
-    @apply text-surface-800 dark:text-surface-200;
-    @apply border border-surface-200 dark:border-surface-700;
-  }
-
-  .prose pre code {
-    @apply text-inherit;
-  }
-
-  .prose :not(pre) > code {
-    @apply text-surface-800 dark:text-surface-200;
-    @apply bg-surface-100 dark:bg-surface-700;
-  }
-
-  /* Message styling */
-  .message-user {
-    @apply bg-primary-50 dark:bg-primary-900/20;
-    @apply border-l-4 border-primary-500;
-  }
-
-  .message-assistant {
-    @apply bg-white dark:bg-surface-800;
-    @apply border border-surface-200 dark:border-surface-700;
-  }
-
-  /* Action approval card */
-  .action-card {
-    @apply card p-4;
-    @apply border-l-4 border-yellow-500;
-    @apply bg-yellow-50 dark:bg-yellow-900/10;
-  }
-
-  /* Sidebar styling */
-  .sidebar {
-    @apply bg-surface-100 dark:bg-surface-800;
-    @apply border-r border-surface-200 dark:border-surface-700;
-  }
-
-  /* Header styling */
-  .header {
-    @apply bg-white dark:bg-surface-800;
-    @apply border-b border-surface-200 dark:border-surface-700;
-    @apply px-4 py-3;
-  }
-}
-
-/* Utility classes */
-@layer utilities {
-  /* Truncate text with ellipsis */
-  .truncate-lines-2 {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
-  .truncate-lines-3 {
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
-  /* Drag region for window */
-  .drag-region {
-    -webkit-app-region: drag;
-    app-region: drag;
-  }
-
-  .no-drag {
-    -webkit-app-region: no-drag;
-    app-region: no-drag;
-  }
-
-  /* Prevent text selection */
-  .no-select {
-    -webkit-user-select: none;
-    user-select: none;
   }
 }

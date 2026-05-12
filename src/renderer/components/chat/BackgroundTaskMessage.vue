@@ -57,11 +57,11 @@ const showErrorIcon = computed(() =>
     <Icon
       name="cpu"
       size="xs"
-      class="text-surface-400 dark:text-surface-500 flex-shrink-0"
+      class="text-surface-400 dark:text-surface-500 shrink-0"
     />
 
     <!-- Label -->
-    <span class="text-xs font-medium text-surface-500 dark:text-surface-400 flex-shrink-0">
+    <span class="text-xs font-medium text-surface-500 dark:text-surface-400 shrink-0">
       Task
     </span>
 
@@ -80,7 +80,7 @@ const showErrorIcon = computed(() =>
     </span>
 
     <!-- Status indicator -->
-    <div class="ml-auto flex items-center gap-1 flex-shrink-0">
+    <div class="ml-auto flex items-center gap-1 shrink-0">
       <Spinner
         v-if="showSpinner"
         size="xs"
