@@ -441,6 +441,11 @@ export function useClaudeChat() {
 
     // Handle SDK session ID for resume support
     cleanupSessionId = window.electron.claude.onSessionId((conversationId, sessionId) => {
+      if (!sessionId) {
+        logger.info('Clearing stale SDK session ID (resume failed)', { conversationId });
+        conversationsStore.clearSdkSessionId(conversationId);
+        return;
+      }
       logger.info('Received SDK session ID', {
         conversationId,
         sessionIdPreview: sessionId.slice(0, 20) + '...',

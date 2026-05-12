@@ -797,6 +797,116 @@ describe('ClaudeCodeService', () => {
     it('should not throw when no active query', async () => {
       await expect(service.abort(TEST_CONV_ID)).resolves.not.toThrow();
     });
+
+    it('should preserve session after interrupt (no --resume needed for next message)', async () => {
+      let interruptResolve: (() => void) | undefined;
+      let messageCount = 0;
+      let finishSession: (() => void) | undefined;
+
+      const mockIterator = {
+        [Symbol.asyncIterator]: async function* () {
+          // First turn: hang until interrupted, then yield result
+          messageCount++;
+          await new Promise<void>((resolve) => {
+            interruptResolve = resolve;
+          });
+          yield {
+            type: 'system',
+            subtype: 'init',
+            slash_commands: [],
+            model: 'claude-3',
+            session_id: 'test-session-preserved',
+          };
+          yield { type: 'result', subtype: 'success', num_turns: 0, duration_ms: 0 };
+
+          // Second turn: wait for next message, then complete
+          messageCount++;
+          await new Promise<void>((resolve) => {
+            finishSession = resolve;
+          });
+          yield { type: 'result', subtype: 'success', num_turns: 1, duration_ms: 100 };
+        },
+        interrupt: vi.fn().mockImplementation(() => {
+          interruptResolve?.();
+        }),
+        supportedCommands: vi.fn().mockResolvedValue([]),
+        supportedModels: vi.fn().mockResolvedValue([]),
+        setModel: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn(),
+      };
+      mockQuery.mockReturnValue(mockIterator);
+
+      // Send first message — starts the session
+      service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+      await vi.waitFor(() => {
+        expect(interruptResolve).toBeDefined();
+      });
+
+      // Interrupt the turn (user clicks Stop)
+      await service.abort(TEST_CONV_ID);
+
+      // Session should still be active after interrupt
+      expect(service.isConversationActive(TEST_CONV_ID)).toBe(true);
+
+      // Wait for the interrupted result to be processed
+      await vi.waitFor(() => {
+        expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_DONE, TEST_CONV_ID);
+      });
+
+      // query() should NOT have been called again (session reused, no --resume)
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+
+      // Send second message — should reuse the existing session
+      await service.sendMessage(TEST_CONV_ID, 'Second message', '/home/user');
+
+      // Still only one query() call (same session reused)
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(messageCount).toBe(2);
+
+      // Clean up
+      finishSession?.();
+      await vi.waitFor(() => {
+        expect(service.isConversationActive(TEST_CONV_ID)).toBe(false);
+      });
+    });
+
+    it('should fall back to hard termination when interrupt fails', async () => {
+      let iteratorStarted = false;
+      let resolveIterator: (() => void) | undefined;
+
+      const mockIterator = {
+        // eslint-disable-next-line require-yield
+        [Symbol.asyncIterator]: async function* () {
+          iteratorStarted = true;
+          await new Promise<void>((resolve) => {
+            resolveIterator = resolve;
+          });
+        },
+        interrupt: vi.fn().mockRejectedValue(new Error('interrupt failed')),
+        supportedCommands: vi.fn().mockResolvedValue([]),
+        supportedModels: vi.fn().mockResolvedValue([]),
+        setModel: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn(),
+      };
+      mockQuery.mockReturnValue(mockIterator);
+
+      service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+      while (!iteratorStarted) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      // Abort — interrupt will fail, should fall back to hard termination
+      await service.abort(TEST_CONV_ID);
+
+      // Session should be cleaned up (hard kill fallback)
+      expect(service.isConversationActive(TEST_CONV_ID)).toBe(false);
+
+      // Should emit done via the termination path
+      expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_DONE, TEST_CONV_ID);
+
+      // Clean up the dangling iterator
+      resolveIterator?.();
+    });
   });
 
   // ===========================================================================
@@ -1243,6 +1353,223 @@ describe('ClaudeCodeService', () => {
       // Clean up
       resolveFirst();
       await firstPromise.catch(() => {});
+    });
+  });
+
+  // ===========================================================================
+  // Session Lifecycle — session ID robustness through the whole conversation
+  // ===========================================================================
+  describe('session lifecycle', () => {
+    beforeEach(() => {
+      mockConfigService.getOAuthToken.mockResolvedValue(
+        'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
+      );
+    });
+
+    it('should emit session ID from init message to renderer', async () => {
+      const mockIterator = createMockQueryIterator([
+        { type: 'system', subtype: 'init', session_id: 'init-session-42', slash_commands: [], model: 'claude-3' },
+        { type: 'result', subtype: 'success', num_turns: 1, duration_ms: 100 },
+      ]);
+      mockQuery.mockReturnValue(mockIterator);
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+      await vi.waitFor(() => {
+        expect(mockSend).toHaveBeenCalledWith(
+          IPC_CHANNELS.CLAUDE_SESSION_ID,
+          TEST_CONV_ID,
+          'init-session-42'
+        );
+      });
+    });
+
+    it('should NOT emit session ID from error result messages', async () => {
+      const mockIterator = createMockQueryIterator([
+        { type: 'system', subtype: 'init', session_id: 'good-session', slash_commands: [] },
+        { type: 'result', subtype: 'error_during_execution', session_id: 'stale-error-session', num_turns: 0, duration_ms: 0, is_error: true },
+      ]);
+      mockQuery.mockReturnValue(mockIterator);
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+      await vi.waitFor(() => {
+        expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_DONE, TEST_CONV_ID);
+      });
+
+      // Should have emitted the init session ID
+      const sessionIdCalls = mockSend.mock.calls.filter(
+        (call: unknown[]) => call[0] === IPC_CHANNELS.CLAUDE_SESSION_ID
+      );
+      expect(sessionIdCalls).toHaveLength(1);
+      expect(sessionIdCalls[0][2]).toBe('good-session');
+    });
+
+    it('should not need --resume when session is still alive (multi-turn within same session)', async () => {
+      let turnIndex = 0;
+      const turnResolvers: (() => void)[] = [];
+
+      const mockIterator = {
+        [Symbol.asyncIterator]: async function* () {
+          yield { type: 'system', subtype: 'init', session_id: 'persistent-session-789', slash_commands: [] };
+
+          // Turn 1
+          await new Promise<void>((resolve) => { turnResolvers.push(resolve); });
+          yield { type: 'result', subtype: 'success', num_turns: 1, duration_ms: 100 };
+          turnIndex++;
+
+          // Turn 2
+          await new Promise<void>((resolve) => { turnResolvers.push(resolve); });
+          yield { type: 'result', subtype: 'success', num_turns: 2, duration_ms: 200 };
+          turnIndex++;
+        },
+        interrupt: vi.fn(),
+        supportedCommands: vi.fn().mockResolvedValue([]),
+        supportedModels: vi.fn().mockResolvedValue([]),
+        setModel: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn(),
+      };
+      mockQuery.mockReturnValue(mockIterator);
+
+      // First message — creates session
+      service.sendMessage(TEST_CONV_ID, 'First', '/home/user');
+      await vi.waitFor(() => { expect(turnResolvers).toHaveLength(1); });
+      turnResolvers[0]();
+
+      await vi.waitFor(() => { expect(turnIndex).toBe(1); });
+
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(service.isConversationActive(TEST_CONV_ID)).toBe(true);
+
+      // Second message — reuses the SAME session, no new query()
+      await service.sendMessage(TEST_CONV_ID, 'Second', '/home/user');
+      await vi.waitFor(() => { expect(turnResolvers).toHaveLength(2); });
+      turnResolvers[1]();
+
+      await vi.waitFor(() => { expect(turnIndex).toBe(2); });
+
+      // Still only one query() call — session was reused, no --resume
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+
+      const queryOptions = mockQuery.mock.calls[0][0].options;
+      expect(queryOptions.resume).toBeUndefined();
+    });
+
+    it('should use --resume only when session is dead (e.g. after app restart)', async () => {
+      // Simulate first session that completes and dies (iterator exhausted)
+      const firstIterator = createMockQueryIterator([
+        { type: 'system', subtype: 'init', session_id: 'original-session', slash_commands: [] },
+        { type: 'result', subtype: 'success', num_turns: 1, duration_ms: 100 },
+      ]);
+      mockQuery.mockReturnValue(firstIterator);
+
+      await service.sendMessage(TEST_CONV_ID, 'First', '/home/user');
+
+      // Wait for session to complete and be cleaned up
+      await vi.waitFor(() => {
+        expect(service.isConversationActive(TEST_CONV_ID)).toBe(false);
+      });
+
+      // Now simulate sending a message with a stored session ID (as after app restart)
+      const secondIterator = createMockQueryIterator([
+        { type: 'system', subtype: 'init', session_id: 'resumed-session', slash_commands: [] },
+        { type: 'result', subtype: 'success', num_turns: 2, duration_ms: 200 },
+      ]);
+      mockQuery.mockReturnValue(secondIterator);
+
+      await service.sendMessage(TEST_CONV_ID, 'After restart', '/home/user', 'original-session');
+
+      // Should have created a NEW query with --resume
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      const secondQueryOptions = mockQuery.mock.calls[1][0].options;
+      expect(secondQueryOptions.resume).toBe('original-session');
+    });
+
+    it('should clear stale session ID and show error when --resume fails', async () => {
+      const mockIterator = createMockQueryIterator([
+        { type: 'result', subtype: 'error_during_execution', error: 'No conversation found with session ID abc123', num_turns: 0, duration_ms: 0, is_error: true, session_id: 'stale-id' },
+      ]);
+      mockQuery.mockReturnValue(mockIterator);
+
+      await service.sendMessage(TEST_CONV_ID, 'Resume attempt', '/home/user', 'abc123');
+
+      await vi.waitFor(() => {
+        // Should clear the stale session ID (empty string)
+        expect(mockSend).toHaveBeenCalledWith(
+          IPC_CHANNELS.CLAUDE_SESSION_ID,
+          TEST_CONV_ID,
+          ''
+        );
+
+        // Should show a user-friendly error
+        expect(mockSend).toHaveBeenCalledWith(
+          IPC_CHANNELS.CLAUDE_ERROR,
+          TEST_CONV_ID,
+          expect.stringContaining('session has expired')
+        );
+      });
+    });
+
+    it('should keep session alive across multiple interrupt cycles', async () => {
+      let turnIndex = 0;
+      const turnResolvers: (() => void)[] = [];
+
+      const mockIterator = {
+        [Symbol.asyncIterator]: async function* () {
+          yield { type: 'system', subtype: 'init', session_id: 'durable-session', slash_commands: [] };
+
+          // Turn 1: will be interrupted
+          await new Promise<void>((resolve) => { turnResolvers.push(resolve); });
+          yield { type: 'result', subtype: 'success', num_turns: 0, duration_ms: 50 };
+          turnIndex++;
+
+          // Turn 2: will also be interrupted
+          await new Promise<void>((resolve) => { turnResolvers.push(resolve); });
+          yield { type: 'result', subtype: 'success', num_turns: 0, duration_ms: 50 };
+          turnIndex++;
+
+          // Turn 3: completes normally
+          await new Promise<void>((resolve) => { turnResolvers.push(resolve); });
+          yield { type: 'result', subtype: 'success', num_turns: 1, duration_ms: 100 };
+          turnIndex++;
+        },
+        interrupt: vi.fn().mockImplementation(() => {
+          const latest = turnResolvers[turnResolvers.length - 1];
+          latest?.();
+        }),
+        supportedCommands: vi.fn().mockResolvedValue([]),
+        supportedModels: vi.fn().mockResolvedValue([]),
+        setModel: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn(),
+      };
+      mockQuery.mockReturnValue(mockIterator);
+
+      // Turn 1
+      service.sendMessage(TEST_CONV_ID, 'Message 1', '/home/user');
+      await vi.waitFor(() => { expect(turnResolvers).toHaveLength(1); });
+
+      // Interrupt turn 1
+      await service.abort(TEST_CONV_ID);
+      await vi.waitFor(() => { expect(turnIndex).toBe(1); });
+      expect(service.isConversationActive(TEST_CONV_ID)).toBe(true);
+
+      // Turn 2 — still same session
+      await service.sendMessage(TEST_CONV_ID, 'Message 2', '/home/user');
+      await vi.waitFor(() => { expect(turnResolvers).toHaveLength(2); });
+
+      // Interrupt turn 2
+      await service.abort(TEST_CONV_ID);
+      await vi.waitFor(() => { expect(turnIndex).toBe(2); });
+      expect(service.isConversationActive(TEST_CONV_ID)).toBe(true);
+
+      // Turn 3 — still same session, completes normally
+      await service.sendMessage(TEST_CONV_ID, 'Message 3', '/home/user');
+      await vi.waitFor(() => { expect(turnResolvers).toHaveLength(3); });
+      turnResolvers[2]();
+      await vi.waitFor(() => { expect(turnIndex).toBe(3); });
+
+      // Only ONE query() call across all 3 turns + 2 interrupts
+      expect(mockQuery).toHaveBeenCalledTimes(1);
     });
   });
 });

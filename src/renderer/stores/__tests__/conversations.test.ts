@@ -936,4 +936,229 @@ describe('useConversationsStore', () => {
       expect(savedConversation.updatedAt).toBeGreaterThan(2000); // Updated
     });
   });
+
+  // ===========================================================================
+  // SDK Session ID Management
+  // ===========================================================================
+  describe('SDK session ID management', () => {
+    describe('setSdkSessionId / getSdkSessionId', () => {
+      it('should store and retrieve a session ID', () => {
+        store.setSdkSessionId('conv_1', 'session-abc-123');
+        expect(store.getSdkSessionId('conv_1')).toBe('session-abc-123');
+      });
+
+      it('should return undefined for unknown conversation', () => {
+        expect(store.getSdkSessionId('nonexistent')).toBeUndefined();
+      });
+
+      it('should overwrite existing session ID', () => {
+        store.setSdkSessionId('conv_1', 'session-old');
+        store.setSdkSessionId('conv_1', 'session-new');
+        expect(store.getSdkSessionId('conv_1')).toBe('session-new');
+      });
+
+      it('should store independent session IDs for different conversations', () => {
+        store.setSdkSessionId('conv_1', 'session-aaa');
+        store.setSdkSessionId('conv_2', 'session-bbb');
+        expect(store.getSdkSessionId('conv_1')).toBe('session-aaa');
+        expect(store.getSdkSessionId('conv_2')).toBe('session-bbb');
+      });
+    });
+
+    describe('clearSdkSessionId', () => {
+      it('should remove session ID from map', () => {
+        store.setSdkSessionId('conv_1', 'session-abc');
+        store.clearSdkSessionId('conv_1');
+        expect(store.getSdkSessionId('conv_1')).toBeUndefined();
+      });
+
+      it('should not affect other conversations', () => {
+        store.setSdkSessionId('conv_1', 'session-aaa');
+        store.setSdkSessionId('conv_2', 'session-bbb');
+        store.clearSdkSessionId('conv_1');
+        expect(store.getSdkSessionId('conv_2')).toBe('session-bbb');
+      });
+
+      it('should handle clearing non-existent ID gracefully', () => {
+        expect(() => store.clearSdkSessionId('nonexistent')).not.toThrow();
+      });
+    });
+
+    describe('clearCurrentSdkSessionId', () => {
+      it('should clear session ID for current conversation', () => {
+        store.currentConversationId = 'conv_1';
+        store.setSdkSessionId('conv_1', 'session-abc');
+        store.clearCurrentSdkSessionId();
+        expect(store.getSdkSessionId('conv_1')).toBeUndefined();
+      });
+
+      it('should do nothing when no current conversation', () => {
+        store.setSdkSessionId('conv_1', 'session-abc');
+        store.currentConversationId = null;
+        store.clearCurrentSdkSessionId();
+        expect(store.getSdkSessionId('conv_1')).toBe('session-abc');
+      });
+    });
+
+    describe('currentConversationHasSession', () => {
+      it('should return true when current conversation has session', () => {
+        store.currentConversationId = 'conv_1';
+        store.setSdkSessionId('conv_1', 'session-abc');
+        expect(store.currentConversationHasSession()).toBe(true);
+      });
+
+      it('should return false when current conversation has no session', () => {
+        store.currentConversationId = 'conv_1';
+        expect(store.currentConversationHasSession()).toBe(false);
+      });
+
+      it('should return false when no current conversation', () => {
+        store.currentConversationId = null;
+        expect(store.currentConversationHasSession()).toBe(false);
+      });
+    });
+
+    describe('loadConversation restores session ID', () => {
+      it('should restore sdkSessionId from persisted conversation data', async () => {
+        const conversation: Conversation = {
+          id: 'conv_with_session',
+          title: 'Has Session',
+          workingDirectory: '/home/user/project',
+          messages: [{ id: 'msg_1', role: 'user', content: 'Hello', timestamp: 1000 }],
+          createdAt: 1000,
+          updatedAt: 2000,
+          sdkSessionId: 'persisted-session-id-12345',
+        };
+        mockElectron.conversation.get.mockResolvedValue(conversation);
+
+        await store.loadConversation('conv_with_session');
+
+        expect(store.getSdkSessionId('conv_with_session')).toBe('persisted-session-id-12345');
+      });
+
+      it('should NOT set session ID when conversation has no sdkSessionId', async () => {
+        const conversation: Conversation = {
+          id: 'conv_no_session',
+          title: 'No Session',
+          workingDirectory: '/home/user/project',
+          messages: [],
+          createdAt: 1000,
+          updatedAt: 2000,
+        };
+        mockElectron.conversation.get.mockResolvedValue(conversation);
+
+        await store.loadConversation('conv_no_session');
+
+        expect(store.getSdkSessionId('conv_no_session')).toBeUndefined();
+      });
+
+      it('should overwrite stale in-memory session ID when loading from disk', async () => {
+        store.setSdkSessionId('conv_1', 'stale-session');
+
+        const conversation: Conversation = {
+          id: 'conv_1',
+          title: 'Updated',
+          workingDirectory: '/home/user/project',
+          messages: [],
+          createdAt: 1000,
+          updatedAt: 2000,
+          sdkSessionId: 'fresh-session-from-disk',
+        };
+        mockElectron.conversation.get.mockResolvedValue(conversation);
+
+        await store.loadConversation('conv_1');
+
+        expect(store.getSdkSessionId('conv_1')).toBe('fresh-session-from-disk');
+      });
+    });
+
+    describe('saveCurrentConversation includes session ID', () => {
+      it('should include sdkSessionId in saved payload when set', async () => {
+        store.currentConversationId = 'conv_1';
+        chatStore.addUserMessage('Hello');
+        store.setSdkSessionId('conv_1', 'save-me-session');
+
+        await store.saveCurrentConversation();
+
+        expect(mockElectron.conversation.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            id: 'conv_1',
+            sdkSessionId: 'save-me-session',
+          })
+        );
+      });
+
+      it('should save with undefined sdkSessionId when not set', async () => {
+        store.currentConversationId = 'conv_1';
+        chatStore.addUserMessage('Hello');
+
+        await store.saveCurrentConversation();
+
+        const savedConversation = mockElectron.conversation.save.mock.calls[0][0];
+        expect(savedConversation.sdkSessionId).toBeUndefined();
+      });
+    });
+
+    describe('conversation switching preserves session IDs', () => {
+      it('should preserve session IDs when switching between conversations', async () => {
+        const conv1: Conversation = {
+          id: 'conv_1',
+          title: 'First',
+          workingDirectory: '/home/user/project',
+          messages: [{ id: 'msg_1', role: 'user', content: 'First message', timestamp: 1000 }],
+          createdAt: 1000,
+          updatedAt: 2000,
+          sdkSessionId: 'session-conv-1',
+        };
+        const conv2: Conversation = {
+          id: 'conv_2',
+          title: 'Second',
+          workingDirectory: '/home/user/project',
+          messages: [{ id: 'msg_2', role: 'user', content: 'Second message', timestamp: 2000 }],
+          createdAt: 2000,
+          updatedAt: 3000,
+          sdkSessionId: 'session-conv-2',
+        };
+
+        mockElectron.conversation.get.mockImplementation((id: string) =>
+          Promise.resolve(id === 'conv_1' ? conv1 : id === 'conv_2' ? conv2 : null)
+        );
+
+        // Load first
+        await store.loadConversation('conv_1');
+        expect(store.getSdkSessionId('conv_1')).toBe('session-conv-1');
+
+        // Load second
+        await store.loadConversation('conv_2');
+        expect(store.getSdkSessionId('conv_2')).toBe('session-conv-2');
+
+        // First should still be preserved in memory
+        expect(store.getSdkSessionId('conv_1')).toBe('session-conv-1');
+      });
+    });
+
+    describe('session ID round-trip (save then load)', () => {
+      it('should survive a save + load round-trip', async () => {
+        // 1. Set up a conversation with a session ID
+        store.currentConversationId = 'conv_roundtrip';
+        chatStore.addUserMessage('Test message');
+        store.setSdkSessionId('conv_roundtrip', 'roundtrip-session');
+
+        // 2. Save — capture what was written
+        await store.saveCurrentConversation();
+
+        const savedConversation = mockElectron.conversation.save.mock.calls[0][0];
+        expect(savedConversation.sdkSessionId).toBe('roundtrip-session');
+
+        // 3. Simulate loading from the saved data
+        store.clearSdkSessionId('conv_roundtrip');
+        mockElectron.conversation.get.mockResolvedValue(savedConversation);
+
+        await store.loadConversation('conv_roundtrip');
+
+        // 4. Session ID should be restored
+        expect(store.getSdkSessionId('conv_roundtrip')).toBe('roundtrip-session');
+      });
+    });
+  });
 });

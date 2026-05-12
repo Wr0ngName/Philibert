@@ -560,4 +560,53 @@ describe('ConversationService', () => {
       expect(list).toHaveLength(3);
     });
   });
+
+  // ===========================================================================
+  // SDK Session ID persistence
+  // ===========================================================================
+  describe('sdkSessionId persistence', () => {
+    it('should preserve sdkSessionId through save and get', async () => {
+      const conv = createConversation({ sdkSessionId: 'sdk-session-abc-123' });
+
+      await service.save(conv);
+      const retrieved = await service.get(conv.id);
+
+      expect(retrieved).not.toBeNull();
+      expect(retrieved?.sdkSessionId).toBe('sdk-session-abc-123');
+    });
+
+    it('should preserve sdkSessionId as undefined when not set', async () => {
+      const conv = createConversation();
+      // Ensure no sdkSessionId property
+      delete (conv as any).sdkSessionId;
+
+      await service.save(conv);
+      const retrieved = await service.get(conv.id);
+
+      expect(retrieved).not.toBeNull();
+      expect(retrieved?.sdkSessionId).toBeUndefined();
+    });
+
+    it('should not strip sdkSessionId in list() (metadata includes it)', async () => {
+      const conv = createConversation({ sdkSessionId: 'list-session-id' });
+      mockFileSystem.set(`/app/conversations/${conv.id}.json`, JSON.stringify(conv));
+
+      const list = await service.list();
+
+      expect(list).toHaveLength(1);
+      expect(list[0].sdkSessionId).toBe('list-session-id');
+    });
+
+    it('should handle updating sdkSessionId on re-save', async () => {
+      const conv = createConversation({ sdkSessionId: 'old-session' });
+      await service.save(conv);
+
+      // Update session ID
+      conv.sdkSessionId = 'new-session';
+      await service.save(conv);
+
+      const retrieved = await service.get(conv.id);
+      expect(retrieved?.sdkSessionId).toBe('new-session');
+    });
+  });
 });

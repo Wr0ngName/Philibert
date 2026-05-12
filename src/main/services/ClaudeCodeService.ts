@@ -112,6 +112,8 @@ interface SessionInstance {
   pollTimer: ReturnType<typeof setInterval> | null;
   /** Model that was used to start this session */
   sessionModel: string;
+  /** Whether this session was started with --resume (for error recovery) */
+  isResumeAttempt: boolean;
 }
 
 /**
@@ -532,6 +534,7 @@ export class ClaudeCodeService {
         pendingSyntheticPolls: 0,
         pollTimer: null,
         sessionModel: shouldResume ? '' : selectedModel,
+        isResumeAttempt: shouldResume,
       };
       this.activeSessions.set(conversationId, session);
       this.emitActiveQueryCount();
@@ -646,10 +649,29 @@ export class ClaudeCodeService {
             // Reset message handler state so the next turn starts clean
             messageHandler.reset();
           } else {
+            const resultSubtype = (sdkMessage as { subtype?: string }).subtype;
+
+            // Detect resume failure from result message (before the thrown error path)
+            if (session?.isResumeAttempt && resultSubtype?.startsWith('error')) {
+              const resultError = (sdkMessage as { error?: string }).error || '';
+              if (this.isResumeSessionError(resultError)) {
+                logger.warn('Resume session failed (result message) — clearing stale session ID', {
+                  conversationId,
+                  error: resultError,
+                });
+                this.emitClearSessionId(conversationId);
+                this.emitError(conversationId,
+                  'Could not resume conversation context — the session has expired or was cleaned up. ' +
+                  'Your conversation history is preserved, but Claude will not remember previous messages. ' +
+                  'Send your message again to continue with a fresh context.');
+                break;
+              }
+            }
+
             // Normal turn — emit done to renderer
             logger.info('Turn completed (result message received), emitting done', {
               conversationId,
-              subtype: (sdkMessage as { subtype?: string }).subtype,
+              subtype: resultSubtype,
             });
             this.emitDone(conversationId);
 
@@ -825,6 +847,22 @@ export class ClaudeCodeService {
         error: errorMessage,
       });
       this.emitDone(conversationId);
+      return;
+    }
+
+    // Handle resume session failures: clear the stale session ID so the next
+    // attempt doesn't fail on the same expired ID, and show a specific error.
+    const session = this.activeSessions.get(conversationId);
+    if (session?.isResumeAttempt && this.isResumeSessionError(errorMessage)) {
+      logger.warn('Resume session failed — clearing stale session ID', {
+        conversationId,
+        error: errorMessage,
+      });
+      this.emitClearSessionId(conversationId);
+      this.emitError(conversationId,
+        'Could not resume conversation context — the session has expired or was cleaned up. ' +
+        'Your conversation history is preserved, but Claude will not remember previous messages. ' +
+        'Send your message again to continue with a fresh context.');
       return;
     }
 
@@ -1105,7 +1143,14 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Abort a specific conversation's session
+   * Interrupt the current turn for a conversation without killing the session.
+   *
+   * Sends SIGINT via query.interrupt() — the CLI cancels the current operation
+   * and sends a result message (with terminal_reason 'aborted_streaming' or
+   * 'aborted_tools'). The processMessageLoop receives this result and emits done.
+   * The session stays alive for subsequent messages — no --resume needed.
+   *
+   * Falls back to hard termination only if interrupt() itself fails.
    */
   async abort(conversationId: string): Promise<void> {
     const instance = this.activeSessions.get(conversationId);
@@ -1114,34 +1159,47 @@ export class ClaudeCodeService {
       return;
     }
 
-    try {
-      await instance.query.interrupt();
-      logger.info('Session interrupted via SDK', { conversationId });
-    } catch (error) {
-      logger.debug('Could not interrupt session', { conversationId, error });
-    }
-
-    instance.abortController.abort();
-    logger.info('Session abort requested', { conversationId });
-
-    // Clear pending permissions
+    // Clear pending permissions (dismisses permission dialogs immediately)
     instance.permissionManager.clearPendingPermissions();
 
-    // Clean up immediately
-    this.cleanupSession(conversationId);
-
-    // Emit done to signal abort completion
-    this.emitDone(conversationId);
+    try {
+      await instance.query.interrupt();
+      logger.info('Turn interrupted — session preserved for next message', { conversationId });
+    } catch (error) {
+      logger.warn('Could not interrupt session, falling back to hard termination', {
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.terminateSession(conversationId);
+    }
   }
 
   /**
-   * Abort all active sessions (e.g., when app is closing)
+   * Hard-kill a session: abort the subprocess, close the channel, remove from active sessions.
+   * Used only for app shutdown (abortAll) or as a fallback when interrupt fails.
+   */
+  private terminateSession(conversationId: string): void {
+    const instance = this.activeSessions.get(conversationId);
+    if (!instance) return;
+
+    instance.permissionManager.clearPendingPermissions();
+    instance.abortController.abort();
+    this.cleanupSession(conversationId);
+    this.emitDone(conversationId);
+
+    logger.info('Session terminated (hard kill)', { conversationId });
+  }
+
+  /**
+   * Terminate all active sessions (e.g., when app is closing)
    */
   async abortAll(): Promise<void> {
     const conversationIds = Array.from(this.activeSessions.keys());
-    logger.info('Aborting all active sessions', { count: conversationIds.length });
+    logger.info('Terminating all active sessions for shutdown', { count: conversationIds.length });
 
-    await Promise.all(conversationIds.map(id => this.abort(id)));
+    for (const id of conversationIds) {
+      this.terminateSession(id);
+    }
   }
 
   /**
@@ -1216,6 +1274,26 @@ export class ClaudeCodeService {
   private emitSessionId(conversationId: string, sessionId: string): void {
     logger.info('Emitting SDK session ID to renderer', { conversationId, sessionId: sessionId.slice(0, 20) + '...' });
     this.send(IPC_CHANNELS.CLAUDE_SESSION_ID, conversationId, sessionId);
+  }
+
+  /**
+   * Clear a stale session ID in the renderer.
+   * Sends empty string via the existing session ID channel — the renderer
+   * interprets this as "delete the stored session ID for this conversation".
+   */
+  private emitClearSessionId(conversationId: string): void {
+    logger.info('Clearing stale SDK session ID in renderer', { conversationId });
+    this.send(IPC_CHANNELS.CLAUDE_SESSION_ID, conversationId, '');
+  }
+
+  /**
+   * Check if an error message indicates a failed session resume (stale/expired session ID).
+   */
+  private isResumeSessionError(errorMessage: string): boolean {
+    const lower = errorMessage.toLowerCase();
+    return lower.includes('no conversation found') ||
+           lower.includes('session not found') ||
+           lower.includes('no session found');
   }
 
   /**

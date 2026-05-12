@@ -381,12 +381,12 @@ export class SDKMessageHandler {
       this.callbacks.onUsageUpdate(sessionUsage);
     }
 
-    // Emit session_id from result as a fallback (in case init message was missed)
-    if (resultMessage.session_id && this.callbacks.onSessionId) {
-      this.callbacks.onSessionId(resultMessage.session_id);
-    }
-
     if (message.subtype === 'success') {
+      // Only emit session_id from SUCCESSFUL results — error results (e.g. failed --resume)
+      // contain ephemeral session IDs that would create a chain of stale IDs if persisted.
+      if (resultMessage.session_id && this.callbacks.onSessionId) {
+        this.callbacks.onSessionId(resultMessage.session_id);
+      }
       // Mark query as succeeded - used to handle process exit errors gracefully
       this.querySucceeded = true;
 

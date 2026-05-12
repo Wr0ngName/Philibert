@@ -195,6 +195,44 @@ describe('SDKMessageHandler', () => {
       expect(onSessionId).toHaveBeenCalledWith('result-session-xyz789');
     });
 
+    it('should NOT emit session_id from error result messages', async () => {
+      const onSessionId = vi.fn();
+      const callbacksWithSession: MessageHandlerCallbacks = {
+        ...callbacks,
+        onSessionId,
+      };
+      const sessionHandler = new SDKMessageHandler(callbacksWithSession);
+
+      await sessionHandler.handleMessage({
+        type: 'result',
+        subtype: 'error_during_execution',
+        num_turns: 0,
+        duration_ms: 0,
+        session_id: 'stale-error-session-id',
+      } as never);
+
+      expect(onSessionId).not.toHaveBeenCalled();
+    });
+
+    it('should NOT emit session_id from error subtype result messages', async () => {
+      const onSessionId = vi.fn();
+      const callbacksWithSession: MessageHandlerCallbacks = {
+        ...callbacks,
+        onSessionId,
+      };
+      const sessionHandler = new SDKMessageHandler(callbacksWithSession);
+
+      await sessionHandler.handleMessage({
+        type: 'result',
+        subtype: 'error',
+        num_turns: 0,
+        duration_ms: 0,
+        session_id: 'another-stale-session-id',
+      } as never);
+
+      expect(onSessionId).not.toHaveBeenCalled();
+    });
+
     it('should not emit session_id if not present in init message', async () => {
       const onSessionId = vi.fn();
       const callbacksWithSession: MessageHandlerCallbacks = {
