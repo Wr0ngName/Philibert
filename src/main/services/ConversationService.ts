@@ -61,7 +61,7 @@ export class ConversationService {
       await fs.promises.access(this.conversationsDir, fs.constants.W_OK);
     } catch (error) {
       logger.error('Conversations directory is not writable', { dir: this.conversationsDir, error });
-      throw new Error(`Conversations directory is not writable: ${this.conversationsDir}`);
+      throw new Error(`Conversations directory is not writable: ${this.conversationsDir}`, { cause: error });
     }
   }
 

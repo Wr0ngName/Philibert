@@ -179,10 +179,16 @@ function handleInput(event: Event) {
 
     <!-- Hints -->
     <div class="flex items-center justify-between mt-2 text-xs text-surface-400 dark:text-surface-500">
-      <span v-if="showAutocomplete" class="text-primary-500 dark:text-primary-400">
+      <span
+        v-if="showAutocomplete"
+        class="text-primary-500 dark:text-primary-400"
+      >
         Use ↑↓ to navigate, Tab/Enter to select
       </span>
-      <span v-else-if="isTypingCommand" class="text-primary-500 dark:text-primary-400">
+      <span
+        v-else-if="isTypingCommand"
+        class="text-primary-500 dark:text-primary-400"
+      >
         Type a command name...
       </span>
       <span v-else>Press Enter to send, Shift+Enter for new line</span>

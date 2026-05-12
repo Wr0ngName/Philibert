@@ -48,7 +48,7 @@ export function extractTarBz2(archivePath: string, destDir: string): void {
     debugLog('tar extraction completed successfully');
   } catch (error) {
     debugLog(`tar extraction failed: ${error}`);
-    throw new Error(`Failed to extract archive: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Failed to extract archive: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 
   // Remove dev/ directory if present (contains POSIX special files like symlinks to /dev/fd/)
@@ -101,7 +101,7 @@ export function extractNodeExe(zipPath: string, destDir: string, nodeVersion: st
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
-    throw new Error(`Failed to extract Node.js zip: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Failed to extract Node.js zip: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 
   // Move node.exe from extracted directory to destination

@@ -39,7 +39,7 @@ export class GitService {
     } catch (error) {
       const err = error as Error & { stderr?: string; code?: string };
       const message = err.stderr?.trim() || err.message;
-      throw new Error(message);
+      throw new Error(message, { cause: error });
     }
   }
 
@@ -55,7 +55,7 @@ export class GitService {
     }
 
     // Get current branch
-    let branch = '';
+    let branch: string;
     try {
       branch = await this.runGit(['branch', '--show-current'], cwd);
       if (!branch) {
@@ -79,11 +79,8 @@ export class GitService {
     }
 
     // Get ahead/behind counts
-    let ahead = 0;
-    let behind = 0;
     const aheadBehind = await this.getAheadBehind(cwd, branch);
-    ahead = aheadBehind.ahead;
-    behind = aheadBehind.behind;
+    const { ahead, behind } = aheadBehind;
 
     return { isGitRepo: true, branch, dirty, ahead, behind };
   }

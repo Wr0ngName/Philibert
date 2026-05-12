@@ -160,8 +160,12 @@ function cancel() {
             ]"
             @click="localLogLevel = option.value"
           >
-            <div class="font-medium">{{ option.label }}</div>
-            <div class="text-xs opacity-75">{{ option.description }}</div>
+            <div class="font-medium">
+              {{ option.label }}
+            </div>
+            <div class="text-xs opacity-75">
+              {{ option.description }}
+            </div>
           </button>
         </div>
       </div>

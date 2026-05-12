@@ -216,220 +216,220 @@ onMounted(() => {
     <!-- Wizard content centered below drag region -->
     <div class="flex-1 flex items-center justify-center overflow-auto">
       <div class="bg-white dark:bg-surface-800 rounded-2xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden my-4">
-      <!-- Progress bar -->
-      <div class="h-1 bg-surface-200 dark:bg-surface-700">
-        <div
-          class="h-full bg-primary-500 transition-all duration-300"
-          :style="{ width: `${(currentStep / totalSteps) * 100}%` }"
-        />
-      </div>
-
-      <!-- Content -->
-      <div class="p-8">
-        <!-- Step indicator -->
-        <div class="flex items-center justify-center gap-2 mb-6">
-          <template
-            v-for="step in totalSteps"
-            :key="step"
-          >
-            <div
-              :class="[
-                'w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition-colors',
-                step === currentStep
-                  ? 'bg-primary-500 text-white'
-                  : step < currentStep
-                    ? 'bg-primary-100 dark:bg-primary-900 text-primary-600 dark:text-primary-400'
-                    : 'bg-surface-200 dark:bg-surface-700 text-surface-500',
-              ]"
-            >
-              <Icon
-                v-if="step < currentStep"
-                name="check"
-                size="sm"
-              />
-              <span v-else>{{ step }}</span>
-            </div>
-            <div
-              v-if="step < totalSteps"
-              :class="[
-                'w-12 h-0.5 transition-colors',
-                step < currentStep ? 'bg-primary-500' : 'bg-surface-200 dark:bg-surface-700',
-              ]"
-            />
-          </template>
-        </div>
-
-        <!-- Step title -->
-        <h2 class="text-2xl font-bold text-center text-surface-900 dark:text-white mb-2">
-          {{ stepTitle }}
-        </h2>
-        <p class="text-center text-surface-600 dark:text-surface-400 mb-8">
-          {{ stepDescription }}
-        </p>
-
-        <!-- Step 1: Welcome -->
-        <div
-          v-if="currentStep === 1"
-          class="text-center"
-        >
-          <div class="w-24 h-24 mx-auto mb-6 rounded-2xl bg-primary-500 flex items-center justify-center">
-            <Icon
-              name="terminal"
-              size="xl"
-              class="text-white"
-            />
-          </div>
-          <div class="space-y-4 text-left max-w-md mx-auto">
-            <div class="flex items-start gap-3">
-              <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center flex-shrink-0 mt-0.5">
-                <Icon
-                  name="check"
-                  size="xs"
-                  class="text-primary-600 dark:text-primary-400"
-                />
-              </div>
-              <p class="text-surface-700 dark:text-surface-300">
-                <strong>Write & edit code</strong> with AI assistance
-              </p>
-            </div>
-            <div class="flex items-start gap-3">
-              <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center flex-shrink-0 mt-0.5">
-                <Icon
-                  name="check"
-                  size="xs"
-                  class="text-primary-600 dark:text-primary-400"
-                />
-              </div>
-              <p class="text-surface-700 dark:text-surface-300">
-                <strong>Run commands</strong> directly from the chat
-              </p>
-            </div>
-            <div class="flex items-start gap-3">
-              <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center flex-shrink-0 mt-0.5">
-                <Icon
-                  name="check"
-                  size="xs"
-                  class="text-primary-600 dark:text-primary-400"
-                />
-              </div>
-              <p class="text-surface-700 dark:text-surface-300">
-                <strong>Review changes</strong> before they're applied
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Step 2: Folder Selection -->
-        <div
-          v-else-if="currentStep === 2"
-          class="text-center"
-        >
+        <!-- Progress bar -->
+        <div class="h-1 bg-surface-200 dark:bg-surface-700">
           <div
-            v-if="selectedFolder"
-            class="p-4 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 mb-6"
+            class="h-full bg-primary-500 transition-all duration-300"
+            :style="{ width: `${(currentStep / totalSteps) * 100}%` }"
+          />
+        </div>
+
+        <!-- Content -->
+        <div class="p-8">
+          <!-- Step indicator -->
+          <div class="flex items-center justify-center gap-2 mb-6">
+            <template
+              v-for="step in totalSteps"
+              :key="step"
+            >
+              <div
+                :class="[
+                  'w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition-colors',
+                  step === currentStep
+                    ? 'bg-primary-500 text-white'
+                    : step < currentStep
+                      ? 'bg-primary-100 dark:bg-primary-900 text-primary-600 dark:text-primary-400'
+                      : 'bg-surface-200 dark:bg-surface-700 text-surface-500',
+                ]"
+              >
+                <Icon
+                  v-if="step < currentStep"
+                  name="check"
+                  size="sm"
+                />
+                <span v-else>{{ step }}</span>
+              </div>
+              <div
+                v-if="step < totalSteps"
+                :class="[
+                  'w-12 h-0.5 transition-colors',
+                  step < currentStep ? 'bg-primary-500' : 'bg-surface-200 dark:bg-surface-700',
+                ]"
+              />
+            </template>
+          </div>
+
+          <!-- Step title -->
+          <h2 class="text-2xl font-bold text-center text-surface-900 dark:text-white mb-2">
+            {{ stepTitle }}
+          </h2>
+          <p class="text-center text-surface-600 dark:text-surface-400 mb-8">
+            {{ stepDescription }}
+          </p>
+
+          <!-- Step 1: Welcome -->
+          <div
+            v-if="currentStep === 1"
+            class="text-center"
           >
-            <div class="flex items-center justify-center gap-3">
+            <div class="w-24 h-24 mx-auto mb-6 rounded-2xl bg-primary-500 flex items-center justify-center">
+              <Icon
+                name="terminal"
+                size="xl"
+                class="text-white"
+              />
+            </div>
+            <div class="space-y-4 text-left max-w-md mx-auto">
+              <div class="flex items-start gap-3">
+                <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <Icon
+                    name="check"
+                    size="xs"
+                    class="text-primary-600 dark:text-primary-400"
+                  />
+                </div>
+                <p class="text-surface-700 dark:text-surface-300">
+                  <strong>Write & edit code</strong> with AI assistance
+                </p>
+              </div>
+              <div class="flex items-start gap-3">
+                <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <Icon
+                    name="check"
+                    size="xs"
+                    class="text-primary-600 dark:text-primary-400"
+                  />
+                </div>
+                <p class="text-surface-700 dark:text-surface-300">
+                  <strong>Run commands</strong> directly from the chat
+                </p>
+              </div>
+              <div class="flex items-start gap-3">
+                <div class="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <Icon
+                    name="check"
+                    size="xs"
+                    class="text-primary-600 dark:text-primary-400"
+                  />
+                </div>
+                <p class="text-surface-700 dark:text-surface-300">
+                  <strong>Review changes</strong> before they're applied
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 2: Folder Selection -->
+          <div
+            v-else-if="currentStep === 2"
+            class="text-center"
+          >
+            <div
+              v-if="selectedFolder"
+              class="p-4 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 mb-6"
+            >
+              <div class="flex items-center justify-center gap-3">
+                <Icon
+                  name="folder"
+                  size="md"
+                  class="text-green-500"
+                />
+                <span class="font-mono text-sm text-green-800 dark:text-green-200 truncate max-w-md">
+                  {{ selectedFolder }}
+                </span>
+              </div>
+            </div>
+
+            <Button
+              variant="primary"
+              size="lg"
+              :loading="isSelectingFolder"
+              class="mx-auto"
+              @click="selectFolder"
+            >
               <Icon
                 name="folder"
                 size="md"
-                class="text-green-500"
+                class="mr-2"
               />
-              <span class="font-mono text-sm text-green-800 dark:text-green-200 truncate max-w-md">
-                {{ selectedFolder }}
-              </span>
-            </div>
+              {{ selectedFolder ? 'Change Folder' : 'Select Folder' }}
+            </Button>
+
+            <p class="mt-4 text-sm text-surface-500 dark:text-surface-400">
+              You can change this later in Settings
+            </p>
           </div>
 
-          <Button
-            variant="primary"
-            size="lg"
-            :loading="isSelectingFolder"
-            class="mx-auto"
-            @click="selectFolder"
+          <!-- Step 3: Authentication -->
+          <div
+            v-else-if="currentStep === 3"
+            class="max-w-md mx-auto"
           >
-            <Icon
-              name="folder"
-              size="md"
-              class="mr-2"
+            <AuthForm
+              :show-title="false"
+              @authenticated="onAuthenticated"
             />
-            {{ selectedFolder ? 'Change Folder' : 'Select Folder' }}
-          </Button>
-
-          <p class="mt-4 text-sm text-surface-500 dark:text-surface-400">
-            You can change this later in Settings
-          </p>
+          </div>
         </div>
 
-        <!-- Step 3: Authentication -->
-        <div
-          v-else-if="currentStep === 3"
-          class="max-w-md mx-auto"
-        >
-          <AuthForm
-            :show-title="false"
-            @authenticated="onAuthenticated"
-          />
-        </div>
-      </div>
-
-      <!-- Footer -->
-      <div class="px-8 py-4 bg-surface-50 dark:bg-surface-900 border-t border-surface-200 dark:border-surface-700 flex items-center justify-between">
-        <Button
-          v-if="currentStep > 1"
-          variant="ghost"
-          @click="prevStep"
-        >
-          <Icon
-            name="chevron-left"
-            size="sm"
-            class="mr-1"
-          />
-          Back
-        </Button>
-        <div
-          v-else
-          class="w-20"
-        />
-
-        <div class="flex items-center gap-3">
+        <!-- Footer -->
+        <div class="px-8 py-4 bg-surface-50 dark:bg-surface-900 border-t border-surface-200 dark:border-surface-700 flex items-center justify-between">
           <Button
-            v-if="currentStep === 3 && !authStatus.isAuthenticated"
+            v-if="currentStep > 1"
             variant="ghost"
-            @click="skipAuth"
+            @click="prevStep"
           >
-            Skip for now
-          </Button>
-
-          <Button
-            v-if="currentStep < totalSteps"
-            variant="primary"
-            :disabled="!canProceed"
-            @click="nextStep"
-          >
-            Continue
             <Icon
-              name="chevron-right"
+              name="chevron-left"
               size="sm"
-              class="ml-1"
+              class="mr-1"
             />
+            Back
           </Button>
-
-          <Button
+          <div
             v-else
-            variant="primary"
-            :disabled="!authStatus.isAuthenticated"
-            @click="finishWizard"
-          >
-            Get Started
-            <Icon
-              name="arrow-right"
-              size="sm"
-              class="ml-1"
-            />
-          </Button>
+            class="w-20"
+          />
+
+          <div class="flex items-center gap-3">
+            <Button
+              v-if="currentStep === 3 && !authStatus.isAuthenticated"
+              variant="ghost"
+              @click="skipAuth"
+            >
+              Skip for now
+            </Button>
+
+            <Button
+              v-if="currentStep < totalSteps"
+              variant="primary"
+              :disabled="!canProceed"
+              @click="nextStep"
+            >
+              Continue
+              <Icon
+                name="chevron-right"
+                size="sm"
+                class="ml-1"
+              />
+            </Button>
+
+            <Button
+              v-else
+              variant="primary"
+              :disabled="!authStatus.isAuthenticated"
+              @click="finishWizard"
+            >
+              Get Started
+              <Icon
+                name="arrow-right"
+                size="sm"
+                class="ml-1"
+              />
+            </Button>
+          </div>
         </div>
       </div>
-    </div>
     </div>
   </div>
 </template>

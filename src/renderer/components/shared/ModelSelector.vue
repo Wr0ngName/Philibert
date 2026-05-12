@@ -213,7 +213,9 @@ onUnmounted(() => {
           class="px-3 py-2 text-sm text-surface-500 dark:text-surface-400 text-center"
         >
           <p>No models available</p>
-          <p class="text-xs mt-1">Start a conversation to load models</p>
+          <p class="text-xs mt-1">
+            Start a conversation to load models
+          </p>
         </div>
 
         <!-- Model list -->

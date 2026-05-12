@@ -541,7 +541,7 @@ describe('useClaudeChat core logic', () => {
     it('should handle load errors gracefully', async () => {
       mockElectron.claude.getCommands.mockRejectedValue(new Error('Load failed'));
 
-      let commands: any[] = [];
+      let commands: any[];
       try {
         commands = await mockElectron.claude.getCommands();
       } catch {

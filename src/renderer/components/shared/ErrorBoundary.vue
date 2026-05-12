@@ -38,7 +38,10 @@ function reload() {
 </script>
 
 <template>
-  <div v-if="error" class="error-boundary">
+  <div
+    v-if="error"
+    class="error-boundary"
+  >
     <div class="error-container">
       <div class="error-icon">
         <Icon
@@ -49,14 +52,18 @@ function reload() {
         />
       </div>
 
-      <h2 class="error-title">Something went wrong</h2>
+      <h2 class="error-title">
+        Something went wrong
+      </h2>
 
       <p class="error-message">
         {{ error.message }}
       </p>
 
       <details class="error-details">
-        <summary class="error-details-summary">Technical details</summary>
+        <summary class="error-details-summary">
+          Technical details
+        </summary>
         <div class="error-stack">
           <p><strong>Component:</strong> {{ errorInfo }}</p>
           <pre>{{ error.stack }}</pre>
@@ -64,10 +71,16 @@ function reload() {
       </details>
 
       <div class="error-actions">
-        <Button variant="ghost" @click="reset">
+        <Button
+          variant="ghost"
+          @click="reset"
+        >
           Try Again
         </Button>
-        <Button variant="primary" @click="reload">
+        <Button
+          variant="primary"
+          @click="reload"
+        >
           Reload App
         </Button>
       </div>

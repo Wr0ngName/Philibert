@@ -2,8 +2,7 @@ import js from '@eslint/js';
 import tseslint from '@typescript-eslint/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
 import vuePlugin from 'eslint-plugin-vue';
-import vueParser from 'vue-eslint-parser';
-import importPlugin from 'eslint-plugin-import';
+import importPlugin from 'eslint-plugin-import-x';
 import globals from 'globals';
 
 export default [
@@ -31,7 +30,7 @@ export default [
     },
     plugins: {
       '@typescript-eslint': tseslint,
-      import: importPlugin,
+      'import-x': importPlugin,
     },
     rules: {
       ...js.configs.recommended.rules,
@@ -39,7 +38,7 @@ export default [
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/no-explicit-any': 'warn',
-      'import/order': [
+      'import-x/order': [
         'error',
         {
           groups: ['builtin', 'external', 'internal', 'parent', 'sibling', 'index'],
@@ -47,10 +46,10 @@ export default [
           alphabetize: { order: 'asc' },
         },
       ],
-      'no-undef': 'off', // TypeScript handles this
+      'no-undef': 'off',
     },
     settings: {
-      'import/resolver': {
+      'import-x/resolver': {
         typescript: {
           alwaysTryTypes: true,
         },
@@ -62,15 +61,17 @@ export default [
   {
     files: ['**/__tests__/**/*.ts', '**/*.test.ts', '**/*.spec.ts'],
     rules: {
-      '@typescript-eslint/no-explicit-any': 'off', // Test mocks often require partial implementations
+      '@typescript-eslint/no-explicit-any': 'off',
     },
   },
 
-  // Vue files configuration
+  // Vue files — flat/recommended provides parser, processor, and all rules
+  ...vuePlugin.configs['flat/recommended'],
+
+  // Vue files — add TypeScript integration and overrides
   {
     files: ['**/*.vue'],
     languageOptions: {
-      parser: vueParser,
       parserOptions: {
         parser: tsParser,
         ecmaVersion: 'latest',
@@ -83,27 +84,24 @@ export default [
       },
     },
     plugins: {
-      vue: vuePlugin,
       '@typescript-eslint': tseslint,
     },
     rules: {
-      ...vuePlugin.configs['vue3-recommended'].rules,
       ...tseslint.configs.recommended.rules,
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/no-explicit-any': 'warn',
       'vue/multi-word-component-names': 'off',
       'vue/no-v-html': 'warn',
-      'no-undef': 'off', // TypeScript handles this
+      'no-undef': 'off',
     },
   },
 
   // Specific files with intentional v-html usage (content is sanitized with DOMPurify)
-  // Must come AFTER Vue config to override vue/no-v-html rule
   {
     files: ['src/renderer/components/chat/MessageItem.vue'],
     rules: {
-      'vue/no-v-html': 'off', // Content is sanitized with DOMPurify - XSS safe
+      'vue/no-v-html': 'off',
     },
   },
 ];

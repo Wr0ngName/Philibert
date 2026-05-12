@@ -26,7 +26,7 @@ export function setupGitIPC(
       return await gitService.getStatus(workingDir);
     } catch (error) {
       logger.error('Failed to get git status', { error, workingDir });
-      throw new Error(formatErrorMessage('Failed to get git status', error));
+      throw new Error(formatErrorMessage('Failed to get git status', error), { cause: error });
     }
   });
 
@@ -42,7 +42,7 @@ export function setupGitIPC(
         return await gitService.commit(workingDir, message, stageAll);
       } catch (error) {
         logger.error('Failed to commit', { error, workingDir });
-        throw new Error(formatErrorMessage('Failed to commit', error));
+        throw new Error(formatErrorMessage('Failed to commit', error), { cause: error });
       }
     }
   );
@@ -56,7 +56,7 @@ export function setupGitIPC(
       return await gitService.pull(workingDir);
     } catch (error) {
       logger.error('Failed to pull', { error, workingDir });
-      throw new Error(formatErrorMessage('Failed to pull', error));
+      throw new Error(formatErrorMessage('Failed to pull', error), { cause: error });
     }
   });
 
@@ -69,7 +69,7 @@ export function setupGitIPC(
       return await gitService.push(workingDir);
     } catch (error) {
       logger.error('Failed to push', { error, workingDir });
-      throw new Error(formatErrorMessage('Failed to push', error));
+      throw new Error(formatErrorMessage('Failed to push', error), { cause: error });
     }
   });
 
@@ -82,7 +82,7 @@ export function setupGitIPC(
       await gitService.fetch(workingDir);
     } catch (error) {
       logger.error('Failed to fetch', { error, workingDir });
-      throw new Error(formatErrorMessage('Failed to fetch', error));
+      throw new Error(formatErrorMessage('Failed to fetch', error), { cause: error });
     }
   });
 
