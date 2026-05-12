@@ -9,7 +9,7 @@ stages:
 
 variables:
   # Node.js version
-  NODE_VERSION: "20"
+  NODE_VERSION: "22"
   # Package registry for auto-updates
   PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic"
   # Disable git clean during checkout - we handle cleanup ourselves after fixing permissions
@@ -103,7 +103,7 @@ typecheck:
       docker run --rm \
         -v "$CI_PROJECT_DIR:/app" \
         -w /app \
-        electronuserland/builder:20 \
+        electronuserland/builder:22 \
         bash -c "apt-get update && apt-get install -y dpkg fakeroot rpm && npm ci && npm run make -- --platform=linux"
 
 # Linux build for tags (with artifacts for release)
@@ -153,7 +153,7 @@ build:linux:manual:
         -w /app \
         -e PHILIBERT_ONLINE_BUILD=false \
         electronuserland/builder:wine-mono \
-        bash -c "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs bzip2 && npm ci && ./scripts/download-node-windows.sh && ./scripts/download-git-bash-windows.sh && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never"
+        bash -c "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs bzip2 && npm ci && ./scripts/download-node-windows.sh && ./scripts/download-git-bash-windows.sh && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never"
     - echo "=== Artifact sizes ==="
     - du -sh out/make/nsis/*.exe 2>/dev/null || true
     - df -h "$CI_PROJECT_DIR" || true
@@ -171,7 +171,7 @@ build:linux:manual:
         -w /app \
         -e PHILIBERT_ONLINE_BUILD=true \
         electronuserland/builder:wine-mono \
-        bash -c "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs bzip2 && npm ci && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never && mkdir -p out-online/nsis && cp out/make/nsis/*.exe out-online/nsis/"
+        bash -c "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs bzip2 && npm ci && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never && mkdir -p out-online/nsis && cp out/make/nsis/*.exe out-online/nsis/"
 
 # Windows OFFLINE build for tags (main installer for auto-updates)
 build:windows:
