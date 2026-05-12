@@ -27,7 +27,6 @@ const selectedFolder = ref('');
 const isSelectingFolder = ref(false);
 
 // Step 3: Authentication
-const authFormRef = ref<InstanceType<typeof AuthForm>>();
 const { authStatus, refreshAuthStatus, resetState } = useAuthentication();
 
 // Computed
@@ -367,7 +366,6 @@ onMounted(() => {
           class="max-w-md mx-auto"
         >
           <AuthForm
-            ref="authFormRef"
             :show-title="false"
             @authenticated="onAuthenticated"
           />
