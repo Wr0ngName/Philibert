@@ -22,8 +22,10 @@ async function main(): Promise<void> {
   // Must happen before any other setup — this is a short-lived process that decrypts
   // and restarts immediately.
   if (process.argv.includes('--migrate-credentials')) {
-    debugLog('Credential migration phase 2: setting app name to old value');
-    app.setName('Cline GUI');
+    const oldNameArg = process.argv.find((a) => a.startsWith('--old-app-name='));
+    const oldAppName = oldNameArg ? oldNameArg.substring('--old-app-name='.length) : 'ClineGUI';
+    debugLog(`Credential migration phase 2: setting app name to "${oldAppName}"`);
+    app.setName(oldAppName);
     app.on('ready', async () => {
       try {
         const { decryptOldCredentials } = await import('./utils/migration');
@@ -31,7 +33,9 @@ async function main(): Promise<void> {
       } catch (err) {
         debugLog(`Credential migration phase 2 failed: ${err}`);
       }
-      const args = process.argv.slice(1).filter((a) => a !== '--migrate-credentials');
+      const args = process.argv
+        .slice(1)
+        .filter((a) => a !== '--migrate-credentials' && !a.startsWith('--old-app-name='));
       app.relaunch({ args });
       app.exit(0);
     });
@@ -107,18 +111,24 @@ async function main(): Promise<void> {
       const { finishCredentialMigration, migrateFromOldApp } = await import('./utils/migration');
       finishCredentialMigration();
 
-      debugLog('Checking for Cline GUI data migration...');
+      debugLog('Checking for old app data migration...');
       const migrationResult = migrateFromOldApp();
       if (migrationResult.needsCredentialRestart) {
-        debugLog('Credential migration restart needed — showing dialog');
+        debugLog(`Credential migration restart needed for "${migrationResult.oldAppName}" — showing dialog`);
         dialog.showMessageBoxSync({
           type: 'info',
           title: 'Migration',
           message:
-            'Migrating your authentication from Cline GUI.\nThe app will restart once to complete the process.',
+            `Migrating your authentication from ${migrationResult.oldAppName}.\nThe app will restart once to complete the process.`,
           buttons: ['OK'],
         });
-        app.relaunch({ args: [...process.argv.slice(1), '--migrate-credentials'] });
+        app.relaunch({
+          args: [
+            ...process.argv.slice(1),
+            '--migrate-credentials',
+            `--old-app-name=${migrationResult.oldAppName}`,
+          ],
+        });
         app.exit(0);
         return;
       }

@@ -2,7 +2,6 @@
 # Post-removal script for Philibert (RPM)
 
 APP_NAME="Philibert"
-OLD_APP_NAME="Cline GUI"
 
 if [ "$1" = "0" ]; then
     # Package is being removed (not upgraded)
@@ -13,7 +12,7 @@ if [ "$1" = "0" ]; then
     echo "  ~/.config/$APP_NAME/"
     echo ""
     echo "To completely remove all data, run:"
-    echo "  rm -rf ~/.config/$APP_NAME/ ~/.config/$OLD_APP_NAME/"
+    echo "  rm -rf ~/.config/$APP_NAME/ ~/.config/ClineGUI/ ~/.config/Cline\ GUI/ ~/.config/cline-gui/"
     echo ""
 fi
 

@@ -5,16 +5,31 @@ import { app, safeStorage } from 'electron';
 
 import { debugLog } from './debugLog';
 
-// Electron prefers productName over name for app.getName() / app.getPath('userData')
-// https://www.electronjs.org/docs/latest/api/app#appgetname
-const OLD_APP_NAME = 'Cline GUI';
+// All possible old app names, ordered by likelihood.
+// "ClineGUI" was productName for v0.1.22–v0.11.7 (vast majority of installs).
+// "Cline GUI" (with space) was productName for v0.1.0–v0.1.21.
+// "cline-gui" was the package.json name field (possible on some Electron versions/platforms).
+const OLD_APP_NAMES = ['ClineGUI', 'Cline GUI', 'cline-gui'] as const;
 const NEW_APP_NAME = 'Philibert';
 
 const CREDENTIAL_KEYS = ['encryptedApiKey', 'encryptedOAuthToken'] as const;
 const CREDENTIAL_TEMP_FILE = '.credential-migration.json';
 
-function getOldUserDataPath(): string {
-  return path.join(path.dirname(app.getPath('userData')), OLD_APP_NAME);
+interface OldAppInfo {
+  path: string;
+  name: string;
+}
+
+function findOldUserDataPath(): OldAppInfo | null {
+  const parentDir = path.dirname(app.getPath('userData'));
+  for (const name of OLD_APP_NAMES) {
+    const candidate = path.join(parentDir, name);
+    if (fs.existsSync(candidate)) {
+      debugLog(`Migration: found old data directory "${name}" at ${candidate}`);
+      return { path: candidate, name };
+    }
+  }
+  return null;
 }
 
 function getPhilibertUserDataPath(): string {
@@ -33,6 +48,7 @@ function wipeTempFile(tempPath: string): void {
 
 interface MigrationResult {
   needsCredentialRestart: boolean;
+  oldAppName?: string;
 }
 
 /**
@@ -44,23 +60,25 @@ interface MigrationResult {
  * in the OS keyring — only Windows DPAPI is user-scoped and works across renames).
  */
 export function migrateFromOldApp(): MigrationResult {
-  const oldPath = getOldUserDataPath();
+  const oldApp = findOldUserDataPath();
   const newPath = app.getPath('userData');
 
-  if (!fs.existsSync(oldPath)) {
-    debugLog('Migration: no old "Cline GUI" data found, skipping');
-    cleanupOldUpdaterCache();
+  if (!oldApp) {
+    debugLog('Migration: no old app data found, skipping');
+    cleanupOldUpdaterCaches();
     return { needsCredentialRestart: false };
   }
+
+  const oldPath = oldApp.path;
 
   const newConfig = path.join(newPath, 'config.json');
   if (fs.existsSync(newConfig)) {
     debugLog('Migration: Philibert config already exists, skipping');
-    cleanupOldUpdaterCache();
+    cleanupOldUpdaterCaches();
     return { needsCredentialRestart: false };
   }
 
-  debugLog(`Migration: migrating data from ${oldPath} to ${newPath}`);
+  debugLog(`Migration: migrating data from "${oldApp.name}" at ${oldPath} to ${newPath}`);
 
   fs.mkdirSync(newPath, { recursive: true });
 
@@ -110,23 +128,23 @@ export function migrateFromOldApp(): MigrationResult {
     debugLog(`Migration: failed to remove old directory (non-critical): ${err}`);
   }
 
-  cleanupOldUpdaterCache();
+  cleanupOldUpdaterCaches();
 
   // On Linux (and macOS), safeStorage key is tied to app name in the OS keyring.
   // A restart with the old app name is needed to decrypt and re-key credentials.
   // On Windows, DPAPI is user-scoped — credentials work without re-keying.
   const needsRekey = process.platform !== 'win32' && hasEncryptedCredentials;
   if (needsRekey) {
-    debugLog('Migration: encrypted credentials detected, restart needed to re-key');
+    debugLog(`Migration: encrypted credentials detected, restart needed to re-key (old name: "${oldApp.name}")`);
   }
 
   debugLog('Migration: phase 1 complete');
-  return { needsCredentialRestart: needsRekey };
+  return { needsCredentialRestart: needsRekey, oldAppName: oldApp.name };
 }
 
 /**
  * Phase 2: Called on restart with --migrate-credentials flag.
- * At this point app.setName('Cline GUI') was called before ready,
+ * At this point app.setName() was called with the detected old app name before ready,
  * so safeStorage has the old encryption key loaded.
  * Decrypts credentials and writes plaintext to a temp file (mode 0600) for phase 3.
  */
@@ -225,16 +243,18 @@ export function finishCredentialMigration(): void {
   debugLog('Migration phase 3: credential migration complete');
 }
 
-function cleanupOldUpdaterCache(): void {
+function cleanupOldUpdaterCaches(): void {
   if (process.platform !== 'win32' || !process.env.LOCALAPPDATA) return;
 
-  const cachePath = path.join(process.env.LOCALAPPDATA, `${OLD_APP_NAME}-updater`);
-  if (fs.existsSync(cachePath)) {
-    try {
-      fs.rmSync(cachePath, { recursive: true, force: true });
-      debugLog(`Migration: removed old updater cache at ${cachePath}`);
-    } catch (err) {
-      debugLog(`Migration: failed to remove updater cache (non-critical): ${err}`);
+  for (const name of OLD_APP_NAMES) {
+    const cachePath = path.join(process.env.LOCALAPPDATA, `${name}-updater`);
+    if (fs.existsSync(cachePath)) {
+      try {
+        fs.rmSync(cachePath, { recursive: true, force: true });
+        debugLog(`Migration: removed old updater cache at ${cachePath}`);
+      } catch (err) {
+        debugLog(`Migration: failed to remove updater cache ${cachePath} (non-critical): ${err}`);
+      }
     }
   }
 }

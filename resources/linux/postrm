@@ -5,7 +5,7 @@
 set -e
 
 APP_NAME="Philibert"
-OLD_APP_NAME="Cline GUI"
+OLD_APP_NAMES=("ClineGUI" "Cline GUI" "cline-gui")
 
 case "$1" in
     purge)
@@ -17,7 +17,7 @@ case "$1" in
             if [ -d "$USER_HOME" ]; then
                 USER_NAME=$(basename "$USER_HOME")
 
-                for DIR_NAME in "$APP_NAME" "$OLD_APP_NAME"; do
+                for DIR_NAME in "$APP_NAME" "${OLD_APP_NAMES[@]}"; do
                     CONFIG_DIR="$USER_HOME/.config/$DIR_NAME"
                     if [ -d "$CONFIG_DIR" ]; then
                         rm -rf "$CONFIG_DIR"
@@ -28,7 +28,7 @@ case "$1" in
         done
 
         # Also check root's config
-        for DIR_NAME in "$APP_NAME" "$OLD_APP_NAME"; do
+        for DIR_NAME in "$APP_NAME" "${OLD_APP_NAMES[@]}"; do
             if [ -d "/root/.config/$DIR_NAME" ]; then
                 rm -rf "/root/.config/$DIR_NAME"
                 echo "Removed $DIR_NAME configuration for root"
