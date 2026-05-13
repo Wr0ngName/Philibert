@@ -3,7 +3,7 @@
  * Settings panel component with OAuth login support
  */
 
-import type { LogLevel } from '@shared/types';
+import type { LogLevel, UpdateChannel } from '@shared/types';
 import { ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
@@ -30,6 +30,7 @@ const localTheme = ref<'light' | 'dark' | 'system'>('system');
 const localFontSize = ref(14);
 const localLogLevel = ref<LogLevel>('info');
 const localEnableNotifications = ref(true);
+const localUpdateChannel = ref<UpdateChannel>('stable');
 const authFormRef = ref<InstanceType<typeof AuthForm>>();
 
 // Log level options for the selector
@@ -48,6 +49,7 @@ watch(
     localFontSize.value = newConfig.fontSize;
     localLogLevel.value = newConfig.logLevel;
     localEnableNotifications.value = newConfig.enableNotifications;
+    localUpdateChannel.value = newConfig.updateChannel;
   },
   { immediate: true }
 );
@@ -69,6 +71,7 @@ async function saveSettings() {
   await settingsStore.setFontSize(localFontSize.value);
   await settingsStore.setLogLevel(localLogLevel.value);
   await settingsStore.setEnableNotifications(localEnableNotifications.value);
+  await settingsStore.setUpdateChannel(localUpdateChannel.value);
 
   emit('close');
 }
@@ -79,6 +82,7 @@ function cancel() {
   localFontSize.value = config.value.fontSize;
   localLogLevel.value = config.value.logLevel;
   localEnableNotifications.value = config.value.enableNotifications;
+  localUpdateChannel.value = config.value.updateChannel;
   authFormRef.value?.resetState();
   emit('close');
 }
@@ -202,6 +206,47 @@ function cancel() {
                 localEnableNotifications ? 'translate-x-6' : 'translate-x-1',
               ]"
             />
+          </button>
+        </div>
+      </div>
+
+      <!-- Update Channel -->
+      <div>
+        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+          Update Channel
+        </label>
+        <div class="flex gap-2">
+          <button
+            :class="[
+              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
+              localUpdateChannel === 'stable'
+                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+            ]"
+            @click="localUpdateChannel = 'stable'"
+          >
+            <div class="font-medium">
+              Stable
+            </div>
+            <div class="text-xs opacity-75">
+              Production releases only
+            </div>
+          </button>
+          <button
+            :class="[
+              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
+              localUpdateChannel === 'rc'
+                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+            ]"
+            @click="localUpdateChannel = 'rc'"
+          >
+            <div class="font-medium">
+              Release Candidate
+            </div>
+            <div class="text-xs opacity-75">
+              Test upcoming versions early
+            </div>
           </button>
         </div>
       </div>

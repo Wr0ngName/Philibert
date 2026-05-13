@@ -10,6 +10,8 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { app } from 'electron';
+
 import { extractNodeExe } from './archiveExtractor';
 import { debugLog } from './debugLog';
 import { getResourcesPath, WindowsPaths } from './resourcePaths';
@@ -115,7 +117,22 @@ function downloadAndExtractNode(config: WindowsDepsConfig): void {
     return;
   }
 
-  const nodeZip = path.join(resourcesPath, '_node_download.zip');
+  // For "All Users" installs, resources/ is not writable — download to userData
+  let targetDir = resourcesPath;
+  try {
+    fs.accessSync(resourcesPath, fs.constants.W_OK);
+  } catch {
+    targetDir = app.getPath('userData');
+    debugLog(`Resources dir not writable, downloading Node.js to ${targetDir}`);
+  }
+
+  const altNodeExe = path.join(targetDir, 'node.exe');
+  if (fs.existsSync(altNodeExe)) {
+    debugLog('Node.js already exists at fallback location, skipping download');
+    return;
+  }
+
+  const nodeZip = path.join(targetDir, '_node_download.zip');
 
   try {
     debugLog(`Downloading Node.js v${config.node.version}...`);
@@ -123,7 +140,7 @@ function downloadAndExtractNode(config: WindowsDepsConfig): void {
     verifyChecksum(nodeZip, config.node.sha256);
 
     debugLog('Extracting node.exe...');
-    extractNodeExe(nodeZip, resourcesPath, config.node.version);
+    extractNodeExe(nodeZip, targetDir, config.node.version);
 
     debugLog('Node.js download and extraction complete');
   } finally {
@@ -134,8 +151,26 @@ function downloadAndExtractNode(config: WindowsDepsConfig): void {
 }
 
 function downloadGitArchive(config: WindowsDepsConfig): void {
-  const gitArchive = WindowsPaths.getGitBashArchive();
-  const versionFile = WindowsPaths.getGitBashVersionFile();
+  // Archive goes into the writable extraction dir's parent so it's next to git-bash/
+  const extractionDir = WindowsPaths.getGitBashExtractionDir();
+  const parentDir = path.dirname(extractionDir);
+  const gitArchive = path.join(parentDir, 'git-bash.tar.bz2');
+  const versionFile = path.join(parentDir, 'git-version.txt');
+
+  // Also check the bundled archive in resources (offline installs)
+  const bundledArchive = WindowsPaths.getGitBashArchive();
+  const bundledVersion = WindowsPaths.getGitBashVersionFile();
+  if (fs.existsSync(bundledArchive) && fs.existsSync(bundledVersion)) {
+    try {
+      const existingVersion = fs.readFileSync(bundledVersion, 'utf8').trim();
+      if (existingVersion === config.git.version) {
+        debugLog('Git archive already exists in resources with correct version, skipping download');
+        return;
+      }
+    } catch {
+      // Continue with download
+    }
+  }
 
   if (fs.existsSync(gitArchive) && fs.existsSync(versionFile)) {
     try {

@@ -385,6 +385,13 @@ export type ThemeMode = 'light' | 'dark' | 'system';
 export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 
 /**
+ * Update channel for auto-updates
+ * - stable: Only stable releases (e.g., v1.0.0)
+ * - rc: Include release candidates (e.g., v1.0.0-rc.1)
+ */
+export type UpdateChannel = 'stable' | 'rc';
+
+/**
  * Application configuration settings
  */
 export interface AppConfig {
@@ -418,6 +425,8 @@ export interface AppConfig {
   enableNotifications: boolean;
   /** ID of the last active conversation (for auto-restore on startup) */
   lastConversationId: string;
+  /** Auto-update channel: 'stable' for releases only, 'rc' to include release candidates */
+  updateChannel: UpdateChannel;
 }
 
 /**
@@ -439,6 +448,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   showFilesSidebar: true,
   enableNotifications: true,
   lastConversationId: '',
+  updateChannel: 'stable',
 };
 
 // Conversation types

@@ -2,6 +2,7 @@ import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerRpm } from '@electron-forge/maker-rpm';
+import type { MakerRpmConfigOptions } from '@electron-forge/maker-rpm/dist/Config';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
@@ -174,15 +175,11 @@ const config: ForgeConfig = {
       options: {
         icon: './resources/icons/icon.png',
         categories: ['Development'],
-        // Git is required by Claude Code CLI
         requires: ['git'],
-        obsoletes: ['cline-gui'],
-        // scripts.postun: RPM post-uninstall script
-        // @ts-expect-error MakerRpm supports scripts via electron-installer-redhat but types are incomplete
         scripts: {
           postun: './resources/linux/postrm.rpm',
         },
-      },
+      } as MakerRpmConfigOptions,
     }),
     new MakerDeb({
       options: {
@@ -190,10 +187,7 @@ const config: ForgeConfig = {
         categories: ['Development'],
         maintainer: 'wrongname',
         homepage: 'https://dev.web.wr0ng.name/wrongname/philibert',
-        // Git is required by Claude Code CLI
         depends: ['git'],
-        conflicts: ['cline-gui'],
-        replaces: ['cline-gui'],
         scripts: {
           postrm: './resources/linux/postrm',
         },

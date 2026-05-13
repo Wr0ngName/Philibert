@@ -9,9 +9,12 @@
 import { BrowserWindow, app, net } from 'electron';
 import { autoUpdater, UpdateInfo as ElectronUpdateInfo } from 'electron-updater';
 
-import { IPC_CHANNELS, UpdateInfo, UpdateProgress } from '../../shared/types';
+import { IPC_CHANNELS, UpdateChannel, UpdateInfo, UpdateProgress } from '../../shared/types';
 import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
+import { compareVersions, isPrerelease, parseVersion } from '../utils/version';
+
+import type ConfigService from './ConfigService';
 
 const GITLAB_HOST = 'https://dev.web.wr0ng.name';
 const GITLAB_PROJECT_ID = 'wrongname%2Fphilibert';
@@ -22,9 +25,11 @@ const PACKAGES_API = `${GITLAB_HOST}/api/v4/projects/${GITLAB_PROJECT_ID}/packag
 export class UpdateService {
   private isCheckingForUpdates = false;
   private send: (channel: string, ...args: unknown[]) => boolean;
+  private configService: ConfigService;
 
-  constructor(getMainWindow: () => BrowserWindow | null) {
+  constructor(getMainWindow: () => BrowserWindow | null, configService: ConfigService) {
     this.send = createSender(getMainWindow);
+    this.configService = configService;
     this.configureUpdater();
     logger.info('UpdateService initialized');
   }
@@ -89,7 +94,7 @@ export class UpdateService {
     logger.info('Auto-updater configured', { currentVersion, hasAuth: !!updateToken });
   }
 
-  private async fetchLatestReleaseTag(): Promise<string | null> {
+  private async fetchLatestReleaseTag(channel: UpdateChannel): Promise<string | null> {
     return new Promise((resolve) => {
       const request = net.request({ method: 'GET', url: RELEASES_API });
 
@@ -114,15 +119,19 @@ export class UpdateService {
         response.on('end', () => {
           try {
             const releases = JSON.parse(responseData);
-            if (Array.isArray(releases) && releases.length > 0) {
-              const latestRelease = releases[0];
-              const tagName = latestRelease.tag_name;
-              logger.info('Found latest release', { tagName, name: latestRelease.name });
-              resolve(tagName);
-            } else {
+            if (!Array.isArray(releases) || releases.length === 0) {
               logger.info('No releases found');
               resolve(null);
+              return;
             }
+
+            const bestTag = this.findBestRelease(releases, channel);
+            if (bestTag) {
+              logger.info('Found latest release for channel', { channel, tagName: bestTag });
+            } else {
+              logger.info('No matching release found for channel', { channel });
+            }
+            resolve(bestTag);
           } catch (error) {
             logger.error('Failed to parse releases response', error);
             resolve(null);
@@ -139,17 +148,27 @@ export class UpdateService {
     });
   }
 
-  private compareVersions(v1: string, v2: string): number {
-    const parts1 = v1.split('.').map(Number);
-    const parts2 = v2.split('.').map(Number);
+  private findBestRelease(releases: Array<{ tag_name: string }>, channel: UpdateChannel): string | null {
+    let bestTag: string | null = null;
 
-    for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
-      const p1 = parts1[i] || 0;
-      const p2 = parts2[i] || 0;
-      if (p1 < p2) return -1;
-      if (p1 > p2) return 1;
+    for (const release of releases) {
+      const tag = release.tag_name;
+      try {
+        parseVersion(tag);
+      } catch {
+        continue;
+      }
+
+      if (channel === 'stable' && isPrerelease(tag)) {
+        continue;
+      }
+
+      if (bestTag === null || compareVersions(tag, bestTag) > 0) {
+        bestTag = tag;
+      }
     }
-    return 0;
+
+    return bestTag;
   }
 
   async checkForUpdates(): Promise<UpdateInfo | null> {
@@ -161,22 +180,23 @@ export class UpdateService {
     this.isCheckingForUpdates = true;
 
     try {
-      const latestTag = await this.fetchLatestReleaseTag();
+      const channel = await this.configService.getUpdateChannel();
+      const latestTag = await this.fetchLatestReleaseTag(channel);
       if (!latestTag) {
-        logger.info('No releases found on GitLab');
+        logger.info('No releases found on GitLab', { channel });
         return null;
       }
 
       const latestVersion = latestTag.startsWith('v') ? latestTag.slice(1) : latestTag;
       const currentVersion = app.getVersion();
 
-      if (this.compareVersions(currentVersion, latestVersion) >= 0) {
-        logger.info('Already on latest version', { currentVersion, latestVersion });
+      if (compareVersions(currentVersion, latestVersion) >= 0) {
+        logger.info('Already on latest version', { currentVersion, latestVersion, channel });
         return null;
       }
 
       const feedUrl = `${PACKAGES_API}/${latestVersion}`;
-      logger.info('Setting feed URL for update check', { feedUrl, latestTag });
+      logger.info('Setting feed URL for update check', { feedUrl, latestTag, channel });
 
       autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl });
 

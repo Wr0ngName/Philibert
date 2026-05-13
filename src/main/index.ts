@@ -94,7 +94,7 @@ async function main(): Promise<void> {
     fileWatcher = new FileWatcherService();
     gitService = new GitService();
     conversationService = new ConversationService();
-    updateService = new UpdateService(getMainWindow);
+    updateService = new UpdateService(getMainWindow, configService);
 
     logger.info('All services initialized');
   }

@@ -52,12 +52,40 @@ interface MigrationResult {
 }
 
 /**
+ * Try to decrypt a credential blob under the current app name's safeStorage key.
+ * Returns true if decryption succeeds (credentials are portable), false otherwise.
+ */
+function canDecryptCredentials(config: Record<string, unknown>): boolean {
+  if (!safeStorage.isEncryptionAvailable()) {
+    debugLog('Migration: safeStorage not available, cannot test decryption');
+    return false;
+  }
+
+  for (const key of CREDENTIAL_KEYS) {
+    const value = config[key];
+    if (value && typeof value === 'string' && !value.startsWith('plain:')) {
+      try {
+        safeStorage.decryptString(Buffer.from(value, 'base64'));
+        debugLog(`Migration: test decryption of ${key} succeeded — no re-key needed`);
+        return true;
+      } catch {
+        debugLog(`Migration: test decryption of ${key} failed — re-key required`);
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Phase 1: Migrate user data from old "Cline GUI" app to new "Philibert" app.
  * Copies config.json and conversations, removes old directory, cleans up updater cache.
  *
- * Returns { needsCredentialRestart: true } on non-Windows when encrypted credentials
- * exist that require a restart to re-key (safeStorage encryption key is tied to app name
- * in the OS keyring — only Windows DPAPI is user-scoped and works across renames).
+ * Returns { needsCredentialRestart: true } when encrypted credentials exist that
+ * can't be decrypted under the new app name. Electron's safeStorage encryption key
+ * is tied to the app identity on all platforms (OS keyring on Linux/macOS,
+ * Chromium os_crypt key on Windows), so a restart with the old app name is needed
+ * to decrypt and re-key them.
  */
 export function migrateFromOldApp(): MigrationResult {
   const oldApp = findOldUserDataPath();
@@ -84,15 +112,16 @@ export function migrateFromOldApp(): MigrationResult {
 
   const oldConfig = path.join(oldPath, 'config.json');
   let hasEncryptedCredentials = false;
+  let config: Record<string, unknown> | null = null;
 
   if (fs.existsSync(oldConfig)) {
     try {
       fs.copyFileSync(oldConfig, newConfig);
       debugLog('Migration: copied config.json');
 
-      const config = JSON.parse(fs.readFileSync(newConfig, 'utf8'));
+      config = JSON.parse(fs.readFileSync(newConfig, 'utf8'));
       hasEncryptedCredentials = CREDENTIAL_KEYS.some(
-        (key) => config[key] && !String(config[key]).startsWith('plain:')
+        (key) => config![key] && !String(config![key]).startsWith('plain:')
       );
     } catch (err) {
       debugLog(`Migration: failed to copy/parse config.json: ${err}`);
@@ -130,12 +159,14 @@ export function migrateFromOldApp(): MigrationResult {
 
   cleanupOldUpdaterCaches();
 
-  // On Linux (and macOS), safeStorage key is tied to app name in the OS keyring.
-  // A restart with the old app name is needed to decrypt and re-key credentials.
-  // On Windows, DPAPI is user-scoped — credentials work without re-keying.
-  const needsRekey = process.platform !== 'win32' && hasEncryptedCredentials;
-  if (needsRekey) {
-    debugLog(`Migration: encrypted credentials detected, restart needed to re-key (old name: "${oldApp.name}")`);
+  // Try to decrypt credentials under the new app name. If it works, no restart needed.
+  // If it fails, a restart with the old app name is required to re-key.
+  let needsRekey = false;
+  if (hasEncryptedCredentials && config) {
+    needsRekey = !canDecryptCredentials(config);
+    if (needsRekey) {
+      debugLog(`Migration: encrypted credentials cannot be decrypted under new app name, restart needed (old name: "${oldApp.name}")`);
+    }
   }
 
   debugLog('Migration: phase 1 complete');

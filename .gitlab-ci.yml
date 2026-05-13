@@ -355,7 +355,7 @@ publish:packages:
       - release-info/
     expire_in: 1 week
   rules:
-    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(-rc\.\d+)?$/
 
 # Publish update metadata for electron-updater via Job Artifacts API
 # This job creates artifacts that can be accessed via:
@@ -383,7 +383,7 @@ publish:update-info:
       - update-info/latest.yml
     expire_in: never
   rules:
-    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(-rc\.\d+)?$/
 
 # Create GitLab Release using release-cli
 create:release:
@@ -401,10 +401,18 @@ create:release:
       # Load URLs from publish:packages artifact
       source release-info/urls.env
 
+      # Determine if this is an RC release
+      IS_RC=false
+      RC_NOTICE=""
+      if echo "${TAG}" | grep -qE -- '-rc\.[0-9]+$'; then
+        IS_RC=true
+        RC_NOTICE=$'\n      > **⚠️ Release Candidate** — This is a pre-release for testing. Only users with update channel set to \"rc\" will receive this update.\n'
+      fi
+
       # Create description file with actual URLs
       cat > /tmp/release_description.md << DESCEOF
       ## Philibert ${TAG}
-
+      ${RC_NOTICE}
       ### Downloads
 
       #### Linux
@@ -439,4 +447,4 @@ create:release:
           --tag-name "${TAG}" \
           --description description.md
   rules:
-    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(-rc\.\d+)?$/

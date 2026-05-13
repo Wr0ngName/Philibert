@@ -22,7 +22,11 @@ export function getResourcesPath(): string {
 }
 
 /**
- * Windows-specific resource paths
+ * Windows-specific resource paths.
+ *
+ * Git-bash and Node.js are extracted at runtime. For "All Users" installs
+ * the resources dir is under C:\Program Files\ (admin-only), so extraction
+ * falls back to app.getPath('userData') which is always writable.
  */
 export const WindowsPaths = {
   getBundledNodeExe(): string {
@@ -33,8 +37,37 @@ export const WindowsPaths = {
     return fs.existsSync(this.getBundledNodeExe());
   },
 
+  _findExtractedGitBash(): string | null {
+    const candidates = [
+      path.join(getResourcesPath(), 'git-bash'),
+      path.join(app.getPath('userData'), 'git-bash'),
+    ];
+    for (const dir of candidates) {
+      if (fs.existsSync(path.join(dir, 'usr', 'bin', 'bash.exe'))) {
+        return dir;
+      }
+    }
+    return null;
+  },
+
+  isResourcesWritable(): boolean {
+    try {
+      fs.accessSync(getResourcesPath(), fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  getGitBashExtractionDir(): string {
+    if (this.isResourcesWritable()) {
+      return path.join(getResourcesPath(), 'git-bash');
+    }
+    return path.join(app.getPath('userData'), 'git-bash');
+  },
+
   getGitBashDir(): string {
-    return path.join(getResourcesPath(), 'git-bash');
+    return this._findExtractedGitBash() || this.getGitBashExtractionDir();
   },
 
   getGitBashBinDir(): string {
@@ -50,7 +83,7 @@ export const WindowsPaths = {
   },
 
   hasBundledGitBash(): boolean {
-    return fs.existsSync(this.getBashExe());
+    return this._findExtractedGitBash() !== null;
   },
 
   getGitBashArchive(): string {

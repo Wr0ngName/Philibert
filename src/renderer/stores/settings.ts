@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 
-import type { AppConfig, LogLevel } from '@shared/types';
+import type { AppConfig, LogLevel, UpdateChannel } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 
 import { useEventCleanup } from '../composables/useEventCleanup';
@@ -33,6 +33,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const showHistorySidebar = computed(() => config.value.showHistorySidebar);
   const showFilesSidebar = computed(() => config.value.showFilesSidebar);
   const enableNotifications = computed(() => config.value.enableNotifications);
+  const updateChannel = computed(() => config.value.updateChannel);
   const needsSetup = computed(() => !workingDirectory.value || !hasAuth.value);
   const isDarkMode = computed(() => {
     if (config.value.theme === 'system') {
@@ -114,6 +115,10 @@ export const useSettingsStore = defineStore('settings', () => {
     await saveConfig({ enableNotifications: enabled });
   }
 
+  async function setUpdateChannel(channel: UpdateChannel): Promise<void> {
+    await saveConfig({ updateChannel: channel });
+  }
+
   function applyFontSize(size: number): void {
     if (typeof document !== 'undefined' && document.documentElement?.style) {
       document.documentElement.style.setProperty('--chat-font-size', `${size}px`);
@@ -189,6 +194,7 @@ export const useSettingsStore = defineStore('settings', () => {
     showHistorySidebar,
     showFilesSidebar,
     enableNotifications,
+    updateChannel,
     isDarkMode,
     needsSetup,
 
@@ -205,6 +211,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setShowHistorySidebar,
     setShowFilesSidebar,
     setEnableNotifications,
+    setUpdateChannel,
     applyTheme,
     applyFontSize,
     clearError,

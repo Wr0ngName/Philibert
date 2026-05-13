@@ -11,11 +11,18 @@ import type { BrowserWindow } from 'electron';
 import { debugLog } from './debugLog';
 import { downloadDependenciesForOnlineInstall } from './downloadDependencies';
 import { extractGitBashIfNeeded } from './gitBashExtractor';
-import { WindowsPaths } from './resourcePaths';
+import logger from './logger';
+import { getResourcesPath, WindowsPaths } from './resourcePaths';
 
 export async function setupWindowsDependencies(mainWindow: BrowserWindow | null): Promise<void> {
   const isOnline = WindowsPaths.isOnlineBundle();
-  debugLog(`Windows setup: bundle type = ${isOnline ? 'online' : 'offline'}`);
+  const resourcesWritable = WindowsPaths.isResourcesWritable();
+  debugLog(`Windows setup: bundle type = ${isOnline ? 'online' : 'offline'}, resourcesWritable = ${resourcesWritable}`);
+  logger.info('Windows dependency setup', {
+    bundleType: isOnline ? 'online' : 'offline',
+    resourcesPath: getResourcesPath(),
+    resourcesWritable,
+  });
 
   const needsExtraction = !WindowsPaths.hasBundledGitBash();
   if (!isOnline && !needsExtraction) {
@@ -44,5 +51,10 @@ export async function setupWindowsDependencies(mainWindow: BrowserWindow | null)
     }
   }
 
+  const hasBash = WindowsPaths.hasBundledGitBash();
+  logger.info('Windows dependency setup complete', {
+    gitBashAvailable: hasBash,
+    gitBashDir: hasBash ? WindowsPaths.getGitBashDir() : null,
+  });
   debugLog('Windows setup complete');
 }

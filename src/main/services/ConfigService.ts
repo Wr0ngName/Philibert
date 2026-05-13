@@ -5,7 +5,7 @@
 
 import { safeStorage, dialog } from 'electron';
 
-import { AppConfig, AuthMethod, DEFAULT_CONFIG, LogLevel } from '../../shared/types';
+import { AppConfig, AuthMethod, DEFAULT_CONFIG, LogLevel, UpdateChannel } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { ConfigurationError, ERROR_CODES } from '../errors';
 import logger, { setLogLevel } from '../utils/logger';
@@ -27,6 +27,7 @@ interface StoredConfig {
   selectedModel: string;
   enableNotifications: boolean;
   lastConversationId: string;
+  updateChannel: UpdateChannel;
 }
 
 /**
@@ -78,6 +79,7 @@ export class ConfigService {
           selectedModel: '',
           enableNotifications: true,
           lastConversationId: '',
+          updateChannel: 'stable',
         },
       }) as unknown as TypedStore;
       this.isInitialized = true;
@@ -429,6 +431,26 @@ export class ConfigService {
 
     this.store.set('selectedModel', model);
     logger.info('Selected model updated', { model: model || '(SDK default)' });
+  }
+
+  /**
+   * Get update channel
+   */
+  async getUpdateChannel(): Promise<UpdateChannel> {
+    await this.ensureInitialized();
+    if (!this.store) return 'stable';
+    return this.store.get('updateChannel', 'stable');
+  }
+
+  /**
+   * Set update channel
+   */
+  async setUpdateChannel(channel: UpdateChannel): Promise<void> {
+    await this.ensureInitialized();
+    if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
+
+    this.store.set('updateChannel', channel);
+    logger.info('Update channel changed', { channel });
   }
 
   /**
