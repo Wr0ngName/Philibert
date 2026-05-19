@@ -125,6 +125,7 @@ export interface ElectronAPI {
     startOAuth: () => Promise<{ authUrl: string; error?: string }>;
     completeOAuth: (code: string) => Promise<{ success: boolean; error?: string }>;
     logout: () => Promise<void>;
+    onInvalidated: (callback: () => void) => () => void;
   };
 
   // Conversation operations

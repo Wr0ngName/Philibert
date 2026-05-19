@@ -1,6 +1,13 @@
 /**
  * Comprehensive tests for ClaudeCodeService.
  *
+ * Uses real ConfigService with mocked external boundaries:
+ * - electron safeStorage (OS keychain)
+ * - electron-store (filesystem persistence)
+ * - electron dialog (UI prompts)
+ * - fs (filesystem operations)
+ * - @anthropic-ai/claude-agent-sdk (SDK query)
+ *
  * Tests cover:
  * - Message sending with SDK integration
  * - Tool permission handling (canUseTool callback)
@@ -16,20 +23,54 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Use vi.hoisted to ensure mocks are available before vi.mock is called
-const { mockQuery, mockSend, mockConfigService, mockNotificationService } = vi.hoisted(() => ({
-  mockQuery: vi.fn(),
-  mockSend: vi.fn(),
-  mockConfigService: {
-    hasAuth: vi.fn(),
-    getOAuthToken: vi.fn(),
-    getApiKey: vi.fn(),
-    getConfig: vi.fn(),
-    getSelectedModel: vi.fn(),
-  },
-  mockNotificationService: {
-    showPermissionRequest: vi.fn(),
-    showQueryComplete: vi.fn(),
-    showError: vi.fn(),
+const { mockQuery, mockSend, mockSafeStorage, mockDialog, mockStoreData, mockNotificationService } = vi.hoisted(() => {
+  const storeData: Record<string, unknown> = {};
+
+  return {
+    mockQuery: vi.fn(),
+    mockSend: vi.fn(),
+    mockSafeStorage: {
+      isEncryptionAvailable: vi.fn(() => true),
+      encryptString: vi.fn((value: string) => Buffer.from(`encrypted:${value}`)),
+      decryptString: vi.fn((buffer: Buffer) => {
+        const str = buffer.toString();
+        if (str.startsWith('encrypted:')) return str.slice('encrypted:'.length);
+        throw new Error('decryption failed');
+      }),
+    },
+    mockDialog: {
+      showMessageBox: vi.fn(),
+    },
+    mockStoreData: storeData,
+    mockNotificationService: {
+      showPermissionRequest: vi.fn(),
+      showQueryComplete: vi.fn(),
+      showError: vi.fn(),
+    },
+  };
+});
+
+vi.mock('electron', () => ({
+  ipcMain: { handle: vi.fn(), on: vi.fn(), removeHandler: vi.fn(), removeAllListeners: vi.fn() },
+  BrowserWindow: vi.fn(),
+  safeStorage: mockSafeStorage,
+  dialog: mockDialog,
+}));
+
+vi.mock('electron-store', () => ({
+  default: class MockStore {
+    private data: Record<string, unknown>;
+    constructor(opts?: { defaults?: Record<string, unknown> }) {
+      Object.assign(mockStoreData, opts?.defaults || {});
+      this.data = mockStoreData;
+    }
+    get(key: string, defaultValue?: unknown) {
+      return key in this.data ? this.data[key] : defaultValue;
+    }
+    set(key: string, value: unknown) { this.data[key] = value; }
+    delete(key: string) { delete this.data[key]; }
+    clear() { for (const k of Object.keys(this.data)) delete this.data[k]; }
+    get store() { return { ...this.data }; }
   },
 }));
 
@@ -48,6 +89,7 @@ vi.mock('../../utils/resourcePaths', () => ({
     getBashExe: vi.fn(() => ''),
     buildEnhancedPath: vi.fn(() => ''),
   },
+  getClaudeConfigDir: vi.fn(() => '/tmp/test-claude-config'),
 }));
 
 // Mock logger
@@ -58,6 +100,15 @@ vi.mock('../../utils/logger', () => ({
     warn: vi.fn(),
     error: vi.fn(),
   },
+  setLogLevel: vi.fn(),
+}));
+
+// Mock fs (used by handleAuthInvalidated for credentials file cleanup)
+vi.mock('fs', () => ({
+  existsSync: vi.fn(() => false),
+  unlinkSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  writeFileSync: vi.fn(),
 }));
 
 // Mock ipc-helpers
@@ -69,28 +120,33 @@ vi.mock('../../utils/ipc-helpers', () => ({
 import { IPC_CHANNELS } from '../../../shared/types';
 import { createMockBrowserWindow } from '../../__tests__/setup';
 import ClaudeCodeService from '../ClaudeCodeService';
+import ConfigService from '../ConfigService';
 
 // Test conversation ID for multi-conversation tests
 const TEST_CONV_ID = 'test-conv-123';
 
 describe('ClaudeCodeService', () => {
   let service: ClaudeCodeService;
+  let configService: ConfigService;
   let mockWindow: ReturnType<typeof createMockBrowserWindow>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    // Clear store data between tests
+    for (const k of Object.keys(mockStoreData)) delete mockStoreData[k];
 
     mockWindow = createMockBrowserWindow();
     const getMainWindow = vi.fn().mockReturnValue(mockWindow);
 
-    // Default mock implementations
-    mockConfigService.hasAuth.mockResolvedValue(true);
-    mockConfigService.getOAuthToken.mockResolvedValue('sk-ant-oat01-test-token-that-is-long-enough-to-pass-validation-check');
-    mockConfigService.getApiKey.mockResolvedValue('');
-    mockConfigService.getConfig.mockResolvedValue({ autoApproveReads: false });
-    mockConfigService.getSelectedModel.mockResolvedValue('');
+    // Real ConfigService with mocked electron-store and safeStorage
+    configService = new ConfigService();
+    await configService.ensureInitialized();
 
-    service = new ClaudeCodeService(mockConfigService as any, getMainWindow, mockNotificationService as any);
+    // Default state: authenticated with OAuth token
+    await configService.setOAuthToken('sk-ant-oat01-test-token-that-is-long-enough-to-pass-validation-check');
+    await configService.setConfig({ autoApproveReads: false });
+
+    service = new ClaudeCodeService(configService, getMainWindow as any, mockNotificationService as any);
   });
 
   afterEach(() => {
@@ -116,16 +172,13 @@ describe('ClaudeCodeService', () => {
   // ===========================================================================
   describe('hasAuth', () => {
     it('should delegate to config service', async () => {
-      mockConfigService.hasAuth.mockResolvedValue(true);
-
       const result = await service.hasAuth();
 
       expect(result).toBe(true);
-      expect(mockConfigService.hasAuth).toHaveBeenCalled();
     });
 
     it('should return false when not authenticated', async () => {
-      mockConfigService.hasAuth.mockResolvedValue(false);
+      await configService.logout();
 
       const result = await service.hasAuth();
 
@@ -138,7 +191,7 @@ describe('ClaudeCodeService', () => {
   // ===========================================================================
   describe('sendMessage - authentication', () => {
     it('should emit error when not authenticated', async () => {
-      mockConfigService.hasAuth.mockResolvedValue(false);
+      await configService.logout();
 
       await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user/project');
 
@@ -151,7 +204,7 @@ describe('ClaudeCodeService', () => {
     });
 
     it('should validate OAuth token format', async () => {
-      mockConfigService.getOAuthToken.mockResolvedValue('short');
+      await configService.setOAuthToken('short');
 
       await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
 
@@ -163,12 +216,10 @@ describe('ClaudeCodeService', () => {
     });
 
     it('should validate OAuth token prefix', async () => {
-      // Wrong prefix - should reject
-      mockConfigService.getOAuthToken.mockResolvedValue('invalid-token-without-proper-prefix');
+      await configService.setOAuthToken('invalid-token-without-proper-prefix');
 
       await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
 
-      // Should emit error for invalid token prefix
       expect(mockSend).toHaveBeenCalledWith(
         IPC_CHANNELS.CLAUDE_ERROR,
         TEST_CONV_ID,
@@ -177,8 +228,8 @@ describe('ClaudeCodeService', () => {
     });
 
     it('should validate API key format', async () => {
-      mockConfigService.getOAuthToken.mockResolvedValue('');
-      mockConfigService.getApiKey.mockResolvedValue('invalid-key');
+      await configService.setOAuthToken('');
+      await configService.setApiKey('invalid-key');
 
       await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
 
@@ -190,8 +241,8 @@ describe('ClaudeCodeService', () => {
     });
 
     it('should accept valid API key', async () => {
-      mockConfigService.getOAuthToken.mockResolvedValue('');
-      mockConfigService.getApiKey.mockResolvedValue('sk-ant-api03-test-key-that-is-long-enough-to-pass');
+      await configService.setOAuthToken('');
+      await configService.setApiKey('sk-ant-api03-test-key-that-is-long-enough-to-pass');
 
       const mockIterator = createMockQueryIterator([]);
       mockQuery.mockReturnValue(mockIterator);
@@ -206,8 +257,8 @@ describe('ClaudeCodeService', () => {
   // sendMessage - SDK Integration
   // ===========================================================================
   describe('sendMessage - SDK integration', () => {
-    beforeEach(() => {
-      mockConfigService.getOAuthToken.mockResolvedValue(
+    beforeEach(async () => {
+      await configService.setOAuthToken(
         'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
       );
     });
@@ -279,8 +330,8 @@ describe('ClaudeCodeService', () => {
   // Streaming Messages
   // ===========================================================================
   describe('streaming messages', () => {
-    beforeEach(() => {
-      mockConfigService.getOAuthToken.mockResolvedValue(
+    beforeEach(async () => {
+      await configService.setOAuthToken(
         'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
       );
     });
@@ -366,11 +417,11 @@ describe('ClaudeCodeService', () => {
     let finishIterator: () => void;
     let sendMessagePromise: Promise<void>;
 
-    beforeEach(() => {
-      mockConfigService.getOAuthToken.mockResolvedValue(
+    beforeEach(async () => {
+      await configService.setOAuthToken(
         'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
       );
-      mockConfigService.getConfig.mockResolvedValue({ autoApproveReads: false });
+      await configService.setConfig({ autoApproveReads: false });
 
       // Create an iterator that waits for our signal before completing
       mockQuery.mockImplementation(({ options }) => {
@@ -435,7 +486,7 @@ describe('ClaudeCodeService', () => {
     });
 
     it('should auto-approve read operations when configured', async () => {
-      mockConfigService.getConfig.mockResolvedValue({ autoApproveReads: true });
+      await configService.setConfig({ autoApproveReads: true });
 
       // Start sendMessage but don't await
       sendMessagePromise = service.sendMessage(TEST_CONV_ID, 'Hi', '/home/user');
@@ -593,7 +644,7 @@ describe('ClaudeCodeService', () => {
     let sendMessagePromise: Promise<void>;
 
     beforeEach(async () => {
-      mockConfigService.getOAuthToken.mockResolvedValue(
+      await configService.setOAuthToken(
         'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
       );
 
@@ -645,13 +696,13 @@ describe('ClaudeCodeService', () => {
     });
 
     it('should deny action when approved is false', async () => {
-      const action = mockSend.mock.calls.find(
+      const toolAction = mockSend.mock.calls.find(
         (call) => call[0] === IPC_CHANNELS.CLAUDE_TOOL_USE
       )?.[2];
 
       service.handleActionResponse(TEST_CONV_ID, {
         conversationId: TEST_CONV_ID,
-        actionId: action.id,
+        actionId: toolAction.id,
         approved: false,
         denyMessage: 'Too dangerous',
       });
@@ -717,10 +768,6 @@ describe('ClaudeCodeService', () => {
       };
       mockQuery.mockReturnValue(hangingIterator);
 
-      mockConfigService.getOAuthToken.mockResolvedValue(
-        'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
-      );
-
       // Start a message (don't await - it will hang)
       const messagePromise = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
 
@@ -760,10 +807,6 @@ describe('ClaudeCodeService', () => {
           close: vi.fn(),
         };
       });
-
-      mockConfigService.getOAuthToken.mockResolvedValue(
-        'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
-      );
 
       // Start message (will hang in iterator)
       const messagePromise = service.sendMessage(TEST_CONV_ID, 'Hi', '/home/user');
@@ -913,24 +956,25 @@ describe('ClaudeCodeService', () => {
   // Error Handling
   // ===========================================================================
   describe('error handling', () => {
-    beforeEach(() => {
-      mockConfigService.getOAuthToken.mockResolvedValue(
+    beforeEach(async () => {
+      await configService.setOAuthToken(
         'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
       );
     });
 
-    it('should convert 401 error to user-friendly message', async () => {
+    it('should auto-clear credentials and notify on 401 error', async () => {
       mockQuery.mockImplementation(() => {
         throw new Error('API returned 401 unauthorized');
       });
 
       await service.sendMessage(TEST_CONV_ID, 'Hi', '/home/user');
 
-      expect(mockSend).toHaveBeenCalledWith(
-        IPC_CHANNELS.CLAUDE_ERROR,
-        TEST_CONV_ID,
-        expect.stringContaining('Authentication failed')
-      );
+      // handleAuthInvalidated runs async fire-and-forget — wait for all effects
+      await vi.waitFor(async () => {
+        const token = await configService.getOAuthToken();
+        expect(token).toBe('');
+        expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.AUTH_INVALIDATED);
+      });
     });
 
     it('should convert 429 error to rate limit message', async () => {
@@ -1006,10 +1050,6 @@ describe('ClaudeCodeService', () => {
     });
 
     it('should return merged built-in and SDK commands after init message', async () => {
-      mockConfigService.getOAuthToken.mockResolvedValue(
-        'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
-      );
-
       const mockIterator = createMockQueryIterator([
         {
           type: 'system',
@@ -1039,12 +1079,6 @@ describe('ClaudeCodeService', () => {
   describe('multi-conversation support', () => {
     const CONV_ID_1 = 'conv-1';
     const CONV_ID_2 = 'conv-2';
-
-    beforeEach(() => {
-      mockConfigService.getOAuthToken.mockResolvedValue(
-        'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
-      );
-    });
 
     it('should track active queries per conversation', async () => {
       // Create iterators that hang
@@ -1194,14 +1228,8 @@ describe('ClaudeCodeService', () => {
   // Model Selection
   // ===========================================================================
   describe('sendMessage - model selection', () => {
-    beforeEach(() => {
-      mockConfigService.getOAuthToken.mockResolvedValue(
-        'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
-      );
-    });
-
     it('should pass selected model to SDK query options', async () => {
-      mockConfigService.getSelectedModel.mockResolvedValue('claude-opus-4-7');
+      await configService.setSelectedModel('claude-opus-4-7');
       const mockIterator = createMockQueryIterator([]);
       mockQuery.mockReturnValue(mockIterator);
 
@@ -1217,7 +1245,7 @@ describe('ClaudeCodeService', () => {
     });
 
     it('should NOT pass model when selectedModel is empty (use SDK default)', async () => {
-      mockConfigService.getSelectedModel.mockResolvedValue('');
+      await configService.setSelectedModel('');
       const mockIterator = createMockQueryIterator([]);
       mockQuery.mockReturnValue(mockIterator);
 
@@ -1228,7 +1256,7 @@ describe('ClaudeCodeService', () => {
     });
 
     it('should resume session and defer model via setModel when model is explicitly selected', async () => {
-      mockConfigService.getSelectedModel.mockResolvedValue('claude-opus-4-7');
+      await configService.setSelectedModel('claude-opus-4-7');
 
       // Create an iterator that yields init with session_id so sessionReady resolves
       let resolveWait!: () => void;
@@ -1265,7 +1293,7 @@ describe('ClaudeCodeService', () => {
     });
 
     it('should use resume when no model is explicitly selected', async () => {
-      mockConfigService.getSelectedModel.mockResolvedValue('');
+      await configService.setSelectedModel('');
       const mockIterator = createMockQueryIterator([]);
       mockQuery.mockReturnValue(mockIterator);
 
@@ -1278,7 +1306,7 @@ describe('ClaudeCodeService', () => {
 
     it('should call setModel() on existing session when model changes', async () => {
       // Start session with default model — use iterator that yields init then waits
-      mockConfigService.getSelectedModel.mockResolvedValue('');
+      await configService.setSelectedModel('');
       let resolveFirst!: () => void;
       const waitPromise = new Promise<void>((resolve) => { resolveFirst = resolve; });
       const firstIterator = {
@@ -1302,7 +1330,7 @@ describe('ClaudeCodeService', () => {
       expect(mockQuery).toHaveBeenCalledTimes(1);
 
       // Change model to Opus
-      mockConfigService.getSelectedModel.mockResolvedValue('claude-opus-4-7');
+      await configService.setSelectedModel('claude-opus-4-7');
 
       // Send second message — should call setModel() on existing session
       await service.sendMessage(TEST_CONV_ID, 'Second message', '/home/user');
@@ -1320,7 +1348,7 @@ describe('ClaudeCodeService', () => {
 
     it('should reuse existing session when model has NOT changed', async () => {
       // Start session with default model — use an iterator that yields init then waits
-      mockConfigService.getSelectedModel.mockResolvedValue('');
+      await configService.setSelectedModel('');
       let resolveFirst!: () => void;
       const waitPromise = new Promise<void>((resolve) => { resolveFirst = resolve; });
       const firstIterator = {
@@ -1343,8 +1371,6 @@ describe('ClaudeCodeService', () => {
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // Send second message with same model (still empty/default)
-      mockConfigService.getSelectedModel.mockResolvedValue('');
-
       await service.sendMessage(TEST_CONV_ID, 'Follow-up', '/home/user');
 
       // Should NOT have created a second query — reused existing session
@@ -1360,12 +1386,6 @@ describe('ClaudeCodeService', () => {
   // Session Lifecycle — session ID robustness through the whole conversation
   // ===========================================================================
   describe('session lifecycle', () => {
-    beforeEach(() => {
-      mockConfigService.getOAuthToken.mockResolvedValue(
-        'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
-      );
-    });
-
     it('should emit session ID from init message to renderer', async () => {
       const mockIterator = createMockQueryIterator([
         { type: 'system', subtype: 'init', session_id: 'init-session-42', slash_commands: [], model: 'claude-3' },

@@ -244,6 +244,12 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.AUTH_COMPLETE_OAUTH, code),
 
     logout: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT),
+
+    onInvalidated: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on(IPC_CHANNELS.AUTH_INVALIDATED, handler);
+      return () => { ipcRenderer.removeListener(IPC_CHANNELS.AUTH_INVALIDATED, handler); };
+    },
   },
 
   // Conversation operations

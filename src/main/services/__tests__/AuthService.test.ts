@@ -86,7 +86,7 @@ describe('AuthService', () => {
     write: ReturnType<typeof vi.fn>;
     kill: ReturnType<typeof vi.fn>;
     _dataCallback: ((data: string) => void) | null;
-    _exitCallback: ((info: { exitCode: number; signal?: number }) => void) | null;
+    _exitCallbacks: ((info: { exitCode: number; signal?: number }) => void)[];
     emitData: (data: string) => void;
     emitExit: (code: number) => void;
   }
@@ -99,12 +99,12 @@ describe('AuthService', () => {
       write: vi.fn(),
       kill: vi.fn(),
       _dataCallback: null,
-      _exitCallback: null,
+      _exitCallbacks: [],
       emitData: function (data: string) {
         if (this._dataCallback) this._dataCallback(data);
       },
       emitExit: function (code: number) {
-        if (this._exitCallback) this._exitCallback({ exitCode: code });
+        for (const cb of this._exitCallbacks) cb({ exitCode: code });
       },
     };
 
@@ -114,7 +114,7 @@ describe('AuthService', () => {
     });
 
     pty.onExit.mockImplementation((callback) => {
-      pty._exitCallback = callback;
+      pty._exitCallbacks.push(callback);
       return { dispose: vi.fn() };
     });
 
@@ -546,6 +546,17 @@ describe('AuthService', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('expired');
+    });
+
+    it('should reject completion when PTY has exited (isPtyAlive guard)', async () => {
+      // PTY exits abnormally after flow started (e.g., crash, signal kill)
+      mockPty.emitExit(1);
+      await vi.advanceTimersByTimeAsync(50);
+
+      const result = await service.completeOAuthFlow('validcode123');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('not running');
     });
 
     it('should detect error messages in output', async () => {

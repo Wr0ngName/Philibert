@@ -2,6 +2,8 @@
  * IPC handlers for authentication operations
  */
 
+import * as fs from 'fs';
+
 import { ipcMain, BrowserWindow } from 'electron';
 
 import { IPC_CHANNELS, AuthStatus } from '../../shared/types';
@@ -11,6 +13,7 @@ import AuthService from '../services/AuthService';
 import ConfigService from '../services/ConfigService';
 import { validateString, sendToRenderer, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
+import { getClaudeConfigDir } from '../utils/resourcePaths';
 
 export function setupAuthHandlers(
   authService: AuthService,
@@ -125,6 +128,12 @@ export function setupAuthHandlers(
         }
 
         if (result.success && result.token) {
+          // Validate token format before saving
+          if (!result.token.startsWith('sk-ant-')) {
+            logger.error('OAuth token has invalid format', { prefix: result.token.slice(0, 10) });
+            return { success: false, error: 'Invalid token format received. Please try logging in again.' };
+          }
+
           // Save the OAuth token
           const configUpdate = {
             oauthToken: result.token,
@@ -132,10 +141,47 @@ export function setupAuthHandlers(
           };
           await configService.setConfig(configUpdate);
 
+          // Verify the round-trip through safeStorage encryption/decryption succeeded
+          try {
+            const storedToken = await configService.getOAuthToken();
+            if (!storedToken) {
+              logger.error('OAuth token round-trip verification failed: token is empty after storage');
+              return { success: false, error: 'Token storage failed. Please try logging in again.' };
+            }
+            if (storedToken !== result.token) {
+              logger.error('OAuth token round-trip verification failed: stored token differs from original');
+              await configService.setConfig({ oauthToken: '', authMethod: 'none' as const });
+              return { success: false, error: 'Token storage verification failed. Please try logging in again.' };
+            }
+          } catch (err) {
+            logger.error('OAuth token round-trip verification threw', { error: err });
+            return { success: false, error: 'Failed to verify stored token. Your system keyring may not be working. Please try again.' };
+          }
+
+          // Store full OAuth credentials for SDK token refresh if available
+          if (result.credentialsJson) {
+            try {
+              await configService.setOAuthCredentials(result.credentialsJson);
+              // Write credentials file to stable config dir so SDK subprocess
+              // can read and refresh tokens natively via CLAUDE_CONFIG_DIR
+              const claudeConfigDir = getClaudeConfigDir();
+              fs.mkdirSync(claudeConfigDir, { recursive: true });
+              fs.writeFileSync(
+                `${claudeConfigDir}/.credentials.json`,
+                result.credentialsJson,
+                'utf8'
+              );
+              logger.info('Full OAuth credentials saved to stable config dir');
+            } catch (err) {
+              // Non-fatal: access token is already stored, just no refresh capability
+              logger.warn('Failed to store full OAuth credentials', { error: err });
+            }
+          }
+
           // Notify renderer of config change so UI updates
           sendToRenderer(getMainWindow, IPC_CHANNELS.CONFIG_CHANGED, configUpdate);
 
-          logger.info('OAuth token saved successfully');
+          logger.info('OAuth token saved and verified successfully');
           return { success: true };
         }
 
@@ -166,6 +212,18 @@ export function setupAuthHandlers(
         authMethod: 'none' as const,
       };
       await configService.setConfig(configUpdate);
+      await configService.clearOAuthCredentials();
+
+      // Clean up stable config dir credentials file
+      try {
+        const credsFile = `${getClaudeConfigDir()}/.credentials.json`;
+        if (fs.existsSync(credsFile)) {
+          fs.unlinkSync(credsFile);
+          logger.debug('Cleaned up credentials file from stable config dir');
+        }
+      } catch (err) {
+        logger.debug('Failed to clean up credentials file', { error: err });
+      }
 
       // Notify renderer of config change so UI updates
       sendToRenderer(getMainWindow, IPC_CHANNELS.CONFIG_CHANGED, configUpdate);

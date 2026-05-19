@@ -24,6 +24,7 @@ import { sanitizeForLog } from '../utils/stringUtils';
 
 export interface OAuthFlowState {
   pty: IPty | null;
+  isPtyAlive: boolean;
   configDir: string;
   createdAt: number;
   output: string;
@@ -35,6 +36,7 @@ export interface OAuthFlowState {
 export interface OAuthFlowResult {
   success: boolean;
   token?: string;
+  credentialsJson?: string;
   error?: string;
 }
 
@@ -381,8 +383,11 @@ export class AuthService {
           processInfo: typeof ptyProcess.process === 'string' ? ptyProcess.process : 'N/A',
         });
 
-        // Handle PTY errors - first handler for immediate logging
+        // Handle PTY errors - first handler for immediate logging and alive-state tracking
         ptyProcess.onExit(({ exitCode, signal }) => {
+          if (this.pendingOAuthFlow) {
+            this.pendingOAuthFlow.isPtyAlive = false;
+          }
           if (exitCode !== 0 && exitCode !== null) {
             logger.warn(`PTY process ended abnormally: exitCode=${exitCode}, signal=${signal}`);
           }
@@ -412,6 +417,7 @@ export class AuthService {
             logger.info('OAuth flow ready for code input');
             this.pendingOAuthFlow = {
               pty: ptyProcess,
+              isPtyAlive: true,
               configDir,
               createdAt: startTime,
               output,
@@ -632,7 +638,7 @@ export class AuthService {
       return { success: false, error: 'Authentication flow expired. Please start again.' };
     }
 
-    if (!ptyProcess) {
+    if (!ptyProcess || !this.pendingOAuthFlow.isPtyAlive) {
       this.cleanupOAuthFlow();
       return { success: false, error: 'Authentication process not running. Please start again.' };
     }
@@ -695,13 +701,13 @@ export class AuthService {
     const clean = stripAnsi(output);
 
     // ALWAYS check credentials file first - it's the only reliable source
-    const credsToken = this.extractTokenFromCredentialsFile(configDir);
-    if (credsToken) {
+    const credsResult = this.extractTokenFromCredentialsFile(configDir);
+    if (credsResult) {
       handlers.resolved = true;
       handlers.cleanup();
       logger.info('OAuth authentication successful via credentials file');
       this.cleanupOAuthFlow();
-      resolve({ success: true, token: credsToken });
+      resolve({ success: true, token: credsResult.token, credentialsJson: credsResult.credentialsJson });
       return true;
     }
 
@@ -794,17 +800,18 @@ export class AuthService {
   }
 
   /**
-   * Extract OAuth token from credentials file.
+   * Extract OAuth token and full credentials from credentials file.
    */
-  private extractTokenFromCredentialsFile(configDir: string): string | null {
+  private extractTokenFromCredentialsFile(configDir: string): { token: string; credentialsJson: string } | null {
     const credsFile = path.join(configDir, '.credentials.json');
     if (!fs.existsSync(credsFile)) return null;
 
     try {
-      const creds = JSON.parse(fs.readFileSync(credsFile, 'utf8'));
+      const raw = fs.readFileSync(credsFile, 'utf8');
+      const creds = JSON.parse(raw);
       const token = creds.oauthToken || creds.claudeAiOauth?.accessToken;
       if (token && typeof token === 'string' && token.startsWith('sk-ant-')) {
-        return token;
+        return { token, credentialsJson: raw };
       }
     } catch {
       // Credentials file not ready yet
@@ -822,13 +829,13 @@ export class AuthService {
   ): void {
     setTimeout(() => {
       if (handlers.resolved) return;
-      const token = this.extractTokenFromCredentialsFile(configDir);
-      if (token) {
+      const credsResult = this.extractTokenFromCredentialsFile(configDir);
+      if (credsResult) {
         handlers.resolved = true;
         handlers.cleanup();
         logger.info('OAuth authentication successful');
         this.cleanupOAuthFlow();
-        resolve({ success: true, token });
+        resolve({ success: true, token: credsResult.token, credentialsJson: credsResult.credentialsJson });
       }
     }, MAIN_CONSTANTS.AUTH.OAUTH_CREDENTIALS_CHECK_DELAY_MS);
   }

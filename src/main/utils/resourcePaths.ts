@@ -159,3 +159,12 @@ export const ClaudeCliPaths = {
     return cliPath.endsWith('claude.exe') && !cliPath.endsWith('.cjs') && !cliPath.endsWith('.js');
   },
 };
+
+/**
+ * Get a stable per-app config directory for Claude SDK credentials.
+ * Uses Electron's userData so the directory persists across app restarts
+ * and the SDK subprocess can read/refresh its own credentials natively.
+ */
+export function getClaudeConfigDir(): string {
+  return path.join(app.getPath('userData'), 'claude-config');
+}

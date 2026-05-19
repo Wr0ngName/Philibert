@@ -25,6 +25,7 @@ export interface MessageHandlerCallbacks {
   onTaskNotification: (notification: TaskNotification) => void;
   onUsageUpdate: (usage: SessionUsage) => void;
   onSessionId?: (sessionId: string) => void;
+  onAuthError?: () => void;
 }
 
 /**
@@ -200,12 +201,15 @@ export class SDKMessageHandler {
 
     for (const block of content) {
       if (block.type === 'text') {
-        // Log warnings for auth errors (don't emit, just log)
+        const lowerText = block.text.toLowerCase();
         const textPreview = block.text.slice(0, 200);
-        if (block.text.toLowerCase().includes('401') ||
-            block.text.toLowerCase().includes('unauthorized') ||
-            block.text.toLowerCase().includes('invalid')) {
-          logger.warn('Assistant message contains error keywords', { textPreview });
+        const isAuthError = lowerText.includes('401') ||
+          lowerText.includes('unauthorized') ||
+          lowerText.includes('invalid bearer') ||
+          lowerText.includes('invalid token');
+        if (isAuthError) {
+          logger.warn('Assistant message contains auth error keywords', { textPreview });
+          this.callbacks.onAuthError?.();
         }
       }
 
@@ -401,6 +405,13 @@ export class SDKMessageHandler {
       }
     } else {
       logger.warn('Query ended with non-success', { subtype: message.subtype });
+      const resultError = (resultMessage.error || '').toLowerCase();
+      if (resultError.includes('401') ||
+          resultError.includes('unauthorized') ||
+          resultError.includes('invalid bearer') ||
+          resultError.includes('invalid token')) {
+        this.callbacks.onAuthError?.();
+      }
     }
   }
 

@@ -5,8 +5,11 @@
  * Extracted from ClaudeCodeService for better separation of concerns.
  */
 
+import * as fs from 'fs';
+
 import { MAIN_CONSTANTS } from '../../constants/app';
 import logger from '../../utils/logger';
+import { getClaudeConfigDir } from '../../utils/resourcePaths';
 import type ConfigService from '../ConfigService';
 
 /**
@@ -78,7 +81,24 @@ export class AuthValidator {
   async setupAuthEnv(): Promise<Record<string, string>> {
     const env: Record<string, string> = {};
 
-    // Check for OAuth token first (from Claude Pro/Max login)
+    // Prefer CLAUDE_CONFIG_DIR with full credentials (enables SDK-native token refresh)
+    const credentialsJson = await this.configService.getOAuthCredentials();
+    if (credentialsJson) {
+      const claudeConfigDir = getClaudeConfigDir();
+      const credsFilePath = `${claudeConfigDir}/.credentials.json`;
+      try {
+        // Ensure the credentials file is up-to-date in the stable config dir
+        fs.mkdirSync(claudeConfigDir, { recursive: true });
+        fs.writeFileSync(credsFilePath, credentialsJson, 'utf8');
+        env['CLAUDE_CONFIG_DIR'] = claudeConfigDir;
+        logger.debug('Using CLAUDE_CONFIG_DIR for OAuth with full credentials (refresh-capable)');
+        return env;
+      } catch (err) {
+        logger.warn('Failed to write credentials file to config dir, falling back to token-only', { error: err });
+      }
+    }
+
+    // Fallback: use access-token-only path (no refresh capability)
     const oauthToken = await this.configService.getOAuthToken();
     if (oauthToken) {
       const validation = this.validateOAuthToken(oauthToken);
@@ -87,7 +107,7 @@ export class AuthValidator {
         throw new Error(`Invalid OAuth token: ${validation.error}. Please log out and log in again.`);
       }
       env['CLAUDE_CODE_OAUTH_TOKEN'] = oauthToken;
-      logger.debug('Using OAuth token for authentication', { tokenLength: oauthToken.length });
+      logger.debug('Using OAuth token for authentication (no refresh)', { tokenLength: oauthToken.length });
       return env;
     }
 

@@ -678,6 +678,8 @@ export type IpcMainEvents = {
   'claude:active-queries': (count: number, maxCount: number) => void;
   /** Git status changed (event-driven from file watchers) */
   'git:status-changed': (status: GitStatus) => void;
+  /** Stored credentials were invalidated (e.g. 401 from API) — UI should prompt re-login */
+  'auth:invalidated': () => void;
 };
 
 /**
@@ -814,6 +816,8 @@ export const IPC_CHANNELS = {
   AUTH_COMPLETE_OAUTH: 'auth:complete-oauth',
   /** Log out and clear credentials */
   AUTH_LOGOUT: 'auth:logout',
+  /** Fired when stored credentials are invalidated (e.g. 401 from API) */
+  AUTH_INVALIDATED: 'auth:invalidated',
 
   // Window operations
   /** Minimize application window */

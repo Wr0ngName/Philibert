@@ -26,6 +26,7 @@
  * - ErrorHandler: Converts errors to user-friendly messages
  */
 
+import * as fs from 'fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -53,7 +54,7 @@ import {
 import { AsyncChannel } from '../utils/AsyncChannel';
 import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
-import { ClaudeCliPaths, WindowsPaths } from '../utils/resourcePaths';
+import { ClaudeCliPaths, WindowsPaths, getClaudeConfigDir } from '../utils/resourcePaths';
 
 import ConfigService from './ConfigService';
 import NotificationService from './NotificationService';
@@ -454,6 +455,11 @@ export class ClaudeCodeService {
           }
         }
         this.emitSessionId(conversationId, sessionId);
+      },
+      onAuthError: () => {
+        this.handleAuthInvalidated().catch(err =>
+          logger.error('handleAuthInvalidated failed', { err })
+        );
       },
     });
 
@@ -868,6 +874,14 @@ export class ClaudeCodeService {
 
     logger.error('Failed to send message', { conversationId, error });
 
+    // Detect 401/auth errors and auto-clear credentials
+    const lowerError = errorMessage.toLowerCase();
+    if (lowerError.includes('401') || lowerError.includes('unauthorized') ||
+        lowerError.includes('invalid bearer') || lowerError.includes('invalid token')) {
+      this.handleAuthInvalidated().catch(() => {});
+      return;
+    }
+
     const userMessage = this.errorHandler.getHumanReadableError(errorMessage);
     this.emitError(conversationId, userMessage);
   }
@@ -1222,6 +1236,47 @@ export class ClaudeCodeService {
   private emitToolUse(conversationId: string, action: PendingAction): void {
     this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
     this.notificationService.showPermissionRequest(conversationId, action.toolName, action.description);
+  }
+
+  /**
+   * Handle authentication invalidation (e.g. 401 from API).
+   * Clears stored credentials, removes config-dir credentials file,
+   * notifies renderer, and aborts all active sessions.
+   * Idempotent: no-ops if credentials are already cleared.
+   */
+  private async handleAuthInvalidated(): Promise<void> {
+    const token = await this.configService.getOAuthToken();
+    const creds = await this.configService.getOAuthCredentials();
+    if (!token && !creds) return;
+
+    logger.warn('Auth invalidated — clearing credentials and notifying renderer');
+    try {
+      await this.configService.setConfig({ oauthToken: '', authMethod: 'none' as const });
+      await this.configService.clearOAuthCredentials();
+
+      // Clean up credentials file from stable config dir
+      try {
+        const credsFile = `${getClaudeConfigDir()}/.credentials.json`;
+        if (fs.existsSync(credsFile)) {
+          fs.unlinkSync(credsFile);
+        }
+      } catch {
+        // Non-critical cleanup
+      }
+
+      // Notify renderer via config change (triggers reactive hasAuth → false)
+      this.send(IPC_CHANNELS.CONFIG_CHANGED, { oauthToken: '', authMethod: 'none' });
+      // Fire dedicated event for targeted "session expired" messaging
+      this.send(IPC_CHANNELS.AUTH_INVALIDATED);
+
+      // Show error on all active conversations and abort them
+      for (const convId of this.activeSessions.keys()) {
+        this.emitError(convId, 'Your session has expired. Please log out and log in again in Settings.');
+      }
+      await this.abortAll();
+    } catch (err) {
+      logger.error('Failed to clear invalidated auth credentials', { err });
+    }
   }
 
   /**

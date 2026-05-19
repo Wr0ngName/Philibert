@@ -485,4 +485,112 @@ describe('SDKMessageHandler', () => {
       }));
     });
   });
+
+  // ===========================================================================
+  // Auth Error Detection (onAuthError callback)
+  // ===========================================================================
+  describe('auth error detection', () => {
+    let handlerWithAuth: SDKMessageHandler;
+    let authCallbacks: MessageHandlerCallbacks;
+
+    beforeEach(() => {
+      authCallbacks = {
+        onChunk: vi.fn(),
+        onSlashCommands: vi.fn(),
+        onTaskNotification: vi.fn(),
+        onUsageUpdate: vi.fn(),
+        onAuthError: vi.fn(),
+      };
+      handlerWithAuth = new SDKMessageHandler(authCallbacks);
+    });
+
+    it('should fire onAuthError when assistant message contains 401', async () => {
+      await handlerWithAuth.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Failed to authenticate. API Error: 401 Invalid bearer token' }] },
+      } as never);
+
+      expect(authCallbacks.onAuthError).toHaveBeenCalledTimes(1);
+    });
+
+    it('should fire onAuthError when assistant message contains "unauthorized"', async () => {
+      await handlerWithAuth.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Request failed: Unauthorized access' }] },
+      } as never);
+
+      expect(authCallbacks.onAuthError).toHaveBeenCalledTimes(1);
+    });
+
+    it('should fire onAuthError when assistant message contains "invalid bearer"', async () => {
+      await handlerWithAuth.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Error: invalid bearer token provided' }] },
+      } as never);
+
+      expect(authCallbacks.onAuthError).toHaveBeenCalledTimes(1);
+    });
+
+    it('should fire onAuthError when assistant message contains "invalid token"', async () => {
+      await handlerWithAuth.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Authentication failed: invalid token' }] },
+      } as never);
+
+      expect(authCallbacks.onAuthError).toHaveBeenCalledTimes(1);
+    });
+
+    it('should NOT fire onAuthError for normal messages', async () => {
+      await handlerWithAuth.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Here is the code you requested.' }] },
+      } as never);
+
+      expect(authCallbacks.onAuthError).not.toHaveBeenCalled();
+    });
+
+    it('should fire onAuthError on error result with 401', async () => {
+      await handlerWithAuth.handleMessage({
+        type: 'result',
+        subtype: 'error',
+        error: 'API returned 401 unauthorized',
+        num_turns: 0,
+        duration_ms: 0,
+      } as never);
+
+      expect(authCallbacks.onAuthError).toHaveBeenCalledTimes(1);
+    });
+
+    it('should fire onAuthError on error result with invalid bearer', async () => {
+      await handlerWithAuth.handleMessage({
+        type: 'result',
+        subtype: 'error',
+        error: 'Failed: invalid bearer token',
+        num_turns: 0,
+        duration_ms: 0,
+      } as never);
+
+      expect(authCallbacks.onAuthError).toHaveBeenCalledTimes(1);
+    });
+
+    it('should NOT fire onAuthError on non-auth error results', async () => {
+      await handlerWithAuth.handleMessage({
+        type: 'result',
+        subtype: 'error',
+        error: 'Rate limit exceeded',
+        num_turns: 0,
+        duration_ms: 0,
+      } as never);
+
+      expect(authCallbacks.onAuthError).not.toHaveBeenCalled();
+    });
+
+    it('should not crash when onAuthError is not provided', async () => {
+      // handler (without onAuthError) should not throw
+      await expect(handler.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'API Error: 401 Unauthorized' }] },
+      } as never)).resolves.not.toThrow();
+    });
+  });
 });

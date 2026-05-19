@@ -34,6 +34,7 @@ let cleanupActiveQueries: (() => void) | null = null;
 let cleanupSessionId: (() => void) | null = null;
 let cleanupSessionPermissions: (() => void) | null = null;
 let cleanupToolExecuted: (() => void) | null = null;
+let cleanupAuthInvalidated: (() => void) | null = null;
 
 // Shared slash commands state (singleton)
 const sharedSlashCommands = shallowRef<SlashCommandInfo[]>([]);
@@ -464,6 +465,12 @@ export function useClaudeChat() {
       logger.debug('Tool executed', { conversationId, actionId });
       chatStore.updateToolUseStatus(conversationId, actionId, 'executed');
     });
+
+    // Handle auth invalidation (401 from API) - refresh config so UI reacts
+    cleanupAuthInvalidated = window.electron.auth.onInvalidated(() => {
+      logger.warn('Auth invalidated — credentials cleared by main process, reloading config');
+      settingsStore.loadConfig();
+    });
   }
 
   /**
@@ -530,6 +537,10 @@ export function useClaudeChat() {
     if (cleanupToolExecuted) {
       cleanupToolExecuted();
       cleanupToolExecuted = null;
+    }
+    if (cleanupAuthInvalidated) {
+      cleanupAuthInvalidated();
+      cleanupAuthInvalidated = null;
     }
   }
 

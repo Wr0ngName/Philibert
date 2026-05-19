@@ -17,6 +17,7 @@ import logger, { setLogLevel } from '../utils/logger';
 interface StoredConfig {
   encryptedApiKey?: string;
   encryptedOAuthToken?: string;
+  encryptedOAuthCredentials?: string;
   authMethod: AuthMethod;
   workingDirectory: string;
   recentProjects: string[];
@@ -184,7 +185,7 @@ export class ConfigService {
    * @param value - The value to encrypt and store
    * @throws Error if encryption is not available
    */
-  private async setEncryptedValue(key: 'encryptedApiKey' | 'encryptedOAuthToken', value: string): Promise<void> {
+  private async setEncryptedValue(key: 'encryptedApiKey' | 'encryptedOAuthToken' | 'encryptedOAuthCredentials', value: string): Promise<void> {
     await this.ensureInitialized();
     if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
 
@@ -240,7 +241,7 @@ export class ConfigService {
    * @param key - Must be 'encryptedApiKey' or 'encryptedOAuthToken'
    * @returns Decrypted value or empty string if not found
    */
-  private async getEncryptedValue(key: 'encryptedApiKey' | 'encryptedOAuthToken'): Promise<string> {
+  private async getEncryptedValue(key: 'encryptedApiKey' | 'encryptedOAuthToken' | 'encryptedOAuthCredentials'): Promise<string> {
     await this.ensureInitialized();
     if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_LOAD_FAILED);
 
@@ -268,6 +269,7 @@ export class ConfigService {
       logger.error(`Failed to decrypt ${key}`, error);
       // Clear the corrupted value to prevent repeated failures
       this.store.delete(key);
+      await this.updateAuthMethod();
       throw new ConfigurationError(
         `Failed to decrypt ${key}. Your credentials may have been corrupted. Please log in again.`,
         ERROR_CODES.AUTH_ENCRYPTION_UNAVAILABLE,
@@ -325,6 +327,35 @@ export class ConfigService {
   }
 
   /**
+   * Get full OAuth credentials JSON (decrypted).
+   * Contains accessToken, refreshToken, expiresAt etc. for SDK token refresh.
+   */
+  async getOAuthCredentials(): Promise<string | null> {
+    try {
+      const value = await this.getEncryptedValue('encryptedOAuthCredentials');
+      return value || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Set full OAuth credentials JSON (encrypted).
+   */
+  async setOAuthCredentials(json: string): Promise<void> {
+    await this.setEncryptedValue('encryptedOAuthCredentials', json);
+  }
+
+  /**
+   * Clear full OAuth credentials.
+   */
+  async clearOAuthCredentials(): Promise<void> {
+    await this.ensureInitialized();
+    if (!this.store) return;
+    this.store.delete('encryptedOAuthCredentials');
+  }
+
+  /**
    * Check if any authentication is configured
    */
   async hasAuth(): Promise<boolean> {
@@ -363,6 +394,7 @@ export class ConfigService {
 
     this.store.delete('encryptedApiKey');
     this.store.delete('encryptedOAuthToken');
+    this.store.delete('encryptedOAuthCredentials');
     this.store.set('authMethod', 'none');
 
     logger.info('User logged out, credentials cleared');

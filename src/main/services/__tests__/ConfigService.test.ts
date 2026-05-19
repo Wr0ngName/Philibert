@@ -416,10 +416,8 @@ describe('ConfigService', () => {
     });
 
     it('should handle decryption failure gracefully', async () => {
-      mockStore.get.mockImplementation((key: string) => {
-        if (key === 'encryptedApiKey') return 'invalid-base64-data!!!';
-        return DEFAULT_CONFIG;
-      });
+      // Store a corrupted API key directly in the backing store
+      mockStoreData.set('encryptedApiKey', 'invalid-base64-data!!!');
       mockSafeStorage.decryptString.mockImplementation(() => {
         throw new Error('Decryption failed');
       });
@@ -428,6 +426,8 @@ describe('ConfigService', () => {
       // Implementation throws on decryption failure (and deletes corrupted value)
       await expect(service.getApiKey()).rejects.toThrow();
       expect(mockStore.delete).toHaveBeenCalledWith('encryptedApiKey');
+      // authMethod must be updated to 'none' after the corrupted key is deleted
+      expect(mockStore.set).toHaveBeenCalledWith('authMethod', 'none');
     });
   });
 
