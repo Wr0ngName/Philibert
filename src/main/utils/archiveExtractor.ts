@@ -32,36 +32,21 @@ export function extractTarBz2(archivePath: string, destDir: string): void {
     fs.mkdirSync(destDir, { recursive: true });
   }
 
-  // Windows native tar command
-  // -x: extract
-  // -j: bzip2 compression
-  // -f: archive file
-  // -C: change to directory before extracting
-  const command = `tar -xjf "${archivePath}" -C "${destDir}"`;
+  // Windows native tar (bsdtar) command
+  // --exclude dev: POSIX symlinks (fd, stdin, stdout, stderr) that Windows cannot create
+  // --exclude etc/mtab: POSIX symlink to /proc/mounts, not needed on Windows
+  const command = `tar -xjf "${archivePath}" -C "${destDir}" --exclude="dev" --exclude="etc/mtab"`;
 
   try {
     execSync(command, {
-      timeout: 120000, // 2 minute timeout for large archives
+      timeout: 120000,
       windowsHide: true,
-      stdio: 'pipe', // Capture output to prevent console spam
+      stdio: 'pipe',
     });
     debugLog('tar extraction completed successfully');
   } catch (error) {
     debugLog(`tar extraction failed: ${error}`);
     throw new Error(`Failed to extract archive: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
-  }
-
-  // Remove dev/ directory if present (contains POSIX special files like symlinks to /dev/fd/)
-  // These files cause issues on Windows and are not needed
-  const devDir = path.join(destDir, 'dev');
-  if (fs.existsSync(devDir)) {
-    debugLog('Removing dev/ directory (POSIX special files)');
-    try {
-      fs.rmSync(devDir, { recursive: true, force: true });
-    } catch (error) {
-      // Non-fatal - just log and continue
-      debugLog(`Warning: Failed to remove dev/ directory: ${error}`);
-    }
   }
 }
 
