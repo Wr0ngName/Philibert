@@ -67,6 +67,55 @@ const server = new Server(
 
 let transport: StdioServerTransport;
 
+// Handle permission requests from Claude Code.
+// When Claude Code needs approval for a tool (Read, Bash, etc.), it sends a
+// notification to the channel server. We forward it to the bridge, which relays
+// it to the Philibert UI. The user's verdict comes back via the verdict poller.
+server.fallbackNotificationHandler = async (notification: { method: string; params?: Record<string, unknown> }) => {
+  if (notification.method === 'notifications/claude/channel/permission_request') {
+    const params = notification.params || {};
+    const requestId = String(params.request_id || params.requestId || '');
+    const toolName = String(params.tool_name || params.toolName || 'unknown');
+    const description = String(params.description || '');
+    const inputPreview = String(params.input_preview || params.inputPreview || '');
+
+    if (!requestId) {
+      log('warn', 'Permission request missing request_id', { params });
+      return;
+    }
+
+    log('info', 'Received permission request from Claude Code', {
+      requestId,
+      toolName,
+      description: description.slice(0, 100),
+    });
+
+    try {
+      const resp = await fetch(
+        `${BRIDGE_URL}/api/channel/permission/request/${encodeURIComponent(CONVERSATION_ID)}`,
+        {
+          method: 'POST',
+          headers: HEADERS,
+          body: JSON.stringify({ requestId, toolName, description, inputPreview }),
+        },
+      );
+
+      if (!resp.ok) {
+        log('error', 'Failed to forward permission request to bridge', {
+          status: resp.status,
+          body: await resp.text(),
+        });
+      }
+    } catch (err) {
+      log('error', 'Permission request forwarding failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  } else {
+    log('debug', 'Unhandled notification', { method: notification.method });
+  }
+};
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {

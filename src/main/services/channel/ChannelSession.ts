@@ -122,6 +122,13 @@ function parseSessionUsage(jsonlPath: string): ChannelUsageData {
 }
 
 export type ChannelSessionErrorCallback = (conversationId: string, error: string) => void;
+export type ChannelSessionPermissionCallback = (
+  conversationId: string,
+  requestId: string,
+  toolName: string,
+  description: string,
+  inputPreview: string,
+) => void;
 
 export interface ChannelSessionOptions {
   conversationId: string;
@@ -134,6 +141,7 @@ export interface ChannelSessionOptions {
   authEnv: Record<string, string>;
   onFatalError?: ChannelSessionErrorCallback;
   onPtyError?: ChannelSessionErrorCallback;
+  onPermissionRequest?: ChannelSessionPermissionCallback;
 }
 
 export class ChannelSession {
@@ -147,12 +155,14 @@ export class ChannelSession {
   private authEnv: Record<string, string>;
   private onFatalError?: ChannelSessionErrorCallback;
   private onPtyError?: ChannelSessionErrorCallback;
+  private onPermissionRequest?: ChannelSessionPermissionCallback;
 
   private ptyProcess: IPty | null = null;
   private running = false;
   private startupDialogsAccepted = 0;
   private fatalErrorEmitted = false;
   private cachedSessionId: string | null = null;
+  private pendingPtyPermissions: Set<string> = new Set();
 
   constructor(options: ChannelSessionOptions) {
     this.conversationId = options.conversationId;
@@ -165,6 +175,7 @@ export class ChannelSession {
     this.authEnv = options.authEnv;
     this.onFatalError = options.onFatalError;
     this.onPtyError = options.onPtyError;
+    this.onPermissionRequest = options.onPermissionRequest;
   }
 
   get isRunning(): boolean {
@@ -276,26 +287,52 @@ export class ChannelSession {
         }
       }
 
-      // Auto-accept MCP tool approval dialogs for philibert tools.
-      // This is a fallback — --allowedTools should prevent these, but
-      // if the dialog appears anyway, accept with "Yes" (Enter on option 1).
+      // PTY permission dialog relay (fallback if MCP channel permission
+      // protocol isn't used). Detects Claude Code's interactive tool approval
+      // dialogs and surfaces them to the Philibert UI, or auto-accepts
+      // philibert MCP tools that should already be pre-allowed.
       {
         const normalized = clean.replace(/\s+/g, '').toLowerCase();
-        if (
-          normalized.includes('doyouwanttoproceed') &&
-          normalized.includes('philibert') &&
-          normalized.includes('yes')
-        ) {
-          setTimeout(() => {
-            if (this.ptyProcess) {
-              this.ptyProcess.write('\r');
-              logger.info('Auto-accepted MCP tool approval dialog', {
+        if (normalized.includes('doyouwanttoproceed') && normalized.includes('yes')) {
+          // Auto-accept philibert MCP tool dialogs (pre-allowed by settings)
+          if (normalized.includes('philibert')) {
+            setTimeout(() => {
+              if (this.ptyProcess) {
+                this.ptyProcess.write('\r');
+                logger.info('Auto-accepted philibert MCP tool dialog', {
+                  conversationId: this.conversationId,
+                });
+              }
+            }, 300);
+            buffer = '';
+            return;
+          }
+
+          // Relay other tool permission dialogs to the UI
+          if (this.onPermissionRequest) {
+            const toolMatch = clean.match(/(\w+)\(([^)]*)\)/);
+            if (toolMatch) {
+              const requestId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+              const toolName = toolMatch[1];
+              const toolArgs = toolMatch[2];
+              this.pendingPtyPermissions.add(requestId);
+              this.onPermissionRequest(
+                this.conversationId,
+                requestId,
+                toolName,
+                `${toolName}(${toolArgs})`,
+                toolArgs,
+              );
+              logger.info('Relayed PTY permission dialog to UI', {
                 conversationId: this.conversationId,
+                requestId,
+                toolName,
+                toolArgs: toolArgs.slice(0, 100),
               });
+              buffer = '';
+              return;
             }
-          }, 300);
-          buffer = '';
-          return;
+          }
         }
       }
 
@@ -449,6 +486,28 @@ export class ChannelSession {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  submitPtyPermission(requestId: string, behavior: 'allow' | 'deny'): boolean {
+    if (!this.pendingPtyPermissions.has(requestId)) return false;
+    this.pendingPtyPermissions.delete(requestId);
+
+    if (!this.ptyProcess) return false;
+
+    if (behavior === 'allow') {
+      this.ptyProcess.write('\r');
+    } else {
+      // Navigate to "No" (last option) with down arrows, then Enter.
+      // Extra down presses are harmless — terminal selectors stop at last option.
+      this.ptyProcess.write('\x1B[B\x1B[B\x1B[B\x1B[B\x1B[B\r');
+    }
+
+    logger.info('Submitted PTY permission verdict', {
+      conversationId: this.conversationId,
+      requestId,
+      behavior,
+    });
+    return true;
   }
 
   private setupClaudeSettings(): void {

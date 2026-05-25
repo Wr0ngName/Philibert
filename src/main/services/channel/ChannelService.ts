@@ -108,8 +108,16 @@ export class ChannelService {
     actionId: string,
     behavior: 'allow' | 'deny',
   ): void {
-    if (!this.bridge) return;
-    this.bridge.submitPermissionVerdict(conversationId, actionId, behavior);
+    // Try PTY permission first (for dialogs detected from PTY output)
+    const active = this.sessions.get(conversationId);
+    if (active?.session.submitPtyPermission(actionId, behavior)) {
+      return;
+    }
+
+    // Fall back to bridge permission (for MCP channel protocol requests)
+    if (this.bridge) {
+      this.bridge.submitPermissionVerdict(conversationId, actionId, behavior);
+    }
   }
 
   async abort(conversationId: string): Promise<void> {
@@ -187,6 +195,9 @@ export class ChannelService {
         this.send(IPC_CHANNELS.CLAUDE_ERROR, convId, errorMsg);
         this.send(IPC_CHANNELS.CLAUDE_DONE, convId);
       },
+      onPermissionRequest: (convId, requestId, toolName, description, inputPreview) => {
+        this.handlePermissionRequestFromPty(convId, requestId, toolName, description, inputPreview);
+      },
     });
 
     await session.start();
@@ -262,6 +273,38 @@ export class ChannelService {
         workingDirectory: '',
       },
     };
+
+    this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
+  }
+
+  private handlePermissionRequestFromPty(
+    conversationId: string,
+    requestId: string,
+    toolName: string,
+    description: string,
+    inputPreview: string,
+  ): void {
+    const base = {
+      id: requestId,
+      toolName,
+      description,
+      input: { command: inputPreview },
+      status: 'pending' as const,
+      timestamp: Date.now(),
+    };
+
+    let action: PendingAction;
+    const toolLower = toolName.toLowerCase();
+
+    if (toolLower === 'read') {
+      action = { ...base, type: 'read-file', details: { filePath: inputPreview } };
+    } else if (toolLower === 'edit') {
+      action = { ...base, type: 'file-edit', details: { filePath: inputPreview, originalContent: '', newContent: '', diff: '' } };
+    } else if (toolLower === 'write') {
+      action = { ...base, type: 'file-create', details: { filePath: inputPreview, content: '' } };
+    } else {
+      action = { ...base, type: 'bash-command', details: { command: inputPreview, workingDirectory: '' } };
+    }
 
     this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
   }
