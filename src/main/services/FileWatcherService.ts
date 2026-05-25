@@ -59,7 +59,6 @@ export class FileWatcherService {
 
     try {
       this.watcher = fs.watch(normalizedDir, { recursive: true }, (eventType, filename) => {
-        logger.debug('Raw fs.watch event', { eventType, filename, hasFilename: !!filename });
         if (filename) {
           this.handleChange(eventType, filename, normalizedDir);
         }
@@ -107,13 +106,11 @@ export class FileWatcherService {
     const normalizedFilename = filename.replace(/\\/g, '/').replace(/\//g, path.sep);
     const fullPath = path.join(baseDir, normalizedFilename);
 
-    logger.debug('File watcher event', { eventType, filename, normalizedFilename, fullPath });
-
-    // Check if we should ignore this path
     if (this.shouldIgnore(normalizedFilename)) {
-      logger.debug('Ignoring file change', { filename: normalizedFilename });
       return;
     }
+
+    logger.debug('File watcher event', { eventType, filename, normalizedFilename, fullPath });
 
     // Determine change type
     let changeType: FileChange['type'];
