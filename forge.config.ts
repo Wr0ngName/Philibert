@@ -7,7 +7,7 @@ import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-nati
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
-import { spawn } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -35,10 +35,17 @@ const hasGitBashArchive = fs.existsSync(gitBashArchive) && fs.existsSync(gitBash
 // Bundle type marker file path
 const bundleTypeFile = './resources/bundle-type.txt';
 
+// Channel server output path (built by esbuild during generateAssets)
+const channelServerOutput = './out/channel-server.cjs';
+
 const config: ForgeConfig = {
   hooks: {
-    // Generate bundle-type.txt before packaging starts
     generateAssets: async () => {
+      // Build channel server (required for channel mode at runtime)
+      console.log('\x1b[36mBuilding channel-server...\x1b[0m');
+      execSync('npm run build:channel-server', { stdio: 'inherit' });
+      console.log('Channel server built successfully');
+
       if (isWindowsBuild) {
         const bundleType = isOnlineBuild ? 'online' : 'offline';
         console.log(`\x1b[36mBundle type: ${bundleType}\x1b[0m`);
@@ -155,6 +162,7 @@ const config: ForgeConfig = {
     // Also include app-update.yml for electron-updater and bundle-type.txt for online/offline detection
     extraResource: [
       './resources/app-update.yml',
+      channelServerOutput,
       // Bundle type marker file (online or offline) - always included for Windows
       ...(isWindowsBuild ? [bundleTypeFile] : []),
       // Only include Node.js and Git for OFFLINE builds
