@@ -5,6 +5,11 @@
  * Produces the same IPC events as SDK mode (CLAUDE_CHUNK, CLAUDE_DONE,
  * CLAUDE_TOOL_USE, CLAUDE_USAGE_UPDATE) so the renderer needs minimal
  * changes.
+ *
+ * Turn boundary: Claude Code may call the reply tool multiple times per
+ * turn. We accumulate replies and emit CLAUDE_DONE only after a quiet
+ * period (no new replies for TURN_DONE_DELAY_MS), signaling the model
+ * has finished its turn.
  */
 
 import type { ChannelUsageData, PendingAction, SessionUsage } from '../../../shared/types';
@@ -19,11 +24,14 @@ import { AuthValidator } from '../claude';
 import { ChannelBridge, type PermissionRequestPayload } from './ChannelBridge';
 import { ChannelSession } from './ChannelSession';
 
+const TURN_DONE_DELAY_MS = 2000;
+
 interface ActiveChannelSession {
   session: ChannelSession;
   usageTimer: ReturnType<typeof setInterval> | null;
   healthTimer: ReturnType<typeof setInterval> | null;
   restartCount: number;
+  turnDoneTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export class ChannelService {
@@ -105,6 +113,11 @@ export class ChannelService {
   }
 
   async abort(conversationId: string): Promise<void> {
+    const active = this.sessions.get(conversationId);
+    if (active?.turnDoneTimer) {
+      clearTimeout(active.turnDoneTimer);
+      active.turnDoneTimer = null;
+    }
     this.cleanupActiveSession(conversationId);
     if (this.bridge) {
       this.bridge.removeConversation(conversationId);
@@ -112,7 +125,11 @@ export class ChannelService {
   }
 
   async shutdown(): Promise<void> {
-    for (const conversationId of this.sessions.keys()) {
+    for (const [conversationId, active] of this.sessions.entries()) {
+      if (active.turnDoneTimer) {
+        clearTimeout(active.turnDoneTimer);
+        active.turnDoneTimer = null;
+      }
       this.cleanupActiveSession(conversationId);
     }
     this.sessions.clear();
@@ -166,6 +183,10 @@ export class ChannelService {
         this.send(IPC_CHANNELS.CLAUDE_DONE, convId);
         this.cleanupActiveSession(convId);
       },
+      onPtyError: (convId, errorMsg) => {
+        this.send(IPC_CHANNELS.CLAUDE_ERROR, convId, errorMsg);
+        this.send(IPC_CHANNELS.CLAUDE_DONE, convId);
+      },
     });
 
     await session.start();
@@ -175,6 +196,7 @@ export class ChannelService {
       usageTimer: null,
       healthTimer: null,
       restartCount: 0,
+      turnDoneTimer: null,
     };
 
     this.sessions.set(conversationId, active);
@@ -196,13 +218,31 @@ export class ChannelService {
     return active;
   }
 
+  /**
+   * Handle a reply from the channel server. Uses a debounce timer to
+   * detect turn boundaries: each reply resets the timer. CLAUDE_DONE
+   * fires only after TURN_DONE_DELAY_MS of silence, so multi-reply
+   * turns don't trigger spurious "done" events.
+   */
   private handleReply(conversationId: string, text: string): void {
     this.send(IPC_CHANNELS.CLAUDE_CHUNK, conversationId, text);
-    this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
 
-    this.notificationService.showQueryComplete(conversationId);
+    const active = this.sessions.get(conversationId);
+    if (!active) {
+      this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
+      return;
+    }
 
-    this.pollUsage(conversationId);
+    if (active.turnDoneTimer) {
+      clearTimeout(active.turnDoneTimer);
+    }
+
+    active.turnDoneTimer = setTimeout(() => {
+      active.turnDoneTimer = null;
+      this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
+      this.notificationService.showQueryComplete(conversationId);
+      this.pollUsage(conversationId);
+    }, TURN_DONE_DELAY_MS);
   }
 
   private handlePermissionRequestFromBridge(
@@ -292,6 +332,7 @@ export class ChannelService {
           conversationId,
           'Channel session crashed too many times. Please start a new conversation.',
         );
+        this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
         return;
       }
 
@@ -311,6 +352,7 @@ export class ChannelService {
       setTimeout(async () => {
         try {
           await active.session.start();
+          active.restartCount = 0;
           logger.info('Channel session restarted', {
             conversationId,
             pid: active.session.pid,
@@ -337,6 +379,11 @@ export class ChannelService {
     if (active.healthTimer) {
       clearInterval(active.healthTimer);
       active.healthTimer = null;
+    }
+
+    if (active.turnDoneTimer) {
+      clearTimeout(active.turnDoneTimer);
+      active.turnDoneTimer = null;
     }
 
     active.session.stop().catch((err) => {

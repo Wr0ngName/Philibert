@@ -133,6 +133,7 @@ export interface ChannelSessionOptions {
   model: string;
   authEnv: Record<string, string>;
   onFatalError?: ChannelSessionErrorCallback;
+  onPtyError?: ChannelSessionErrorCallback;
 }
 
 export class ChannelSession {
@@ -145,10 +146,11 @@ export class ChannelSession {
   private model: string;
   private authEnv: Record<string, string>;
   private onFatalError?: ChannelSessionErrorCallback;
+  private onPtyError?: ChannelSessionErrorCallback;
 
   private ptyProcess: IPty | null = null;
   private running = false;
-  private trustAccepted = false;
+  private startupDialogsAccepted = 0;
   private fatalErrorEmitted = false;
   private cachedSessionId: string | null = null;
 
@@ -162,6 +164,7 @@ export class ChannelSession {
     this.model = options.model;
     this.authEnv = options.authEnv;
     this.onFatalError = options.onFatalError;
+    this.onPtyError = options.onPtyError;
   }
 
   get isRunning(): boolean {
@@ -185,16 +188,19 @@ export class ChannelSession {
     }
 
     this.running = false;
-    this.trustAccepted = false;
+    this.startupDialogsAccepted = 0;
     this.cachedSessionId = null;
 
     this.setupMcpJson();
+    this.setupClaudeSettings();
 
     const args = [
       '--dangerously-load-development-channels',
       'server:philibert',
       '--model',
       this.model,
+      '--allowedTools',
+      'mcp__philibert__reply',
       '--verbose',
     ];
 
@@ -239,16 +245,51 @@ export class ChannelSession {
       buffer += data;
       const clean = stripAnsi(buffer);
 
-      if (!this.trustAccepted && clean.toLowerCase().includes('trust')) {
+      // Auto-accept startup dialogs (workspace trust, MCP server trust,
+      // development channels warning). All are menu selectors needing Enter.
+      // Cap at 5 to prevent infinite loops on unexpected dialogs.
+      const MAX_STARTUP_DIALOGS = 5;
+      if (this.startupDialogsAccepted < MAX_STARTUP_DIALOGS) {
+        const normalized = clean.replace(/\s+/g, '').toLowerCase();
+        const isStartupDialog =
+          // Workspace trust
+          normalized.includes('trustthisfolder') ||
+          normalized.includes('oneyoutrust') ||
+          // MCP server trust
+          (normalized.includes('mcpserver') && normalized.includes('philibert')) ||
+          // Development channels warning
+          normalized.includes('developmentchannels');
+
+        if (isStartupDialog && normalized.includes('entertoconfirm')) {
+          setTimeout(() => {
+            if (this.ptyProcess) {
+              this.ptyProcess.write('\r');
+              this.startupDialogsAccepted++;
+              logger.info('Auto-accepted startup dialog', {
+                conversationId: this.conversationId,
+                count: this.startupDialogsAccepted,
+              });
+            }
+          }, 300);
+          buffer = '';
+          return;
+        }
+      }
+
+      // Auto-accept MCP tool approval dialogs for philibert tools.
+      // This is a fallback — --allowedTools should prevent these, but
+      // if the dialog appears anyway, accept with "Yes" (Enter on option 1).
+      {
+        const normalized = clean.replace(/\s+/g, '').toLowerCase();
         if (
-          clean.toLowerCase().includes('do you trust') ||
-          clean.toLowerCase().includes('trust this')
+          normalized.includes('doyouwanttoproceed') &&
+          normalized.includes('philibert') &&
+          normalized.includes('yes')
         ) {
           setTimeout(() => {
             if (this.ptyProcess) {
-              this.ptyProcess.write('y\r\n');
-              this.trustAccepted = true;
-              logger.info('Auto-accepted trust dialog', {
+              this.ptyProcess.write('\r');
+              logger.info('Auto-accepted MCP tool approval dialog', {
                 conversationId: this.conversationId,
               });
             }
@@ -276,6 +317,41 @@ export class ChannelSession {
               this.conversationId,
               'Your Claude CLI version does not support channel mode. Please update Claude Code or switch to SDK mode in Settings.',
             );
+          }
+        }
+      }
+
+      // Detect recoverable PTY errors and propagate to UI
+      if (this.onPtyError) {
+        const lower = clean.toLowerCase();
+        const errorPatterns: Array<{ test: () => boolean; message: string }> = [
+          {
+            test: () => lower.includes('rate limit') || lower.includes('429') || lower.includes('too many requests'),
+            message: 'Rate limited by API. Claude Code will retry automatically.',
+          },
+          {
+            test: () => lower.includes('unauthorized') || lower.includes('401') || lower.includes('session expired') || lower.includes('authentication failed'),
+            message: 'Authentication error. Please check your credentials in Settings.',
+          },
+          {
+            test: () => lower.includes('quota exceeded') || (lower.includes('credit') && lower.includes('limit')),
+            message: 'Usage quota exceeded. Check your subscription status.',
+          },
+          {
+            test: () => (lower.includes('context window') && lower.includes('exceeded')) || lower.includes('prompt is too long'),
+            message: 'Context window exceeded. Start a new conversation to continue.',
+          },
+        ];
+
+        for (const pattern of errorPatterns) {
+          if (pattern.test()) {
+            logger.warn('Channel PTY error detected', {
+              conversationId: this.conversationId,
+              error: pattern.message,
+              output: clean.slice(0, 300),
+            });
+            this.onPtyError(this.conversationId, pattern.message);
+            break;
           }
         }
       }
@@ -373,6 +449,55 @@ export class ChannelSession {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  private setupClaudeSettings(): void {
+    const claudeDir = path.join(this.sessionDir, '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+
+    const settingsPath = path.join(claudeDir, 'settings.local.json');
+    const localSettings = {
+      enabledMcpjsonServers: ['philibert'],
+      enableAllProjectMcpServers: true,
+      permissions: {
+        allow: ['mcp__philibert__reply'],
+      },
+    };
+
+    fs.writeFileSync(settingsPath, JSON.stringify(localSettings, null, 2) + '\n');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(settingsPath, 0o600);
+    }
+
+    // Set workspace trust in global settings so Claude Code skips the trust dialog.
+    // Claude Code stores per-project trust at projects[normalizedPath].hasTrustDialogAccepted
+    const globalSettingsPath = path.join(CLAUDE_HOME, 'settings.json');
+    const projectKey = this.sessionDir.replace(/\\/g, '/');
+
+    let globalSettings: Record<string, unknown> = {};
+    try {
+      if (fs.existsSync(globalSettingsPath)) {
+        globalSettings = JSON.parse(fs.readFileSync(globalSettingsPath, 'utf-8'));
+      }
+    } catch {
+      logger.warn('Could not parse global Claude settings, will merge carefully');
+    }
+
+    const projects = (globalSettings.projects ?? {}) as Record<string, Record<string, unknown>>;
+    projects[projectKey] = {
+      ...(projects[projectKey] ?? {}),
+      hasTrustDialogAccepted: true,
+      allowedTools: ['mcp__philibert__reply'],
+    };
+    globalSettings.projects = projects;
+
+    fs.writeFileSync(globalSettingsPath, JSON.stringify(globalSettings, null, 2) + '\n');
+
+    logger.info('Pre-created Claude settings with tool permissions and workspace trust', {
+      conversationId: this.conversationId,
+      localSettings: settingsPath,
+      projectKey,
+    });
   }
 
   private setupMcpJson(): void {

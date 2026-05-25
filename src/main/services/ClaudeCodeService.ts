@@ -273,9 +273,9 @@ export class ClaudeCodeService {
    * @param resumeSessionId - Optional SDK session ID to resume conversation context
    */
   async sendMessage(conversationId: string, message: string, workingDirectory: string, resumeSessionId?: string): Promise<void> {
-    // Channel mode: delegate to ChannelService
-    const executionMode = await this.configService.getExecutionMode();
-    if (executionMode === 'channel') {
+    // Channel mode: delegate to ChannelService (only valid with OAuth auth)
+    const currentConfig = await this.configService.getConfig();
+    if (currentConfig.executionMode === 'channel' && currentConfig.authMethod === 'oauth') {
       if (!this.channelService) {
         this.channelService = new ChannelService(
           this.configService,
@@ -1425,7 +1425,63 @@ export class ClaudeCodeService {
       }
     }
 
+    // No active sessions — spawn a temporary SDK query to fetch models.
+    // supportedModels() is a free control command (no token cost).
+    try {
+      await this.fetchModelsViaTemporarySession();
+      if (this.cachedModels.length > 0) {
+        return this.cachedModels;
+      }
+    } catch (error) {
+      logger.warn('Failed to fetch models via temporary session', { error });
+    }
+
     return [];
+  }
+
+  private async fetchModelsViaTemporarySession(): Promise<void> {
+    const hasAuthCreds = await this.authValidator.hasAuth();
+    if (!hasAuthCreds) return;
+
+    const authEnv = await this.authValidator.setupAuthEnv();
+    const originalEnv: Record<string, string | undefined> = {};
+    Object.entries(authEnv).forEach(([key, value]) => {
+      originalEnv[key] = process.env[key];
+      process.env[key] = value;
+    });
+
+    const abortController = new AbortController();
+    const inputChannel = new AsyncChannel<SDKUserMessage>();
+
+    try {
+      const tempQuery = query({
+        prompt: inputChannel,
+        options: {
+          abortController,
+          env: authEnv,
+          pathToClaudeCodeExecutable: ClaudeCliPaths.findBundledCli() || undefined,
+        },
+      });
+
+      const models = await tempQuery.supportedModels();
+      this.cachedModels = models.map((m) => ({
+        value: m.value,
+        displayName: m.displayName,
+        description: m.description,
+      }));
+      logger.info('Fetched models via temporary session', { count: this.cachedModels.length });
+      this.send(IPC_CHANNELS.CLAUDE_MODEL_CHANGED, this.cachedModels);
+    } finally {
+      abortController.abort();
+      inputChannel.close();
+      Object.entries(originalEnv).forEach(([key, value]) => {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      });
+    }
   }
 
   /**

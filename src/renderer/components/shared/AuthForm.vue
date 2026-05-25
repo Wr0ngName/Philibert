@@ -85,6 +85,7 @@ function cancelCodeInput() {
  * Expose methods for parent components if needed
  */
 defineExpose({
+  authStatus,
   refreshAuthStatus,
   resetState,
 });

@@ -5,6 +5,10 @@
  * It bridges between Claude Code (MCP protocol) and the Philibert
  * main process (HTTP long-polling via ChannelBridge).
  *
+ * Notifications are written directly to the transport (not via
+ * server.notification()) because Claude Code's channel protocol
+ * uses custom notification methods that the MCP SDK doesn't know about.
+ *
  * Run as: node channel-server.cjs
  *
  * Environment variables (set via .mcp.json env block):
@@ -19,6 +23,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCNotification } from '@modelcontextprotocol/sdk/types.js';
 
 const BRIDGE_URL = process.env.PHILIBERT_BRIDGE_URL || 'http://127.0.0.1:8080';
 const CONVERSATION_ID = process.env.PHILIBERT_CONVERSATION_ID || 'default';
@@ -28,6 +33,14 @@ const HEADERS: Record<string, string> = {
   'Authorization': `Bearer ${CHANNEL_TOKEN}`,
   'Content-Type': 'application/json',
 };
+
+const HEARTBEAT_INTERVAL_MS = 15000;
+const BRIDGE_READY_POLL_MS = 500;
+const BRIDGE_READY_TIMEOUT_MS = 30000;
+const MAX_BACKOFF_MS = 30000;
+const INITIAL_BACKOFF_MS = 1000;
+
+let shuttingDown = false;
 
 const log = (level: string, msg: string, extra?: Record<string, unknown>) => {
   const entry = { ts: new Date().toISOString(), level, msg, ...extra };
@@ -39,9 +52,20 @@ const server = new Server(
   {
     capabilities: {
       tools: {},
+      experimental: {
+        'claude/channel': {},
+        'claude/channel/permission': {},
+      },
     },
+    instructions:
+      'You are connected to a chat UI via the Philibert channel. ' +
+      'Messages from the user arrive as channel notifications. ' +
+      'You MUST reply using the "reply" tool with the "text" parameter. ' +
+      'Do NOT write your response to stdout — always use the reply tool.',
   },
 );
+
+let transport: StdioServerTransport;
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -77,7 +101,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!resp.ok) {
         const body = await resp.text();
         log('error', 'Reply failed', { status: resp.status, body });
-        return { content: [{ type: 'text', text: `Error: bridge returned ${resp.status}` }] };
+        return { content: [{ type: 'text', text: `Error: bridge returned ${resp.status}: ${body}` }] };
       }
 
       return { content: [{ type: 'text', text: 'Message sent' }] };
@@ -91,11 +115,75 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
 });
 
-async function pollMessages(): Promise<void> {
-  // Initial delay to let Claude Code finish initialization
-  await sleep(3000);
+async function sendRawNotification(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<void> {
+  const notification: JSONRPCNotification = {
+    jsonrpc: '2.0',
+    method,
+    params,
+  };
+  await transport.send(notification);
+}
 
-  while (true) {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function nextBackoff(current: number): number {
+  return Math.min((current || INITIAL_BACKOFF_MS) * 2, MAX_BACKOFF_MS);
+}
+
+async function waitForBridge(): Promise<void> {
+  const deadline = Date.now() + BRIDGE_READY_TIMEOUT_MS;
+  log('info', 'Waiting for bridge to be ready', { url: BRIDGE_URL });
+
+  while (Date.now() < deadline) {
+    try {
+      const resp = await fetch(`${BRIDGE_URL}/api/channel/health`, {
+        method: 'GET',
+        headers: HEADERS,
+        signal: AbortSignal.timeout(2000),
+      });
+      if (resp.ok) {
+        log('info', 'Bridge is ready');
+        return;
+      }
+    } catch {
+      // Bridge not ready yet
+    }
+    await sleep(BRIDGE_READY_POLL_MS);
+  }
+
+  log('error', 'Bridge did not become ready within timeout', {
+    timeoutMs: BRIDGE_READY_TIMEOUT_MS,
+  });
+  process.exit(1);
+}
+
+async function heartbeat(): Promise<void> {
+  while (!shuttingDown) {
+    try {
+      await fetch(`${BRIDGE_URL}/api/channel/health`, {
+        method: 'GET',
+        headers: HEADERS,
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch (err) {
+      log('warn', 'Heartbeat failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    await sleep(HEARTBEAT_INTERVAL_MS);
+  }
+}
+
+async function pollMessages(): Promise<void> {
+  log('info', 'Message poller started', { conversationId: CONVERSATION_ID });
+  let backoffMs = 0;
+
+  while (!shuttingDown) {
     try {
       const resp = await fetch(
         `${BRIDGE_URL}/api/channel/poll/${encodeURIComponent(CONVERSATION_ID)}?timeout=30`,
@@ -104,21 +192,21 @@ async function pollMessages(): Promise<void> {
 
       if (!resp.ok) {
         log('warn', 'Poll failed', { status: resp.status });
-        await sleep(5000);
+        backoffMs = nextBackoff(backoffMs);
+        await sleep(backoffMs);
         continue;
       }
+
+      backoffMs = 0;
 
       const data = (await resp.json()) as { messages?: Array<{ content: string; meta: Record<string, string> }> };
       const messages = data.messages || [];
 
       for (const msg of messages) {
         try {
-          await server.notification({
-            method: 'notifications/claude/channel',
-            params: {
-              content: msg.content,
-              meta: msg.meta || {},
-            },
+          await sendRawNotification('notifications/claude/channel', {
+            content: msg.content,
+            meta: msg.meta || {},
           });
           log('info', 'Pushed channel notification', {
             contentLength: msg.content.length,
@@ -130,19 +218,22 @@ async function pollMessages(): Promise<void> {
         }
       }
     } catch (err) {
+      if (shuttingDown) break;
       if (err instanceof Error && err.name === 'TimeoutError') {
         continue;
       }
       log('error', 'Poll error', { error: err instanceof Error ? err.message : String(err) });
-      await sleep(5000);
+      backoffMs = nextBackoff(backoffMs);
+      await sleep(backoffMs);
     }
   }
 }
 
 async function pollVerdicts(): Promise<void> {
-  await sleep(3000);
+  log('info', 'Verdict poller started', { conversationId: CONVERSATION_ID });
+  let backoffMs = 0;
 
-  while (true) {
+  while (!shuttingDown) {
     try {
       const resp = await fetch(
         `${BRIDGE_URL}/api/channel/permission/poll/${encodeURIComponent(CONVERSATION_ID)}?timeout=30`,
@@ -150,21 +241,21 @@ async function pollVerdicts(): Promise<void> {
       );
 
       if (!resp.ok) {
-        await sleep(5000);
+        backoffMs = nextBackoff(backoffMs);
+        await sleep(backoffMs);
         continue;
       }
+
+      backoffMs = 0;
 
       const data = (await resp.json()) as { verdicts?: Array<{ requestId: string; behavior: string }> };
       const verdicts = data.verdicts || [];
 
       for (const verdict of verdicts) {
         try {
-          await server.notification({
-            method: 'notifications/claude/channel/permission',
-            params: {
-              request_id: verdict.requestId,
-              behavior: verdict.behavior,
-            },
+          await sendRawNotification('notifications/claude/channel/permission', {
+            request_id: verdict.requestId,
+            behavior: verdict.behavior,
           });
           log('info', 'Pushed permission verdict', {
             requestId: verdict.requestId,
@@ -177,20 +268,37 @@ async function pollVerdicts(): Promise<void> {
         }
       }
     } catch (err) {
+      if (shuttingDown) break;
       if (err instanceof Error && err.name === 'TimeoutError') {
         continue;
       }
       log('error', 'Verdict poll error', {
         error: err instanceof Error ? err.message : String(err),
       });
-      await sleep(5000);
+      backoffMs = nextBackoff(backoffMs);
+      await sleep(backoffMs);
     }
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function shutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log('info', 'Channel server shutting down');
+
+  try {
+    await server.close();
+  } catch (err) {
+    log('warn', 'Error closing MCP server', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  process.exit(0);
 }
+
+process.on('SIGTERM', () => void shutdown());
+process.on('SIGINT', () => void shutdown());
 
 async function main(): Promise<void> {
   log('info', 'Channel server starting', {
@@ -198,13 +306,14 @@ async function main(): Promise<void> {
     conversationId: CONVERSATION_ID,
   });
 
-  const transport = new StdioServerTransport();
+  transport = new StdioServerTransport();
   await server.connect(transport);
 
   log('info', 'Channel server connected via stdio');
 
-  // Run pollers concurrently — they never return under normal operation
-  await Promise.all([pollMessages(), pollVerdicts()]);
+  await waitForBridge();
+
+  await Promise.all([pollMessages(), pollVerdicts(), heartbeat()]);
 }
 
 main().catch((err) => {

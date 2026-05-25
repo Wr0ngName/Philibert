@@ -4,7 +4,7 @@
  */
 
 import type { ExecutionMode, LogLevel, UpdateChannel } from '@shared/types';
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import { useSettingsStore } from '../../stores/settings';
@@ -33,6 +33,11 @@ const localEnableNotifications = ref(true);
 const localUpdateChannel = ref<UpdateChannel>('stable');
 const localExecutionMode = ref<ExecutionMode>('sdk');
 const authFormRef = ref<InstanceType<typeof AuthForm>>();
+
+const isOAuthUser = computed(() =>
+  authFormRef.value?.authStatus?.method === 'oauth' &&
+  authFormRef.value?.authStatus?.isAuthenticated === true
+);
 
 // Log level options for the selector
 const logLevelOptions: { value: LogLevel; label: string; description: string }[] = [
@@ -74,7 +79,8 @@ async function saveSettings() {
   await settingsStore.setLogLevel(localLogLevel.value);
   await settingsStore.setEnableNotifications(localEnableNotifications.value);
   await settingsStore.setUpdateChannel(localUpdateChannel.value);
-  await settingsStore.setExecutionMode(localExecutionMode.value);
+  const effectiveMode = config.value.authMethod === 'oauth' ? localExecutionMode.value : 'sdk';
+  await settingsStore.setExecutionMode(effectiveMode);
 
   emit('close');
 }
@@ -105,6 +111,55 @@ function cancel() {
         ref="authFormRef"
         :show-title="true"
       />
+
+      <!-- Execution Mode (OAuth/Pro/Max users only) -->
+      <div v-if="isOAuthUser">
+        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+          Execution Mode
+        </label>
+        <div class="flex gap-2">
+          <button
+            :class="[
+              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
+              localExecutionMode === 'sdk'
+                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+            ]"
+            @click="localExecutionMode = 'sdk'"
+          >
+            <div class="font-medium">
+              SDK
+            </div>
+            <div class="text-xs opacity-75">
+              Credit pool billing, full features
+            </div>
+          </button>
+          <button
+            :class="[
+              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
+              localExecutionMode === 'channel'
+                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+            ]"
+            @click="localExecutionMode = 'channel'"
+          >
+            <div class="font-medium">
+              Channel
+            </div>
+            <div class="text-xs opacity-75">
+              Subscription billing, no credit cap
+            </div>
+          </button>
+        </div>
+        <div
+          v-if="localExecutionMode === 'channel'"
+          class="mt-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200"
+        >
+          Channel mode uses your Pro/Max subscription for billing with no credit cap.
+          Trade-offs: no real-time streaming (replies arrive complete), no mid-session model switching.
+          Takes effect on the next new conversation.
+        </div>
+      </div>
 
       <!-- Theme -->
       <div>
@@ -252,55 +307,6 @@ function cancel() {
               Test upcoming versions early
             </div>
           </button>
-        </div>
-      </div>
-
-      <!-- Execution Mode -->
-      <div>
-        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
-          Execution Mode
-        </label>
-        <div class="flex gap-2">
-          <button
-            :class="[
-              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
-              localExecutionMode === 'sdk'
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-            ]"
-            @click="localExecutionMode = 'sdk'"
-          >
-            <div class="font-medium">
-              SDK
-            </div>
-            <div class="text-xs opacity-75">
-              Credit pool billing, full features
-            </div>
-          </button>
-          <button
-            :class="[
-              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
-              localExecutionMode === 'channel'
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-            ]"
-            @click="localExecutionMode = 'channel'"
-          >
-            <div class="font-medium">
-              Channel
-            </div>
-            <div class="text-xs opacity-75">
-              Subscription billing, no credit cap
-            </div>
-          </button>
-        </div>
-        <div
-          v-if="localExecutionMode === 'channel'"
-          class="mt-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200"
-        >
-          Channel mode uses your Pro/Max subscription for billing with no credit cap.
-          Trade-offs: no real-time streaming (replies arrive complete), no mid-session model switching.
-          Takes effect on the next new conversation.
         </div>
       </div>
     </div>
