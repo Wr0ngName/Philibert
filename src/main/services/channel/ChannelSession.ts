@@ -602,6 +602,8 @@ export class ChannelSession {
     logger.info('Updated .mcp.json with channel server config', {
       conversationId: this.conversationId,
       path: mcpJsonPath,
+      channelServerScript: this.channelServerScript,
+      bridgeUrl: this.bridgeUrl,
     });
   }
 

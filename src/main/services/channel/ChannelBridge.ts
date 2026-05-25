@@ -193,6 +193,8 @@ export class ChannelBridge {
     const path = url.pathname;
     const method = req.method?.toUpperCase() || 'GET';
 
+    logger.debug('ChannelBridge request', { method, path: path.slice(0, 80) });
+
     if (method === 'GET' && path === '/api/channel/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));

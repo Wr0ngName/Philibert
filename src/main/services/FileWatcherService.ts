@@ -31,6 +31,7 @@ const IGNORED_DIRS = new Set([
   '.venv',
   'coverage',
   '.nyc_output',
+  '.channel-sessions',
 ]);
 
 // Files to ignore
