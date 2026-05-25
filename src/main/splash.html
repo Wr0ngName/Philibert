@@ -23,15 +23,10 @@
       width: 80px;
       height: 80px;
       margin-bottom: 20px;
-      border-radius: 16px;
-      background: rgba(255, 255, 255, 0.15);
-      display: flex;
-      align-items: center;
-      justify-content: center;
     }
     .logo svg {
-      width: 60px;
-      height: 60px;
+      width: 80px;
+      height: 80px;
     }
     .title {
       font-size: 24px;
@@ -74,8 +69,15 @@
 </head>
 <body>
   <div class="logo">
-    <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
-      <text x="256" y="360" font-family="Arial, sans-serif" font-size="220" font-weight="bold" fill="white" text-anchor="middle">P</text>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+      <defs>
+        <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#7c3aed"/>
+          <stop offset="100%" style="stop-color:#4f46e5"/>
+        </linearGradient>
+      </defs>
+      <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+      <text x="256" y="320" font-family="Arial, sans-serif" font-size="170" font-weight="bold" fill="white" text-anchor="middle">Phil</text>
     </svg>
   </div>
   <div class="title">Philibert</div>
