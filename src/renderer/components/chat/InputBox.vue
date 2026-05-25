@@ -28,7 +28,7 @@ const settingsStore = useSettingsStore();
 const { slashCommands } = useClaudeChat();
 
 const { isLoading, hasMessages } = storeToRefs(chatStore);
-const { hasAuth } = storeToRefs(settingsStore);
+const { hasAuth, executionMode } = storeToRefs(settingsStore);
 const { hasWorkingDirectory } = storeToRefs(filesStore);
 
 const inputRef = ref<HTMLTextAreaElement | null>(null);
@@ -192,6 +192,10 @@ function handleInput(event: Event) {
         Type a command name...
       </span>
       <span v-else>Press Enter to send, Shift+Enter for new line</span>
+      <span
+        v-if="executionMode === 'channel'"
+        class="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800"
+      >Channel</span>
       <span v-if="message.length > 0">{{ message.length }} characters</span>
     </div>
   </div>

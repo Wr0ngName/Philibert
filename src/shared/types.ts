@@ -392,6 +392,13 @@ export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 export type UpdateChannel = 'stable' | 'rc';
 
 /**
+ * Execution mode for Claude integration.
+ * - sdk: Claude Agent SDK — billed against a separate capped credit pool
+ * - channel: Claude Code in PTY with MCP channel — billed against subscription (Pro/Max)
+ */
+export type ExecutionMode = 'sdk' | 'channel';
+
+/**
  * Application configuration settings
  */
 export interface AppConfig {
@@ -427,6 +434,8 @@ export interface AppConfig {
   lastConversationId: string;
   /** Auto-update channel: 'stable' for releases only, 'rc' to include release candidates */
   updateChannel: UpdateChannel;
+  /** Execution mode: 'sdk' for Agent SDK (credit pool), 'channel' for PTY/MCP (subscription) */
+  executionMode: ExecutionMode;
 }
 
 /**
@@ -449,6 +458,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   enableNotifications: true,
   lastConversationId: '',
   updateChannel: 'stable',
+  executionMode: 'sdk',
 };
 
 // Conversation types
@@ -552,6 +562,38 @@ export interface TaskNotification {
   uuid?: string;
   /** Previous task ID when remapping (e.g., tool_use ID → background task ID) */
   previousTaskId?: string;
+}
+
+// Channel mode types
+
+/**
+ * Status of the channel execution mode
+ */
+export interface ChannelStatus {
+  mode: ExecutionMode;
+  bridgeHealthy: boolean;
+  sessionRunning: boolean;
+}
+
+/**
+ * Per-model token counts and cost for channel mode usage tracking
+ */
+export interface ChannelModelTokens {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUsd: number;
+}
+
+/**
+ * Aggregated usage data from Claude Code's session JSONL files.
+ * Used in channel mode to provide token/cost visibility despite
+ * subscription billing.
+ */
+export interface ChannelUsageData {
+  models: Record<string, ChannelModelTokens>;
+  totals: ChannelModelTokens;
 }
 
 // Context/Usage types
@@ -746,6 +788,8 @@ export const IPC_CHANNELS = {
   CLAUDE_SESSION_PERMISSIONS_CHANGED: 'claude:session-permissions-changed',
   /** Tool execution completed (action was approved and SDK proceeded) */
   CLAUDE_TOOL_EXECUTED: 'claude:tool-executed',
+  /** Channel mode status update (bridge health, session running) */
+  CLAUDE_CHANNEL_STATUS: 'claude:channel-status',
 
   // Git operations
   /** Get git repository status */

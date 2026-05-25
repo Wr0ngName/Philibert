@@ -21,6 +21,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "format": "prettier --write \"src/**/*.{ts,tsx,vue,css,json}\"",
+    "build:channel-server": "esbuild src/main/services/channel/channel-server.ts --bundle --platform=node --format=cjs --outfile=out/channel-server.cjs",
     "prepare": "husky"
   },
   "keywords": [
@@ -53,6 +54,7 @@
     "@vue/test-utils": "^2.4.10",
     "electron": "42.0.1",
     "electron-builder": "^26.8.1",
+    "esbuild": "^0.28.0",
     "eslint": "^10.3.0",
     "eslint-import-resolver-typescript": "^4.4.4",
     "eslint-plugin-import-x": "^4.16.2",
@@ -73,6 +75,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.139",
     "@anthropic-ai/claude-code": "^2.1.139",
     "@anthropic-ai/sdk": "^0.95.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@tailwindcss/typography": "^0.5.19",
     "dompurify": "^3.4.2",
     "electron-log": "^5.4.3",

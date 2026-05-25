@@ -161,6 +161,22 @@ export const ClaudeCliPaths = {
 };
 
 /**
+ * Channel mode resource paths.
+ */
+export const ChannelPaths = {
+  getChannelServerScript(): string | null {
+    const candidates = [
+      path.join(getResourcesPath(), 'channel-server.cjs'),
+      path.join(app.getAppPath(), 'out', 'channel-server.cjs'),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
+    return null;
+  },
+};
+
+/**
  * Get a stable per-app config directory for Claude SDK credentials.
  * Uses Electron's userData so the directory persists across app restarts
  * and the SDK subprocess can read/refresh its own credentials natively.

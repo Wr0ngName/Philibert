@@ -5,7 +5,7 @@
 
 import { safeStorage, dialog } from 'electron';
 
-import { AppConfig, AuthMethod, DEFAULT_CONFIG, LogLevel, UpdateChannel } from '../../shared/types';
+import { AppConfig, AuthMethod, DEFAULT_CONFIG, ExecutionMode, LogLevel, UpdateChannel } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { ConfigurationError, ERROR_CODES } from '../errors';
 import logger, { setLogLevel } from '../utils/logger';
@@ -29,6 +29,7 @@ interface StoredConfig {
   enableNotifications: boolean;
   lastConversationId: string;
   updateChannel: UpdateChannel;
+  executionMode: ExecutionMode;
 }
 
 /**
@@ -81,6 +82,7 @@ export class ConfigService {
           enableNotifications: true,
           lastConversationId: '',
           updateChannel: 'stable',
+          executionMode: 'sdk',
         },
       }) as unknown as TypedStore;
       this.isInitialized = true;
@@ -483,6 +485,26 @@ export class ConfigService {
 
     this.store.set('updateChannel', channel);
     logger.info('Update channel changed', { channel });
+  }
+
+  /**
+   * Get execution mode
+   */
+  async getExecutionMode(): Promise<ExecutionMode> {
+    await this.ensureInitialized();
+    if (!this.store) return 'sdk';
+    return this.store.get('executionMode', 'sdk');
+  }
+
+  /**
+   * Set execution mode
+   */
+  async setExecutionMode(mode: ExecutionMode): Promise<void> {
+    await this.ensureInitialized();
+    if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
+
+    this.store.set('executionMode', mode);
+    logger.info('Execution mode changed', { mode });
   }
 
   /**

@@ -58,6 +58,7 @@ import { ClaudeCliPaths, WindowsPaths, getClaudeConfigDir } from '../utils/resou
 
 import ConfigService from './ConfigService';
 import NotificationService from './NotificationService';
+import { ChannelService } from './channel';
 import {
   PermissionManager,
   SDKMessageHandler,
@@ -129,6 +130,9 @@ export class ClaudeCodeService {
   private errorHandler: ErrorHandler;
   private builtinCommandHandler: BuiltinCommandHandler;
 
+  // Channel mode service (lazily initialized)
+  private channelService: ChannelService | null = null;
+
   // Multi-instance support: Map of conversation ID to active session
   private activeSessions: Map<string, SessionInstance> = new Map();
   private maxConcurrentQueries: number = MAX_CONCURRENT_QUERIES;
@@ -179,6 +183,16 @@ export class ClaudeCodeService {
    * Routes to the correct conversation's permission manager
    */
   handleActionResponse(conversationId: string, response: ActionResponse): void {
+    // Channel mode: delegate permission verdicts to ChannelService
+    if (this.channelService && this.channelService.isConversationActive(conversationId)) {
+      this.channelService.handlePermissionResponse(
+        conversationId,
+        response.actionId,
+        response.approved ? 'allow' : 'deny',
+      );
+      return;
+    }
+
     const instance = this.activeSessions.get(conversationId);
     if (instance) {
       instance.permissionManager.handleActionResponse(response);
@@ -259,6 +273,20 @@ export class ClaudeCodeService {
    * @param resumeSessionId - Optional SDK session ID to resume conversation context
    */
   async sendMessage(conversationId: string, message: string, workingDirectory: string, resumeSessionId?: string): Promise<void> {
+    // Channel mode: delegate to ChannelService
+    const executionMode = await this.configService.getExecutionMode();
+    if (executionMode === 'channel') {
+      if (!this.channelService) {
+        this.channelService = new ChannelService(
+          this.configService,
+          this.send,
+          this.notificationService,
+        );
+      }
+      await this.channelService.sendMessage(conversationId, message, workingDirectory);
+      return;
+    }
+
     // Check resource limits
     if (this.activeSessions.size >= this.maxConcurrentQueries && !this.activeSessions.has(conversationId)) {
       const errorMsg = `Maximum concurrent conversations (${this.maxConcurrentQueries}) reached. ` +
@@ -1167,6 +1195,13 @@ export class ClaudeCodeService {
    * Falls back to hard termination only if interrupt() itself fails.
    */
   async abort(conversationId: string): Promise<void> {
+    // Channel mode abort
+    if (this.channelService && this.channelService.isConversationActive(conversationId)) {
+      await this.channelService.abort(conversationId);
+      this.emitDone(conversationId);
+      return;
+    }
+
     const instance = this.activeSessions.get(conversationId);
     if (!instance) {
       logger.debug('No active session to abort', { conversationId });
@@ -1208,6 +1243,12 @@ export class ClaudeCodeService {
    * Terminate all active sessions (e.g., when app is closing)
    */
   async abortAll(): Promise<void> {
+    // Shut down channel service if active
+    if (this.channelService) {
+      await this.channelService.shutdown();
+      this.channelService = null;
+    }
+
     const conversationIds = Array.from(this.activeSessions.keys());
     logger.info('Terminating all active sessions for shutdown', { count: conversationIds.length });
 

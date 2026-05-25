@@ -80,4 +80,24 @@ export const MAIN_CONSTANTS = {
     /** Timeout for showing window if ready-to-show doesn't fire - 5 seconds */
     SHOW_TIMEOUT_MS: 5000,
   },
+  CHANNEL: {
+    /** PTY terminal columns */
+    PTY_COLS: 120,
+    /** PTY terminal rows */
+    PTY_ROWS: 40,
+    /** Timeout for trust dialog auto-accept */
+    TRUST_DIALOG_TIMEOUT_MS: 30000,
+    /** Maximum restart attempts for crashed sessions */
+    MAX_RESTART_ATTEMPTS: 10,
+    /** Base delay for exponential backoff on restart (ms) */
+    RESTART_BASE_DELAY_MS: 5000,
+    /** Long-poll timeout for bridge HTTP endpoints (ms) */
+    POLL_TIMEOUT_MS: 30000,
+    /** TTL for unanswered permission requests before auto-deny (ms) */
+    PERMISSION_TTL_MS: 600000,
+    /** Interval for polling usage data from JSONL files (ms) */
+    USAGE_POLL_INTERVAL_MS: 10000,
+    /** Session health check interval (ms) */
+    HEALTH_CHECK_INTERVAL_MS: 10000,
+  },
 } as const;
