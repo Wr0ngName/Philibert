@@ -64,6 +64,9 @@ async function main(): Promise<void> {
   const { default: logger } = await import('./utils/logger');
   debugLog('Importing window...');
   const { createWindow, getMainWindow } = await import('./window');
+  debugLog('Importing splash...');
+  const { createSplashWindow, updateSplashStatus, updateSplashVersion, closeSplashWindow } =
+    await import('./splash');
   debugLog('All imports completed');
 
   // Service instances
@@ -107,13 +110,19 @@ async function main(): Promise<void> {
     try {
       logger.info('Application ready');
 
+      // Show splash screen immediately for user feedback
+      createSplashWindow();
+      updateSplashVersion(app.getVersion());
+
       debugLog('Checking for credential migration completion...');
+      updateSplashStatus('Checking migrations...');
       const { finishCredentialMigration, migrateFromOldApp } = await import('./utils/migration');
       finishCredentialMigration();
 
       debugLog('Checking for old app data migration...');
       const migrationResult = migrateFromOldApp();
       if (migrationResult.needsCredentialRestart) {
+        closeSplashWindow();
         debugLog(`Credential migration restart needed for "${migrationResult.oldAppName}" — showing dialog`);
         dialog.showMessageBoxSync({
           type: 'info',
@@ -134,11 +143,13 @@ async function main(): Promise<void> {
       }
 
       debugLog('Calling initializeServices()...');
+      updateSplashStatus('Initializing services...');
 
       await initializeServices();
       debugLog('Services initialized');
 
       debugLog('Setting up IPC...');
+      updateSplashStatus('Setting up IPC...');
       ipcCleanup = setupIPC(
         {
           authService,
@@ -154,9 +165,19 @@ async function main(): Promise<void> {
       debugLog('IPC setup complete');
 
       debugLog('Creating window...');
+      updateSplashStatus('Loading interface...');
       const config = await configService.getConfig();
       const mainWindow = await createWindow({ logLevel: config.logLevel });
       debugLog(`Window created: ${mainWindow ? 'success' : 'null'}`);
+
+      // Close splash once main window is visible
+      if (mainWindow.isVisible()) {
+        closeSplashWindow();
+      } else {
+        mainWindow.once('show', () => {
+          closeSplashWindow();
+        });
+      }
 
       // Windows: ensure bundled dependencies are ready (download for online, extract git-bash)
       if (process.platform === 'win32') {
@@ -178,6 +199,7 @@ async function main(): Promise<void> {
         });
       }, 5000);
     } catch (error) {
+      closeSplashWindow();
       debugLog(`onReady() ERROR: ${error instanceof Error ? error.stack : String(error)}`);
       logger.error('Critical error during app startup:', error);
       dialog.showErrorBox(

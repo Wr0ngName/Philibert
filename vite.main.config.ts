@@ -1,5 +1,20 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import path from 'node:path';
+import fs from 'node:fs';
+
+function copyStaticFiles(files: { src: string; dest: string }[]): Plugin {
+  return {
+    name: 'copy-static-files',
+    writeBundle(options) {
+      const outDir = options.dir || path.dirname(options.file || '');
+      for (const { src, dest } of files) {
+        const target = path.resolve(outDir, dest);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(src, target);
+      }
+    },
+  };
+}
 
 // https://vitejs.dev/config
 export default defineConfig({
@@ -8,6 +23,11 @@ export default defineConfig({
       '@shared': path.resolve(__dirname, './src/shared'),
     },
   },
+  plugins: [
+    copyStaticFiles([
+      { src: 'src/main/splash.html', dest: 'splash.html' },
+    ]),
+  ],
   build: {
     rollupOptions: {
       external: [
