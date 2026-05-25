@@ -268,7 +268,8 @@ export class ChannelSession {
       const clean = stripAnsi(buffer);
 
       // Auto-accept startup dialogs (workspace trust, MCP server trust,
-      // development channels warning). All are menu selectors needing Enter.
+      // development channels warning, first-run theme picker).
+      // All are menu selectors needing Enter.
       // Cap at 5 to prevent infinite loops on unexpected dialogs.
       const MAX_STARTUP_DIALOGS = 5;
       if (this.startupDialogsAccepted < MAX_STARTUP_DIALOGS) {
@@ -282,7 +283,11 @@ export class ChannelSession {
           // Development channels warning
           normalized.includes('developmentchannels');
 
-        if (isStartupDialog && normalized.includes('entertoconfirm')) {
+        // First-run theme picker ("Choose the text style that looks best...")
+        // doesn't show "enter to confirm" but Enter selects the highlighted option.
+        const isThemePicker = normalized.includes('choosethetextstyle');
+
+        if ((isStartupDialog && normalized.includes('entertoconfirm')) || isThemePicker) {
           setTimeout(() => {
             if (this.ptyProcess) {
               this.ptyProcess.write('\r');
