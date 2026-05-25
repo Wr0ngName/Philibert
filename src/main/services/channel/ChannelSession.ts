@@ -21,6 +21,7 @@ import type { ChannelUsageData, ChannelModelTokens } from '../../../shared/types
 import { MAIN_CONSTANTS } from '../../constants/app';
 import { stripAnsi } from '../../utils/ansi';
 import logger from '../../utils/logger';
+import { getChannelSessionsDir } from '../../utils/resourcePaths';
 
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 
@@ -187,7 +188,7 @@ export class ChannelSession {
   }
 
   private get sessionDir(): string {
-    const dir = path.join(this.workingDirectory, '.channel-sessions', this.conversationId);
+    const dir = path.join(getChannelSessionsDir(), this.conversationId);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   }
@@ -205,6 +206,8 @@ export class ChannelSession {
     this.setupMcpJson();
     this.setupClaudeSettings();
 
+    const mcpJsonPath = path.join(this.sessionDir, '.mcp.json');
+
     const args = [
       '--dangerously-load-development-channels',
       'server:philibert',
@@ -212,6 +215,8 @@ export class ChannelSession {
       this.model,
       '--allowedTools',
       'mcp__philibert__reply',
+      '--mcp-config',
+      mcpJsonPath,
       '--verbose',
     ];
 
@@ -226,7 +231,7 @@ export class ChannelSession {
       env.BROWSER = '/bin/false';
     }
 
-    const cwd = this.sessionDir;
+    const cwd = this.workingDirectory;
 
     logger.info('Starting Claude Code channel session in PTY', {
       conversationId: this.conversationId,
@@ -476,7 +481,7 @@ export class ChannelSession {
 
   cleanupSessionDir(): void {
     try {
-      const dir = path.join(this.workingDirectory, '.channel-sessions', this.conversationId);
+      const dir = path.join(getChannelSessionsDir(), this.conversationId);
       if (fs.existsSync(dir)) {
         fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -531,7 +536,7 @@ export class ChannelSession {
     // Set workspace trust in global settings so Claude Code skips the trust dialog.
     // Claude Code stores per-project trust at projects[normalizedPath].hasTrustDialogAccepted
     const globalSettingsPath = path.join(CLAUDE_HOME, 'settings.json');
-    const projectKey = this.sessionDir.replace(/\\/g, '/');
+    const projectKey = this.workingDirectory.replace(/\\/g, '/');
 
     let globalSettings: Record<string, unknown> = {};
     try {

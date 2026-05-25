@@ -2,7 +2,10 @@
  * IPC handlers for conversation management
  */
 
-import { ipcMain } from 'electron';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+import { app, ipcMain } from 'electron';
 
 import { Conversation, IPC_CHANNELS } from '../../shared/types';
 import { ConfigurationError, ValidationError, ERROR_CODES } from '../errors';
@@ -151,6 +154,12 @@ export function setupConversationIPC(conversationService: ConversationService): 
       validateString(id, 'Conversation ID');
 
       await conversationService.delete(id);
+
+      const sessionDir = path.join(app.getPath('userData'), 'channel-sessions', id);
+      if (fs.existsSync(sessionDir)) {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        logger.info('Cleaned up channel session data', { conversationId: id });
+      }
     } catch (error) {
       logger.error('Failed to delete conversation', { error, id });
       throw new ConfigurationError(formatErrorMessage('Failed to delete conversation', error), ERROR_CODES.CONVERSATION_SAVE_FAILED, error);

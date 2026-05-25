@@ -184,3 +184,7 @@ export const ChannelPaths = {
 export function getClaudeConfigDir(): string {
   return path.join(app.getPath('userData'), 'claude-config');
 }
+
+export function getChannelSessionsDir(): string {
+  return path.join(app.getPath('userData'), 'channel-sessions');
+}
