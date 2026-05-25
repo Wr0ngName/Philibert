@@ -265,6 +265,11 @@ export class ChannelBridge {
 
     if (state.messageQueue.length > 0) {
       const messages = state.messageQueue.splice(0);
+      logger.info('Bridge poll returning messages', {
+        conversationId,
+        count: messages.length,
+        contentLengths: messages.map(m => m.content.length),
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ messages }));
       return;

@@ -218,6 +218,7 @@ export class ChannelSession {
       '--mcp-config',
       mcpJsonPath,
       '--verbose',
+      '--debug',
     ];
 
     const env: Record<string, string> = {
@@ -257,7 +258,12 @@ export class ChannelSession {
 
     let buffer = '';
 
+    const ptyLogPath = path.join(os.tmpdir(), `philibert-pty-${this.conversationId}.log`);
+    const ptyLogStream = fs.createWriteStream(ptyLogPath, { flags: 'a' });
+    logger.info('PTY output will be logged to', { path: ptyLogPath });
+
     this.ptyProcess.onData((data: string) => {
+      ptyLogStream.write(data);
       buffer += data;
       const clean = stripAnsi(buffer);
 

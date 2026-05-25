@@ -5,10 +5,9 @@
  * It bridges between Claude Code (MCP protocol) and the Philibert
  * main process (HTTP long-polling via ChannelBridge).
  *
- * IMPORTANT: Do NOT declare experimental claude/channel capabilities.
- * Claude Code gates channel notifications behind a feature flag when
- * the server declares that capability. Without it, notifications flow
- * through a simpler path that works with --dangerously-load-development-channels.
+ * Notifications are written directly to the transport (not via
+ * server.notification()) because Claude Code's channel protocol
+ * uses custom notification methods that the MCP SDK doesn't know about.
  *
  * Run as: node channel-server.cjs
  *
@@ -18,12 +17,17 @@
  *   PHILIBERT_CHANNEL_TOKEN      Bearer token for bridge authentication
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCNotification } from '@modelcontextprotocol/sdk/types.js';
 
 const BRIDGE_URL = process.env.PHILIBERT_BRIDGE_URL || 'http://127.0.0.1:8080';
 const CONVERSATION_ID = process.env.PHILIBERT_CONVERSATION_ID || 'default';
@@ -42,15 +46,35 @@ const INITIAL_BACKOFF_MS = 1000;
 
 let shuttingDown = false;
 
+const LOG_FILE = path.join(os.tmpdir(), `philibert-channel-server-${process.pid}.log`);
+const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+
 const log = (level: string, msg: string, extra?: Record<string, unknown>) => {
   const entry = { ts: new Date().toISOString(), level, msg, ...extra };
-  process.stderr.write(JSON.stringify(entry) + '\n');
+  const line = JSON.stringify(entry) + '\n';
+  process.stderr.write(line);
+  logStream.write(line);
 };
 
 const server = new Server(
   { name: 'philibert', version: '1.0.0' },
-  { capabilities: { tools: {} } },
+  {
+    capabilities: {
+      tools: {},
+      experimental: {
+        'claude/channel': {},
+        'claude/channel/permission': {},
+      },
+    },
+    instructions:
+      'You are connected to a chat UI via the Philibert channel. ' +
+      'Messages from the user arrive as channel notifications. ' +
+      'You MUST reply using the "reply" tool with the "text" parameter. ' +
+      'Do NOT write your response to stdout — always use the reply tool.',
+  },
 );
+
+let transport: StdioServerTransport;
 
 // Handle permission requests from Claude Code.
 // When Claude Code needs approval for a tool (Read, Bash, etc.), it sends a
@@ -149,6 +173,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
 });
 
+async function sendRawNotification(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<void> {
+  const notification: JSONRPCNotification = {
+    jsonrpc: '2.0',
+    method,
+    params,
+  };
+  await transport.send(notification);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -226,12 +262,9 @@ async function pollMessages(): Promise<void> {
 
       for (const msg of messages) {
         try {
-          await server.notification({
-            method: 'notifications/claude/channel',
-            params: {
-              content: msg.content,
-              meta: msg.meta || {},
-            },
+          await sendRawNotification('notifications/claude/channel', {
+            content: msg.content,
+            meta: msg.meta || {},
           });
           log('info', 'Pushed channel notification', {
             contentLength: msg.content.length,
@@ -278,12 +311,9 @@ async function pollVerdicts(): Promise<void> {
 
       for (const verdict of verdicts) {
         try {
-          await server.notification({
-            method: 'notifications/claude/channel/permission',
-            params: {
-              request_id: verdict.requestId,
-              behavior: verdict.behavior,
-            },
+          await sendRawNotification('notifications/claude/channel/permission', {
+            request_id: verdict.requestId,
+            behavior: verdict.behavior,
           });
           log('info', 'Pushed permission verdict', {
             requestId: verdict.requestId,
@@ -334,12 +364,17 @@ async function main(): Promise<void> {
     conversationId: CONVERSATION_ID,
   });
 
-  const transport = new StdioServerTransport();
+  transport = new StdioServerTransport();
   await server.connect(transport);
 
   log('info', 'Channel server connected via stdio');
 
   await waitForBridge();
+
+  // Wait for Claude Code to finish processing the initialize response
+  // and registering the channel notification handler. Without this delay,
+  // the first polled message arrives before the handler is set up (~13ms race).
+  await sleep(2000);
 
   await Promise.all([pollMessages(), pollVerdicts(), heartbeat()]);
 }
