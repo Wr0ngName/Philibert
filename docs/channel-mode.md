@@ -70,7 +70,14 @@ reference implementation use the same mechanism.
 
 ### Permission Flow
 
-When Claude Code needs user approval for a tool (Bash, file writes, etc.):
+Claude Code fires **both** an MCP channel permission notification **and** a
+terminal dialog simultaneously as racers — the first to respond wins via an
+internal atomic `claim()` mechanism (see `interactiveHandler.ts` in the CLI
+source). The MCP channel protocol is the primary path; the PTY dialog is gated
+behind feature flags (`KAIROS`/`tengu_harbor_permissions`) and serves as a
+fallback when those flags are closed.
+
+**Primary path (MCP channel protocol):**
 
 1. Claude Code sends `notifications/claude/channel/permission_request` to the
    MCP channel server
@@ -84,9 +91,15 @@ When Claude Code needs user approval for a tool (Bash, file writes, etc.):
 8. The channel server pushes `notifications/claude/channel/permission` to
    Claude Code, which proceeds or aborts
 
-There is also a **PTY fallback**: if Claude Code shows an interactive permission
-dialog in the terminal instead of using the MCP protocol, ChannelSession parses
-the PTY output and relays the dialog to the UI.
+**Fallback path (PTY dialog parsing):**
+
+If the MCP permission protocol is unavailable (feature gates closed),
+ChannelSession detects the interactive "Do you want to proceed?" dialog in the
+PTY output and relays it to the UI. To prevent duplicate permission dialogs
+when both paths fire, ChannelService delays the PTY emission by 1.5 seconds
+and suppresses it if an MCP request for the same tool arrived in the meantime.
+Verdict routing also tries the MCP bridge first, falling back to PTY only if
+the bridge has no matching pending permission.
 
 ### Usage Tracking
 

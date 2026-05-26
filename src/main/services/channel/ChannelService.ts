@@ -26,6 +26,13 @@ import { ChannelSession } from './ChannelSession';
 
 const TURN_DONE_DELAY_MS = 2000;
 
+// Claude Code fires BOTH an MCP channel permission notification AND a terminal
+// dialog simultaneously.  MCP is the protocol path; the PTY dialog is a
+// fallback for users whose feature gates (KAIROS/tengu_harbor_permissions)
+// are closed.  MCP arrives before the PTY dialog (stdio vs terminal render),
+// so when PTY detects a dialog we simply check if MCP already handled it.
+const PERMISSION_DEDUP_WINDOW_MS = 10000;
+
 interface ActiveChannelSession {
   session: ChannelSession;
   usageTimer: ReturnType<typeof setInterval> | null;
@@ -41,6 +48,10 @@ export class ChannelService {
   private configService: ConfigService;
   private notificationService: NotificationService;
   private authValidator: AuthValidator;
+
+  // MCP permission dedup: tracks recent MCP permission requests so the PTY
+  // fallback can detect duplicates.  Keyed by `${conversationId}:${toolName}`.
+  private recentMcpPermissions: Map<string, number> = new Map();
 
   constructor(
     configService: ConfigService,
@@ -109,16 +120,20 @@ export class ChannelService {
     actionId: string,
     behavior: 'allow' | 'deny',
   ): void {
-    // Try PTY permission first (for dialogs detected from PTY output)
+    // Try MCP bridge first (primary path)
+    if (this.bridge && this.bridge.submitPermissionVerdict(conversationId, actionId, behavior)) {
+      return;
+    }
+
+    // Fall back to PTY permission (for when MCP protocol is unavailable)
     const active = this.sessions.get(conversationId);
     if (active?.session.submitPtyPermission(actionId, behavior)) {
       return;
     }
 
-    // Fall back to bridge permission (for MCP channel protocol requests)
-    if (this.bridge) {
-      this.bridge.submitPermissionVerdict(conversationId, actionId, behavior);
-    }
+    logger.warn('Permission verdict not routed — no matching request', {
+      conversationId, actionId, behavior,
+    });
   }
 
   async abort(conversationId: string): Promise<void> {
@@ -266,6 +281,11 @@ export class ChannelService {
     conversationId: string,
     request: PermissionRequestPayload,
   ): void {
+    // Record for PTY dedup — PTY fallback checks this before emitting
+    const dedupKey = `${conversationId}:${request.toolName}`;
+    this.recentMcpPermissions.set(dedupKey, Date.now());
+    this.pruneRecentMcpPermissions();
+
     const action: PendingAction = {
       type: 'bash-command',
       id: request.requestId,
@@ -280,9 +300,21 @@ export class ChannelService {
       },
     };
 
+    logger.info('Permission request via MCP channel protocol', {
+      conversationId,
+      requestId: request.requestId,
+      toolName: request.toolName,
+    });
+
     this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
   }
 
+  /**
+   * PTY permission fallback.  MCP arrives before the PTY dialog (stdio is
+   * faster than terminal render + buffer pattern matching).  If MCP already
+   * raised this permission, suppress the PTY duplicate.  If not, MCP is
+   * unavailable (feature gates closed) and PTY is the only path.
+   */
   private handlePermissionRequestFromPty(
     conversationId: string,
     requestId: string,
@@ -290,6 +322,19 @@ export class ChannelService {
     description: string,
     inputPreview: string,
   ): void {
+    const dedupKey = `${conversationId}:${toolName}`;
+    const mcpTs = this.recentMcpPermissions.get(dedupKey);
+    if (mcpTs && Date.now() - mcpTs < PERMISSION_DEDUP_WINDOW_MS) {
+      logger.info('Suppressed PTY permission — MCP already active', {
+        conversationId, toolName, requestId,
+      });
+      return;
+    }
+
+    logger.info('Emitting PTY permission as fallback (MCP not available)', {
+      conversationId, toolName, requestId,
+    });
+
     const base = {
       id: requestId,
       toolName,
@@ -313,6 +358,15 @@ export class ChannelService {
     }
 
     this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
+  }
+
+  private pruneRecentMcpPermissions(): void {
+    const now = Date.now();
+    for (const [key, ts] of this.recentMcpPermissions) {
+      if (now - ts > PERMISSION_DEDUP_WINDOW_MS * 3) {
+        this.recentMcpPermissions.delete(key);
+      }
+    }
   }
 
   private pollUsage(conversationId: string): void {
