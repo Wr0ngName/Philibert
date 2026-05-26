@@ -120,32 +120,58 @@ function handleInput(event: Event) {
 
 <template>
   <div class="border-t border-surface-200 dark:border-surface-700 p-4 bg-white dark:bg-surface-800">
-    <div class="flex gap-3 items-end">
-      <div class="flex-1 relative">
-        <!-- Command autocomplete dropdown -->
-        <CommandAutocomplete
-          ref="autocompleteRef"
-          :commands="slashCommands"
-          :input-value="message"
-          :show="showAutocomplete"
-          :has-conversation="hasMessages"
-          @select="handleCommandSelect"
-        />
+    <div class="flex gap-3 items-start">
+      <div class="flex-1">
+        <div class="relative">
+          <!-- Command autocomplete dropdown -->
+          <CommandAutocomplete
+            ref="autocompleteRef"
+            :commands="slashCommands"
+            :input-value="message"
+            :show="showAutocomplete"
+            :has-conversation="hasMessages"
+            @select="handleCommandSelect"
+          />
 
-        <textarea
-          ref="inputRef"
-          v-model="message"
-          :placeholder="placeholder"
-          :disabled="isDisabled"
-          class="input-base resize-none min-h-[44px] max-h-[200px] pr-4"
-          :class="{ 'opacity-60 cursor-not-allowed': isDisabled }"
-          rows="1"
-          @keydown="handleKeydown"
-          @input="handleInput"
-        />
+          <textarea
+            ref="inputRef"
+            v-model="message"
+            :placeholder="placeholder"
+            :disabled="isDisabled"
+            class="input-base resize-none min-h-[44px] max-h-[200px] pr-4"
+            :class="{ 'opacity-60 cursor-not-allowed': isDisabled }"
+            rows="1"
+            @keydown="handleKeydown"
+            @input="handleInput"
+          />
+        </div>
+
+        <!-- Hints -->
+        <div class="flex items-center justify-between mt-1.5 text-xs text-surface-400 dark:text-surface-500">
+          <span
+            v-if="showAutocomplete"
+            class="text-primary-500 dark:text-primary-400"
+          >
+            Use ↑↓ to navigate, Tab/Enter to select
+          </span>
+          <span
+            v-else-if="isTypingCommand"
+            class="text-primary-500 dark:text-primary-400"
+          >
+            Type a command name...
+          </span>
+          <span v-else>Press Enter to send, Shift+Enter for new line</span>
+          <div class="flex items-center gap-2">
+            <span
+              v-if="executionMode === 'channel'"
+              class="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800"
+            >Channel</span>
+            <span v-if="message.length > 0">{{ message.length }} characters</span>
+          </div>
+        </div>
       </div>
 
-      <div class="flex gap-2">
+      <div class="flex gap-2 h-[44px] items-center">
         <Button
           v-if="isLoading"
           variant="danger"
@@ -175,28 +201,6 @@ function handleInput(event: Event) {
           Send
         </Button>
       </div>
-    </div>
-
-    <!-- Hints -->
-    <div class="flex items-center justify-between mt-2 text-xs text-surface-400 dark:text-surface-500">
-      <span
-        v-if="showAutocomplete"
-        class="text-primary-500 dark:text-primary-400"
-      >
-        Use ↑↓ to navigate, Tab/Enter to select
-      </span>
-      <span
-        v-else-if="isTypingCommand"
-        class="text-primary-500 dark:text-primary-400"
-      >
-        Type a command name...
-      </span>
-      <span v-else>Press Enter to send, Shift+Enter for new line</span>
-      <span
-        v-if="executionMode === 'channel'"
-        class="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800"
-      >Channel</span>
-      <span v-if="message.length > 0">{{ message.length }} characters</span>
     </div>
   </div>
 </template>
