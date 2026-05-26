@@ -289,7 +289,9 @@ export class ChannelSession {
           // Theme picker ("Choose the text style that looks best...")
           normalized.includes('choosethetextstyle') ||
           // Login method selector ("Select login method:")
-          normalized.includes('selectloginmethod');
+          normalized.includes('selectloginmethod') ||
+          // Post-login continuation ("Login successful. Press Enter to continue")
+          normalized.includes('loginsuccessful');
 
         if ((isStartupDialog && normalized.includes('entertoconfirm')) || isFirstRunDialog) {
           setTimeout(() => {
@@ -548,31 +550,40 @@ export class ChannelSession {
       fs.chmodSync(settingsPath, 0o600);
     }
 
-    // Determine Claude Code's config directory: CLAUDE_CONFIG_DIR from auth
-    // env if set (full credentials path), otherwise ~/.claude (token-only path).
+    // Claude Code's getGlobalClaudeFile() resolves the config file as:
+    //   1. If CLAUDE_CONFIG_DIR is set: join(CLAUDE_CONFIG_DIR, '.claude.json')
+    //   2. Legacy: if ~/.claude/.config.json exists, use that
+    //   3. Default: join(homedir(), '.claude.json')   ← NOT ~/.claude/.claude.json
+    // Ref: src/utils/env.ts in https://github.com/codeaashu/claude-code
     const claudeConfigDir = this.authEnv.CLAUDE_CONFIG_DIR || CLAUDE_HOME;
     fs.mkdirSync(claudeConfigDir, { recursive: true });
 
-    // Mark onboarding as completed in .claude.json so Claude Code skips
-    // the first-run flow (theme picker, login method selector, etc.).
-    const claudeJsonPath = path.join(claudeConfigDir, '.claude.json');
+    const legacyConfigPath = path.join(CLAUDE_HOME, '.config.json');
+    let claudeJsonPath: string;
+    if (this.authEnv.CLAUDE_CONFIG_DIR) {
+      claudeJsonPath = path.join(this.authEnv.CLAUDE_CONFIG_DIR, '.claude.json');
+    } else if (fs.existsSync(legacyConfigPath)) {
+      claudeJsonPath = legacyConfigPath;
+    } else {
+      claudeJsonPath = path.join(os.homedir(), '.claude.json');
+    }
+
     let claudeJson: Record<string, unknown> = {};
     try {
       if (fs.existsSync(claudeJsonPath)) {
         claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8'));
       }
     } catch {
-      logger.warn('Could not parse .claude.json, will overwrite');
+      logger.warn('Could not parse Claude config, will overwrite', { path: claudeJsonPath });
     }
 
     if (!claudeJson.hasCompletedOnboarding) {
       claudeJson.hasCompletedOnboarding = true;
       claudeJson.theme = claudeJson.theme || 'dark';
       fs.writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2) + '\n');
+      logger.info('Pre-wrote hasCompletedOnboarding to Claude config', { path: claudeJsonPath });
     }
 
-    // Set workspace trust in global settings so Claude Code skips the trust dialog.
-    // Claude Code stores per-project trust at projects[normalizedPath].hasTrustDialogAccepted
     const globalSettingsPath = path.join(claudeConfigDir, 'settings.json');
     const projectKey = this.workingDirectory.replace(/\\/g, '/');
 
