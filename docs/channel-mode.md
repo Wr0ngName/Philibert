@@ -180,10 +180,16 @@ the allowlist gate for local development.
 2. Creates a session directory at `{userData}/channel-sessions/{conversationId}/`
 3. Writes `.mcp.json` with the channel server config (command, args, env vars)
 4. Writes `.claude/settings.local.json` with tool permissions
-5. Sets workspace trust in `~/.claude/settings.json` for the working directory
-6. Spawns Claude Code in a PTY via `node-pty`
-7. Auto-accepts startup dialogs (workspace trust, dev channels warning)
-8. Channel server starts, connects to bridge, begins polling
+5. Pre-writes `hasCompletedOnboarding: true` and `theme: dark` to
+   `.claude.json` in the Claude config directory, skipping the entire first-run
+   onboarding flow (theme picker, login method selector, OAuth flow).
+   Claude Code ignores `CLAUDE_CODE_OAUTH_TOKEN` during onboarding and forces
+   an interactive OAuth flow that cannot be completed in channel mode.
+6. Sets workspace trust in the global `settings.json` for the working directory
+7. Spawns Claude Code in a PTY via `node-pty`
+8. Auto-accepts startup dialogs (workspace trust, dev channels warning,
+   and as a fallback: theme picker, login method selector)
+9. Channel server starts, connects to bridge, begins polling
 
 ### Shutdown
 
@@ -218,3 +224,8 @@ max 10 attempts). After 10 consecutive failures, it reports an error to the UI.
   switching mid-conversation requires starting a new session
 - PTY output parsing for dialogs is inherently fragile (ANSI stripping +
   pattern matching); the MCP permission protocol is the preferred path
+- Claude Code's first-run onboarding ignores `CLAUDE_CODE_OAUTH_TOKEN` and
+  forces an interactive OAuth flow (browser + paste-code prompt). The
+  `hasCompletedOnboarding` pre-write in `.claude.json` is essential to skip
+  this; the PTY auto-accept patterns for theme picker and login selector are
+  kept only as a fallback
