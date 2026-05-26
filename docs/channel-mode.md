@@ -180,17 +180,21 @@ the allowlist gate for local development.
 2. Creates a session directory at `{userData}/channel-sessions/{conversationId}/`
 3. Writes `.mcp.json` with the channel server config (command, args, env vars)
 4. Writes `.claude/settings.local.json` with tool permissions
-5. Pre-writes `hasCompletedOnboarding: true` and `theme: dark` to
-   `.claude.json` in the Claude config directory. Claude Code's
-   `hasCompletedOnboarding` flag (set to `true` after a successful login in
-   normal CLI usage) gates whether `showSetupScreens()` runs. Since Philibert
-   provides credentials externally (`CLAUDE_CONFIG_DIR` with `.credentials.json`
-   or `CLAUDE_CODE_OAUTH_TOKEN`), the setup screens are unnecessary.
-   Source: `src/utils/config.ts` and `src/entrypoints/cli.tsx` in Claude Code.
+5. Pre-writes `hasCompletedOnboarding: true` and `theme: dark` to Claude
+   Code's config file. The file path must match Claude Code's
+   `getGlobalClaudeFile()` resolution (`src/utils/env.ts`):
+   - If `CLAUDE_CONFIG_DIR` is set: `$CLAUDE_CONFIG_DIR/.claude.json`
+   - Legacy: if `~/.claude/.config.json` exists, use that
+   - Default (no `CLAUDE_CONFIG_DIR`): `~/.claude.json` (homedir, **not**
+     `~/.claude/.claude.json`)
+   This flag gates `showSetupScreens()` in `src/interactiveHelpers.tsx`.
+   Since Philibert provides credentials externally, the setup screens
+   (theme picker, login selector) are unnecessary.
 6. Sets workspace trust in the global `settings.json` for the working directory
 7. Spawns Claude Code in a PTY via `node-pty`
 8. Auto-accepts startup dialogs (workspace trust, dev channels warning,
-   and as a fallback: theme picker, login method selector)
+   and as a fallback: theme picker, login method selector, post-login
+   "Press Enter to continue")
 9. Channel server starts, connects to bridge, begins polling
 
 ### Shutdown
@@ -226,9 +230,11 @@ max 10 attempts). After 10 consecutive failures, it reports an error to the UI.
   switching mid-conversation requires starting a new session
 - PTY output parsing for dialogs is inherently fragile (ANSI stripping +
   pattern matching); the MCP permission protocol is the preferred path
-- `hasCompletedOnboarding` in `.claude.json` gates Claude Code's
-  `showSetupScreens()`. Without it, the CLI enters interactive onboarding
-  (theme picker, login selector) even when credentials are available via
-  env vars. Pre-writing it aligns with what Claude Code sets after a
-  successful login. PTY auto-accept patterns are kept as a fallback.
+- `hasCompletedOnboarding` in Claude Code's config file gates
+  `showSetupScreens()`. The config file path varies by context — see
+  `getGlobalClaudeFile()` in `src/utils/env.ts`: without `CLAUDE_CONFIG_DIR`
+  it resolves to `~/.claude.json` (homedir), **not** `~/.claude/.claude.json`.
+  Writing to the wrong path was the root cause of onboarding persisting in
+  v0.14.5. PTY auto-accept patterns (theme picker, login selector, post-login
+  "Press Enter") are kept as a fallback.
   Ref: https://github.com/codeaashu/claude-code
