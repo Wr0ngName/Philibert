@@ -21,7 +21,7 @@ import type { ChannelUsageData, ChannelModelTokens } from '../../../shared/types
 import { MAIN_CONSTANTS } from '../../constants/app';
 import { stripAnsi } from '../../utils/ansi';
 import logger from '../../utils/logger';
-import { getChannelSessionsDir } from '../../utils/resourcePaths';
+import { getChannelSessionsDir, WindowsPaths } from '../../utils/resourcePaths';
 
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 
@@ -615,7 +615,11 @@ export class ChannelSession {
 
   private setupMcpJson(): void {
     const mcpJsonPath = path.join(this.sessionDir, '.mcp.json');
-    const nodeCmd = process.platform === 'win32' ? 'node.exe' : 'node';
+    let nodeCmd = 'node';
+    if (process.platform === 'win32') {
+      const bundled = WindowsPaths.getBundledNodeExe();
+      nodeCmd = fs.existsSync(bundled) ? bundled : 'node.exe';
+    }
 
     const newConfig = {
       mcpServers: {
