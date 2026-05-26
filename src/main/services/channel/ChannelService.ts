@@ -277,6 +277,13 @@ export class ChannelService {
     conversationId: string,
     request: PermissionRequestPayload,
   ): void {
+    if (this.pendingPermissions.has(request.toolName)) {
+      logger.debug('MCP permission suppressed — PTY already raised', {
+        conversationId, toolName: request.toolName,
+      });
+      return;
+    }
+
     this.pendingPermissions.add(request.toolName);
 
     const action: PendingAction = {
