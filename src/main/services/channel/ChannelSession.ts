@@ -164,6 +164,7 @@ export class ChannelSession {
   private fatalErrorEmitted = false;
   private cachedSessionId: string | null = null;
   private pendingPtyPermissions: Set<string> = new Set();
+  private emittedPtyErrors: Set<string> = new Set();
 
   constructor(options: ChannelSessionOptions) {
     this.conversationId = options.conversationId;
@@ -202,6 +203,7 @@ export class ChannelSession {
     this.running = false;
     this.startupDialogsAccepted = 0;
     this.cachedSessionId = null;
+    this.emittedPtyErrors.clear();
 
     this.setupMcpJson();
     this.setupClaudeSettings();
@@ -380,38 +382,52 @@ export class ChannelSession {
         }
       }
 
-      // Detect recoverable PTY errors and propagate to UI
+      // Detect recoverable PTY errors by matching the exact error messages
+      // that Claude Code CLI renders (from src/services/api/errors.ts).
+      // Two guards against false positives:
+      //   1. Phrases are CLI-specific (not generic keywords like "401").
+      //   2. The match must appear near the END of the data chunk (within
+      //      the last 300 chars). Real CLI errors are the last thing
+      //      rendered; conversation text mentioning errors would have
+      //      more content following.
       if (this.onPtyError) {
-        const lower = clean.toLowerCase();
-        const errorPatterns: Array<{ test: () => boolean; message: string }> = [
+        const recentLower = stripAnsi(data).toLowerCase();
+        const MAX_TRAILING = 300;
+        const errorPatterns: Array<{ phrases: string[]; message: string }> = [
           {
-            test: () => lower.includes('rate limit') || lower.includes('429') || lower.includes('too many requests'),
+            phrases: ["you've hit your", "you're out of extra usage", 'request rejected (429)', 'extra usage is required'],
             message: 'Rate limited by API. Claude Code will retry automatically.',
           },
           {
-            test: () => lower.includes('unauthorized') || lower.includes('401') || lower.includes('session expired') || lower.includes('authentication failed'),
+            phrases: ['please run /login', 'oauth token revoked', 'does not have access to claude code', 'failed to authenticate', 'invalid api key', 'authentication error'],
             message: 'Authentication error. Please check your credentials in Settings.',
           },
           {
-            test: () => lower.includes('quota exceeded') || (lower.includes('credit') && lower.includes('limit')),
+            phrases: ['credit balance is too low', 'belongs to a disabled organization'],
             message: 'Usage quota exceeded. Check your subscription status.',
           },
           {
-            test: () => (lower.includes('context window') && lower.includes('exceeded')) || lower.includes('prompt is too long'),
+            phrases: ['prompt is too long', 'request too large'],
             message: 'Context window exceeded. Start a new conversation to continue.',
           },
         ];
 
         for (const pattern of errorPatterns) {
-          if (pattern.test()) {
-            logger.warn('Channel PTY error detected', {
-              conversationId: this.conversationId,
-              error: pattern.message,
-              output: clean.slice(0, 300),
-            });
-            this.onPtyError(this.conversationId, pattern.message);
-            break;
-          }
+          if (this.emittedPtyErrors.has(pattern.message)) continue;
+          const matched = pattern.phrases.find((p) => recentLower.includes(p));
+          if (!matched) continue;
+          const pos = recentLower.lastIndexOf(matched);
+          if (recentLower.length - pos > MAX_TRAILING) continue;
+
+          this.emittedPtyErrors.add(pattern.message);
+          logger.warn('Channel PTY error detected', {
+            conversationId: this.conversationId,
+            error: pattern.message,
+            matchedPhrase: matched,
+            output: recentLower.slice(Math.max(0, pos - 50), pos + matched.length + 100),
+          });
+          this.onPtyError(this.conversationId, pattern.message);
+          break;
         }
       }
 
@@ -438,6 +454,43 @@ export class ChannelSession {
         exitCode,
         signal,
       });
+
+      // On abnormal exit, check the tail of the buffer for CLI error
+      // phrases. The match must be near the end (last 500 chars) since
+      // CLI errors are the final output before exit.
+      if (exitCode && exitCode !== 0 && this.onPtyError) {
+        const tail = stripAnsi(buffer.slice(-2000)).toLowerCase();
+        const MAX_TRAILING = 500;
+        const exitErrors: Array<{ phrases: string[]; message: string }> = [
+          {
+            phrases: ['please run /login', 'oauth token revoked', 'does not have access to claude code', 'failed to authenticate', 'invalid api key'],
+            message: 'Authentication error. Please check your credentials in Settings.',
+          },
+          {
+            phrases: ['credit balance is too low', 'belongs to a disabled organization'],
+            message: 'Usage quota exceeded. Check your subscription status.',
+          },
+        ];
+        for (const pattern of exitErrors) {
+          if (this.emittedPtyErrors.has(pattern.message)) continue;
+          const matched = pattern.phrases.find((p) => tail.includes(p));
+          if (!matched) continue;
+          const pos = tail.lastIndexOf(matched);
+          if (tail.length - pos > MAX_TRAILING) continue;
+
+          this.emittedPtyErrors.add(pattern.message);
+          logger.warn('Channel PTY error detected on exit', {
+            conversationId: this.conversationId,
+            exitCode,
+            error: pattern.message,
+            matchedPhrase: matched,
+            output: tail.slice(Math.max(0, pos - 50)),
+          });
+          this.onPtyError(this.conversationId, pattern.message);
+          break;
+        }
+      }
+
       this.ptyProcess = null;
     });
   }
