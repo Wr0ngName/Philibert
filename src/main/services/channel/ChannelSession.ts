@@ -211,7 +211,6 @@ export class ChannelSession {
     const args = [
       '--dangerously-load-development-channels',
       'server:philibert',
-      '--no-first-run',
       '--model',
       this.model,
       '--allowedTools',
