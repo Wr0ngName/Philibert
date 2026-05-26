@@ -181,10 +181,12 @@ the allowlist gate for local development.
 3. Writes `.mcp.json` with the channel server config (command, args, env vars)
 4. Writes `.claude/settings.local.json` with tool permissions
 5. Pre-writes `hasCompletedOnboarding: true` and `theme: dark` to
-   `.claude.json` in the Claude config directory, skipping the entire first-run
-   onboarding flow (theme picker, login method selector, OAuth flow).
-   Claude Code ignores `CLAUDE_CODE_OAUTH_TOKEN` during onboarding and forces
-   an interactive OAuth flow that cannot be completed in channel mode.
+   `.claude.json` in the Claude config directory. Claude Code's
+   `hasCompletedOnboarding` flag (set to `true` after a successful login in
+   normal CLI usage) gates whether `showSetupScreens()` runs. Since Philibert
+   provides credentials externally (`CLAUDE_CONFIG_DIR` with `.credentials.json`
+   or `CLAUDE_CODE_OAUTH_TOKEN`), the setup screens are unnecessary.
+   Source: `src/utils/config.ts` and `src/entrypoints/cli.tsx` in Claude Code.
 6. Sets workspace trust in the global `settings.json` for the working directory
 7. Spawns Claude Code in a PTY via `node-pty`
 8. Auto-accepts startup dialogs (workspace trust, dev channels warning,
@@ -224,8 +226,9 @@ max 10 attempts). After 10 consecutive failures, it reports an error to the UI.
   switching mid-conversation requires starting a new session
 - PTY output parsing for dialogs is inherently fragile (ANSI stripping +
   pattern matching); the MCP permission protocol is the preferred path
-- Claude Code's first-run onboarding ignores `CLAUDE_CODE_OAUTH_TOKEN` and
-  forces an interactive OAuth flow (browser + paste-code prompt). The
-  `hasCompletedOnboarding` pre-write in `.claude.json` is essential to skip
-  this; the PTY auto-accept patterns for theme picker and login selector are
-  kept only as a fallback
+- `hasCompletedOnboarding` in `.claude.json` gates Claude Code's
+  `showSetupScreens()`. Without it, the CLI enters interactive onboarding
+  (theme picker, login selector) even when credentials are available via
+  env vars. Pre-writing it aligns with what Claude Code sets after a
+  successful login. PTY auto-accept patterns are kept as a fallback.
+  Ref: https://github.com/codeaashu/claude-code
