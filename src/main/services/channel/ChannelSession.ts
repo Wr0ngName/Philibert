@@ -315,63 +315,85 @@ export class ChannelSession {
       // protocol isn't used). Detects Claude Code's interactive tool approval
       // dialogs and surfaces them to the Philibert UI, or auto-accepts
       // philibert MCP tools that should already be pre-allowed.
+      //
+      // Tool section isolation: Claude Code uses ● (U+25CF) before tool call
+      // names and ← (U+2190) before channel messages. To avoid false positives
+      // from "philibert" appearing in channel message labels (←philibert:...),
+      // we extract the text between the last ● and the dialog prompt and only
+      // check THAT section for tool identity.
       {
         const normalized = clean.replace(/\s+/g, '').toLowerCase();
-        if (normalized.includes('doyouwanttoproceed') && normalized.includes('yes')) {
-          // Auto-accept philibert MCP tool dialogs (pre-allowed by settings)
-          if (normalized.includes('philibert')) {
-            setTimeout(() => {
-              if (this.ptyProcess) {
-                this.ptyProcess.write('\r');
-                logger.info('Auto-accepted philibert MCP tool dialog', {
-                  conversationId: this.conversationId,
-                });
-              }
-            }, 300);
-            buffer = '';
-            return;
-          }
+        const dialogPos = normalized.lastIndexOf('doyouwanttoproceed');
+        if (dialogPos >= 0 && normalized.includes('yes', dialogPos)) {
+          // Positional guard: dialog must be near the end of output
+          if (normalized.length - dialogPos <= 500) {
+            // Find the dialog position in clean text (with whitespace preserved)
+            // for accurate tool name extraction
+            const cleanLower = clean.toLowerCase();
+            const dialogPosClean = cleanLower.lastIndexOf('do you want to proceed');
+            const precedingClean = dialogPosClean >= 0 ? clean.slice(0, dialogPosClean) : clean;
+            const lastToolMarker = precedingClean.lastIndexOf('●');
+            const toolSection = lastToolMarker >= 0
+              ? precedingClean.slice(lastToolMarker)
+              : precedingClean.slice(-300);
 
-          // Relay other tool permission dialogs to the UI
-          if (this.onPermissionRequest) {
-            const toolMatch = clean.match(/(\w+)\(([^)]*)\)/);
-            if (toolMatch) {
-              const requestId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-              const toolName = toolMatch[1];
-              const toolArgs = toolMatch[2];
-              this.pendingPtyPermissions.add(requestId);
-              this.onPermissionRequest(
-                this.conversationId,
-                requestId,
-                toolName,
-                `${toolName}(${toolArgs})`,
-                toolArgs,
-              );
-              logger.info('Relayed PTY permission dialog to UI', {
-                conversationId: this.conversationId,
-                requestId,
-                toolName,
-                toolArgs: toolArgs.slice(0, 100),
-              });
+            // Auto-accept philibert MCP tool dialogs (pre-allowed by settings)
+            if (toolSection.toLowerCase().includes('philibert')) {
+              setTimeout(() => {
+                if (this.ptyProcess) {
+                  this.ptyProcess.write('\r');
+                  logger.info('Auto-accepted philibert MCP tool dialog', {
+                    conversationId: this.conversationId,
+                    toolSection: toolSection.slice(0, 200),
+                  });
+                }
+              }, 300);
               buffer = '';
               return;
+            }
+
+            // Relay other tool permission dialogs to the UI
+            if (this.onPermissionRequest) {
+              const toolMatch = toolSection.match(/(\w+)\(([^)]*)\)/);
+              if (toolMatch) {
+                const requestId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                const toolName = toolMatch[1];
+                const toolArgs = toolMatch[2];
+                this.pendingPtyPermissions.add(requestId);
+                this.onPermissionRequest(
+                  this.conversationId,
+                  requestId,
+                  toolName,
+                  `${toolName}(${toolArgs})`,
+                  toolArgs,
+                );
+                logger.info('Relayed PTY permission dialog to UI', {
+                  conversationId: this.conversationId,
+                  requestId,
+                  toolName,
+                  toolArgs: toolArgs.slice(0, 100),
+                });
+                buffer = '';
+                return;
+              }
             }
           }
         }
       }
 
-      // Detect CLI errors that indicate channel mode isn't supported
+      // Detect CLI errors that indicate channel mode isn't supported.
+      // Uses recent data only (not accumulated buffer) to avoid false positives.
       if (!this.fatalErrorEmitted) {
-        const lower = clean.toLowerCase();
+        const recentLowerFatal = stripAnsi(data).toLowerCase();
         if (
-          lower.includes('unknown option') ||
-          lower.includes('unrecognized option') ||
-          lower.includes('error: command not found')
+          recentLowerFatal.includes('unknown option') ||
+          recentLowerFatal.includes('unrecognized option') ||
+          recentLowerFatal.includes('error: command not found')
         ) {
           this.fatalErrorEmitted = true;
           logger.error('Claude CLI does not support channel mode flags', {
             conversationId: this.conversationId,
-            output: clean.slice(0, 500),
+            output: recentLowerFatal.slice(0, 500),
           });
           if (this.onFatalError) {
             this.onFatalError(

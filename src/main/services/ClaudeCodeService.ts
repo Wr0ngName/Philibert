@@ -1150,6 +1150,13 @@ export class ClaudeCodeService {
     alwaysAllow?: boolean,
     chosenScope?: import('../../shared/types').PermissionScope,
   ): Promise<void> {
+    // Channel mode: route to channel service (PTY-based permission handling)
+    if (this.channelService && this.channelService.isConversationActive(conversationId)) {
+      this.channelService.handlePermissionResponse(conversationId, actionId, 'allow');
+      this.emitToolExecuted(conversationId, actionId);
+      return;
+    }
+
     const instance = this.activeSessions.get(conversationId);
     if (instance) {
       instance.permissionManager.handleActionResponse({
@@ -1171,6 +1178,12 @@ export class ClaudeCodeService {
    * Reject a pending action (called from IPC handler)
    */
   async rejectAction(conversationId: string, actionId: string, message?: string): Promise<void> {
+    // Channel mode: route to channel service (PTY-based permission handling)
+    if (this.channelService && this.channelService.isConversationActive(conversationId)) {
+      this.channelService.handlePermissionResponse(conversationId, actionId, 'deny');
+      return;
+    }
+
     const instance = this.activeSessions.get(conversationId);
     if (instance) {
       instance.permissionManager.handleActionResponse({
