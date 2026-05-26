@@ -283,11 +283,15 @@ export class ChannelSession {
           // Development channels warning
           normalized.includes('developmentchannels');
 
-        // First-run theme picker ("Choose the text style that looks best...")
-        // doesn't show "enter to confirm" but Enter selects the highlighted option.
-        const isThemePicker = normalized.includes('choosethetextstyle');
+        // First-run dialogs without "enter to confirm" text — Enter
+        // selects the currently highlighted menu option.
+        const isFirstRunDialog =
+          // Theme picker ("Choose the text style that looks best...")
+          normalized.includes('choosethetextstyle') ||
+          // Login method selector ("Select login method:")
+          normalized.includes('selectloginmethod');
 
-        if ((isStartupDialog && normalized.includes('entertoconfirm')) || isThemePicker) {
+        if ((isStartupDialog && normalized.includes('entertoconfirm')) || isFirstRunDialog) {
           setTimeout(() => {
             if (this.ptyProcess) {
               this.ptyProcess.write('\r');
@@ -544,9 +548,32 @@ export class ChannelSession {
       fs.chmodSync(settingsPath, 0o600);
     }
 
+    // Determine Claude Code's config directory: CLAUDE_CONFIG_DIR from auth
+    // env if set (full credentials path), otherwise ~/.claude (token-only path).
+    const claudeConfigDir = this.authEnv.CLAUDE_CONFIG_DIR || CLAUDE_HOME;
+    fs.mkdirSync(claudeConfigDir, { recursive: true });
+
+    // Mark onboarding as completed in .claude.json so Claude Code skips
+    // the first-run flow (theme picker, login method selector, etc.).
+    const claudeJsonPath = path.join(claudeConfigDir, '.claude.json');
+    let claudeJson: Record<string, unknown> = {};
+    try {
+      if (fs.existsSync(claudeJsonPath)) {
+        claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8'));
+      }
+    } catch {
+      logger.warn('Could not parse .claude.json, will overwrite');
+    }
+
+    if (!claudeJson.hasCompletedOnboarding) {
+      claudeJson.hasCompletedOnboarding = true;
+      claudeJson.theme = claudeJson.theme || 'dark';
+      fs.writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2) + '\n');
+    }
+
     // Set workspace trust in global settings so Claude Code skips the trust dialog.
     // Claude Code stores per-project trust at projects[normalizedPath].hasTrustDialogAccepted
-    const globalSettingsPath = path.join(CLAUDE_HOME, 'settings.json');
+    const globalSettingsPath = path.join(claudeConfigDir, 'settings.json');
     const projectKey = this.workingDirectory.replace(/\\/g, '/');
 
     let globalSettings: Record<string, unknown> = {};
