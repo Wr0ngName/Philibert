@@ -26,13 +26,6 @@ import { ChannelSession } from './ChannelSession';
 
 const TURN_DONE_DELAY_MS = 2000;
 
-// Claude Code fires BOTH an MCP channel permission notification AND a terminal
-// dialog simultaneously.  MCP is the protocol path; the PTY dialog is a
-// fallback for users whose feature gates (KAIROS/tengu_harbor_permissions)
-// are closed.  MCP arrives before the PTY dialog (stdio vs terminal render),
-// so when PTY detects a dialog we simply check if MCP already handled it.
-const PERMISSION_DEDUP_WINDOW_MS = 10000;
-
 interface ActiveChannelSession {
   session: ChannelSession;
   usageTimer: ReturnType<typeof setInterval> | null;
@@ -49,9 +42,16 @@ export class ChannelService {
   private notificationService: NotificationService;
   private authValidator: AuthValidator;
 
-  // MCP permission dedup: tracks recent MCP permission requests so the PTY
-  // fallback can detect duplicates.  Keyed by `${conversationId}:${toolName}`.
-  private recentMcpPermissions: Map<string, number> = new Map();
+  // MCP permission availability — session-level property.
+  // null = not yet determined, true = MCP handles permissions,
+  // false = MCP unavailable so PTY is the sole path.
+  // Determined deterministically on the first permission request via
+  // a channel-server probe (no timers).
+  private mcpAvailable: boolean | null = null;
+
+  // Resolvers waiting for the first MCP permission to arrive at the bridge.
+  // All resolved with `true` when handlePermissionRequestFromBridge fires.
+  private mcpArrivalResolvers: Array<(value: boolean) => void> = [];
 
   constructor(
     configService: ConfigService,
@@ -281,10 +281,16 @@ export class ChannelService {
     conversationId: string,
     request: PermissionRequestPayload,
   ): void {
-    // Record for PTY dedup — PTY fallback checks this before emitting
-    const dedupKey = `${conversationId}:${request.toolName}`;
-    this.recentMcpPermissions.set(dedupKey, Date.now());
-    this.pruneRecentMcpPermissions();
+    this.mcpAvailable = true;
+
+    for (const resolve of this.mcpArrivalResolvers) resolve(true);
+    this.mcpArrivalResolvers = [];
+
+    logger.info('Permission request via MCP channel protocol', {
+      conversationId,
+      requestId: request.requestId,
+      toolName: request.toolName,
+    });
 
     const action: PendingAction = {
       type: 'bash-command',
@@ -300,21 +306,9 @@ export class ChannelService {
       },
     };
 
-    logger.info('Permission request via MCP channel protocol', {
-      conversationId,
-      requestId: request.requestId,
-      toolName: request.toolName,
-    });
-
     this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
   }
 
-  /**
-   * PTY permission fallback.  MCP arrives before the PTY dialog (stdio is
-   * faster than terminal render + buffer pattern matching).  If MCP already
-   * raised this permission, suppress the PTY duplicate.  If not, MCP is
-   * unavailable (feature gates closed) and PTY is the only path.
-   */
   private handlePermissionRequestFromPty(
     conversationId: string,
     requestId: string,
@@ -322,16 +316,74 @@ export class ChannelService {
     description: string,
     inputPreview: string,
   ): void {
-    const dedupKey = `${conversationId}:${toolName}`;
-    const mcpTs = this.recentMcpPermissions.get(dedupKey);
-    if (mcpTs && Date.now() - mcpTs < PERMISSION_DEDUP_WINDOW_MS) {
-      logger.info('Suppressed PTY permission — MCP already active', {
+    if (this.mcpAvailable === true) {
+      logger.debug('PTY permission suppressed — MCP mode active', {
         conversationId, toolName, requestId,
       });
       return;
     }
 
-    logger.info('Emitting PTY permission as fallback (MCP not available)', {
+    if (this.mcpAvailable === false) {
+      this.emitPtyPermission(conversationId, requestId, toolName, description, inputPreview);
+      return;
+    }
+
+    // MCP availability unknown — check bridge synchronously first
+    if (this.bridge?.hasPendingPermissionForTool(conversationId, toolName)) {
+      this.mcpAvailable = true;
+      logger.info('PTY permission suppressed — MCP already in bridge', {
+        conversationId, toolName, requestId,
+      });
+      return;
+    }
+
+    // Wait for MCP deterministically: race MCP arrival vs channel-server probe
+    void this.waitForMcpCheck(conversationId, requestId, toolName, description, inputPreview);
+  }
+
+  private async waitForMcpCheck(
+    conversationId: string,
+    requestId: string,
+    toolName: string,
+    description: string,
+    inputPreview: string,
+  ): Promise<void> {
+    const mcpHandled = await new Promise<boolean>((resolve) => {
+      this.mcpArrivalResolvers.push(resolve);
+
+      if (!this.bridge) {
+        resolve(false);
+        return;
+      }
+
+      this.bridge.requestMcpProbe(conversationId).then((status) => {
+        resolve(status.permissionsForwarded > 0);
+      });
+    });
+
+    if (mcpHandled) {
+      this.mcpAvailable = true;
+      logger.info('PTY permission suppressed — MCP confirmed by probe', {
+        conversationId, toolName, requestId,
+      });
+      return;
+    }
+
+    this.mcpAvailable = false;
+    logger.info('Permission mode locked: PTY (MCP unavailable via probe)', {
+      conversationId, toolName,
+    });
+    this.emitPtyPermission(conversationId, requestId, toolName, description, inputPreview);
+  }
+
+  private emitPtyPermission(
+    conversationId: string,
+    requestId: string,
+    toolName: string,
+    description: string,
+    inputPreview: string,
+  ): void {
+    logger.info('Permission request via PTY fallback', {
       conversationId, toolName, requestId,
     });
 
@@ -358,15 +410,6 @@ export class ChannelService {
     }
 
     this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
-  }
-
-  private pruneRecentMcpPermissions(): void {
-    const now = Date.now();
-    for (const [key, ts] of this.recentMcpPermissions) {
-      if (now - ts > PERMISSION_DEDUP_WINDOW_MS * 3) {
-        this.recentMcpPermissions.delete(key);
-      }
-    }
   }
 
   private pollUsage(conversationId: string): void {

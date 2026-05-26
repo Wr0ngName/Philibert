@@ -46,6 +46,8 @@ interface ConversationState {
   verdictQueue: PermissionVerdict[];
   verdictEmitter: EventEmitter;
   pendingPermissions: Map<string, PendingPermission>;
+  mcpProbeRequested: boolean;
+  mcpProbeResolvers: Array<(status: { permissionsForwarded: number }) => void>;
 }
 
 export class ChannelBridge {
@@ -153,6 +155,24 @@ export class ChannelBridge {
     return true;
   }
 
+  hasPendingPermissionForTool(conversationId: string, toolName: string): boolean {
+    const state = this.conversations.get(conversationId);
+    if (!state) return false;
+    for (const perm of state.pendingPermissions.values()) {
+      if (perm.toolName === toolName) return true;
+    }
+    return false;
+  }
+
+  requestMcpProbe(conversationId: string): Promise<{ permissionsForwarded: number }> {
+    const state = this.ensureConversation(conversationId);
+    state.mcpProbeRequested = true;
+    state.messageEmitter.emit('message');
+    return new Promise((resolve) => {
+      state.mcpProbeResolvers.push(resolve);
+    });
+  }
+
   removeConversation(conversationId: string): void {
     this.conversations.delete(conversationId);
   }
@@ -166,6 +186,8 @@ export class ChannelBridge {
         verdictQueue: [],
         verdictEmitter: new EventEmitter(),
         pendingPermissions: new Map(),
+        mcpProbeRequested: false,
+        mcpProbeResolvers: [],
       };
       this.conversations.set(conversationId, state);
     }
@@ -227,6 +249,15 @@ export class ChannelBridge {
       return;
     }
 
+    const mcpStatusMatch = path.match(/^\/api\/channel\/mcp-status\/(.+)$/);
+    if (method === 'POST' && mcpStatusMatch) {
+      const convId = decodeURIComponent(mcpStatusMatch[1]);
+      this.readBody(req, (body) => {
+        this.handleMcpStatusResponse(convId, body, res);
+      });
+      return;
+    }
+
     const permPollMatch = path.match(/^\/api\/channel\/permission\/poll\/(.+)$/);
     if (method === 'GET' && permPollMatch) {
       const convId = decodeURIComponent(permPollMatch[1]);
@@ -263,29 +294,34 @@ export class ChannelBridge {
   ): void {
     const state = this.ensureConversation(conversationId);
 
-    if (state.messageQueue.length > 0) {
+    const respond = () => {
       const messages = state.messageQueue.splice(0);
-      logger.info('Bridge poll returning messages', {
-        conversationId,
-        count: messages.length,
-        contentLengths: messages.map(m => m.content.length),
-      });
+      const mcpProbe = state.mcpProbeRequested;
+      if (mcpProbe) state.mcpProbeRequested = false;
+      if (messages.length > 0) {
+        logger.info('Bridge poll returning messages', {
+          conversationId,
+          count: messages.length,
+          contentLengths: messages.map(m => m.content.length),
+        });
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ messages }));
+      res.end(JSON.stringify({ messages, ...(mcpProbe ? { mcpProbe: true } : {}) }));
+    };
+
+    if (state.messageQueue.length > 0 || state.mcpProbeRequested) {
+      respond();
       return;
     }
 
     const timer = setTimeout(() => {
       state.messageEmitter.removeAllListeners('message');
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ messages: [] }));
+      respond();
     }, timeoutMs);
 
     state.messageEmitter.once('message', () => {
       clearTimeout(timer);
-      const messages = state.messageQueue.splice(0);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ messages }));
+      respond();
     });
   }
 
@@ -374,6 +410,31 @@ export class ChannelBridge {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ verdicts }));
     });
+  }
+
+  private handleMcpStatusResponse(
+    conversationId: string,
+    body: Record<string, unknown>,
+    res: http.ServerResponse,
+  ): void {
+    const state = this.conversations.get(conversationId);
+    const permissionsForwarded = typeof body.permissionsForwarded === 'number'
+      ? body.permissionsForwarded : 0;
+
+    logger.info('MCP status received from channel server', {
+      conversationId,
+      permissionsForwarded,
+    });
+
+    if (state && state.mcpProbeResolvers.length > 0) {
+      for (const resolve of state.mcpProbeResolvers) {
+        resolve({ permissionsForwarded });
+      }
+      state.mcpProbeResolvers = [];
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
   }
 
   private expireStalePermissions(state: ConversationState): void {

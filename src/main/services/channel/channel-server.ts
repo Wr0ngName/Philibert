@@ -45,6 +45,7 @@ const MAX_BACKOFF_MS = 30000;
 const INITIAL_BACKOFF_MS = 1000;
 
 let shuttingDown = false;
+let permissionsForwarded = 0;
 
 const LOG_FILE = path.join(os.tmpdir(), `philibert-channel-server-${process.pid}.log`);
 const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
@@ -98,6 +99,8 @@ server.fallbackNotificationHandler = async (notification: { method: string; para
       toolName,
       description: description.slice(0, 100),
     });
+
+    permissionsForwarded++;
 
     try {
       const resp = await fetch(
@@ -257,8 +260,32 @@ async function pollMessages(): Promise<void> {
 
       backoffMs = 0;
 
-      const data = (await resp.json()) as { messages?: Array<{ content: string; meta: Record<string, string> }> };
+      const data = (await resp.json()) as {
+        messages?: Array<{ content: string; meta: Record<string, string> }>;
+        mcpProbe?: boolean;
+      };
       const messages = data.messages || [];
+
+      if (data.mcpProbe) {
+        // Wait one event-loop I/O cycle so any pending MCP notification
+        // from Claude Code's stdio is processed before we report status.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        try {
+          await fetch(
+            `${BRIDGE_URL}/api/channel/mcp-status/${encodeURIComponent(CONVERSATION_ID)}`,
+            {
+              method: 'POST',
+              headers: HEADERS,
+              body: JSON.stringify({ permissionsForwarded }),
+            },
+          );
+          log('info', 'MCP probe response sent', { permissionsForwarded });
+        } catch (err) {
+          log('error', 'Failed to send MCP probe response', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
 
       for (const msg of messages) {
         try {
