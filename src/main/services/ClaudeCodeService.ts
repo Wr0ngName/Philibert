@@ -283,7 +283,7 @@ export class ClaudeCodeService {
           this.notificationService,
         );
       }
-      await this.channelService.sendMessage(conversationId, message, workingDirectory);
+      await this.channelService.sendMessage(conversationId, message, workingDirectory, resumeSessionId);
       return;
     }
 

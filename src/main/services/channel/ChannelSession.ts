@@ -131,6 +131,8 @@ export type ChannelSessionPermissionCallback = (
   inputPreview: string,
 ) => void;
 
+export type ChannelSessionIdCallback = (conversationId: string, sessionId: string) => void;
+
 export interface ChannelSessionOptions {
   conversationId: string;
   workingDirectory: string;
@@ -140,9 +142,11 @@ export interface ChannelSessionOptions {
   channelServerScript: string;
   model: string;
   authEnv: Record<string, string>;
+  resumeSessionId?: string;
   onFatalError?: ChannelSessionErrorCallback;
   onPtyError?: ChannelSessionErrorCallback;
   onPermissionRequest?: ChannelSessionPermissionCallback;
+  onSessionId?: ChannelSessionIdCallback;
 }
 
 export class ChannelSession {
@@ -157,14 +161,17 @@ export class ChannelSession {
   private onFatalError?: ChannelSessionErrorCallback;
   private onPtyError?: ChannelSessionErrorCallback;
   private onPermissionRequest?: ChannelSessionPermissionCallback;
+  private onSessionId?: ChannelSessionIdCallback;
 
   private ptyProcess: IPty | null = null;
   private running = false;
   private startupDialogsAccepted = 0;
   private fatalErrorEmitted = false;
   private cachedSessionId: string | null = null;
+  private resumeSessionId: string | null = null;
   private pendingPtyPermissions: Set<string> = new Set();
   private emittedPtyErrors: Set<string> = new Set();
+  private sessionIdTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: ChannelSessionOptions) {
     this.conversationId = options.conversationId;
@@ -175,9 +182,11 @@ export class ChannelSession {
     this.channelServerScript = options.channelServerScript;
     this.model = options.model;
     this.authEnv = options.authEnv;
+    this.resumeSessionId = options.resumeSessionId || null;
     this.onFatalError = options.onFatalError;
     this.onPtyError = options.onPtyError;
     this.onPermissionRequest = options.onPermissionRequest;
+    this.onSessionId = options.onSessionId;
   }
 
   get isRunning(): boolean {
@@ -202,8 +211,16 @@ export class ChannelSession {
 
     this.running = false;
     this.startupDialogsAccepted = 0;
+    // Preserve previously discovered session ID for crash recovery restarts
+    if (this.cachedSessionId && !this.resumeSessionId) {
+      this.resumeSessionId = this.cachedSessionId;
+    }
     this.cachedSessionId = null;
     this.emittedPtyErrors.clear();
+    if (this.sessionIdTimer) {
+      clearInterval(this.sessionIdTimer);
+      this.sessionIdTimer = null;
+    }
 
     this.setupMcpJson();
     this.setupClaudeSettings();
@@ -223,6 +240,10 @@ export class ChannelSession {
       '--debug',
     ];
 
+    if (this.resumeSessionId) {
+      args.push('--resume', this.resumeSessionId);
+    }
+
     const env: Record<string, string> = {
       ...process.env as Record<string, string>,
       ...this.authEnv,
@@ -241,6 +262,7 @@ export class ChannelSession {
       cwd,
       claudeCli: this.claudeCliPath,
       model: this.model,
+      resumeSessionId: this.resumeSessionId?.slice(0, 20) || null,
     });
 
     this.ptyProcess = pty.spawn(this.claudeCliPath, args, {
@@ -257,6 +279,8 @@ export class ChannelSession {
       conversationId: this.conversationId,
       pid: this.ptyProcess.pid,
     });
+
+    this.startSessionIdPolling();
 
     let buffer = '';
 
@@ -471,6 +495,11 @@ export class ChannelSession {
     });
 
     this.ptyProcess.onExit(({ exitCode, signal }) => {
+      if (this.sessionIdTimer) {
+        clearInterval(this.sessionIdTimer);
+        this.sessionIdTimer = null;
+      }
+
       logger.info('Claude Code channel session exited', {
         conversationId: this.conversationId,
         exitCode,
@@ -519,6 +548,11 @@ export class ChannelSession {
 
   async stop(): Promise<void> {
     this.running = false;
+
+    if (this.sessionIdTimer) {
+      clearInterval(this.sessionIdTimer);
+      this.sessionIdTimer = null;
+    }
 
     if (!this.ptyProcess) return;
 
@@ -738,6 +772,39 @@ export class ChannelSession {
       channelServerScript: this.channelServerScript,
       bridgeUrl: this.bridgeUrl,
     });
+  }
+
+  private startSessionIdPolling(): void {
+    let attempts = 0;
+    const MAX_ATTEMPTS = 30;
+
+    this.sessionIdTimer = setInterval(() => {
+      attempts++;
+      const sessionId = this.discoverSessionId();
+
+      if (sessionId) {
+        clearInterval(this.sessionIdTimer!);
+        this.sessionIdTimer = null;
+        this.resumeSessionId = sessionId;
+        if (this.onSessionId) {
+          this.onSessionId(this.conversationId, sessionId);
+        }
+        logger.info('Discovered channel session ID', {
+          conversationId: this.conversationId,
+          sessionId: sessionId.slice(0, 20) + '...',
+        });
+        return;
+      }
+
+      if (attempts >= MAX_ATTEMPTS) {
+        clearInterval(this.sessionIdTimer!);
+        this.sessionIdTimer = null;
+        logger.warn('Failed to discover channel session ID after polling', {
+          conversationId: this.conversationId,
+          attempts,
+        });
+      }
+    }, 1000);
   }
 
   private discoverSessionId(): string | null {

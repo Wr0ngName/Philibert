@@ -75,6 +75,7 @@ export class ChannelService {
     conversationId: string,
     message: string,
     workingDirectory: string,
+    resumeSessionId?: string,
   ): Promise<void> {
     try {
       const bridge = await this.ensureBridge();
@@ -84,7 +85,7 @@ export class ChannelService {
         if (active) {
           this.cleanupActiveSession(conversationId);
         }
-        active = await this.createSession(conversationId, workingDirectory, bridge);
+        active = await this.createSession(conversationId, workingDirectory, bridge, resumeSessionId);
       }
 
       bridge.pushMessage(conversationId, message);
@@ -159,6 +160,7 @@ export class ChannelService {
     conversationId: string,
     workingDirectory: string,
     bridge: ChannelBridge,
+    resumeSessionId?: string,
   ): Promise<ActiveChannelSession> {
     const claudeCliPath = ClaudeCliPaths.findBundledCli();
     if (!claudeCliPath) {
@@ -186,6 +188,10 @@ export class ChannelService {
       channelServerScript,
       model: selectedModel || 'sonnet',
       authEnv,
+      resumeSessionId,
+      onSessionId: (convId, sessionId) => {
+        this.send(IPC_CHANNELS.CLAUDE_SESSION_ID, convId, sessionId);
+      },
       onFatalError: (convId, errorMsg) => {
         this.send(IPC_CHANNELS.CLAUDE_ERROR, convId, errorMsg);
         this.send(IPC_CHANNELS.CLAUDE_DONE, convId);
