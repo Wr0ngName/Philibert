@@ -83,7 +83,8 @@ fallback when those flags are closed.
    MCP channel server
 2. The channel server POSTs to `POST /api/channel/permission/request/:convId`
 3. ChannelBridge stores the pending permission and invokes the callback
-4. ChannelService emits `CLAUDE_TOOL_USE` IPC (same as SDK mode)
+4. ChannelService emits `CLAUDE_TOOL_USE` IPC (same as SDK mode) and resolves
+   a per-tool Promise signal with `true`
 5. User approves or denies in the Philibert UI
 6. ChannelService calls `bridge.submitPermissionVerdict()`
 7. The channel server long-polls `GET /api/channel/permission/poll/:convId`
@@ -93,14 +94,46 @@ fallback when those flags are closed.
 
 **Fallback path (PTY dialog parsing):**
 
-If the MCP permission protocol is unavailable (feature gates closed),
-ChannelSession detects the interactive "Do you want to proceed?" dialog in the
-PTY output and relays it to the UI.
+Channel mode always has both MCP and PTY. PTY detects the interactive
+"Do you want to proceed?" dialog in the PTY output but does **not** emit
+directly. Instead, PTY awaits the MCP signal (a per-tool Promise):
 
-**Deduplication:** MCP always runs first. PTY defers one I/O cycle
-(`setImmediate`) then checks what MCP already raised — it only emits
-permissions MCP didn't. Verdict routing tries the MCP bridge first,
-falling back to PTY.
+- If MCP emitted (`true`): PTY is suppressed. MCP handled it.
+- If MCP resolved `false` (forwarding failed): PTY emits as fallback.
+
+This is pure event-driven coordination via Promises — no timers, no
+races, deterministic regardless of arrival order. MCP always wins when
+available; PTY only activates when MCP explicitly signals failure.
+
+**MCP failure recovery:** If the channel server fails to POST the
+permission request to the bridge (network error, bridge down), it POSTs
+to `POST /api/channel/permission/failed/:convId` instead. The bridge
+invokes the failure callback, which resolves the signal with `false`,
+triggering the PTY fallback path.
+
+**Verdict routing:** tries the MCP bridge first (`submitPermissionVerdict`),
+falling back to PTY (`submitPtyPermission`).
+
+### Error Handling
+
+Claude Code's channel protocol defines **only** three notification types:
+messages, permission requests, and permission verdicts. There are **no error
+notifications** in the protocol (no quota, rate limit, auth, or status
+notifications via MCP).
+
+All errors are detected via **PTY output pattern matching** in ChannelSession:
+
+| Error Type | PTY Pattern | User Message |
+|------------|-------------|--------------|
+| Rate limit | "you've hit your", "request rejected (429)" | Rate limit reached |
+| Auth | "please run /login", "oauth token revoked" | Authentication error |
+| Quota | "credit balance is too low" | Quota exceeded |
+| Org | "belongs to a disabled organization" | Organization disabled |
+| Context | "prompt is too long", "request too large" | Context limit reached |
+
+Errors emit `CLAUDE_ERROR` + `CLAUDE_DONE` IPC events. Fatal errors (CLI
+incompatibility) also clean up the session. A dedup Set prevents the same
+error from firing multiple times.
 
 ### Usage Tracking
 

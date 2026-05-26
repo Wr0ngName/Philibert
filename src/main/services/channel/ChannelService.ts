@@ -34,6 +34,11 @@ interface ActiveChannelSession {
   turnDoneTimer: ReturnType<typeof setTimeout> | null;
 }
 
+interface McpSignal {
+  promise: Promise<boolean>;
+  resolve: (emitted: boolean) => void;
+}
+
 export class ChannelService {
   private bridge: ChannelBridge | null = null;
   private sessions: Map<string, ActiveChannelSession> = new Map();
@@ -42,10 +47,9 @@ export class ChannelService {
   private notificationService: NotificationService;
   private authValidator: AuthValidator;
 
-  // Dedup: tracks tool names with a pending permission dialog.
-  // MCP always runs first. PTY defers (setImmediate) then only
-  // raises what MCP didn't. Cleared on user verdict.
-  private pendingPermissions = new Set<string>();
+  // Per-tool signal: MCP resolves it when done. PTY awaits it
+  // to decide whether to emit as fallback.
+  private mcpSignals = new Map<string, McpSignal>();
 
   constructor(
     configService: ConfigService,
@@ -69,6 +73,10 @@ export class ChannelService {
 
     this.bridge.setPermissionRequestCallback((conversationId, request) => {
       this.handlePermissionRequestFromBridge(conversationId, request);
+    });
+
+    this.bridge.setPermissionFailedCallback((conversationId, toolName) => {
+      this.handlePermissionFailed(conversationId, toolName);
     });
 
     await this.bridge.start();
@@ -114,7 +122,7 @@ export class ChannelService {
     actionId: string,
     behavior: 'allow' | 'deny',
   ): void {
-    this.pendingPermissions.clear();
+    this.mcpSignals.clear();
 
     // Try MCP bridge first (primary path)
     if (this.bridge && this.bridge.submitPermissionVerdict(conversationId, actionId, behavior)) {
@@ -165,6 +173,17 @@ export class ChannelService {
   isConversationActive(conversationId: string): boolean {
     const active = this.sessions.get(conversationId);
     return !!active && active.session.isRunning;
+  }
+
+  private getOrCreateMcpSignal(toolName: string): McpSignal {
+    let signal = this.mcpSignals.get(toolName);
+    if (!signal) {
+      let resolve!: (emitted: boolean) => void;
+      const promise = new Promise<boolean>((r) => { resolve = r; });
+      signal = { promise, resolve };
+      this.mcpSignals.set(toolName, signal);
+    }
+    return signal;
   }
 
   private async createSession(
@@ -277,28 +296,9 @@ export class ChannelService {
     conversationId: string,
     request: PermissionRequestPayload,
   ): void {
-    if (this.pendingPermissions.has(request.toolName)) {
-      logger.debug('MCP permission suppressed — PTY already raised', {
-        conversationId, toolName: request.toolName,
-      });
-      return;
-    }
-
-    this.pendingPermissions.add(request.toolName);
-
-    const action: PendingAction = {
-      type: 'bash-command',
-      id: request.requestId,
-      toolName: request.toolName,
-      description: request.description,
-      input: { command: request.inputPreview },
-      status: 'pending',
-      timestamp: Date.now(),
-      details: {
-        command: request.inputPreview,
-        workingDirectory: '',
-      },
-    };
+    const action = this.buildPermissionAction(
+      request.requestId, request.toolName, request.description, request.inputPreview,
+    );
 
     logger.info('Permission request via MCP', {
       conversationId,
@@ -307,6 +307,14 @@ export class ChannelService {
     });
 
     this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
+    this.getOrCreateMcpSignal(request.toolName).resolve(true);
+  }
+
+  private handlePermissionFailed(conversationId: string, toolName: string): void {
+    logger.warn('MCP permission forwarding failed — PTY fallback will handle', {
+      conversationId, toolName,
+    });
+    this.getOrCreateMcpSignal(toolName).resolve(false);
   }
 
   private handlePermissionRequestFromPty(
@@ -316,16 +324,19 @@ export class ChannelService {
     description: string,
     inputPreview: string,
   ): void {
-    // MCP always runs first. Defer one I/O cycle, then only raise
-    // what MCP didn't.
-    setImmediate(() => {
-      if (this.pendingPermissions.has(toolName)) {
-        logger.debug('PTY permission suppressed — MCP already raised', {
+    const signal = this.getOrCreateMcpSignal(toolName);
+
+    signal.promise.then((mcpEmitted) => {
+      if (mcpEmitted) {
+        logger.debug('PTY permission suppressed — MCP handled it', {
           conversationId, toolName, requestId,
         });
         return;
       }
-      this.pendingPermissions.add(toolName);
+
+      logger.info('Permission request via PTY fallback', {
+        conversationId, toolName, requestId,
+      });
       this.emitPtyPermission(conversationId, requestId, toolName, description, inputPreview);
     });
   }
@@ -337,10 +348,16 @@ export class ChannelService {
     description: string,
     inputPreview: string,
   ): void {
-    logger.info('Permission request via PTY fallback', {
-      conversationId, toolName, requestId,
-    });
+    const action = this.buildPermissionAction(requestId, toolName, description, inputPreview);
+    this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
+  }
 
+  private buildPermissionAction(
+    requestId: string,
+    toolName: string,
+    description: string,
+    inputPreview: string,
+  ): PendingAction {
     const base = {
       id: requestId,
       toolName,
@@ -350,20 +367,18 @@ export class ChannelService {
       timestamp: Date.now(),
     };
 
-    let action: PendingAction;
-    const toolLower = toolName.toLowerCase();
-
-    if (toolLower === 'read') {
-      action = { ...base, type: 'read-file', details: { filePath: inputPreview } };
-    } else if (toolLower === 'edit') {
-      action = { ...base, type: 'file-edit', details: { filePath: inputPreview, originalContent: '', newContent: '', diff: '' } };
-    } else if (toolLower === 'write') {
-      action = { ...base, type: 'file-create', details: { filePath: inputPreview, content: '' } };
-    } else {
-      action = { ...base, type: 'bash-command', details: { command: inputPreview, workingDirectory: '' } };
+    switch (toolName) {
+      case 'Read':
+      case 'Glob':
+      case 'Grep':
+        return { ...base, type: 'read-file', details: { filePath: inputPreview } };
+      case 'Edit':
+        return { ...base, type: 'file-edit', details: { filePath: inputPreview, originalContent: '', newContent: '', diff: '' } };
+      case 'Write':
+        return { ...base, type: 'file-create', details: { filePath: inputPreview, content: '' } };
+      default:
+        return { ...base, type: 'bash-command', details: { command: inputPreview, workingDirectory: '' } };
     }
-
-    this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
   }
 
   private pollUsage(conversationId: string): void {
@@ -485,6 +500,8 @@ export class ChannelService {
       clearTimeout(active.turnDoneTimer);
       active.turnDoneTimer = null;
     }
+
+    this.mcpSignals.clear();
 
     active.session.stop().catch((err) => {
       logger.warn('Error stopping channel session', {

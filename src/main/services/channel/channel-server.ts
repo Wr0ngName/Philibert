@@ -114,11 +114,13 @@ server.fallbackNotificationHandler = async (notification: { method: string; para
           status: resp.status,
           body: await resp.text(),
         });
+        await reportPermissionFailed(toolName);
       }
     } catch (err) {
       log('error', 'Permission request forwarding failed', {
         error: err instanceof Error ? err.message : String(err),
       });
+      await reportPermissionFailed(toolName);
     }
   } else {
     log('debug', 'Unhandled notification', { method: notification.method });
@@ -183,6 +185,23 @@ async function sendRawNotification(
     params,
   };
   await transport.send(notification);
+}
+
+async function reportPermissionFailed(toolName: string): Promise<void> {
+  try {
+    await fetch(
+      `${BRIDGE_URL}/api/channel/permission/failed/${encodeURIComponent(CONVERSATION_ID)}`,
+      {
+        method: 'POST',
+        headers: HEADERS,
+        body: JSON.stringify({ toolName }),
+      },
+    );
+  } catch (err) {
+    log('error', 'Failed to report permission failure to bridge', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 function sleep(ms: number): Promise<void> {

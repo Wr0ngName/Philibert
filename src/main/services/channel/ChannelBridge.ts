@@ -22,6 +22,12 @@ export type PermissionRequestCallback = (
   request: PermissionRequestPayload,
 ) => void;
 
+/** Callback invoked when the channel server failed to forward a permission request. */
+export type PermissionFailedCallback = (
+  conversationId: string,
+  toolName: string,
+) => void;
+
 export interface PermissionRequestPayload {
   requestId: string;
   toolName: string;
@@ -55,6 +61,7 @@ export class ChannelBridge {
   private conversations: Map<string, ConversationState> = new Map();
   private onReply: ReplyCallback | null = null;
   private onPermissionRequest: PermissionRequestCallback | null = null;
+  private onPermissionFailed: PermissionFailedCallback | null = null;
 
   constructor() {
     this.token = crypto.randomBytes(32).toString('hex');
@@ -66,6 +73,10 @@ export class ChannelBridge {
 
   setPermissionRequestCallback(cb: PermissionRequestCallback): void {
     this.onPermissionRequest = cb;
+  }
+
+  setPermissionFailedCallback(cb: PermissionFailedCallback): void {
+    this.onPermissionFailed = cb;
   }
 
   async start(): Promise<{ port: number }> {
@@ -223,6 +234,20 @@ export class ChannelBridge {
       const convId = decodeURIComponent(permReqMatch[1]);
       this.readBody(req, (body) => {
         this.handlePermissionRequest(convId, body, res);
+      });
+      return;
+    }
+
+    const permFailMatch = path.match(/^\/api\/channel\/permission\/failed\/(.+)$/);
+    if (method === 'POST' && permFailMatch) {
+      const convId = decodeURIComponent(permFailMatch[1]);
+      this.readBody(req, (body) => {
+        const toolName = typeof body.toolName === 'string' ? body.toolName : '';
+        if (this.onPermissionFailed) {
+          this.onPermissionFailed(convId, toolName);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
       });
       return;
     }

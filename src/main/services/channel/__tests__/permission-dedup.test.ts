@@ -1,5 +1,9 @@
 /**
- * Feature tests: permission deduplication between MCP and PTY paths.
+ * Feature tests: MCP primary, PTY fallback via Promise signal.
+ *
+ * Channel mode always has both MCP and PTY. MCP is primary — it emits
+ * and resolves a signal. PTY awaits the signal: if MCP emitted, PTY
+ * is suppressed; if MCP didn't emit, PTY emits as fallback.
  *
  * Uses real ChannelService and ChannelBridge (no internal mocking).
  * Only external boundaries are mocked: electron, logger, fs, node-pty.
@@ -107,11 +111,41 @@ function postPermission(
   });
 }
 
-function flushImmediate(): Promise<void> {
+function postFailure(
+  port: number,
+  token: string,
+  convId: string,
+  toolName: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ toolName });
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path: `/api/channel/permission/failed/${encodeURIComponent(convId)}`,
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        res.resume();
+        res.on('end', () => resolve());
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-describe('Permission dedup: MCP first, PTY fallback', () => {
+describe('Channel mode permissions: MCP primary, PTY fallback', () => {
   let service: ChannelService;
   let mockSend: (channel: string, ...args: unknown[]) => boolean;
   let mockSendFn: ReturnType<typeof vi.fn>;
@@ -157,44 +191,45 @@ describe('Permission dedup: MCP first, PTY fallback', () => {
     );
   }
 
-  it('MCP arrives first → PTY is suppressed', async () => {
+  it('MCP emits the permission dialog', async () => {
     await triggerMcp('Bash');
     expect(toolUseCalls()).toHaveLength(1);
-
-    triggerPty('Bash');
-    await flushImmediate();
-
-    expect(toolUseCalls()).toHaveLength(1);
+    expect(toolUseCalls()[0][2]).toMatchObject({ toolName: 'Bash' });
   });
 
-  it('PTY arrives when MCP did not raise → PTY emits', async () => {
+  it('PTY waits for MCP — does not emit on its own', async () => {
     triggerPty('Bash');
-    await flushImmediate();
+    await flushMicrotasks();
+    expect(toolUseCalls()).toHaveLength(0);
+  });
+
+  it('PTY first, then MCP → MCP emits, PTY suppressed', async () => {
+    triggerPty('Bash');
+    await triggerMcp('Bash');
+    await flushMicrotasks();
 
     expect(toolUseCalls()).toHaveLength(1);
     expect(toolUseCalls()[0][2]).toMatchObject({ toolName: 'Bash' });
   });
 
-  it('MCP arrives after PTY already emitted → MCP is suppressed', async () => {
-    triggerPty('Bash');
-    await flushImmediate();
-    expect(toolUseCalls()).toHaveLength(1);
-
+  it('MCP first, then PTY → MCP already emitted, PTY suppressed', async () => {
     await triggerMcp('Bash');
+    triggerPty('Bash');
+    await flushMicrotasks();
+
     expect(toolUseCalls()).toHaveLength(1);
   });
 
-  it('different tools are not deduplicated', async () => {
+  it('different tools each get their own MCP emit', async () => {
     await triggerMcp('Bash');
-    triggerPty('Read');
-    await flushImmediate();
+    await triggerMcp('Read');
 
     expect(toolUseCalls()).toHaveLength(2);
     expect(toolUseCalls()[0][2]).toMatchObject({ toolName: 'Bash' });
     expect(toolUseCalls()[1][2]).toMatchObject({ toolName: 'Read' });
   });
 
-  it('verdict clears dedup state — next permission works', async () => {
+  it('verdict clears signals — next MCP permission works', async () => {
     await triggerMcp('Bash');
     expect(toolUseCalls()).toHaveLength(1);
 
@@ -204,29 +239,34 @@ describe('Permission dedup: MCP first, PTY fallback', () => {
     expect(toolUseCalls()).toHaveLength(2);
   });
 
-  it('only MCP — no PTY at all', async () => {
-    await triggerMcp('Edit');
+  it('PTY fallback emits when MCP resolves false', async () => {
+    triggerPty('Bash');
+
+    const signal = (service as any).mcpSignals.get('Bash');
+    signal.resolve(false);
+    await flushMicrotasks();
+
     expect(toolUseCalls()).toHaveLength(1);
-    expect(toolUseCalls()[0][2]).toMatchObject({ toolName: 'Edit' });
+    expect(toolUseCalls()[0][2]).toMatchObject({ toolName: 'Bash' });
   });
 
-  it('only PTY — MCP never arrives', async () => {
-    triggerPty('Write');
-    await flushImmediate();
+  it('PTY fallback works for any tool', async () => {
+    triggerPty('Read');
+    (service as any).mcpSignals.get('Read').resolve(false);
+    await flushMicrotasks();
 
     expect(toolUseCalls()).toHaveLength(1);
-    expect(toolUseCalls()[0][2]).toMatchObject({ toolName: 'Write' });
+    expect(toolUseCalls()[0][2]).toMatchObject({ toolName: 'Read' });
   });
 
-  it('PTY for same tool twice after verdict — both emit', async () => {
+  it('MCP failure via bridge endpoint triggers PTY fallback', async () => {
     triggerPty('Bash');
-    await flushImmediate();
+    expect(toolUseCalls()).toHaveLength(0);
+
+    await postFailure(bridgePort, bridgeToken, CONV, 'Bash');
+    await flushMicrotasks();
+
     expect(toolUseCalls()).toHaveLength(1);
-
-    service.handlePermissionResponse(CONV, 'pty-1', 'allow');
-
-    triggerPty('Bash');
-    await flushImmediate();
-    expect(toolUseCalls()).toHaveLength(2);
+    expect(toolUseCalls()[0][2]).toMatchObject({ toolName: 'Bash' });
   });
 });
