@@ -209,6 +209,25 @@ ChannelService checks every 10 seconds whether the PTY is still running. If it
 crashed, it restarts with exponential backoff (5s base, 2x multiplier, max 60s,
 max 10 attempts). After 10 consecutive failures, it reports an error to the UI.
 
+### Session Resume (v0.15.0+)
+
+Channel mode supports conversation continuity across app restarts via Claude
+Code's `--resume <sessionId>` CLI flag. The flow mirrors SDK mode:
+
+1. After PTY starts, `ChannelSession` polls `~/.claude/sessions/{pid}.json`
+   every second (up to 30 attempts) to discover the session ID
+2. Once found, the session ID is emitted via `CLAUDE_SESSION_ID` IPC — the
+   same channel used by SDK mode
+3. The renderer stores it in the `Conversation` object (persisted to disk)
+4. On next app launch, when the user sends a message to an existing
+   conversation, the persisted session ID is passed as `resumeSessionId`
+5. `ChannelSession.start()` adds `--resume <sessionId>` to the CLI args
+6. Claude Code resumes the conversation with full context
+
+For crash recovery (health check restarts within the same app session), the
+discovered session ID is preserved internally on the `ChannelSession` instance
+and reused on the next `start()` call.
+
 ## Trade-offs vs SDK Mode
 
 | Feature | SDK Mode | Channel Mode |
@@ -216,7 +235,7 @@ max 10 attempts). After 10 consecutive failures, it reports an error to the UI.
 | Billing | Credit pool ($20 Pro / $100-200 Max) | Subscription (uncapped) |
 | Streaming | Real-time token streaming | Complete messages only |
 | Model switching | Mid-session | Per-conversation only |
-| Session resume | Supported | Not supported |
+| Session resume | Supported | Supported (v0.15.0+) |
 | Usage tracking | Direct from SDK | Parsed from JSONL files |
 
 ## Known Constraints
