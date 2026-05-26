@@ -97,29 +97,10 @@ If the MCP permission protocol is unavailable (feature gates closed),
 ChannelSession detects the interactive "Do you want to proceed?" dialog in the
 PTY output and relays it to the UI.
 
-**Deduplication (deterministic, no timers):**
-
-When both paths fire simultaneously (MCP available), PTY must never emit
-before MCP has been checked. The dedup is fully event-driven:
-
-1. PTY detects dialog → checks bridge for an existing MCP pending permission
-2. If found → MCP already handled it → discard PTY
-3. If MCP availability is already known (`mcpAvailable` flag):
-   - `true` → discard PTY
-   - `false` → emit PTY immediately
-4. If unknown (first permission in session) → **wait deterministically**:
-   a. Register a resolver on `mcpArrivalResolvers` (fires when MCP delivers)
-   b. Simultaneously probe the channel server via the bridge: the bridge
-      returns `mcpProbe: true` in the next message-poll response, causing
-      the channel server to call `setImmediate` (drains pending I/O —
-      ensures any in-flight MCP notification is processed) then POST its
-      `permissionsForwarded` count back to `POST /api/channel/mcp-status/`
-   c. Whichever resolves first wins: MCP arrival → discard PTY;
-      probe returns `permissionsForwarded === 0` → MCP unavailable → emit PTY
-5. `mcpAvailable` is locked in for the rest of the session
-
-Verdict routing tries the MCP bridge first, falling back to PTY only if
-the bridge has no matching pending permission.
+**Deduplication:** MCP always runs first. PTY defers one I/O cycle
+(`setImmediate`) then checks what MCP already raised — it only emits
+permissions MCP didn't. Verdict routing tries the MCP bridge first,
+falling back to PTY.
 
 ### Usage Tracking
 

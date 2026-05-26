@@ -42,16 +42,10 @@ export class ChannelService {
   private notificationService: NotificationService;
   private authValidator: AuthValidator;
 
-  // MCP permission availability — session-level property.
-  // null = not yet determined, true = MCP handles permissions,
-  // false = MCP unavailable so PTY is the sole path.
-  // Determined deterministically on the first permission request via
-  // a channel-server probe (no timers).
-  private mcpAvailable: boolean | null = null;
-
-  // Resolvers waiting for the first MCP permission to arrive at the bridge.
-  // All resolved with `true` when handlePermissionRequestFromBridge fires.
-  private mcpArrivalResolvers: Array<(value: boolean) => void> = [];
+  // Dedup: tracks tool names with a pending permission dialog.
+  // MCP always runs first. PTY defers (setImmediate) then only
+  // raises what MCP didn't. Cleared on user verdict.
+  private pendingPermissions = new Set<string>();
 
   constructor(
     configService: ConfigService,
@@ -120,12 +114,14 @@ export class ChannelService {
     actionId: string,
     behavior: 'allow' | 'deny',
   ): void {
+    this.pendingPermissions.clear();
+
     // Try MCP bridge first (primary path)
     if (this.bridge && this.bridge.submitPermissionVerdict(conversationId, actionId, behavior)) {
       return;
     }
 
-    // Fall back to PTY permission (for when MCP protocol is unavailable)
+    // Fall back to PTY
     const active = this.sessions.get(conversationId);
     if (active?.session.submitPtyPermission(actionId, behavior)) {
       return;
@@ -281,16 +277,7 @@ export class ChannelService {
     conversationId: string,
     request: PermissionRequestPayload,
   ): void {
-    this.mcpAvailable = true;
-
-    for (const resolve of this.mcpArrivalResolvers) resolve(true);
-    this.mcpArrivalResolvers = [];
-
-    logger.info('Permission request via MCP channel protocol', {
-      conversationId,
-      requestId: request.requestId,
-      toolName: request.toolName,
-    });
+    this.pendingPermissions.add(request.toolName);
 
     const action: PendingAction = {
       type: 'bash-command',
@@ -306,6 +293,12 @@ export class ChannelService {
       },
     };
 
+    logger.info('Permission request via MCP', {
+      conversationId,
+      requestId: request.requestId,
+      toolName: request.toolName,
+    });
+
     this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
   }
 
@@ -316,64 +309,18 @@ export class ChannelService {
     description: string,
     inputPreview: string,
   ): void {
-    if (this.mcpAvailable === true) {
-      logger.debug('PTY permission suppressed — MCP mode active', {
-        conversationId, toolName, requestId,
-      });
-      return;
-    }
-
-    if (this.mcpAvailable === false) {
-      this.emitPtyPermission(conversationId, requestId, toolName, description, inputPreview);
-      return;
-    }
-
-    // MCP availability unknown — check bridge synchronously first
-    if (this.bridge?.hasPendingPermissionForTool(conversationId, toolName)) {
-      this.mcpAvailable = true;
-      logger.info('PTY permission suppressed — MCP already in bridge', {
-        conversationId, toolName, requestId,
-      });
-      return;
-    }
-
-    // Wait for MCP deterministically: race MCP arrival vs channel-server probe
-    void this.waitForMcpCheck(conversationId, requestId, toolName, description, inputPreview);
-  }
-
-  private async waitForMcpCheck(
-    conversationId: string,
-    requestId: string,
-    toolName: string,
-    description: string,
-    inputPreview: string,
-  ): Promise<void> {
-    const mcpHandled = await new Promise<boolean>((resolve) => {
-      this.mcpArrivalResolvers.push(resolve);
-
-      if (!this.bridge) {
-        resolve(false);
+    // MCP always runs first. Defer one I/O cycle, then only raise
+    // what MCP didn't.
+    setImmediate(() => {
+      if (this.pendingPermissions.has(toolName)) {
+        logger.debug('PTY permission suppressed — MCP already raised', {
+          conversationId, toolName, requestId,
+        });
         return;
       }
-
-      this.bridge.requestMcpProbe(conversationId).then((status) => {
-        resolve(status.permissionsForwarded > 0);
-      });
+      this.pendingPermissions.add(toolName);
+      this.emitPtyPermission(conversationId, requestId, toolName, description, inputPreview);
     });
-
-    if (mcpHandled) {
-      this.mcpAvailable = true;
-      logger.info('PTY permission suppressed — MCP confirmed by probe', {
-        conversationId, toolName, requestId,
-      });
-      return;
-    }
-
-    this.mcpAvailable = false;
-    logger.info('Permission mode locked: PTY (MCP unavailable via probe)', {
-      conversationId, toolName,
-    });
-    this.emitPtyPermission(conversationId, requestId, toolName, description, inputPreview);
   }
 
   private emitPtyPermission(
