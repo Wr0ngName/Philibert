@@ -23,6 +23,7 @@ interface StoredConfig {
   recentProjects: string[];
   theme: 'light' | 'dark' | 'system';
   fontSize: number;
+  lineHeight: number;
   autoApproveReads: boolean;
   logLevel: LogLevel;
   selectedModel: string;
@@ -76,6 +77,7 @@ export class ConfigService {
           recentProjects: [],
           theme: 'system',
           fontSize: 14,
+          lineHeight: 1.6,
           autoApproveReads: true,
           logLevel: 'warn',
           selectedModel: '',

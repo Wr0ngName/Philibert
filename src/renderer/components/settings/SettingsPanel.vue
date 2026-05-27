@@ -28,6 +28,7 @@ const { config, isSaving } = storeToRefs(settingsStore);
 // Local form state
 const localTheme = ref<'light' | 'dark' | 'system'>('system');
 const localFontSize = ref(14);
+const localLineHeight = ref(1.6);
 const localLogLevel = ref<LogLevel>('info');
 const localEnableNotifications = ref(true);
 const localUpdateChannel = ref<UpdateChannel>('stable');
@@ -53,6 +54,7 @@ watch(
   (newConfig) => {
     localTheme.value = newConfig.theme;
     localFontSize.value = newConfig.fontSize;
+    localLineHeight.value = newConfig.lineHeight;
     localLogLevel.value = newConfig.logLevel;
     localEnableNotifications.value = newConfig.enableNotifications;
     localUpdateChannel.value = newConfig.updateChannel;
@@ -76,6 +78,7 @@ async function saveSettings() {
   // Save theme (also applies it), font size, and log level
   await settingsStore.setTheme(localTheme.value);
   await settingsStore.setFontSize(localFontSize.value);
+  await settingsStore.setLineHeight(localLineHeight.value);
   await settingsStore.setLogLevel(localLogLevel.value);
   await settingsStore.setEnableNotifications(localEnableNotifications.value);
   await settingsStore.setUpdateChannel(localUpdateChannel.value);
@@ -89,6 +92,7 @@ function cancel() {
   // Reset local state
   localTheme.value = config.value.theme;
   localFontSize.value = config.value.fontSize;
+  localLineHeight.value = config.value.lineHeight;
   localLogLevel.value = config.value.logLevel;
   localEnableNotifications.value = config.value.enableNotifications;
   localUpdateChannel.value = config.value.updateChannel;
@@ -203,6 +207,29 @@ function cancel() {
         <div class="flex justify-between text-xs text-surface-400 mt-1">
           <span>12px</span>
           <span>20px</span>
+        </div>
+      </div>
+
+      <!-- Line Height -->
+      <div>
+        <label
+          for="line-height"
+          class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2"
+        >
+          Line Spacing: {{ localLineHeight.toFixed(1) }}
+        </label>
+        <input
+          id="line-height"
+          v-model.number="localLineHeight"
+          type="range"
+          min="1.0"
+          max="2.4"
+          step="0.1"
+          class="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg appearance-none cursor-pointer"
+        >
+        <div class="flex justify-between text-xs text-surface-400 mt-1">
+          <span>Compact</span>
+          <span>Spacious</span>
         </div>
       </div>
 

@@ -404,6 +404,16 @@ describe('useSettingsStore', () => {
     });
   });
 
+  describe('setLineHeight', () => {
+    it('should save line height', async () => {
+      const store = useSettingsStore();
+      await store.loadConfig();
+      await store.setLineHeight(1.2);
+
+      expect(mockElectron.config.set).toHaveBeenCalledWith({ lineHeight: 1.2 });
+    });
+  });
+
   // ===========================================================================
   // applyTheme
   // ===========================================================================

@@ -92,6 +92,11 @@ export const useSettingsStore = defineStore('settings', () => {
     applyFontSize(fontSize);
   }
 
+  async function setLineHeight(lineHeight: number): Promise<void> {
+    await saveConfig({ lineHeight });
+    applyLineHeight(lineHeight);
+  }
+
   async function setLogLevel(logLevel: LogLevel): Promise<void> {
     await saveConfig({ logLevel });
   }
@@ -130,6 +135,12 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
+  function applyLineHeight(height: number): void {
+    if (typeof document !== 'undefined' && document.documentElement?.style) {
+      document.documentElement.style.setProperty('--chat-line-height', String(height));
+    }
+  }
+
   function applyTheme(themeToApply: 'light' | 'dark' | 'system'): void {
     const html = document.documentElement;
 
@@ -156,6 +167,7 @@ export const useSettingsStore = defineStore('settings', () => {
     loadConfig().then(() => {
       applyTheme(config.value.theme);
       applyFontSize(config.value.fontSize);
+      applyLineHeight(config.value.lineHeight);
     });
 
     // Listen for config changes from main process
@@ -166,6 +178,9 @@ export const useSettingsStore = defineStore('settings', () => {
       }
       if (updates.fontSize !== undefined) {
         applyFontSize(updates.fontSize);
+      }
+      if (updates.lineHeight !== undefined) {
+        applyLineHeight(updates.lineHeight);
       }
     }));
 
@@ -211,6 +226,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setWorkingDirectory,
     setTheme,
     setFontSize,
+    setLineHeight,
     setLogLevel,
     setSelectedModel,
     setHasCompletedInitialSetup,
@@ -221,6 +237,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setExecutionMode,
     applyTheme,
     applyFontSize,
+    applyLineHeight,
     clearError,
     initialize,
     cleanup,

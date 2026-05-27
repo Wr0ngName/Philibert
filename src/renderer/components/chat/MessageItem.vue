@@ -103,7 +103,7 @@ const renderedContent = computed(() => renderMarkdown(props.message.content));
 <style scoped>
 .message-content {
   font-size: var(--chat-font-size, 14px) !important;
-  line-height: 1.6;
+  line-height: var(--chat-line-height, 1.6);
   overflow-wrap: break-word;
   word-break: break-word;
 }

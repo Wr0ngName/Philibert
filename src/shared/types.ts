@@ -416,6 +416,8 @@ export interface AppConfig {
   theme: ThemeMode;
   /** Font size for the chat interface */
   fontSize: number;
+  /** Line height for the chat interface (unitless multiplier) */
+  lineHeight: number;
   /** Whether to automatically approve read-file actions */
   autoApproveReads: boolean;
   /** Log level for application logging */
@@ -449,6 +451,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   recentProjects: [],
   theme: 'system',
   fontSize: 14,
+  lineHeight: 1.6,
   autoApproveReads: true,
   logLevel: 'warn',
   selectedModel: '', // Empty means use SDK default
