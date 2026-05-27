@@ -78,14 +78,65 @@ function canDecryptCredentials(config: Record<string, unknown>): boolean {
 }
 
 /**
+ * Clear undecryptable credentials from config so the user can re-authenticate.
+ */
+function clearBrokenCredentials(configPath: string, reason: string): void {
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    for (const key of CREDENTIAL_KEYS) {
+      delete config[key];
+    }
+    config['authMethod'] = 'none';
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    debugLog(`Migration: cleared broken credentials (${reason})`);
+  } catch (err) {
+    debugLog(`Migration: failed to clear broken credentials: ${err}`);
+  }
+}
+
+/**
+ * Check if credentials need re-keying and whether a restart would help.
+ *
+ * On Windows, safeStorage uses DPAPI which is scoped to the Windows user
+ * account, not the app name. Restarting with the old app name achieves
+ * nothing — if decryption fails, the credentials are genuinely broken.
+ *
+ * On macOS/Linux, safeStorage keys ARE app-scoped (Keychain / libsecret),
+ * so restarting with the old app name can recover them. Uses the attempt
+ * counter to prevent infinite loops.
+ */
+function handleUndecryptableCredentials(
+  configPath: string,
+  oldAppName: string,
+  newPath: string,
+): MigrationResult {
+  if (process.platform === 'win32') {
+    debugLog('Migration: Windows DPAPI is user-scoped — re-key restart would not help, clearing credentials');
+    clearBrokenCredentials(configPath, 'DPAPI decrypt failed on Windows');
+    return { needsCredentialRestart: false };
+  }
+
+  const attempts = getMigrationAttempts(newPath);
+  if (attempts >= MAX_MIGRATION_ATTEMPTS) {
+    debugLog(`Migration: exhausted ${MAX_MIGRATION_ATTEMPTS} re-key attempts, clearing broken credentials`);
+    clearBrokenCredentials(configPath, `exhausted ${MAX_MIGRATION_ATTEMPTS} attempts`);
+    clearMigrationAttempts(newPath);
+    return { needsCredentialRestart: false };
+  }
+
+  incrementMigrationAttempts(newPath);
+  debugLog(`Migration: scheduling re-key restart with "${oldAppName}" (attempt ${attempts + 1}/${MAX_MIGRATION_ATTEMPTS})`);
+  return { needsCredentialRestart: true, oldAppName };
+}
+
+/**
  * Phase 1: Migrate user data from old "Cline GUI" app to new "Philibert" app.
  * Copies config.json and conversations, removes old directory, cleans up updater cache.
  *
  * Returns { needsCredentialRestart: true } when encrypted credentials exist that
- * can't be decrypted under the new app name. Electron's safeStorage encryption key
- * is tied to the app identity on all platforms (OS keyring on Linux/macOS,
- * Chromium os_crypt key on Windows), so a restart with the old app name is needed
- * to decrypt and re-key them.
+ * can't be decrypted under the new app name AND we're on a platform where
+ * restarting with the old app name would help (macOS/Linux — app-scoped keyring).
+ * On Windows (DPAPI, user-scoped), undecryptable credentials are cleared immediately.
  */
 export function migrateFromOldApp(): MigrationResult {
   const oldApp = findOldUserDataPath();
@@ -95,10 +146,6 @@ export function migrateFromOldApp(): MigrationResult {
     debugLog('Migration: no old app data found');
     cleanupOldUpdaterCaches();
 
-    // Recovery: phase 1 may have already deleted the old directory in a
-    // previous launch, but phase 2/3 never completed (e.g. restart was
-    // interrupted).  Detect stuck credentials and retry with the most likely
-    // old app name.
     const recoveryResult = recoverStuckCredentials(newPath);
     if (recoveryResult) return recoveryResult;
 
@@ -112,17 +159,13 @@ export function migrateFromOldApp(): MigrationResult {
     debugLog('Migration: Philibert config already exists, skipping data copy');
     cleanupOldUpdaterCaches();
 
-    // Even though config exists, the old data dir still does.  This means a
-    // previous migration attempt may have copied the config but never completed
-    // credential re-keying.  Check whether credentials need re-keying now.
     try {
       const config = JSON.parse(fs.readFileSync(newConfig, 'utf8'));
       const hasEncryptedCredentials = CREDENTIAL_KEYS.some(
         (key) => config[key] && typeof config[key] === 'string' && !String(config[key]).startsWith('plain:')
       );
       if (hasEncryptedCredentials && !canDecryptCredentials(config)) {
-        debugLog(`Migration: config exists but credentials need re-keying (old name: "${oldApp.name}")`);
-        return { needsCredentialRestart: true, oldAppName: oldApp.name };
+        return handleUndecryptableCredentials(newConfig, oldApp.name, newPath);
       }
     } catch (err) {
       debugLog(`Migration: failed to check credentials in existing config: ${err}`);
@@ -184,18 +227,12 @@ export function migrateFromOldApp(): MigrationResult {
 
   cleanupOldUpdaterCaches();
 
-  // Try to decrypt credentials under the new app name. If it works, no restart needed.
-  // If it fails, a restart with the old app name is required to re-key.
-  let needsRekey = false;
-  if (hasEncryptedCredentials && config) {
-    needsRekey = !canDecryptCredentials(config);
-    if (needsRekey) {
-      debugLog(`Migration: encrypted credentials cannot be decrypted under new app name, restart needed (old name: "${oldApp.name}")`);
-    }
+  if (hasEncryptedCredentials && config && !canDecryptCredentials(config)) {
+    return handleUndecryptableCredentials(newConfig, oldApp.name, newPath);
   }
 
   debugLog('Migration: phase 1 complete');
-  return { needsCredentialRestart: needsRekey, oldAppName: oldApp.name };
+  return { needsCredentialRestart: false };
 }
 
 /**
@@ -307,9 +344,6 @@ const MAX_MIGRATION_ATTEMPTS = 2;
  * Recovery helper: detect credentials that are stuck encrypted with the
  * old app's safeStorage key.  This covers the case where phase 1 completed
  * (config copied, old dir deleted) but the phase-2 restart never happened.
- *
- * Guards against infinite restart loops: after MAX_MIGRATION_ATTEMPTS failures,
- * clears the broken credentials so the user can re-authenticate cleanly.
  */
 function recoverStuckCredentials(newPath: string): MigrationResult | null {
   const configPath = path.join(newPath, 'config.json');
@@ -322,7 +356,7 @@ function recoverStuckCredentials(newPath: string): MigrationResult | null {
     );
     if (!hasEncryptedCredentials) return null;
     if (!safeStorage.isEncryptionAvailable()) {
-      debugLog('Migration recovery: safeStorage not available, skipping recovery (cannot test decryption)');
+      debugLog('Migration recovery: safeStorage not available, skipping (cannot test decryption)');
       return null;
     }
     if (canDecryptCredentials(config)) {
@@ -330,24 +364,7 @@ function recoverStuckCredentials(newPath: string): MigrationResult | null {
       return null;
     }
 
-    // Check attempt counter to prevent infinite restart loops
-    const attempts = getMigrationAttempts(newPath);
-    if (attempts >= MAX_MIGRATION_ATTEMPTS) {
-      debugLog(`Migration recovery: exhausted ${MAX_MIGRATION_ATTEMPTS} attempts, clearing broken credentials`);
-      for (const key of CREDENTIAL_KEYS) {
-        delete config[key];
-      }
-      // Reset auth method so ConfigService doesn't try to use missing credentials
-      config['authMethod'] = 'none';
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-      clearMigrationAttempts(newPath);
-      return null;
-    }
-
-    incrementMigrationAttempts(newPath);
-    const oldAppName = OLD_APP_NAMES[0];
-    debugLog(`Migration recovery: credentials stuck with old encryption key, scheduling re-key with "${oldAppName}" (attempt ${attempts + 1}/${MAX_MIGRATION_ATTEMPTS})`);
-    return { needsCredentialRestart: true, oldAppName };
+    return handleUndecryptableCredentials(configPath, OLD_APP_NAMES[0], newPath);
   } catch (err) {
     debugLog(`Migration recovery: failed to read config: ${err}`);
   }
