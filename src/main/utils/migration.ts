@@ -79,6 +79,16 @@ function canDecryptCredentials(config: Record<string, unknown>): boolean {
 }
 
 /**
+ * Atomically write JSON to a file: write to a temp file in the same directory,
+ * then rename.  On crash, either the old file or the new file survives intact.
+ */
+function atomicWriteJson(filePath: string, data: unknown): void {
+  const tmp = filePath + '.tmp.' + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, filePath);
+}
+
+/**
  * Clear undecryptable credentials from config so the user can re-authenticate.
  */
 function clearBrokenCredentials(configPath: string, reason: string): void {
@@ -88,7 +98,7 @@ function clearBrokenCredentials(configPath: string, reason: string): void {
       delete config[key];
     }
     config['authMethod'] = 'none';
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    atomicWriteJson(configPath, config);
     logger.warn('Migration: cleared broken credentials', { reason });
     debugLog(`Migration: cleared broken credentials (${reason})`);
   } catch (err) {
@@ -175,9 +185,14 @@ export function migrateFromOldApp(): MigrationResult {
       const hasEncryptedCredentials = CREDENTIAL_KEYS.some(
         (key) => config[key] && typeof config[key] === 'string' && !String(config[key]).startsWith('plain:')
       );
-      if (hasEncryptedCredentials && !canDecryptCredentials(config)) {
-        logger.warn('Migration: credentials need re-keying', { oldAppName: oldApp.name });
-        return handleUndecryptableCredentials(newConfig, oldApp.name, newPath);
+      if (hasEncryptedCredentials) {
+        if (!safeStorage.isEncryptionAvailable()) {
+          debugLog('Migration: safeStorage not available, skipping credential re-key check');
+          logger.info('Migration: safeStorage temporarily unavailable, deferring credential check');
+        } else if (!canDecryptCredentials(config)) {
+          logger.warn('Migration: credentials need re-keying', { oldAppName: oldApp.name });
+          return handleUndecryptableCredentials(newConfig, oldApp.name, newPath);
+        }
       }
       logger.info('Migration: credentials OK (decryptable or none present)');
     } catch (err) {
@@ -206,7 +221,7 @@ export function migrateFromOldApp(): MigrationResult {
 
       config = JSON.parse(fs.readFileSync(newConfig, 'utf8'));
       hasEncryptedCredentials = CREDENTIAL_KEYS.some(
-        (key) => config![key] && !String(config![key]).startsWith('plain:')
+        (key) => config![key] && typeof config![key] === 'string' && !String(config![key]).startsWith('plain:')
       );
     } catch (err) {
       debugLog(`Migration: failed to copy/parse config.json: ${err}`);
@@ -237,15 +252,17 @@ export function migrateFromOldApp(): MigrationResult {
 
   cleanupOldUpdaterCaches();
 
-  if (hasEncryptedCredentials && config && !canDecryptCredentials(config)) {
-    // Keep the old directory — phase 2 needs the old Local State file
-    // (contains the safeStorage encryption key) to decrypt credentials.
-    // The old directory is cleaned up after phase 3 completes successfully.
-    logger.info('Migration: credentials need re-keying, keeping old directory', {
-      oldAppName: oldApp.name,
-    });
-    debugLog('Migration: keeping old directory for credential re-keying');
-    return handleUndecryptableCredentials(newConfig, oldApp.name, newPath);
+  if (hasEncryptedCredentials && config) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      debugLog('Migration: safeStorage not available after fresh copy, skipping re-key check');
+      logger.info('Migration: safeStorage temporarily unavailable, deferring credential check');
+    } else if (!canDecryptCredentials(config)) {
+      logger.info('Migration: credentials need re-keying, keeping old directory', {
+        oldAppName: oldApp.name,
+      });
+      debugLog('Migration: keeping old directory for credential re-keying');
+      return handleUndecryptableCredentials(newConfig, oldApp.name, newPath);
+    }
   }
 
   try {
@@ -361,7 +378,7 @@ export function finishCredentialMigration(): void {
   }
 
   const configPath = path.join(app.getPath('userData'), 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  atomicWriteJson(configPath, config);
   clearMigrationAttempts(app.getPath('userData'));
   cleanupOldAppDirectory();
 
@@ -370,7 +387,7 @@ export function finishCredentialMigration(): void {
 }
 
 const MIGRATION_ATTEMPT_FILE = '.credential-migration-attempts';
-const MAX_MIGRATION_ATTEMPTS = 2;
+const MAX_MIGRATION_ATTEMPTS = 3;
 
 /**
  * Recovery helper: detect credentials that are stuck encrypted with the
@@ -396,7 +413,11 @@ function recoverStuckCredentials(newPath: string): MigrationResult | null {
       return null;
     }
 
-    return handleUndecryptableCredentials(configPath, OLD_APP_NAMES[0], newPath);
+    const attempts = getMigrationAttempts(newPath);
+    const nameIndex = attempts % OLD_APP_NAMES.length;
+    const oldAppName = OLD_APP_NAMES[nameIndex];
+    debugLog(`Migration recovery: trying old app name "${oldAppName}" (attempt ${attempts + 1})`);
+    return handleUndecryptableCredentials(configPath, oldAppName, newPath);
   } catch (err) {
     debugLog(`Migration recovery: failed to read config: ${err}`);
   }

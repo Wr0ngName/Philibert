@@ -10,7 +10,7 @@
  * It runs during Squirrel events when npm packages may not be available.
  */
 
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -32,17 +32,23 @@ export function extractTarBz2(archivePath: string, destDir: string): void {
     fs.mkdirSync(destDir, { recursive: true });
   }
 
-  // Windows native tar (bsdtar) command
-  // --exclude dev: POSIX symlinks (fd, stdin, stdout, stderr) that Windows cannot create
-  // --exclude etc/mtab: POSIX symlink to /proc/mounts, not needed on Windows
-  const command = `tar -xjf "${archivePath}" -C "${destDir}" --exclude="dev" --exclude="etc/mtab"`;
+  // spawnSync with arg array: avoids shell encoding issues with non-ASCII paths
+  // (e.g. Cyrillic usernames) and paths with spaces
+  const args = ['-xjf', archivePath, '-C', destDir, '--exclude=dev', '--exclude=etc/mtab'];
 
   try {
-    execSync(command, {
+    const result = spawnSync('tar', args, {
       timeout: 120000,
       windowsHide: true,
       stdio: 'pipe',
     });
+    if (result.status !== 0) {
+      const stderr = result.stderr?.toString().trim() || 'unknown error';
+      throw new Error(`tar exited with code ${result.status}: ${stderr}`);
+    }
+    if (result.error) {
+      throw result.error;
+    }
     debugLog('tar extraction completed successfully');
   } catch (error) {
     debugLog(`tar extraction failed: ${error}`);

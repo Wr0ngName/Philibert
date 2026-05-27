@@ -123,17 +123,19 @@ describe('migrateFromOldApp', () => {
     mockIsEncryptionAvailable.mockReturnValue(true);
     mockDecryptString.mockImplementation(() => { throw new Error('decrypt failed'); });
 
-    // Attempt 1: restart needed
+    // MAX_MIGRATION_ATTEMPTS = 3 (one per OLD_APP_NAMES entry)
     const result1 = migrateFromOldApp();
     expect(result1.needsCredentialRestart).toBe(true);
 
-    // Attempt 2: restart needed (counter now at 1, increments to 2)
     const result2 = migrateFromOldApp();
     expect(result2.needsCredentialRestart).toBe(true);
 
-    // Attempt 3: counter at 2 = MAX, should clear credentials and stop
     const result3 = migrateFromOldApp();
-    expect(result3.needsCredentialRestart).toBe(false);
+    expect(result3.needsCredentialRestart).toBe(true);
+
+    // Attempt 4: counter at 3 = MAX, should clear credentials and stop
+    const result4 = migrateFromOldApp();
+    expect(result4.needsCredentialRestart).toBe(false);
 
     // Verify credentials were cleared
     const config = readConfig(NEW_DIR);
@@ -155,10 +157,11 @@ describe('migrateFromOldApp', () => {
     expect(fs.existsSync(path.join(NEW_DIR, 'config.json'))).toBe(true);
     expect(fs.existsSync(OLD_DIR)).toBe(true);
 
-    migrateFromOldApp(); // attempt 2 (Path 1: config exists + old dir exists)
+    migrateFromOldApp(); // attempt 2
+    migrateFromOldApp(); // attempt 3
 
-    const result3 = migrateFromOldApp(); // attempt 3 → MAX reached → clear
-    expect(result3.needsCredentialRestart).toBe(false);
+    const result4 = migrateFromOldApp(); // attempt 4 → MAX reached → clear
+    expect(result4.needsCredentialRestart).toBe(false);
 
     const config = readConfig(NEW_DIR);
     expect(config.encryptedOAuthToken).toBeUndefined();
