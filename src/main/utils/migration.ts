@@ -4,6 +4,7 @@ import path from 'node:path';
 import { app, safeStorage } from 'electron';
 
 import { debugLog } from './debugLog';
+import logger from './logger';
 
 // All possible old app names, ordered by likelihood.
 // "ClineGUI" was productName for v0.1.22–v0.11.7 (vast majority of installs).
@@ -88,43 +89,45 @@ function clearBrokenCredentials(configPath: string, reason: string): void {
     }
     config['authMethod'] = 'none';
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    logger.warn('Migration: cleared broken credentials', { reason });
     debugLog(`Migration: cleared broken credentials (${reason})`);
   } catch (err) {
+    logger.error('Migration: failed to clear broken credentials', { error: String(err) });
     debugLog(`Migration: failed to clear broken credentials: ${err}`);
   }
 }
 
 /**
- * Check if credentials need re-keying and whether a restart would help.
+ * Handle credentials that can't be decrypted under the current app name.
+ * Electron's safeStorage encryption key is app-scoped on all platforms
+ * (Chromium os_crypt key in Local State on Windows, Keychain on macOS,
+ * libsecret on Linux), so restarting with the old app name can recover them.
  *
- * On Windows, safeStorage uses DPAPI which is scoped to the Windows user
- * account, not the app name. Restarting with the old app name achieves
- * nothing — if decryption fails, the credentials are genuinely broken.
- *
- * On macOS/Linux, safeStorage keys ARE app-scoped (Keychain / libsecret),
- * so restarting with the old app name can recover them. Uses the attempt
- * counter to prevent infinite loops.
+ * Uses an attempt counter to prevent infinite restart loops — after
+ * MAX_MIGRATION_ATTEMPTS failures, clears credentials so the user can
+ * re-authenticate cleanly.
  */
 function handleUndecryptableCredentials(
   configPath: string,
   oldAppName: string,
   newPath: string,
 ): MigrationResult {
-  if (process.platform === 'win32') {
-    debugLog('Migration: Windows DPAPI is user-scoped — re-key restart would not help, clearing credentials');
-    clearBrokenCredentials(configPath, 'DPAPI decrypt failed on Windows');
-    return { needsCredentialRestart: false };
-  }
-
   const attempts = getMigrationAttempts(newPath);
   if (attempts >= MAX_MIGRATION_ATTEMPTS) {
+    logger.warn('Migration: exhausted re-key attempts, clearing broken credentials', {
+      attempts: MAX_MIGRATION_ATTEMPTS, oldAppName,
+    });
     debugLog(`Migration: exhausted ${MAX_MIGRATION_ATTEMPTS} re-key attempts, clearing broken credentials`);
     clearBrokenCredentials(configPath, `exhausted ${MAX_MIGRATION_ATTEMPTS} attempts`);
     clearMigrationAttempts(newPath);
+    cleanupOldAppDirectory();
     return { needsCredentialRestart: false };
   }
 
   incrementMigrationAttempts(newPath);
+  logger.info('Migration: scheduling credential re-key restart', {
+    oldAppName, attempt: attempts + 1, maxAttempts: MAX_MIGRATION_ATTEMPTS,
+  });
   debugLog(`Migration: scheduling re-key restart with "${oldAppName}" (attempt ${attempts + 1}/${MAX_MIGRATION_ATTEMPTS})`);
   return { needsCredentialRestart: true, oldAppName };
 }
@@ -134,15 +137,20 @@ function handleUndecryptableCredentials(
  * Copies config.json and conversations, removes old directory, cleans up updater cache.
  *
  * Returns { needsCredentialRestart: true } when encrypted credentials exist that
- * can't be decrypted under the new app name AND we're on a platform where
- * restarting with the old app name would help (macOS/Linux — app-scoped keyring).
- * On Windows (DPAPI, user-scoped), undecryptable credentials are cleared immediately.
+ * can't be decrypted under the new app name. Electron's safeStorage encryption
+ * key is app-scoped on all platforms (Chromium os_crypt in Local State on
+ * Windows, Keychain on macOS, libsecret on Linux), so a restart with the old
+ * app name is needed to decrypt and re-key them.
+ *
+ * All restart paths go through handleUndecryptableCredentials() which uses an
+ * attempt counter to prevent infinite loops.
  */
 export function migrateFromOldApp(): MigrationResult {
   const oldApp = findOldUserDataPath();
   const newPath = app.getPath('userData');
 
   if (!oldApp) {
+    logger.info('Migration: no old app data found');
     debugLog('Migration: no old app data found');
     cleanupOldUpdaterCaches();
 
@@ -156,6 +164,9 @@ export function migrateFromOldApp(): MigrationResult {
 
   const newConfig = path.join(newPath, 'config.json');
   if (fs.existsSync(newConfig)) {
+    logger.info('Migration: Philibert config already exists, checking credentials', {
+      oldAppName: oldApp.name, oldPath,
+    });
     debugLog('Migration: Philibert config already exists, skipping data copy');
     cleanupOldUpdaterCaches();
 
@@ -165,15 +176,21 @@ export function migrateFromOldApp(): MigrationResult {
         (key) => config[key] && typeof config[key] === 'string' && !String(config[key]).startsWith('plain:')
       );
       if (hasEncryptedCredentials && !canDecryptCredentials(config)) {
+        logger.warn('Migration: credentials need re-keying', { oldAppName: oldApp.name });
         return handleUndecryptableCredentials(newConfig, oldApp.name, newPath);
       }
+      logger.info('Migration: credentials OK (decryptable or none present)');
     } catch (err) {
+      logger.error('Migration: failed to check credentials', { error: String(err) });
       debugLog(`Migration: failed to check credentials in existing config: ${err}`);
     }
 
     return { needsCredentialRestart: false };
   }
 
+  logger.info('Migration: migrating data from old app', {
+    oldAppName: oldApp.name, oldPath, newPath,
+  });
   debugLog(`Migration: migrating data from "${oldApp.name}" at ${oldPath} to ${newPath}`);
 
   fs.mkdirSync(newPath, { recursive: true });
@@ -218,6 +235,19 @@ export function migrateFromOldApp(): MigrationResult {
     }
   }
 
+  cleanupOldUpdaterCaches();
+
+  if (hasEncryptedCredentials && config && !canDecryptCredentials(config)) {
+    // Keep the old directory — phase 2 needs the old Local State file
+    // (contains the safeStorage encryption key) to decrypt credentials.
+    // The old directory is cleaned up after phase 3 completes successfully.
+    logger.info('Migration: credentials need re-keying, keeping old directory', {
+      oldAppName: oldApp.name,
+    });
+    debugLog('Migration: keeping old directory for credential re-keying');
+    return handleUndecryptableCredentials(newConfig, oldApp.name, newPath);
+  }
+
   try {
     fs.rmSync(oldPath, { recursive: true, force: true });
     debugLog(`Migration: removed old data directory at ${oldPath}`);
@@ -225,12 +255,7 @@ export function migrateFromOldApp(): MigrationResult {
     debugLog(`Migration: failed to remove old directory (non-critical): ${err}`);
   }
 
-  cleanupOldUpdaterCaches();
-
-  if (hasEncryptedCredentials && config && !canDecryptCredentials(config)) {
-    return handleUndecryptableCredentials(newConfig, oldApp.name, newPath);
-  }
-
+  logger.info('Migration: phase 1 complete (no re-keying needed)');
   debugLog('Migration: phase 1 complete');
   return { needsCredentialRestart: false };
 }
@@ -278,12 +303,16 @@ export function decryptOldCredentials(): void {
   }
 
   if (Object.keys(decrypted).length === 0) {
+    logger.warn('Migration phase 2: no credentials could be decrypted');
     debugLog('Migration phase 2: no credentials to migrate');
     return;
   }
 
   const tempPath = path.join(philibertPath, CREDENTIAL_TEMP_FILE);
   fs.writeFileSync(tempPath, JSON.stringify(decrypted), { mode: 0o600 });
+  logger.info('Migration phase 2: decrypted credentials written to temp file', {
+    keys: Object.keys(decrypted),
+  });
   debugLog('Migration phase 2: wrote decrypted credentials to temp file');
 }
 
@@ -334,6 +363,9 @@ export function finishCredentialMigration(): void {
   const configPath = path.join(app.getPath('userData'), 'config.json');
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   clearMigrationAttempts(app.getPath('userData'));
+  cleanupOldAppDirectory();
+
+  logger.info('Migration phase 3: credential migration complete');
   debugLog('Migration phase 3: credential migration complete');
 }
 
@@ -394,6 +426,21 @@ function clearMigrationAttempts(newPath: string): void {
     const attemptFile = path.join(newPath, MIGRATION_ATTEMPT_FILE);
     if (fs.existsSync(attemptFile)) fs.unlinkSync(attemptFile);
   } catch { /* ignore */ }
+}
+
+function cleanupOldAppDirectory(): void {
+  const parentDir = path.dirname(app.getPath('userData'));
+  for (const name of OLD_APP_NAMES) {
+    const candidate = path.join(parentDir, name);
+    if (fs.existsSync(candidate)) {
+      try {
+        fs.rmSync(candidate, { recursive: true, force: true });
+        debugLog(`Migration: removed old app directory at ${candidate}`);
+      } catch (err) {
+        debugLog(`Migration: failed to remove old directory ${candidate} (non-critical): ${err}`);
+      }
+    }
+  }
 }
 
 function cleanupOldUpdaterCaches(): void {
