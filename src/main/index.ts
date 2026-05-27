@@ -93,10 +93,10 @@ async function main(): Promise<void> {
 
     authService = new AuthService();
     notificationService = new NotificationService(configService, getMainWindow);
-    claudeService = new ClaudeCodeService(configService, getMainWindow, notificationService);
+    conversationService = new ConversationService();
+    claudeService = new ClaudeCodeService(configService, getMainWindow, notificationService, conversationService);
     fileWatcher = new FileWatcherService();
     gitService = new GitService();
-    conversationService = new ConversationService();
     updateService = new UpdateService(getMainWindow, configService);
 
     logger.info('All services initialized');

@@ -470,6 +470,9 @@ export function useClaudeChat() {
     cleanupAuthInvalidated = window.electron.auth.onInvalidated(() => {
       logger.warn('Auth invalidated — credentials cleared by main process, reloading config');
       settingsStore.loadConfig();
+      // Clear all stale SDK session IDs so conversations don't attempt to resume
+      // under a different auth context (e.g. after migration or re-login)
+      conversationsStore.clearAllSdkSessionIds();
     });
   }
 

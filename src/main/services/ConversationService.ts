@@ -249,6 +249,39 @@ export class ConversationService {
   }
 
   /**
+   * Strip sdkSessionId from all persisted conversations.
+   * Called when auth is invalidated so stale session IDs don't survive restart.
+   */
+  async clearAllSessionIds(): Promise<void> {
+    try {
+      const files = await fs.promises.readdir(this.conversationsDir);
+      let cleared = 0;
+
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        const filePath = path.join(this.conversationsDir, file);
+        try {
+          const content = await fs.promises.readFile(filePath, 'utf-8');
+          const conversation = JSON.parse(content) as Conversation;
+          if (conversation.sdkSessionId) {
+            delete conversation.sdkSessionId;
+            await fs.promises.writeFile(filePath, JSON.stringify(conversation, null, 2), 'utf-8');
+            cleared++;
+          }
+        } catch (err) {
+          logger.warn('Failed to clear session ID from conversation file', { file, error: err });
+        }
+      }
+
+      if (cleared > 0) {
+        logger.info('Cleared persisted SDK session IDs', { cleared });
+      }
+    } catch (err) {
+      logger.error('Failed to clear all session IDs', { error: err });
+    }
+  }
+
+  /**
    * Create a new conversation
    */
   create(workingDirectory: string): Conversation {

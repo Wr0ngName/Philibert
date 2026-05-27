@@ -24,9 +24,10 @@ export function getResourcesPath(): string {
 /**
  * Windows-specific resource paths.
  *
- * Git-bash and Node.js are extracted at runtime. For "All Users" installs
- * the resources dir is under C:\Program Files\ (admin-only), so extraction
- * falls back to app.getPath('userData') which is always writable.
+ * Git-bash is extracted by the NSIS installer during installation (elevated).
+ * Node.js is bundled as a standalone exe. For "All Users" installs the
+ * resources dir is under C:\Program Files\ (read-only at runtime); the app
+ * only reads from it, never writes.
  */
 export const WindowsPaths = {
   getBundledNodeExe(): string {
@@ -38,14 +39,9 @@ export const WindowsPaths = {
   },
 
   _findExtractedGitBash(): string | null {
-    const candidates = [
-      path.join(getResourcesPath(), 'git-bash'),
-      path.join(app.getPath('userData'), 'git-bash'),
-    ];
-    for (const dir of candidates) {
-      if (fs.existsSync(path.join(dir, 'usr', 'bin', 'bash.exe'))) {
-        return dir;
-      }
+    const dir = path.join(getResourcesPath(), 'git-bash');
+    if (fs.existsSync(path.join(dir, 'usr', 'bin', 'bash.exe'))) {
+      return dir;
     }
     return null;
   },
@@ -60,10 +56,7 @@ export const WindowsPaths = {
   },
 
   getGitBashExtractionDir(): string {
-    if (this.isResourcesWritable()) {
-      return path.join(getResourcesPath(), 'git-bash');
-    }
-    return path.join(app.getPath('userData'), 'git-bash');
+    return path.join(getResourcesPath(), 'git-bash');
   },
 
   getGitBashDir(): string {

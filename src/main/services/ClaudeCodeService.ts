@@ -57,6 +57,7 @@ import logger from '../utils/logger';
 import { ClaudeCliPaths, WindowsPaths, getClaudeConfigDir } from '../utils/resourcePaths';
 
 import ConfigService from './ConfigService';
+import { ConversationService } from './ConversationService';
 import NotificationService from './NotificationService';
 import { ChannelService } from './channel';
 import {
@@ -144,15 +145,16 @@ export class ClaudeCodeService {
   // Cached slash commands (shared across all sessions)
   private cachedSlashCommands: SlashCommandInfo[] = [];
   private configService: ConfigService;
+  private conversationService: ConversationService;
   private notificationService: NotificationService;
   private sessionPermissionCache: SessionPermissionCache;
 
-  constructor(configService: ConfigService, getMainWindow: () => BrowserWindow | null, notificationService: NotificationService) {
+  constructor(configService: ConfigService, getMainWindow: () => BrowserWindow | null, notificationService: NotificationService, conversationService: ConversationService) {
     // Create bound sender using the provided window getter
     this.send = createSender(getMainWindow);
 
-    // Store config service reference for model selection
     this.configService = configService;
+    this.conversationService = conversationService;
     this.notificationService = notificationService;
 
     // Initialize session permission cache (persists across queries per conversation)
@@ -485,6 +487,18 @@ export class ClaudeCodeService {
         this.emitSessionId(conversationId, sessionId);
       },
       onAuthError: () => {
+        const session = this.activeSessions.get(conversationId);
+        if (session?.isResumeAttempt) {
+          // During resume, a 401 likely means the stale session belongs to a
+          // different auth context (e.g. after migration/re-login).  Clear the
+          // session ID and let the user retry without destroying the fresh token.
+          logger.warn('Auth error during resume attempt — treating as stale session, not token invalidation', { conversationId });
+          this.emitClearSessionId(conversationId);
+          this.emitError(conversationId,
+            'Could not resume conversation context — authentication failed for the previous session. ' +
+            'Your conversation history is preserved. Send your message again to continue with a fresh context.');
+          return;
+        }
         this.handleAuthInvalidated().catch(err =>
           logger.error('handleAuthInvalidated failed', { err })
         );
@@ -702,6 +716,11 @@ export class ClaudeCodeService {
               }
             }
 
+            // Resume succeeded — subsequent auth errors are real, not stale-session artifacts
+            if (session?.isResumeAttempt) {
+              session.isResumeAttempt = false;
+            }
+
             // Normal turn — emit done to renderer
             logger.info('Turn completed (result message received), emitting done', {
               conversationId,
@@ -887,10 +906,18 @@ export class ClaudeCodeService {
     // Handle resume session failures: clear the stale session ID so the next
     // attempt doesn't fail on the same expired ID, and show a specific error.
     const session = this.activeSessions.get(conversationId);
-    if (session?.isResumeAttempt && this.isResumeSessionError(errorMessage)) {
+    const lowerError = errorMessage.toLowerCase();
+    const isAuthError = lowerError.includes('401') || lowerError.includes('unauthorized') ||
+        lowerError.includes('invalid bearer') || lowerError.includes('invalid token');
+
+    if (session?.isResumeAttempt && (this.isResumeSessionError(errorMessage) || isAuthError)) {
+      // During resume, auth errors likely mean the stale session belongs to a
+      // different auth context (e.g. after migration/re-login).  Clear the
+      // session ID and let the user retry without destroying the fresh token.
       logger.warn('Resume session failed — clearing stale session ID', {
         conversationId,
         error: errorMessage,
+        wasAuthError: isAuthError,
       });
       this.emitClearSessionId(conversationId);
       this.emitError(conversationId,
@@ -903,9 +930,7 @@ export class ClaudeCodeService {
     logger.error('Failed to send message', { conversationId, error });
 
     // Detect 401/auth errors and auto-clear credentials
-    const lowerError = errorMessage.toLowerCase();
-    if (lowerError.includes('401') || lowerError.includes('unauthorized') ||
-        lowerError.includes('invalid bearer') || lowerError.includes('invalid token')) {
+    if (isAuthError) {
       this.handleAuthInvalidated().catch(() => {});
       return;
     }
@@ -1317,6 +1342,10 @@ export class ClaudeCodeService {
       } catch {
         // Non-critical cleanup
       }
+
+      // Clear stale session IDs from persisted conversation files so they
+      // don't reload on restart and trigger 401s with the new auth context
+      await this.conversationService.clearAllSessionIds();
 
       // Notify renderer via config change (triggers reactive hasAuth → false)
       this.send(IPC_CHANNELS.CONFIG_CHANGED, { oauthToken: '', authMethod: 'none' });

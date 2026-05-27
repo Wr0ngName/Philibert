@@ -159,24 +159,35 @@ export function setupAuthHandlers(
           }
 
           // Store full OAuth credentials for SDK token refresh if available
-          if (result.credentialsJson) {
+          const saveCredentials = (json: string) => {
             try {
-              await configService.setOAuthCredentials(result.credentialsJson);
-              // Write credentials file to stable config dir so SDK subprocess
-              // can read and refresh tokens natively via CLAUDE_CONFIG_DIR
+              configService.setOAuthCredentials(json).catch(err =>
+                logger.warn('Failed to store OAuth credentials', { error: err }));
               const claudeConfigDir = getClaudeConfigDir();
               fs.mkdirSync(claudeConfigDir, { recursive: true });
               fs.writeFileSync(
                 `${claudeConfigDir}/.credentials.json`,
-                result.credentialsJson,
+                json,
                 'utf8'
               );
               logger.info('Full OAuth credentials saved to stable config dir');
             } catch (err) {
-              // Non-fatal: access token is already stored, just no refresh capability
               logger.warn('Failed to store full OAuth credentials', { error: err });
             }
+          };
+
+          if (result.credentialsJson) {
+            saveCredentials(result.credentialsJson);
           }
+
+          // Register callback for late-arriving credentials (setup-token writes
+          // the file after displaying the token — PTY may not have finished yet)
+          authService.onLateCredentials = (credentialsJson: string) => {
+            authService.onLateCredentials = null;
+            saveCredentials(credentialsJson);
+          };
+          // Auto-clear callback after 10s to avoid stale references
+          setTimeout(() => { authService.onLateCredentials = null; }, 10000);
 
           // Notify renderer of config change so UI updates
           sendToRenderer(getMainWindow, IPC_CHANNELS.CONFIG_CHANGED, configUpdate);

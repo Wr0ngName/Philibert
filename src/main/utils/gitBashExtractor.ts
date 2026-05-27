@@ -2,9 +2,11 @@
  * Git Bash extraction utility for Windows.
  *
  * Extracts the bundled git-bash.tar.bz2 on first run or when the bundled
- * version changes.  For "All Users" installs the resources directory is
- * under C:\Program Files\ (not writable by regular users), so extraction
- * falls back to app.getPath('userData').
+ * version changes.
+ *
+ * For "all users" installs (Program Files), the NSIS installer extracts
+ * Git Bash during installation while elevated.  Runtime extraction only
+ * applies to per-user installs where resources/ is writable.
  */
 
 import * as fs from 'fs';
@@ -13,7 +15,62 @@ import * as path from 'path';
 import { extractTarBz2 } from './archiveExtractor';
 import { debugLog } from './debugLog';
 import logger from './logger';
-import { WindowsPaths } from './resourcePaths';
+import { getResourcesPath, WindowsPaths } from './resourcePaths';
+
+function isAlreadyExtracted(
+  extractedDir: string,
+  bundledVersionFile: string,
+): boolean {
+  const bashExePath = path.join(extractedDir, 'usr', 'bin', 'bash.exe');
+  const extractedVersionFile = path.join(extractedDir, '.version');
+
+  if (!fs.existsSync(bashExePath) || !fs.existsSync(extractedVersionFile)) {
+    return false;
+  }
+
+  try {
+    const bundledVersion = fs.existsSync(bundledVersionFile)
+      ? fs.readFileSync(bundledVersionFile, 'utf8').trim()
+      : '';
+    const extractedVersion = fs.readFileSync(extractedVersionFile, 'utf8').trim();
+    if (bundledVersion === extractedVersion) {
+      debugLog(`Git Bash already extracted with version ${extractedVersion} at ${extractedDir}`);
+      return true;
+    }
+    debugLog(`Git Bash version mismatch: bundled=${bundledVersion}, extracted=${extractedVersion}`);
+  } catch (err) {
+    debugLog(`Error reading version files: ${err}`);
+  }
+  return false;
+}
+
+function doExtract(archivePath: string, extractedDir: string, bundledVersionFile: string): void {
+  if (fs.existsSync(extractedDir)) {
+    fs.rmSync(extractedDir, { recursive: true, force: true });
+  }
+
+  fs.mkdirSync(extractedDir, { recursive: true });
+  extractTarBz2(archivePath, extractedDir);
+
+  const extractedVersionFile = path.join(extractedDir, '.version');
+  if (fs.existsSync(bundledVersionFile)) {
+    const version = fs.readFileSync(bundledVersionFile, 'utf8').trim();
+    fs.writeFileSync(extractedVersionFile, version);
+    logger.info('Git Bash extracted successfully', { version, dir: extractedDir });
+    debugLog(`Git Bash extracted successfully, version ${version}`);
+  } else {
+    logger.info('Git Bash extracted successfully (no version file)', { dir: extractedDir });
+    debugLog('Git Bash extracted successfully (no version file)');
+  }
+
+  const bashExePath = path.join(extractedDir, 'usr', 'bin', 'bash.exe');
+  if (fs.existsSync(bashExePath)) {
+    debugLog(`Verified: ${bashExePath} exists`);
+  } else {
+    logger.error('bash.exe not found after extraction', { expected: bashExePath });
+    debugLog(`WARNING: ${bashExePath} not found after extraction`);
+  }
+}
 
 export function extractGitBashIfNeeded(): void {
   if (process.platform !== 'win32') {
@@ -23,10 +80,9 @@ export function extractGitBashIfNeeded(): void {
   try {
     const gitBashArchive = WindowsPaths.getGitBashArchive();
     const bundledVersionFile = WindowsPaths.getGitBashVersionFile();
+    const extractedDir = path.join(getResourcesPath(), 'git-bash');
 
     debugLog(`Git Bash extraction: checking ${gitBashArchive}`);
-
-    const extractedDir = WindowsPaths.getGitBashExtractionDir();
 
     // Check for archive in resources (offline builds) or next to extraction dir (online downloads)
     let archivePath = gitBashArchive;
@@ -42,50 +98,46 @@ export function extractGitBashIfNeeded(): void {
         return;
       }
     }
-    const extractedVersionFile = path.join(extractedDir, '.version');
-    const bashExePath = path.join(extractedDir, 'usr', 'bin', 'bash.exe');
 
-    if (fs.existsSync(bashExePath) && fs.existsSync(extractedVersionFile)) {
-      try {
-        const bundledVersion = fs.existsSync(bundledVersionFile)
-          ? fs.readFileSync(bundledVersionFile, 'utf8').trim()
-          : '';
-        const extractedVersion = fs.readFileSync(extractedVersionFile, 'utf8').trim();
-
-        if (bundledVersion === extractedVersion) {
-          debugLog(`Git Bash already extracted with version ${extractedVersion}`);
-          return;
-        }
-        debugLog(`Git Bash version mismatch: bundled=${bundledVersion}, extracted=${extractedVersion}`);
-      } catch (err) {
-        debugLog(`Error reading version files: ${err}`);
-      }
+    // Skip if already extracted (e.g. by the NSIS installer during installation)
+    if (isAlreadyExtracted(extractedDir, bundledVersionFile)) {
+      return;
     }
 
-    logger.info('Extracting Git Bash', { target: extractedDir, resourcesWritable: WindowsPaths.isResourcesWritable() });
+    // For "all users" installs, the NSIS installer should have extracted
+    // Git Bash during installation while elevated.  If it didn't (e.g. old
+    // installer, manual placement), we cannot write to Program Files at
+    // runtime — report the error clearly instead of silently degrading.
+    if (!WindowsPaths.isResourcesWritable()) {
+      logger.error(
+        'Cannot extract Git Bash: resources directory is not writable. ' +
+        'For system-wide installations, Git Bash should be extracted by the installer. ' +
+        'Please reinstall Philibert or install Git Bash system-wide.',
+        { resourcesPath: getResourcesPath(), target: extractedDir },
+      );
+      debugLog('Resources dir not writable — cannot extract Git Bash at runtime');
+      return;
+    }
+
+    logger.info('Extracting Git Bash', { target: extractedDir });
     debugLog(`Extracting Git Bash to ${extractedDir}...`);
 
-    if (fs.existsSync(extractedDir)) {
-      fs.rmSync(extractedDir, { recursive: true, force: true });
-    }
-
-    extractTarBz2(archivePath, extractedDir);
-
-    if (fs.existsSync(bundledVersionFile)) {
-      const version = fs.readFileSync(bundledVersionFile, 'utf8').trim();
-      fs.writeFileSync(extractedVersionFile, version);
-      logger.info('Git Bash extracted successfully', { version, dir: extractedDir });
-      debugLog(`Git Bash extracted successfully, version ${version}`);
-    } else {
-      logger.info('Git Bash extracted successfully (no version file)', { dir: extractedDir });
-      debugLog('Git Bash extracted successfully (no version file)');
-    }
-
-    if (fs.existsSync(bashExePath)) {
-      debugLog(`Verified: ${bashExePath} exists`);
-    } else {
-      logger.error('bash.exe not found after extraction', { expected: bashExePath });
-      debugLog(`WARNING: ${bashExePath} not found after extraction`);
+    try {
+      doExtract(archivePath, extractedDir, bundledVersionFile);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EPERM' || code === 'EACCES') {
+        // isResourcesWritable() can give false positives on Windows (ACL check
+        // passes but actual write fails).  Same story: not our job to work around.
+        logger.error(
+          'Git Bash extraction failed: permission denied despite resources appearing writable. ' +
+          'This typically happens with system-wide installations. Please reinstall Philibert.',
+          { error: String(err), target: extractedDir },
+        );
+        debugLog(`Extraction failed with ${code} — reinstallation required`);
+      } else {
+        throw err;
+      }
     }
   } catch (err) {
     logger.error('Git Bash extraction failed', err);

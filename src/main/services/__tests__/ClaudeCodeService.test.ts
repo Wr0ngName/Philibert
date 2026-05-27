@@ -146,7 +146,8 @@ describe('ClaudeCodeService', () => {
     await configService.setOAuthToken('sk-ant-oat01-test-token-that-is-long-enough-to-pass-validation-check');
     await configService.setConfig({ autoApproveReads: false });
 
-    service = new ClaudeCodeService(configService, getMainWindow as any, mockNotificationService as any);
+    const mockConversationService = { clearAllSessionIds: vi.fn().mockResolvedValue(undefined) };
+    service = new ClaudeCodeService(configService, getMainWindow as any, mockNotificationService as any, mockConversationService as any);
   });
 
   afterEach(() => {

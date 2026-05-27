@@ -92,8 +92,16 @@ export function migrateFromOldApp(): MigrationResult {
   const newPath = app.getPath('userData');
 
   if (!oldApp) {
-    debugLog('Migration: no old app data found, skipping');
+    debugLog('Migration: no old app data found');
     cleanupOldUpdaterCaches();
+
+    // Recovery: phase 1 may have already deleted the old directory in a
+    // previous launch, but phase 2/3 never completed (e.g. restart was
+    // interrupted).  Detect stuck credentials and retry with the most likely
+    // old app name.
+    const recoveryResult = recoverStuckCredentials(newPath);
+    if (recoveryResult) return recoveryResult;
+
     return { needsCredentialRestart: false };
   }
 
@@ -101,8 +109,25 @@ export function migrateFromOldApp(): MigrationResult {
 
   const newConfig = path.join(newPath, 'config.json');
   if (fs.existsSync(newConfig)) {
-    debugLog('Migration: Philibert config already exists, skipping');
+    debugLog('Migration: Philibert config already exists, skipping data copy');
     cleanupOldUpdaterCaches();
+
+    // Even though config exists, the old data dir still does.  This means a
+    // previous migration attempt may have copied the config but never completed
+    // credential re-keying.  Check whether credentials need re-keying now.
+    try {
+      const config = JSON.parse(fs.readFileSync(newConfig, 'utf8'));
+      const hasEncryptedCredentials = CREDENTIAL_KEYS.some(
+        (key) => config[key] && typeof config[key] === 'string' && !String(config[key]).startsWith('plain:')
+      );
+      if (hasEncryptedCredentials && !canDecryptCredentials(config)) {
+        debugLog(`Migration: config exists but credentials need re-keying (old name: "${oldApp.name}")`);
+        return { needsCredentialRestart: true, oldAppName: oldApp.name };
+      }
+    } catch (err) {
+      debugLog(`Migration: failed to check credentials in existing config: ${err}`);
+    }
+
     return { needsCredentialRestart: false };
   }
 
@@ -271,7 +296,87 @@ export function finishCredentialMigration(): void {
 
   const configPath = path.join(app.getPath('userData'), 'config.json');
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  clearMigrationAttempts(app.getPath('userData'));
   debugLog('Migration phase 3: credential migration complete');
+}
+
+const MIGRATION_ATTEMPT_FILE = '.credential-migration-attempts';
+const MAX_MIGRATION_ATTEMPTS = 2;
+
+/**
+ * Recovery helper: detect credentials that are stuck encrypted with the
+ * old app's safeStorage key.  This covers the case where phase 1 completed
+ * (config copied, old dir deleted) but the phase-2 restart never happened.
+ *
+ * Guards against infinite restart loops: after MAX_MIGRATION_ATTEMPTS failures,
+ * clears the broken credentials so the user can re-authenticate cleanly.
+ */
+function recoverStuckCredentials(newPath: string): MigrationResult | null {
+  const configPath = path.join(newPath, 'config.json');
+  if (!fs.existsSync(configPath)) return null;
+
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const hasEncryptedCredentials = CREDENTIAL_KEYS.some(
+      (key) => config[key] && typeof config[key] === 'string' && !String(config[key]).startsWith('plain:')
+    );
+    if (!hasEncryptedCredentials) return null;
+    if (!safeStorage.isEncryptionAvailable()) {
+      debugLog('Migration recovery: safeStorage not available, skipping recovery (cannot test decryption)');
+      return null;
+    }
+    if (canDecryptCredentials(config)) {
+      clearMigrationAttempts(newPath);
+      return null;
+    }
+
+    // Check attempt counter to prevent infinite restart loops
+    const attempts = getMigrationAttempts(newPath);
+    if (attempts >= MAX_MIGRATION_ATTEMPTS) {
+      debugLog(`Migration recovery: exhausted ${MAX_MIGRATION_ATTEMPTS} attempts, clearing broken credentials`);
+      for (const key of CREDENTIAL_KEYS) {
+        delete config[key];
+      }
+      // Reset auth method so ConfigService doesn't try to use missing credentials
+      config['authMethod'] = 'none';
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      clearMigrationAttempts(newPath);
+      return null;
+    }
+
+    incrementMigrationAttempts(newPath);
+    const oldAppName = OLD_APP_NAMES[0];
+    debugLog(`Migration recovery: credentials stuck with old encryption key, scheduling re-key with "${oldAppName}" (attempt ${attempts + 1}/${MAX_MIGRATION_ATTEMPTS})`);
+    return { needsCredentialRestart: true, oldAppName };
+  } catch (err) {
+    debugLog(`Migration recovery: failed to read config: ${err}`);
+  }
+  return null;
+}
+
+function getMigrationAttempts(newPath: string): number {
+  try {
+    const attemptFile = path.join(newPath, MIGRATION_ATTEMPT_FILE);
+    if (fs.existsSync(attemptFile)) {
+      return parseInt(fs.readFileSync(attemptFile, 'utf8').trim(), 10) || 0;
+    }
+  } catch { /* ignore */ }
+  return 0;
+}
+
+function incrementMigrationAttempts(newPath: string): void {
+  try {
+    const attemptFile = path.join(newPath, MIGRATION_ATTEMPT_FILE);
+    const current = getMigrationAttempts(newPath);
+    fs.writeFileSync(attemptFile, String(current + 1));
+  } catch { /* ignore */ }
+}
+
+function clearMigrationAttempts(newPath: string): void {
+  try {
+    const attemptFile = path.join(newPath, MIGRATION_ATTEMPT_FILE);
+    if (fs.existsSync(attemptFile)) fs.unlinkSync(attemptFile);
+  } catch { /* ignore */ }
 }
 
 function cleanupOldUpdaterCaches(): void {

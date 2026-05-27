@@ -539,6 +539,19 @@ export const useConversationsStore = defineStore('conversations', () => {
   }
 
   /**
+   * Clear ALL stored SDK session IDs.
+   * Used when authentication changes (re-login, migration) to prevent
+   * stale session resume attempts with a different auth context.
+   */
+  function clearAllSdkSessionIds(): void {
+    const count = sdkSessionIds.value.size;
+    sdkSessionIds.value.clear();
+    if (count > 0) {
+      logger.info('Cleared all SDK session IDs after auth change', { count });
+    }
+  }
+
+  /**
    * Persist the last active conversation ID to config for auto-restore on startup.
    */
   function persistLastConversationId(id: string): void {
@@ -636,6 +649,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     getSdkSessionId,
     clearSdkSessionId,
     clearCurrentSdkSessionId,
+    clearAllSdkSessionIds,
     currentConversationHasSession,
   };
 });

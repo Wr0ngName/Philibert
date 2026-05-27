@@ -52,6 +52,13 @@ interface OAuthResourceHandlers {
 
 export class AuthService {
   private pendingOAuthFlow: OAuthFlowState | null = null;
+  /**
+   * Callback invoked when credentials JSON is found AFTER the OAuth promise
+   * already resolved (e.g. setup-token writes the file between output
+   * extraction and PTY exit).  The IPC handler sets this to save the late
+   * credentials for refresh capability.
+   */
+  onLateCredentials: ((credentialsJson: string) => void) | null = null;
 
   constructor() {
     logger.info('AuthService initialized');
@@ -689,6 +696,11 @@ export class AuthService {
   /**
    * Check OAuth result in PTY output.
    * Looks for token, credentials file, success message, or error indicators.
+   *
+   * When a token is found in output, we resolve immediately so the user gets
+   * feedback, but we do NOT kill the PTY — the `setup-token` command may still
+   * need to finish server-side registration.  The PTY exit handler handles
+   * final cleanup and a last-chance credentials-file capture.
    */
   private checkOAuthResult(
     output: string,
@@ -711,7 +723,7 @@ export class AuthService {
       return true;
     }
 
-    // Check for success message or token pattern - defer to credentials file
+    // Check for success message or token pattern
     const hasSuccessIndicator =
       clean.includes('Successfully authenticated') ||
       clean.includes('logged in') ||
@@ -730,7 +742,9 @@ export class AuthService {
       handlers.resolved = true;
       handlers.cleanup();
       logger.info('OAuth authentication successful (extracted from output)');
-      this.cleanupOAuthFlow();
+      // Do NOT call cleanupOAuthFlow() here — let the PTY exit naturally so
+      // setup-token can complete its server-side registration.  The PTY exit
+      // handler calls cleanupOAuthFlow() after a final credentials-file check.
       resolve({ success: true, token: tokenResult });
       return true;
     }
@@ -883,6 +897,10 @@ export class AuthService {
 
   /**
    * Setup PTY exit handler.
+   * Always cleans up the OAuth flow after PTY exits.  When the promise was
+   * already resolved (e.g. token extracted from output), we do a final
+   * credentials-file check and emit a late-credentials event so the caller
+   * can upgrade to the full JSON if available.
    */
   private setupPtyExitHandler(
     ptyProcess: IPty,
@@ -894,6 +912,8 @@ export class AuthService {
     ptyProcess.onExit(({ exitCode }) => {
       logger.info(`OAuth PTY exited with code ${exitCode}`);
       setTimeout(() => {
+        // Always clean up — even if we already resolved from output extraction,
+        // the PTY and temp dir still need cleanup.
         if (!handlers.resolved) {
           this.checkOAuthResult(getOutput(), configDir, handlers, resolve);
           if (!handlers.resolved) {
@@ -902,6 +922,16 @@ export class AuthService {
             this.cleanupOAuthFlow();
             resolve({ success: false, error: 'Authentication failed. Please try again.' });
           }
+        } else {
+          // Already resolved (from output extraction).  Do a final
+          // credentials-file check — setup-token may have written it between
+          // our resolve and the PTY exiting.  Save it async if found.
+          const credsResult = this.extractTokenFromCredentialsFile(configDir);
+          if (credsResult) {
+            logger.info('Late credentials file found after PTY exit — saving for refresh capability');
+            this.onLateCredentials?.(credsResult.credentialsJson);
+          }
+          this.cleanupOAuthFlow();
         }
       }, MAIN_CONSTANTS.CLAUDE.INTERRUPT_DELAY_MS);
     });
