@@ -63,12 +63,12 @@ const renderedContent = computed(() => renderMarkdown(props.message.content));
   <div
     v-else
     :class="[
-      'p-4 rounded-lg animate-fade-in',
+      'rounded-lg animate-fade-in message-bubble',
       isUser ? 'message-user' : 'message-assistant',
     ]"
   >
     <!-- Header -->
-    <div class="flex items-center gap-2 mb-2">
+    <div class="flex items-center gap-2 message-header">
       <div
         :class="[
           'w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium',
@@ -101,11 +101,24 @@ const renderedContent = computed(() => renderMarkdown(props.message.content));
 </template>
 
 <style scoped>
+.message-bubble {
+  padding: calc(var(--chat-line-height, 1.6) * 0.6rem);
+}
+
+.message-header {
+  margin-bottom: calc(var(--chat-line-height, 1.6) * 0.3rem);
+}
+
 .message-content {
   font-size: var(--chat-font-size, 14px) !important;
-  line-height: var(--chat-line-height, 1.6);
+  line-height: var(--chat-line-height, 1.6) !important;
   overflow-wrap: break-word;
   word-break: break-word;
+}
+
+/* Force line-height on all prose children (Tailwind Typography sets its own) */
+.message-content :deep(*) {
+  line-height: inherit !important;
 }
 
 /* Code blocks get horizontal scroll instead of overflowing */
@@ -114,10 +127,10 @@ const renderedContent = computed(() => renderMarkdown(props.message.content));
   max-width: 100%;
 }
 
-/* Tighten paragraph spacing for chat-like feel */
+/* Scale paragraph spacing with line-height setting */
 .message-content :deep(p) {
-  margin-top: 0.5em;
-  margin-bottom: 0.5em;
+  margin-top: calc(var(--chat-line-height, 1.6) * 0.3em);
+  margin-bottom: calc(var(--chat-line-height, 1.6) * 0.3em);
 }
 
 .message-content :deep(p:first-child) {

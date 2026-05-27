@@ -94,7 +94,7 @@ onUnmounted(() => {
 <template>
   <div
     ref="listRef"
-    class="flex-1 overflow-y-auto overflow-x-hidden min-w-0 p-4 space-y-4"
+    class="flex-1 overflow-y-auto overflow-x-hidden min-w-0 p-4 message-list-spacing"
   >
     <!-- Empty state -->
     <div
@@ -121,7 +121,7 @@ onUnmounted(() => {
       v-else
       name="message"
       tag="div"
-      class="space-y-4"
+      class="message-list-spacing"
     >
       <MessageItem
         v-for="message in messages"
@@ -134,6 +134,10 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.message-list-spacing > * + * {
+  margin-top: calc(var(--chat-line-height, 1.6) * 0.6rem);
+}
+
 .message-enter-active,
 .message-leave-active {
   transition: all 0.2s ease;
