@@ -87,10 +87,14 @@ vi.mock('../../utils/logger', () => ({
   },
 }));
 
-vi.mock('../../utils/paths', () => ({
-  getConversationsPath: () => '/app/conversations',
-  isPathWithin: () => true, // Always return true in tests (paths are mocked)
-}));
+vi.mock('../../utils/paths', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../utils/paths')>();
+  return {
+    ...actual,
+    getConversationsPath: () => '/app/conversations',
+    isPathWithin: () => true,
+  };
+});
 
 // Import after mocks
 import { Conversation } from '../../../shared/types';

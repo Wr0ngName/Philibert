@@ -10,7 +10,7 @@ import { generateId, ID_PREFIXES } from '../../shared/id';
 import { Conversation } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import logger from '../utils/logger';
-import { getConversationsPath, isPathWithin } from '../utils/paths';
+import { escapeCwdForClaude, getConversationsPath, isPathWithin } from '../utils/paths';
 import { generateTitleFromContent } from '../utils/stringUtils';
 
 export class ConversationService {
@@ -321,7 +321,7 @@ export class ConversationService {
           if (!conversation.sdkSessionId || !conversation.workingDirectory) continue;
 
           // Check if session file already exists under the stored CWD — if so, skip
-          const escapedCwd = conversation.workingDirectory.replace(/[^a-zA-Z0-9-]/g, '-');
+          const escapedCwd = escapeCwdForClaude(conversation.workingDirectory);
           const expectedSession = path.join(
             claudeProjectsDir, escapedCwd,
             `${conversation.sdkSessionId}.jsonl`

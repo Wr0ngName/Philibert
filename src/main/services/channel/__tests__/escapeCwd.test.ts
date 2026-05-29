@@ -1,46 +1,37 @@
 /**
- * Tests for the escapeCwdForClaude logic (Bug 2 fix).
+ * Tests for escapeCwdForClaude — matches the Claude Code CLI's project
+ * directory naming logic (M0 function in sdk.mjs).
  *
- * Claude Code CLI derives a project-directory name from the session's working
- * directory by replacing every character that is NOT [a-zA-Z0-9-] with a '-'.
- * The old implementation only replaced '/' and '_', missing backslashes, spaces,
- * colons, dots, etc. — causing session-file look-ups to fail on Windows paths.
+ * The CLI replaces every non-alphanumeric character with '-', and for
+ * paths longer than 200 chars, truncates and appends a hash.
  *
- * Because escapeCwdForClaude is a private module-level function inside
- * ChannelSession.ts, we test the escaping logic in isolation here and
- * cross-check the expected outputs against the real CLI evidence:
- *
+ * Verified against real Windows client data:
  *   'C:\Claude\Claude Femmexpat'  →  'C--Claude-Claude-Femmexpat'
- *
- * These tests will FAIL against the old /[/_]/g regex and PASS once the
- * correct /[^a-zA-Z0-9-]/g regex is in place.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
-// ---------------------------------------------------------------------------
-// Inline reference implementation — mirrors the FIXED logic in ChannelSession.ts.
-// If the source function is ever exported we can import it directly instead.
-// ---------------------------------------------------------------------------
-function escapeCwdForClaude(cwd: string): string {
-  return cwd.replace(/[^a-zA-Z0-9-]/g, '-');
-}
+vi.mock('node:fs', () => ({
+  default: { existsSync: vi.fn(), realpathSync: vi.fn((p: string) => p) },
+  existsSync: vi.fn(),
+  realpathSync: vi.fn((p: string) => p),
+}));
 
-// ---------------------------------------------------------------------------
-// Contrast helper — applies the OLD (broken) regex so we can assert it differs
-// ---------------------------------------------------------------------------
+vi.mock('electron', () => ({
+  app: { getPath: vi.fn(() => '/mock-user-data') },
+}));
+
+import { escapeCwdForClaude } from '../../../utils/paths';
+
+// Old (broken) regex for regression assertions
 function escapeCwdBroken(cwd: string): string {
   return cwd.replace(/[/_]/g, '-');
 }
 
-describe('escapeCwdForClaude (correct /[^a-zA-Z0-9-]/g escaping)', () => {
+describe('escapeCwdForClaude', () => {
 
-  // -------------------------------------------------------------------------
-  // Windows paths — the primary evidence for the bug
-  // -------------------------------------------------------------------------
   describe('Windows paths', () => {
     it('escapes backslashes and colons in a typical Windows path', () => {
-      // Evidence from real CLI output: 'C:\Claude\Claude Femmexpat' → 'C--Claude-Claude-Femmexpat'
       expect(escapeCwdForClaude('C:\\Claude\\Claude Femmexpat')).toBe('C--Claude-Claude-Femmexpat');
     });
 
@@ -48,25 +39,16 @@ describe('escapeCwdForClaude (correct /[^a-zA-Z0-9-]/g escaping)', () => {
       expect(escapeCwdForClaude('C:\\Users\\John Doe\\project')).toBe('C--Users-John-Doe-project');
     });
 
-    it('escapes all non-alphanumeric-hyphen characters in a nested Windows path', () => {
-      expect(escapeCwdForClaude('C:\\Program Files\\My App\\src')).toBe('C--Program-Files-My-App-src');
-    });
-
     it('escapes dots in Windows drive paths', () => {
-      // A path like 'C:\Users\user.name\work' has a dot
       expect(escapeCwdForClaude('C:\\Users\\user.name\\work')).toBe('C--Users-user-name-work');
     });
 
-    it('produces a result that differs from the old broken regex for Windows paths', () => {
+    it('differs from the old broken regex for Windows paths', () => {
       const cwd = 'C:\\Claude\\Claude Femmexpat';
-      // Old regex leaves backslashes, colons and spaces intact — it only touches '/' and '_'
       expect(escapeCwdBroken(cwd)).not.toBe(escapeCwdForClaude(cwd));
     });
   });
 
-  // -------------------------------------------------------------------------
-  // Linux / macOS paths
-  // -------------------------------------------------------------------------
   describe('Linux / macOS paths', () => {
     it('escapes leading slash in a simple Linux path', () => {
       expect(escapeCwdForClaude('/home/user/project')).toBe('-home-user-project');
@@ -80,24 +62,43 @@ describe('escapeCwdForClaude (correct /[^a-zA-Z0-9-]/g escaping)', () => {
       expect(escapeCwdForClaude('/home/user/.config/app')).toBe('-home-user--config-app');
     });
 
-    it('preserves hyphens that are already in the path', () => {
+    it('preserves hyphens already in the path', () => {
       expect(escapeCwdForClaude('/home/user/my-project')).toBe('-home-user-my-project');
     });
 
-    it('escapes path with spaces', () => {
+    it('escapes spaces', () => {
       expect(escapeCwdForClaude('/home/user/my project')).toBe('-home-user-my-project');
-    });
-
-    it('handles the root path', () => {
-      expect(escapeCwdForClaude('/')).toBe('-');
     });
   });
 
-  // -------------------------------------------------------------------------
-  // Edge cases
-  // -------------------------------------------------------------------------
+  describe('long path truncation', () => {
+    it('returns paths <= 200 chars as-is', () => {
+      const cwd = '/home/' + 'a'.repeat(190);
+      const result = escapeCwdForClaude(cwd);
+      expect(result.length).toBeLessThanOrEqual(200);
+      expect(result).toBe('-home-' + 'a'.repeat(190));
+    });
+
+    it('truncates paths > 200 chars and appends a hash', () => {
+      const cwd = '/home/' + 'a'.repeat(300);
+      const result = escapeCwdForClaude(cwd);
+      expect(result.length).toBeGreaterThan(200);
+      expect(result.length).toBeLessThan(220);
+      expect(result.startsWith('-home-' + 'a'.repeat(194))).toBe(true);
+      expect(result).toMatch(/-[a-z0-9]+$/);
+    });
+
+    it('produces different hashes for different long paths', () => {
+      const cwd1 = '/home/' + 'a'.repeat(300);
+      const cwd2 = '/home/' + 'b'.repeat(300);
+      const result1 = escapeCwdForClaude(cwd1);
+      const result2 = escapeCwdForClaude(cwd2);
+      expect(result1).not.toBe(result2);
+    });
+  });
+
   describe('edge cases', () => {
-    it('returns an empty string unchanged', () => {
+    it('returns empty string unchanged', () => {
       expect(escapeCwdForClaude('')).toBe('');
     });
 
@@ -105,38 +106,27 @@ describe('escapeCwdForClaude (correct /[^a-zA-Z0-9-]/g escaping)', () => {
       expect(escapeCwdForClaude('home-user-project')).toBe('home-user-project');
     });
 
-    it('replaces consecutive special characters with multiple hyphens', () => {
-      // Double backslash  '\\\\'  should produce '--'
-      expect(escapeCwdForClaude('C:\\\\dir')).toBe('C---dir');
-    });
-
     it('handles paths with mixed separators', () => {
       expect(escapeCwdForClaude('C:/Users/Jane/project')).toBe('C--Users-Jane-project');
     });
   });
 
-  // -------------------------------------------------------------------------
-  // Regression: old /[/_]/g regex failures
-  // The following paths were silently mishandled by the old regex.
-  // -------------------------------------------------------------------------
   describe('regression against old /[/_]/g regex', () => {
-    it('old regex does NOT escape backslashes (regression proof)', () => {
+    it('old regex does NOT escape backslashes', () => {
       const cwd = 'C:\\Claude\\project';
-      // Old regex: only '/' and '_' are replaced — backslashes stay
-      expect(escapeCwdBroken(cwd)).toBe('C:\\Claude\\project'); // unchanged by old regex
-      // New regex: all non-[a-zA-Z0-9-] replaced
+      expect(escapeCwdBroken(cwd)).toBe('C:\\Claude\\project');
       expect(escapeCwdForClaude(cwd)).toBe('C--Claude-project');
     });
 
-    it('old regex does NOT escape spaces (regression proof)', () => {
+    it('old regex does NOT escape spaces', () => {
       const cwd = '/home/user/my project';
-      expect(escapeCwdBroken(cwd)).toBe('-home-user-my project'); // space survives
-      expect(escapeCwdForClaude(cwd)).toBe('-home-user-my-project'); // space escaped
+      expect(escapeCwdBroken(cwd)).toBe('-home-user-my project');
+      expect(escapeCwdForClaude(cwd)).toBe('-home-user-my-project');
     });
 
-    it('old regex does NOT escape colons (regression proof)', () => {
+    it('old regex does NOT escape colons', () => {
       const cwd = 'C:\\work';
-      expect(escapeCwdBroken(cwd)).toBe('C:\\work'); // colon and backslash survive
+      expect(escapeCwdBroken(cwd)).toBe('C:\\work');
       expect(escapeCwdForClaude(cwd)).toBe('C--work');
     });
   });

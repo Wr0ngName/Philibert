@@ -21,6 +21,7 @@ import type { ChannelUsageData, ChannelModelTokens } from '../../../shared/types
 import { MAIN_CONSTANTS } from '../../constants/app';
 import { stripAnsi } from '../../utils/ansi';
 import logger from '../../utils/logger';
+import { escapeCwdForClaude } from '../../utils/paths';
 import { getChannelSessionsDir, WindowsPaths } from '../../utils/resourcePaths';
 
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
@@ -36,10 +37,6 @@ function modelFamily(modelId: string): string {
   if (name.includes('opus')) return 'opus';
   if (name.includes('haiku')) return 'haiku';
   return 'sonnet';
-}
-
-function escapeCwdForClaude(cwd: string): string {
-  return cwd.replace(/[^a-zA-Z0-9-]/g, '-');
 }
 
 function parseSessionUsage(jsonlPath: string): ChannelUsageData {

@@ -78,3 +78,24 @@ export function isPathWithin(filePath: string, directory: string): boolean {
 export function getRelativePath(filePath: string, baseDir: string): string {
   return path.relative(baseDir, filePath);
 }
+
+function cwdHash(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++)
+    hash = (hash << 5) - hash + str.charCodeAt(i) | 0;
+  return hash;
+}
+
+/**
+ * Escape a CWD path the same way the Claude Code CLI does to create
+ * project directory names under ~/.claude/projects/.
+ *
+ * Mirrors the CLI's M0() function (sdk.mjs):
+ *   1. Replace every non-alphanumeric character with '-'
+ *   2. If the result is longer than 200 chars, truncate + append a hash
+ */
+export function escapeCwdForClaude(cwd: string): string {
+  const escaped = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (escaped.length <= 200) return escaped;
+  return `${escaped.slice(0, 200)}-${Math.abs(cwdHash(cwd)).toString(36)}`;
+}
