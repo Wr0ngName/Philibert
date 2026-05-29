@@ -10,7 +10,7 @@ import { generateId, ID_PREFIXES } from '../../shared/id';
 import { Conversation } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import logger from '../utils/logger';
-import { escapeCwdForClaude, getConversationsPath, isPathWithin } from '../utils/paths';
+import { getConversationsPath, isPathWithin } from '../utils/paths';
 import { generateTitleFromContent } from '../utils/stringUtils';
 
 export class ConversationService {
@@ -320,19 +320,11 @@ export class ConversationService {
           const conversation = JSON.parse(content) as Conversation;
           if (!conversation.sdkSessionId || !conversation.workingDirectory) continue;
 
-          // Check if session file already exists under the stored CWD — if so, skip
-          const escapedCwd = escapeCwdForClaude(conversation.workingDirectory);
-          const expectedSession = path.join(
-            claudeProjectsDir, escapedCwd,
-            `${conversation.sdkSessionId}.jsonl`
-          );
-          if (fs.existsSync(expectedSession)) continue;
-
-          // Session not found at expected path — search subdirectory project dirs
+          // Search ALL project dirs for the session file by its unique ID.
+          // This avoids replicating the CLI's internal CWD escaping logic.
           const sessionFileName = `${conversation.sdkSessionId}.jsonl`;
           let sessionFilePath: string | null = null;
           for (const dir of projectDirs) {
-            if (!dir.startsWith(escapedCwd)) continue;
             const candidate = path.join(claudeProjectsDir, dir, sessionFileName);
             if (fs.existsSync(candidate)) {
               sessionFilePath = candidate;
@@ -346,7 +338,10 @@ export class ConversationService {
           const actualCwd = await this.readCwdFromSessionFile(sessionFilePath);
           if (!actualCwd) continue;
 
-          logger.info('Recovering conversation CWD — session found under subdirectory', {
+          // Only update if the stored CWD doesn't match the actual CWD
+          if (conversation.workingDirectory === actualCwd) continue;
+
+          logger.info('Recovering conversation CWD from session file', {
             conversationId: conversation.id,
             oldCwd: conversation.workingDirectory,
             newCwd: actualCwd,

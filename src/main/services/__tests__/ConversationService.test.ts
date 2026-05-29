@@ -691,32 +691,19 @@ describe('ConversationService', () => {
   });
 
   // ===========================================================================
-  // recoverSessionData() — Bug 3 fix
-  // The stored escapedCwd must use replace(/[^a-zA-Z0-9-]/g, '-') not /[/_]/g.
-  // Strategy: store a stale/wrong CWD on the conversation and put the REAL CWD
-  // in the JSONL. Recovery should update the conversation's workingDirectory to
-  // the value from the JSONL, proving that the correct project dir was found.
+  // recoverSessionData()
+  // Searches ALL project dirs by session ID (no escaping dependency).
+  // Reads the actual CWD from the session JSONL and updates the conversation.
   // ===========================================================================
   describe('recoverSessionData()', () => {
     const SESSION_ID = 'abc123-session';
-
-    // The REAL cwd recorded by the CLI in the session JSONL — this is the
-    // corrected value recovery should write back into the conversation file.
     const REAL_CWD = 'C:\\Claude\\Claude Femmexpat\\actual-subdir';
     const SESSION_FILE_CONTENT = JSON.stringify({ type: 'system', cwd: REAL_CWD });
-
-    // The stale/wrong CWD that the conversation currently stores (simulates
-    // what was persisted before the session moved to a subdirectory).
     const STALE_CWD = 'C:\\Claude\\Claude Femmexpat';
 
     beforeEach(() => {
-      // Provide a HOME so recoverSessionData() does not early-exit
       process.env.HOME = '/mock-home';
-
-      // Allow access check for the projects directory to succeed
       mockFs.promises.access.mockResolvedValue(undefined);
-
-      // existsSync: keyed by mockFileSystem presence
       mockFs.existsSync.mockImplementation((p: string) => mockFileSystem.has(p));
     });
 
@@ -724,67 +711,75 @@ describe('ConversationService', () => {
       delete process.env.HOME;
     });
 
-    it('recovers CWD from session file using correct Windows-path escaping (Bug 3 fix)', async () => {
-      // Conversation has a stale CWD — not equal to what the CLI recorded.
+    it('finds session file by ID regardless of directory name and recovers CWD', async () => {
       const conv = createConversation({
-        id: 'conv_windows',
+        id: 'conv_recover',
         workingDirectory: STALE_CWD,
         sdkSessionId: SESSION_ID,
       });
-      mockFileSystem.set('/app/conversations/conv_windows.json', JSON.stringify(conv));
+      mockFileSystem.set('/app/conversations/conv_recover.json', JSON.stringify(conv));
 
-      // With the CORRECT regex /[^a-zA-Z0-9-]/g:
-      //   'C:\Claude\Claude Femmexpat' → 'C--Claude-Claude-Femmexpat'
-      // The session file lives under a subdirectory of that escaped name.
-      const correctEscaped = 'C--Claude-Claude-Femmexpat';
-      const subdir = `${correctEscaped}-actual-subdir`;
-      const sessionFilePath = `/mock-home/.claude/projects/${subdir}/${SESSION_ID}.jsonl`;
+      // Session file under an arbitrarily-named directory
+      const someDir = 'whatever-dir-name-doesnt-matter';
+      const sessionFilePath = `/mock-home/.claude/projects/${someDir}/${SESSION_ID}.jsonl`;
       mockFileSystem.set(sessionFilePath, SESSION_FILE_CONTENT);
 
       mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-        if (dir === '/mock-home/.claude/projects') return [subdir];
-        if (dir === '/app/conversations') return ['conv_windows.json'];
+        if (dir === '/mock-home/.claude/projects') return [someDir];
+        if (dir === '/app/conversations') return ['conv_recover.json'];
         return [];
       });
 
       await service.recoverSessionData();
 
-      // Recovery ran → workingDirectory updated to the actual CWD from the JSONL
-      const updated = JSON.parse(mockFileSystem.get('/app/conversations/conv_windows.json')!);
+      const updated = JSON.parse(mockFileSystem.get('/app/conversations/conv_recover.json')!);
       expect(updated.workingDirectory).toBe(REAL_CWD);
     });
 
-    it('recovers CWD when session found at exact escaped prefix subdirectory', async () => {
-      // With the FIXED regex /[^a-zA-Z0-9-]/g:
-      // With the FIXED regex, both Windows and Linux paths are escaped correctly.
-      // This test verifies recovery ALSO works when the session is at the
-      // exact escaped path (no subdirectory mismatch).
+    it('does not update conversation when CWD already matches session file', async () => {
       const conv = createConversation({
-        id: 'conv_exact_match',
-        workingDirectory: STALE_CWD,
+        id: 'conv_already_ok',
+        workingDirectory: REAL_CWD,
         sdkSessionId: SESSION_ID,
       });
-      mockFileSystem.set('/app/conversations/conv_exact_match.json', JSON.stringify(conv));
+      const original = JSON.stringify(conv);
+      mockFileSystem.set('/app/conversations/conv_already_ok.json', original);
 
-      // Session file at the correctly escaped path, under a subdirectory
-      const correctEscaped = 'C--Claude-Claude-Femmexpat';
-      const subdir = `${correctEscaped}-actual-subdir`;
-      const sessionFilePath = `/mock-home/.claude/projects/${subdir}/${SESSION_ID}.jsonl`;
-      mockFileSystem.set(sessionFilePath, SESSION_FILE_CONTENT);
+      const someDir = 'some-project-dir';
+      mockFileSystem.set(
+        `/mock-home/.claude/projects/${someDir}/${SESSION_ID}.jsonl`,
+        SESSION_FILE_CONTENT
+      );
 
       mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-        if (dir === '/mock-home/.claude/projects') return [subdir];
-        if (dir === '/app/conversations') return ['conv_exact_match.json'];
+        if (dir === '/mock-home/.claude/projects') return [someDir];
+        if (dir === '/app/conversations') return ['conv_already_ok.json'];
         return [];
       });
 
       await service.recoverSessionData();
 
-      // With the FIXED regex the escaped prefix is 'C--Claude-Claude-Femmexpat',
-      // which correctly start-matches 'C--Claude-Claude-Femmexpat-actual-subdir'.
-      // Recovery runs → workingDirectory updated to the actual CWD from the session file.
-      const updated = JSON.parse(mockFileSystem.get('/app/conversations/conv_exact_match.json')!);
-      expect(updated.workingDirectory).toBe(REAL_CWD);
+      expect(mockFileSystem.get('/app/conversations/conv_already_ok.json')).toBe(original);
+    });
+
+    it('leaves conversation alone when session file is gone', async () => {
+      const conv = createConversation({
+        id: 'conv_gone',
+        workingDirectory: STALE_CWD,
+        sdkSessionId: SESSION_ID,
+      });
+      const original = JSON.stringify(conv);
+      mockFileSystem.set('/app/conversations/conv_gone.json', original);
+
+      mockFs.promises.readdir.mockImplementation(async (dir: string) => {
+        if (dir === '/mock-home/.claude/projects') return ['empty-dir'];
+        if (dir === '/app/conversations') return ['conv_gone.json'];
+        return [];
+      });
+
+      await service.recoverSessionData();
+
+      expect(mockFileSystem.get('/app/conversations/conv_gone.json')).toBe(original);
     });
 
     it('skips conversations without sdkSessionId', async () => {
@@ -804,39 +799,7 @@ describe('ConversationService', () => {
       expect(mockFileSystem.get('/app/conversations/conv_no_sid.json')).toBe(original);
     });
 
-    it('skips conversations when session file already exists at expected (already-correct) path', async () => {
-      // With the correct regex, '/home/user/project' → '-home-user-project'.
-      // If the session JSONL already lives under that path, no recovery is needed.
-      const UNIX_CWD = '/home/user/project';
-      const conv = createConversation({
-        id: 'conv_already_ok',
-        workingDirectory: UNIX_CWD,
-        sdkSessionId: SESSION_ID,
-      });
-      mockFileSystem.set('/app/conversations/conv_already_ok.json', JSON.stringify(conv));
-
-      // Place the session file at the already-correct path so existsSync returns true
-      const correctEscaped = '-home-user-project';
-      const sessionFilePath = `/mock-home/.claude/projects/${correctEscaped}/${SESSION_ID}.jsonl`;
-      mockFileSystem.set(sessionFilePath, JSON.stringify({ type: 'system', cwd: UNIX_CWD }));
-
-      // Make existsSync return true ONLY for this session path
-      mockFs.existsSync.mockImplementation((p: string) => p === sessionFilePath || mockFileSystem.has(p));
-
-      mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-        if (dir === '/mock-home/.claude/projects') return [correctEscaped];
-        if (dir === '/app/conversations') return ['conv_already_ok.json'];
-        return [];
-      });
-
-      const originalContent = mockFileSystem.get('/app/conversations/conv_already_ok.json');
-      await service.recoverSessionData();
-
-      // File must be untouched — session was already findable at the expected path
-      expect(mockFileSystem.get('/app/conversations/conv_already_ok.json')).toBe(originalContent);
-    });
-
-    it('does nothing when HOME environment variable is not set', async () => {
+    it('does nothing when HOME is not set', async () => {
       delete process.env.HOME;
       delete process.env.USERPROFILE;
 
@@ -845,7 +808,6 @@ describe('ConversationService', () => {
 
       await expect(service.recoverSessionData()).resolves.toBeUndefined();
 
-      // writeFile must not have been called (no recovery attempted)
       const convWriteCalls = mockFs.promises.writeFile.mock.calls.filter(
         (args: unknown[]) => String(args[0]).includes('conv_nohome')
       );
