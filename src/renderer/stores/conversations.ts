@@ -243,7 +243,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       id: conversationId,
       title,
       customTitle: existingConv?.customTitle,
-      workingDirectory,
+      workingDirectory: existingConv?.workingDirectory || workingDirectory,
       messages: rawMessages,
       createdAt: existingConv?.createdAt || Date.now(),
       updatedAt: lastMessageAt,
@@ -521,6 +521,16 @@ export const useConversationsStore = defineStore('conversations', () => {
   }
 
   /**
+   * Get the stored working directory for a conversation.
+   * Used to pass the correct CWD when resuming a session — the CLI looks for
+   * session files under a CWD-derived path, so it must match the original.
+   */
+  function getConversationWorkingDirectory(conversationId: string): string | undefined {
+    const conv = conversations.value.find((c: Conversation) => c.id === conversationId);
+    return conv?.workingDirectory || undefined;
+  }
+
+  /**
    * Clear SDK session ID for a conversation
    */
   function clearSdkSessionId(conversationId: string): void {
@@ -647,6 +657,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     // SDK session management (for resume support)
     setSdkSessionId,
     getSdkSessionId,
+    getConversationWorkingDirectory,
     clearSdkSessionId,
     clearCurrentSdkSessionId,
     clearAllSdkSessionIds,

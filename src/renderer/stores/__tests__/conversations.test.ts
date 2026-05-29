@@ -1137,6 +1137,80 @@ describe('useConversationsStore', () => {
       });
     });
 
+    describe('getConversationWorkingDirectory', () => {
+      it('should return stored CWD for a loaded conversation', async () => {
+        const conversation: Conversation = {
+          id: 'conv_cwd',
+          title: 'CWD Test',
+          workingDirectory: '/home/user/projectA',
+          messages: [{ id: 'msg_1', role: 'user', content: 'Hello', timestamp: 1000 }],
+          createdAt: 1000,
+          updatedAt: 2000,
+        };
+        mockElectron.conversation.get.mockResolvedValue(conversation);
+
+        await store.loadConversation('conv_cwd');
+
+        expect(store.getConversationWorkingDirectory('conv_cwd')).toBe('/home/user/projectA');
+      });
+
+      it('should return undefined for unknown conversation', () => {
+        expect(store.getConversationWorkingDirectory('nonexistent')).toBeUndefined();
+      });
+
+      it('should return each conversation\'s own CWD, not global', async () => {
+        const convA: Conversation = {
+          id: 'conv_a',
+          title: 'Project A',
+          workingDirectory: '/home/user/projectA',
+          messages: [{ id: 'msg_1', role: 'user', content: 'A', timestamp: 1000 }],
+          createdAt: 1000,
+          updatedAt: 2000,
+        };
+        const convB: Conversation = {
+          id: 'conv_b',
+          title: 'Project B',
+          workingDirectory: '/home/user/projectB',
+          messages: [{ id: 'msg_2', role: 'user', content: 'B', timestamp: 2000 }],
+          createdAt: 2000,
+          updatedAt: 3000,
+        };
+
+        mockElectron.conversation.get.mockImplementation((id: string) =>
+          Promise.resolve(id === 'conv_a' ? convA : id === 'conv_b' ? convB : null)
+        );
+
+        await store.loadConversation('conv_a');
+        await store.loadConversation('conv_b');
+
+        expect(store.getConversationWorkingDirectory('conv_a')).toBe('/home/user/projectA');
+        expect(store.getConversationWorkingDirectory('conv_b')).toBe('/home/user/projectB');
+      });
+    });
+
+    describe('save preserves original conversation CWD', () => {
+      it('should keep original CWD when re-saving an existing conversation', async () => {
+        const conversation: Conversation = {
+          id: 'conv_preserve',
+          title: 'Preserve CWD',
+          workingDirectory: '/home/user/original-project',
+          messages: [{ id: 'msg_1', role: 'user', content: 'Hello', timestamp: 1000 }],
+          createdAt: 1000,
+          updatedAt: 2000,
+          sdkSessionId: 'session-preserve',
+        };
+        mockElectron.conversation.get.mockResolvedValue(conversation);
+
+        await store.loadConversation('conv_preserve');
+        chatStore.addUserMessage('Follow-up message');
+
+        await store.saveCurrentConversation();
+
+        const savedConversation = mockElectron.conversation.save.mock.calls[0][0];
+        expect(savedConversation.workingDirectory).toBe('/home/user/original-project');
+      });
+    });
+
     describe('session ID round-trip (save then load)', () => {
       it('should survive a save + load round-trip', async () => {
         // 1. Set up a conversation with a session ID

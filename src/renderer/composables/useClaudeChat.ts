@@ -178,13 +178,22 @@ export function useClaudeChat() {
       // Get SDK session ID for this conversation (for resume support)
       const resumeSessionId = conversationsStore.getSdkSessionId(currentConvId);
 
+      // When resuming, use the conversation's stored CWD — the CLI stores session
+      // files under a CWD-derived path, so it must match the original creation CWD.
+      // Fall back to current global CWD for new conversations or if not available.
+      const effectiveCwd = resumeSessionId
+        ? (conversationsStore.getConversationWorkingDirectory(currentConvId) || filesStore.workingDirectory)
+        : filesStore.workingDirectory;
+
       logger.info('Sending message to Claude', {
         conversationId: currentConvId,
         hasResumeSession: !!resumeSessionId,
+        cwd: effectiveCwd,
+        cwdMatchesGlobal: effectiveCwd === filesStore.workingDirectory,
       });
 
       // Send message via IPC with conversationId and optional resume session ID
-      await window.electron.claude.send(currentConvId, content, filesStore.workingDirectory, resumeSessionId);
+      await window.electron.claude.send(currentConvId, content, effectiveCwd, resumeSessionId);
     } catch (err) {
       logger.error('Failed to send message', err);
       chatStore.setError(currentConvId, 'Failed to send message to Claude');
