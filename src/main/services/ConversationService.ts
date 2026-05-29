@@ -321,7 +321,7 @@ export class ConversationService {
           if (!conversation.sdkSessionId || !conversation.workingDirectory) continue;
 
           // Check if session file already exists under the stored CWD — if so, skip
-          const escapedCwd = conversation.workingDirectory.replace(/[/_]/g, '-');
+          const escapedCwd = conversation.workingDirectory.replace(/[^a-zA-Z0-9-]/g, '-');
           const expectedSession = path.join(
             claudeProjectsDir, escapedCwd,
             `${conversation.sdkSessionId}.jsonl`

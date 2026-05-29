@@ -39,7 +39,7 @@ function modelFamily(modelId: string): string {
 }
 
 function escapeCwdForClaude(cwd: string): string {
-  return cwd.replace(/[/_]/g, '-');
+  return cwd.replace(/[^a-zA-Z0-9-]/g, '-');
 }
 
 function parseSessionUsage(jsonlPath: string): ChannelUsageData {

@@ -452,8 +452,23 @@ export function useClaudeChat() {
     // Handle SDK session ID for resume support
     cleanupSessionId = window.electron.claude.onSessionId((conversationId, sessionId) => {
       if (!sessionId) {
-        logger.info('Clearing stale SDK session ID (resume failed)', { conversationId });
+        logger.info('Clearing stale SDK session ID (resume failed) — persisting to disk', { conversationId });
         conversationsStore.clearSdkSessionId(conversationId);
+        // Persist the cleared session ID to disk so it doesn't reload on restart
+        // and cause an infinite resume-failure loop. emitDone is never called on
+        // the resume failure path, so this is the only save trigger.
+        if (conversationId === conversationsStore.currentConversationId) {
+          conversationsStore.saveCurrentConversation().catch((err) => {
+            logger.error('Failed to persist cleared session ID', { conversationId, error: err });
+          });
+        } else {
+          const messages = conversationMessages.get(conversationId);
+          if (messages && messages.length > 0) {
+            conversationsStore.saveConversation(conversationId, messages).catch((err) => {
+              logger.error('Failed to persist cleared session ID (background)', { conversationId, error: err });
+            });
+          }
+        }
         return;
       }
       logger.info('Received SDK session ID', {
