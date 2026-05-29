@@ -282,6 +282,113 @@ export class ConversationService {
   }
 
   /**
+   * Recover conversations whose stored CWD doesn't match where the CLI
+   * actually placed the session file.
+   *
+   * Targets a specific scenario: conversation stores the global working
+   * directory but the session was created under a subdirectory CWD
+   * (e.g. a channel-session subpath). Only touches broken conversations —
+   * if the session file is already found under the stored CWD, nothing changes.
+   *
+   * Reads the actual CWD directly from the session .jsonl file (the `cwd`
+   * field in message records) — no lossy path reconstruction.
+   *
+   * Called once at startup.
+   */
+  async recoverSessionData(): Promise<void> {
+    const home = process.env.HOME || process.env.USERPROFILE;
+    if (!home) return;
+
+    const claudeProjectsDir = path.join(home, '.claude', 'projects');
+
+    try {
+      await fs.promises.access(claudeProjectsDir);
+    } catch {
+      return;
+    }
+
+    try {
+      const projectDirs = await fs.promises.readdir(claudeProjectsDir);
+      const conversationFiles = await fs.promises.readdir(this.conversationsDir);
+      let fixed = 0;
+
+      for (const file of conversationFiles) {
+        if (!file.endsWith('.json')) continue;
+        const filePath = path.join(this.conversationsDir, file);
+        try {
+          const content = await fs.promises.readFile(filePath, 'utf-8');
+          const conversation = JSON.parse(content) as Conversation;
+          if (!conversation.sdkSessionId || !conversation.workingDirectory) continue;
+
+          // Check if session file already exists under the stored CWD — if so, skip
+          const escapedCwd = conversation.workingDirectory.replace(/[\\/_ ]/g, '-');
+          const expectedSession = path.join(
+            claudeProjectsDir, escapedCwd,
+            `${conversation.sdkSessionId}.jsonl`
+          );
+          if (fs.existsSync(expectedSession)) continue;
+
+          // Session not found at expected path — search subdirectory project dirs
+          const sessionFileName = `${conversation.sdkSessionId}.jsonl`;
+          let sessionFilePath: string | null = null;
+          for (const dir of projectDirs) {
+            if (!dir.startsWith(escapedCwd)) continue;
+            const candidate = path.join(claudeProjectsDir, dir, sessionFileName);
+            if (fs.existsSync(candidate)) {
+              sessionFilePath = candidate;
+              break;
+            }
+          }
+
+          if (!sessionFilePath) continue; // session gone entirely — leave as-is
+
+          // Read the actual CWD from the session .jsonl file
+          const actualCwd = await this.readCwdFromSessionFile(sessionFilePath);
+          if (!actualCwd) continue;
+
+          logger.info('Recovering conversation CWD — session found under subdirectory', {
+            conversationId: conversation.id,
+            oldCwd: conversation.workingDirectory,
+            newCwd: actualCwd,
+          });
+          conversation.workingDirectory = actualCwd;
+          await fs.promises.writeFile(filePath, JSON.stringify(conversation, null, 2), 'utf-8');
+          fixed++;
+        } catch (err) {
+          logger.warn('Failed to check conversation for recovery', { file, error: err });
+        }
+      }
+
+      if (fixed > 0) {
+        logger.info('Session data recovery complete', { fixed });
+      }
+    } catch (err) {
+      logger.error('Failed to recover session data', { error: err });
+    }
+  }
+
+  /**
+   * Read the `cwd` field from the first message in a CLI session .jsonl file.
+   */
+  private async readCwdFromSessionFile(sessionPath: string): Promise<string | null> {
+    try {
+      const content = await fs.promises.readFile(sessionPath, 'utf-8');
+      for (const line of content.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const record = JSON.parse(line);
+          if (typeof record.cwd === 'string' && record.cwd) return record.cwd;
+        } catch {
+          // skip unparseable lines
+        }
+      }
+    } catch (err) {
+      logger.warn('Failed to read CWD from session file', { sessionPath, error: err });
+    }
+    return null;
+  }
+
+  /**
    * Create a new conversation
    */
   create(workingDirectory: string): Conversation {

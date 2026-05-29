@@ -94,6 +94,7 @@ async function main(): Promise<void> {
     authService = new AuthService();
     notificationService = new NotificationService(configService, getMainWindow);
     conversationService = new ConversationService();
+    await conversationService.recoverSessionData();
     claudeService = new ClaudeCodeService(configService, getMainWindow, notificationService, conversationService);
     fileWatcher = new FileWatcherService();
     gitService = new GitService();
