@@ -78,6 +78,8 @@ watch(
   }
 );
 
+defineExpose({ scrollToBottom });
+
 // Set up scroll listener
 onMounted(() => {
   if (listRef.value) {

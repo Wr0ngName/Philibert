@@ -3,7 +3,7 @@
  * Main chat window component
  */
 
-import { ref } from 'vue';
+import { ref, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import type { BackgroundTask, PermissionScope, ToolUseInfo } from '@shared/types';
@@ -25,6 +25,8 @@ const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, run
 
 const { sendMessage, approveAction, rejectAction, abort } = useClaudeChat();
 
+const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
+
 // Task detail modal state
 const taskDetailOpen = ref(false);
 const taskDetailTask = ref<BackgroundTask | null>(null);
@@ -35,6 +37,7 @@ const toolDetailInfo = ref<ToolUseInfo | null>(null);
 
 function handleSend(message: string) {
   sendMessage(message);
+  nextTick(() => messageListRef.value?.scrollToBottom());
 }
 
 function handleAbort() {
@@ -114,6 +117,7 @@ function closeToolDetail() {
 
     <!-- Messages -->
     <MessageList
+      ref="messageListRef"
       @open-task-detail="openTaskDetail"
       @open-tool-detail="openToolDetail"
     />
