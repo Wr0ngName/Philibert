@@ -67,7 +67,7 @@ export interface BuiltinCommandResult {
   /** Response message to display */
   response?: string;
   /** Whether this command requires special action (e.g., clear conversation) */
-  action?: 'clear' | 'compact' | 'login' | 'logout';
+  action?: 'clear' | 'login' | 'logout';
 }
 
 /**
@@ -212,16 +212,8 @@ export class BuiltinCommandHandler {
     };
   }
 
-  private handleCompact(args: string): BuiltinCommandResult {
-    // Compact requires the SDK to summarize the conversation
-    // We'll pass this through to the SDK as it may support it
-    return {
-      handled: true,
-      response: `_Compacting conversation${args ? ` with focus on: ${args}` : ''}..._\n\n` +
-        '**Note:** Compact is not fully supported in GUI mode. ' +
-        'The conversation context is managed automatically.',
-      action: 'compact',
-    };
+  private handleCompact(_args: string): BuiltinCommandResult {
+    return { handled: false };
   }
 
   private handleConfig(): BuiltinCommandResult {
