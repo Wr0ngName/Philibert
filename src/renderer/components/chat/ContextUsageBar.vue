@@ -18,17 +18,22 @@ interface Props {
 const props = defineProps<Props>();
 
 /**
- * Calculate total tokens used (input + output)
+ * Current context window occupation (tokens actually in the prompt).
+ * Prefers SDK's getContextUsage() which gives the real number;
+ * falls back to last-turn input tokens if not available.
  */
 const totalTokensUsed = computed(() => {
   if (!props.usage) return 0;
+  if (props.usage.contextTokens != null) return props.usage.contextTokens;
   return props.usage.usage.inputTokens + props.usage.usage.cacheReadInputTokens + props.usage.usage.outputTokens;
 });
 
 /**
- * Get context window size from model usage
+ * Context window maximum size.
+ * Prefers SDK's getContextUsage() maxTokens; falls back to modelUsage.
  */
 const contextWindowSize = computed(() => {
+  if (props.usage?.contextMaxTokens) return props.usage.contextMaxTokens;
   if (!props.usage?.modelUsage) return 0;
   const models = Object.values(props.usage.modelUsage);
   return models.length > 0 ? models[models.length - 1].contextWindow : 0;

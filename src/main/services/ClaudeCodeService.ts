@@ -491,10 +491,18 @@ export class ClaudeCodeService {
         this.trackBackgroundTask(conversationId, notification);
         this.emitTaskNotification(conversationId, notification);
       },
-      onUsageUpdate: (usage: SessionUsage) => {
-        // Suppress usage updates from synthetic background task polls
+      onUsageUpdate: async (usage: SessionUsage) => {
         const session = this.activeSessions.get(conversationId);
         if (session && session.pendingSyntheticPolls > 0) return;
+        try {
+          const ctx = await session?.query.getContextUsage();
+          if (ctx) {
+            usage.contextTokens = ctx.totalTokens;
+            usage.contextMaxTokens = ctx.maxTokens;
+          }
+        } catch {
+          // getContextUsage may not be available on all SDK versions
+        }
         this.emitUsageUpdate(conversationId, usage);
       },
       onSystemNote: (note: string) => {

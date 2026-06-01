@@ -671,6 +671,10 @@ export interface SessionUsage {
   numTurns: number;
   /** Duration of the query in milliseconds */
   durationMs: number;
+  /** Current context window occupation in tokens (from SDK getContextUsage) */
+  contextTokens?: number;
+  /** Context window maximum in tokens (from SDK getContextUsage) */
+  contextMaxTokens?: number;
 }
 
 // Update types

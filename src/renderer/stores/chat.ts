@@ -176,10 +176,12 @@ export const useChatStore = defineStore('chat', () => {
 
   const totalTokensUsed = computed(() => {
     if (!sessionUsage.value) return 0;
+    if (sessionUsage.value.contextTokens != null) return sessionUsage.value.contextTokens;
     return sessionUsage.value.usage.inputTokens + sessionUsage.value.usage.cacheReadInputTokens + sessionUsage.value.usage.outputTokens;
   });
 
   const contextWindowSize = computed(() => {
+    if (sessionUsage.value?.contextMaxTokens) return sessionUsage.value.contextMaxTokens;
     if (!sessionUsage.value?.modelUsage) return 0;
     const models: ModelUsageInfo[] = Object.values(sessionUsage.value.modelUsage);
     return models.length > 0 ? models[models.length - 1].contextWindow : 0;
