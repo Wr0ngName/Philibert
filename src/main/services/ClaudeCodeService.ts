@@ -3,14 +3,9 @@
  *
  * Uses the Claude Code SDK query() function with AsyncIterable prompt
  * for persistent sessions. This keeps the SDK subprocess alive between
- * user turns, allowing background task notifications to flow naturally
- * (matching Claude Code CLI behavior).
- *
- * BACKGROUND TASK NOTIFICATION FLUSHING:
- * The CLI subprocess only emits task_notification messages when processing
- * a user turn. Between turns, notifications accumulate in the CLI's internal
- * queue. To flush these, we periodically send minimal synthetic messages (".")
- * when there are running background tasks. Synthetic turn output is suppressed.
+ * user turns. Background task notifications (task_started, task_progress,
+ * task_updated, task_notification) flow natively through the SDK stream
+ * between turns — no polling required.
  *
  * Supports both OAuth tokens (Pro/Max) and API keys.
  *
@@ -34,8 +29,6 @@ import * as path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
   Query,
-  SDKMessage,
-  SDKAssistantMessage,
   SDKUserMessage,
   SpawnOptions,
   SpawnedProcess,
@@ -73,14 +66,6 @@ import {
 } from './claude';
 
 /**
- * Info about a running background task within a session.
- */
-interface RunningBackgroundTask {
-  outputFile?: string;
-  startedAt: number;
-}
-
-/**
  * Represents a persistent SDK session for a specific conversation.
  *
  * Unlike the old single-turn QueryInstance, this keeps the SDK process alive
@@ -105,29 +90,11 @@ interface SessionInstance {
   sessionReady: Promise<void>;
   /** Resolver for sessionReady */
   resolveSessionReady: (() => void) | null;
-  /** Running background tasks: taskId -> info */
-  runningBackgroundTasks: Map<string, RunningBackgroundTask>;
-  /**
-   * Number of synthetic poll turns currently queued in the input channel.
-   * When > 0, output (chunks, usage, done) is suppressed for the next N results.
-   * This is a counter rather than a boolean because a poll may already be in the
-   * channel when a user message arrives — the poll's result still needs suppressing.
-   */
-  pendingSyntheticPolls: number;
-  /** Timer for periodic background task notification flushing */
-  pollTimer: ReturnType<typeof setInterval> | null;
   /** Model that was used to start this session */
   sessionModel: string;
   /** Whether this session was started with --resume (for error recovery) */
   isResumeAttempt: boolean;
 }
-
-/**
- * Interval in ms between synthetic poll messages to flush background task notifications.
- * The CLI subprocess only emits task_notification messages when processing a user turn,
- * so we periodically send a minimal synthetic message to trigger notification flushing.
- */
-const BACKGROUND_TASK_POLL_INTERVAL_MS = 5000;
 
 export class ClaudeCodeService {
   private authValidator: AuthValidator;
@@ -411,12 +378,6 @@ export class ClaudeCodeService {
       sdkSessionId: session.sdkSessionId?.slice(0, 20),
     });
 
-    // Stop background task polling — the real user message will trigger
-    // the CLI to flush any pending task notifications naturally
-    if (session.pollTimer) {
-      this.stopBackgroundTaskPolling(session);
-    }
-
     // Reset handler state for new turn
     messageHandler.reset();
     if (isSlashCommand) {
@@ -478,9 +439,6 @@ export class ClaudeCodeService {
     // Create per-conversation message handler
     const messageHandler = new SDKMessageHandler({
       onChunk: (chunk: string) => {
-        // Suppress output during synthetic background task polls
-        const session = this.activeSessions.get(conversationId);
-        if (session && session.pendingSyntheticPolls > 0) return;
         this.emitChunk(conversationId, chunk);
       },
       onSlashCommands: (commands: SlashCommandInfo[]) => {
@@ -488,13 +446,11 @@ export class ClaudeCodeService {
         this.emitSlashCommands(conversationId, commands);
       },
       onTaskNotification: (notification: TaskNotification) => {
-        this.trackBackgroundTask(conversationId, notification);
         this.emitTaskNotification(conversationId, notification);
       },
       onUsageUpdate: async (usage: SessionUsage) => {
-        const session = this.activeSessions.get(conversationId);
-        if (session && session.pendingSyntheticPolls > 0) return;
         try {
+          const session = this.activeSessions.get(conversationId);
           const ctx = await session?.query.getContextUsage();
           if (ctx) {
             usage.contextTokens = ctx.totalTokens;
@@ -506,18 +462,12 @@ export class ClaudeCodeService {
         this.emitUsageUpdate(conversationId, usage);
       },
       onSystemNote: (note: string) => {
-        const session = this.activeSessions.get(conversationId);
-        if (session && session.pendingSyntheticPolls > 0) return;
         this.emitSystemNote(conversationId, note);
       },
       onToolUseCapture: (capture: ToolCaptureData) => {
-        const session = this.activeSessions.get(conversationId);
-        if (session && session.pendingSyntheticPolls > 0) return;
         this.send(IPC_CHANNELS.CLAUDE_TOOL_CAPTURE, conversationId, capture);
       },
       onToolResult: (result: { toolUseBlockId: string; content: string }) => {
-        const session = this.activeSessions.get(conversationId);
-        if (session && session.pendingSyntheticPolls > 0) return;
         const outputDir = path.join(os.tmpdir(), 'claude', 'tool-results');
         fs.mkdirSync(outputDir, { recursive: true });
         const safeId = result.toolUseBlockId.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -610,6 +560,7 @@ export class ClaudeCodeService {
           pathToClaudeCodeExecutable: ClaudeCliPaths.findBundledCli() || undefined,
           canUseTool: permissionManager.createCanUseToolCallback(),
           includePartialMessages: true,
+          agentProgressSummaries: true,
           ...(!shouldResume && selectedModel ? { model: selectedModel } : {}),
           ...(shouldResume ? { resume: resumeSessionId } : {}),
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {
@@ -633,9 +584,6 @@ export class ClaudeCodeService {
         sdkSessionId: null,
         sessionReady,
         resolveSessionReady,
-        runningBackgroundTasks: new Map(),
-        pendingSyntheticPolls: 0,
-        pollTimer: null,
         sessionModel: shouldResume ? '' : selectedModel,
         isResumeAttempt: shouldResume,
       };
@@ -697,14 +645,12 @@ export class ClaudeCodeService {
   /**
    * Background message processing loop for a persistent session.
    *
-   * Runs `for await` over the query's async generator. Unlike the old approach
-   * where this blocked sendMessage(), this runs as a detached promise.
+   * Runs `for await` over the query's async generator. This runs as a detached
+   * promise. Task notifications (task_started, task_progress, task_updated,
+   * task_notification) flow natively through the stream between turns.
    *
    * `emitDone` is called after each `result` message (turn completion),
    * not at the end of the loop (which only happens when the session ends).
-   *
-   * For synthetic poll turns (used to flush background task notifications),
-   * the result is handled silently without emitting done to the renderer.
    */
   private async processMessageLoop(
     conversationId: string,
@@ -721,73 +667,39 @@ export class ClaudeCodeService {
 
         const session = this.activeSessions.get(conversationId);
 
-        // Safety mechanism: if a synthetic poll triggers real model work
-        // (tool_use requiring user permission), immediately un-flag it so the
-        // output reaches the renderer instead of being silently suppressed.
-        if (session && session.pendingSyntheticPolls > 0) {
-          if (this.isSyntheticPollEscalation(sdkMessage)) {
-            logger.warn('Synthetic poll triggered real model work — treating as real turn', {
-              conversationId,
-              messageType: sdkMessage.type,
-              pendingPolls: session.pendingSyntheticPolls,
-            });
-            // Drain all pending polls — this turn is now real
-            session.pendingSyntheticPolls = 0;
-          }
-        }
-
         await messageHandler.handleMessage(sdkMessage);
 
         // After each result message, emit done to signal turn completion
-        // The session stays alive for subsequent turns and task notifications
         if (sdkMessage.type === 'result') {
-          if (session && session.pendingSyntheticPolls > 0) {
-            // Synthetic poll turn completed — suppress done, decrement counter
-            session.pendingSyntheticPolls--;
-            logger.debug('Synthetic poll turn completed', {
-              conversationId,
-              remainingPolls: session.pendingSyntheticPolls,
-              remainingTasks: session.runningBackgroundTasks.size,
-            });
-            // Reset message handler state so the next turn starts clean
-            messageHandler.reset();
-          } else {
-            const resultSubtype = (sdkMessage as { subtype?: string }).subtype;
+          const resultSubtype = (sdkMessage as { subtype?: string }).subtype;
 
-            // Detect resume failure from result message (before the thrown error path)
-            if (session?.isResumeAttempt && resultSubtype?.startsWith('error')) {
-              const resultError = (sdkMessage as { error?: string }).error || '';
-              if (this.isResumeSessionError(resultError)) {
-                logger.warn('Resume session failed (result message) — clearing stale session ID', {
-                  conversationId,
-                  error: resultError,
-                });
-                this.emitClearSessionId(conversationId);
-                this.emitError(conversationId,
-                  'Could not resume conversation context — the session has expired or was cleaned up. ' +
-                  'Your conversation history is preserved, but Claude will not remember previous messages. ' +
-                  'Send your message again to continue with a fresh context.');
-                break;
-              }
-            }
-
-            // Resume succeeded — subsequent auth errors are real, not stale-session artifacts
-            if (session?.isResumeAttempt) {
-              session.isResumeAttempt = false;
-            }
-
-            // Normal turn — emit done to renderer
-            logger.info('Turn completed (result message received), emitting done', {
-              conversationId,
-              subtype: resultSubtype,
-            });
-            this.emitDone(conversationId);
-
-            // Start polling if there are running background tasks
-            if (session && session.runningBackgroundTasks.size > 0 && !session.pollTimer) {
-              this.startBackgroundTaskPolling(session);
+          // Detect resume failure from result message (before the thrown error path)
+          if (session?.isResumeAttempt && resultSubtype?.startsWith('error')) {
+            const resultError = (sdkMessage as { error?: string }).error || '';
+            if (this.isResumeSessionError(resultError)) {
+              logger.warn('Resume session failed (result message) — clearing stale session ID', {
+                conversationId,
+                error: resultError,
+              });
+              this.emitClearSessionId(conversationId);
+              this.emitError(conversationId,
+                'Could not resume conversation context — the session has expired or was cleaned up. ' +
+                'Your conversation history is preserved, but Claude will not remember previous messages. ' +
+                'Send your message again to continue with a fresh context.');
+              break;
             }
           }
+
+          // Resume succeeded — subsequent auth errors are real, not stale-session artifacts
+          if (session?.isResumeAttempt) {
+            session.isResumeAttempt = false;
+          }
+
+          logger.info('Turn completed (result message received), emitting done', {
+            conversationId,
+            subtype: resultSubtype,
+          });
+          this.emitDone(conversationId);
         }
       }
 
@@ -998,188 +910,6 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Track a background task notification — add running tasks, remove completed ones.
-   *
-   * This maintains the session's `runningBackgroundTasks` map so we know when
-   * to start/stop polling for task notification flushing.
-   */
-  private trackBackgroundTask(conversationId: string, notification: TaskNotification): void {
-    const session = this.activeSessions.get(conversationId);
-    if (!session) return;
-
-    if (notification.status === 'running') {
-      session.runningBackgroundTasks.set(notification.taskId, {
-        outputFile: notification.outputFile,
-        startedAt: Date.now(),
-      });
-      // Also remove old key if this is a remapping (previousTaskId)
-      if (notification.previousTaskId && notification.previousTaskId !== notification.taskId) {
-        session.runningBackgroundTasks.delete(notification.previousTaskId);
-      }
-      logger.info('Tracking running background task', {
-        conversationId,
-        taskId: notification.taskId,
-        previousTaskId: notification.previousTaskId,
-        totalRunning: session.runningBackgroundTasks.size,
-        allTaskIds: Array.from(session.runningBackgroundTasks.keys()),
-      });
-    } else {
-      // Task completed/failed/stopped — remove from running map
-      let deleted = session.runningBackgroundTasks.delete(notification.taskId);
-      // Also try to match by previousTaskId (tool_use ID → background task ID remapping)
-      if (!deleted && notification.previousTaskId) {
-        deleted = session.runningBackgroundTasks.delete(notification.previousTaskId);
-      }
-      // Fallback: if no match found, remove the oldest running task.
-      // This handles cases where the ID remapping from user messages didn't work
-      // (e.g., tool_use ID in the map but background task ID in the notification).
-      if (!deleted && session.runningBackgroundTasks.size > 0) {
-        let oldestKey: string | null = null;
-        let oldestTime = Infinity;
-        for (const [key, task] of session.runningBackgroundTasks.entries()) {
-          if (task.startedAt < oldestTime) {
-            oldestTime = task.startedAt;
-            oldestKey = key;
-          }
-        }
-        if (oldestKey) {
-          session.runningBackgroundTasks.delete(oldestKey);
-          logger.info('Background task resolved via oldest-match fallback', {
-            conversationId,
-            notificationTaskId: notification.taskId,
-            removedTaskId: oldestKey,
-          });
-        }
-      }
-      logger.info('Background task resolved', {
-        conversationId,
-        taskId: notification.taskId,
-        status: notification.status,
-        directMatch: deleted,
-        remainingTasks: session.runningBackgroundTasks.size,
-        allTaskIds: Array.from(session.runningBackgroundTasks.keys()),
-      });
-
-      // Stop polling if no more running tasks
-      if (session.runningBackgroundTasks.size === 0 && session.pollTimer) {
-        this.stopBackgroundTaskPolling(session);
-      }
-    }
-  }
-
-  /**
-   * Start periodic polling to flush background task notifications from the CLI subprocess.
-   *
-   * The CLI only emits task_notification messages to stdout when processing a user turn
-   * (via its internal `c()` function). Between turns, completed task notifications
-   * accumulate in the CLI's internal queue. This polling mechanism periodically sends
-   * a minimal synthetic user message (".") to trigger the CLI to flush those notifications.
-   *
-   * The synthetic turn's output (chunks, result) is suppressed — only task_notification
-   * system messages are forwarded to the renderer.
-   */
-  private startBackgroundTaskPolling(session: SessionInstance): void {
-    if (session.pollTimer) return; // Already polling
-
-    const { conversationId } = session;
-
-    logger.info('Starting background task notification polling', {
-      conversationId,
-      runningTasks: session.runningBackgroundTasks.size,
-      intervalMs: BACKGROUND_TASK_POLL_INTERVAL_MS,
-    });
-
-    session.pollTimer = setInterval(() => {
-      // Verify session is still active and has running tasks
-      if (!this.activeSessions.has(conversationId) ||
-          session.runningBackgroundTasks.size === 0 ||
-          session.inputChannel.isClosed()) {
-        this.stopBackgroundTaskPolling(session);
-        return;
-      }
-
-      // Don't queue too many polls — if previous polls haven't completed yet,
-      // more won't help and would just pile up suppressed results
-      if (session.pendingSyntheticPolls > 0) {
-        logger.debug('Skipping poll tick — pending polls still in channel', {
-          conversationId,
-          pendingPolls: session.pendingSyntheticPolls,
-        });
-        return;
-      }
-
-      // Wait for session to be ready before polling
-      if (!session.sdkSessionId) {
-        logger.debug('Skipping poll tick — session not yet initialized', { conversationId });
-        return;
-      }
-
-      logger.debug('Sending synthetic poll to flush task notifications', {
-        conversationId,
-        runningTasks: session.runningBackgroundTasks.size,
-      });
-
-      // Increment the pending poll counter — the result handler will decrement it
-      session.pendingSyntheticPolls++;
-
-      // Push a minimal synthetic message to trigger the CLI's c() function
-      const syntheticMessage: SDKUserMessage = {
-        type: 'user',
-        message: { role: 'user', content: '.' },
-        parent_tool_use_id: null,
-        session_id: session.sdkSessionId,
-      };
-
-      session.inputChannel.push(syntheticMessage);
-    }, BACKGROUND_TASK_POLL_INTERVAL_MS);
-  }
-
-  /**
-   * Detect if a synthetic poll has triggered real model work that requires
-   * user interaction (tool invocation needing permission).
-   *
-   * The "." poll message always triggers a model response (the LLM treats it
-   * as a user message and generates text). Text responses are expected noise
-   * and must stay suppressed. Only tool_use blocks indicate real work — these
-   * require user permission and produce meaningful side effects.
-   *
-   * We intentionally do NOT escalate on text_delta: the model will always
-   * respond to "." with some text, and letting it through would create
-   * spurious messages in the chat and trigger false emitDone events.
-   */
-  private isSyntheticPollEscalation(sdkMessage: SDKMessage): boolean {
-    // Only escalate on assistant message with tool_use (requires user permission)
-    if (sdkMessage.type === 'assistant') {
-      const assistantMsg = sdkMessage as SDKAssistantMessage;
-      const content = assistantMsg.message?.content;
-      if (content?.some((block: { type: string }) => block.type === 'tool_use')) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * Stop background task notification polling for a session.
-   */
-  private stopBackgroundTaskPolling(session: SessionInstance): void {
-    if (!session.pollTimer) return;
-
-    clearInterval(session.pollTimer);
-    session.pollTimer = null;
-    // NOTE: Do NOT reset pendingSyntheticPolls here — polls already in the
-    // channel still need their results suppressed. The counter decrements
-    // naturally as each poll's result arrives in processMessageLoop.
-
-    logger.info('Stopped background task notification polling', {
-      conversationId: session.conversationId,
-      remainingTasks: session.runningBackgroundTasks.size,
-      pendingPolls: session.pendingSyntheticPolls,
-    });
-  }
-
-  /**
    * Clean up a persistent session
    */
   private cleanupSession(conversationId: string): void {
@@ -1187,9 +917,6 @@ export class ClaudeCodeService {
     if (!instance) {
       return;
     }
-
-    // Stop background task polling
-    this.stopBackgroundTaskPolling(instance);
 
     // Close the input channel (stops the SDK from waiting for more input)
     instance.inputChannel.close();

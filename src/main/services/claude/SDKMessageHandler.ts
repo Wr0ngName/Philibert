@@ -464,7 +464,7 @@ export class SDKMessageHandler {
   }
 
   /**
-   * Process system messages (init, status, task_notification, etc.)
+   * Process system messages (init, status, task lifecycle, etc.)
    *
    * IMPORTANT: The SDK uses snake_case for all message fields.
    * We must use snake_case field names when reading from SDK messages.
@@ -486,6 +486,20 @@ export class SDKMessageHandler {
       session_id?: string;
       error?: string;
       uuid?: string;
+      // session_state_changed fields
+      state?: 'idle' | 'running' | 'requires_action';
+      // task_updated fields
+      patch?: {
+        status?: 'pending' | 'running' | 'completed' | 'failed' | 'killed';
+        description?: string;
+        error?: string;
+        is_backgrounded?: boolean;
+      };
+      // task_progress fields
+      last_tool_name?: string;
+      // task_started fields
+      task_type?: string;
+      skip_transcript?: boolean;
     };
 
     // Log ALL system messages at info level for debugging task flow
@@ -548,21 +562,16 @@ export class SDKMessageHandler {
 
     // Handle task notifications (background tasks/agents)
     // SDK sends task_notification when a background task completes/fails/stops
-    // Task *start* is detected from assistant tool_use messages (Task tool), not from system messages
     if (systemMsg.subtype === 'task_notification' && systemMsg.task_id) {
       logger.info('Task notification received', {
-        subtype: systemMsg.subtype,
         taskId: systemMsg.task_id,
         status: systemMsg.status,
         description: systemMsg.description,
         summary: systemMsg.summary,
         error: systemMsg.error,
         outputFile: systemMsg.output_file,
-        sessionId: systemMsg.session_id,
       });
 
-      // Map SDK status to our BackgroundTaskStatus type
-      // SDK only sends: 'completed' | 'failed' | 'stopped' per SDKTaskNotificationMessage
       const statusMap: Record<string, BackgroundTaskStatus> = {
         'running': 'running',
         'completed': 'completed',
@@ -570,7 +579,7 @@ export class SDKMessageHandler {
         'stopped': 'stopped',
       };
 
-      const notification: TaskNotification = {
+      this.callbacks.onTaskNotification({
         taskId: systemMsg.task_id,
         status: statusMap[systemMsg.status || 'completed'] || 'completed',
         description: systemMsg.description,
@@ -579,9 +588,65 @@ export class SDKMessageHandler {
         sessionId: systemMsg.session_id,
         error: systemMsg.error,
         uuid: systemMsg.uuid,
-      };
+      });
+    }
 
-      this.callbacks.onTaskNotification(notification);
+    // Handle task_started — authoritative task start signal from SDK stream
+    if (systemMsg.subtype === 'task_started' && systemMsg.task_id) {
+      logger.info('Task started', {
+        taskId: systemMsg.task_id,
+        description: systemMsg.description,
+        taskType: systemMsg.task_type,
+        skipTranscript: systemMsg.skip_transcript,
+      });
+      if (!systemMsg.skip_transcript) {
+        this.callbacks.onTaskNotification({
+          taskId: systemMsg.task_id,
+          status: 'running',
+          description: systemMsg.description,
+        });
+      }
+    }
+
+    // Handle task_progress — live progress updates (description, AI summary when agentProgressSummaries enabled)
+    if (systemMsg.subtype === 'task_progress' && systemMsg.task_id) {
+      logger.debug('Task progress', {
+        taskId: systemMsg.task_id,
+        description: systemMsg.description,
+        summary: systemMsg.summary,
+        lastToolName: systemMsg.last_tool_name,
+      });
+      this.callbacks.onTaskNotification({
+        taskId: systemMsg.task_id,
+        status: 'running',
+        description: systemMsg.description,
+        summary: systemMsg.summary,
+      });
+    }
+
+    // Handle task_updated — patch-style status changes
+    if (systemMsg.subtype === 'task_updated' && systemMsg.task_id && systemMsg.patch) {
+      const patch = systemMsg.patch;
+      logger.info('Task updated', { taskId: systemMsg.task_id, patch });
+      const statusMap: Record<string, BackgroundTaskStatus> = {
+        'running': 'running',
+        'completed': 'completed',
+        'failed': 'failed',
+        'killed': 'stopped',
+      };
+      if (patch.status && statusMap[patch.status]) {
+        this.callbacks.onTaskNotification({
+          taskId: systemMsg.task_id,
+          status: statusMap[patch.status],
+          ...(patch.description && { description: patch.description }),
+          ...(patch.error && { error: patch.error }),
+        });
+      }
+    }
+
+    // Handle session_state_changed — authoritative turn-over signal
+    if (systemMsg.subtype === 'session_state_changed') {
+      logger.info('Session state changed', { state: systemMsg.state });
     }
 
     // Emit other system messages as system notes
