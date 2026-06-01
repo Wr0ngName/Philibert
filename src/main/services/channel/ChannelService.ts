@@ -46,6 +46,7 @@ export class ChannelService {
   private configService: ConfigService;
   private notificationService: NotificationService;
   private authValidator: AuthValidator;
+  private onTurnDone: ((conversationId: string) => void) | null = null;
 
   // Per-tool signal: MCP resolves it when done. PTY awaits it
   // to decide whether to emit as fallback.
@@ -60,6 +61,15 @@ export class ChannelService {
     this.send = send;
     this.notificationService = notificationService;
     this.authValidator = new AuthValidator(configService);
+  }
+
+  setOnTurnDone(callback: (conversationId: string) => void): void {
+    this.onTurnDone = callback;
+  }
+
+  private emitDone(conversationId: string): void {
+    this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
+    this.onTurnDone?.(conversationId);
   }
 
   async ensureBridge(): Promise<ChannelBridge> {
@@ -113,7 +123,7 @@ export class ChannelService {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('ChannelService.sendMessage failed', { conversationId, error: msg });
       this.send(IPC_CHANNELS.CLAUDE_ERROR, conversationId, `Channel mode error: ${msg}`);
-      this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
+      this.emitDone(conversationId);
     }
   }
 
@@ -224,12 +234,12 @@ export class ChannelService {
       },
       onFatalError: (convId, errorMsg) => {
         this.send(IPC_CHANNELS.CLAUDE_ERROR, convId, errorMsg);
-        this.send(IPC_CHANNELS.CLAUDE_DONE, convId);
+        this.emitDone(convId);
         this.cleanupActiveSession(convId);
       },
       onPtyError: (convId, errorMsg) => {
         this.send(IPC_CHANNELS.CLAUDE_ERROR, convId, errorMsg);
-        this.send(IPC_CHANNELS.CLAUDE_DONE, convId);
+        this.emitDone(convId);
       },
       onPermissionRequest: (convId, requestId, toolName, description, inputPreview) => {
         this.handlePermissionRequestFromPty(convId, requestId, toolName, description, inputPreview);
@@ -276,7 +286,7 @@ export class ChannelService {
 
     const active = this.sessions.get(conversationId);
     if (!active) {
-      this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
+      this.emitDone(conversationId);
       return;
     }
 
@@ -286,7 +296,7 @@ export class ChannelService {
 
     active.turnDoneTimer = setTimeout(() => {
       active.turnDoneTimer = null;
-      this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
+      this.emitDone(conversationId);
       this.notificationService.showQueryComplete(conversationId);
       this.pollUsage(conversationId);
     }, TURN_DONE_DELAY_MS);
@@ -447,7 +457,7 @@ export class ChannelService {
           conversationId,
           'Channel session crashed too many times. Please start a new conversation.',
         );
-        this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
+        this.emitDone(conversationId);
         return;
       }
 

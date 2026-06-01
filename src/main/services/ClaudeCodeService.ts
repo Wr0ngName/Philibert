@@ -293,7 +293,13 @@ export class ClaudeCodeService {
           this.send,
           this.notificationService,
         );
+        this.channelService.setOnTurnDone((convId) => {
+          this.processingSessions.delete(convId);
+          this.emitActiveQueryCount();
+        });
       }
+      this.processingSessions.add(conversationId);
+      this.emitActiveQueryCount();
       await this.channelService.sendMessage(conversationId, message, workingDirectory, resumeSessionId);
       return;
     }
