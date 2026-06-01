@@ -595,4 +595,119 @@ describe('SDKMessageHandler', () => {
       } as never)).resolves.not.toThrow();
     });
   });
+
+  describe('native task lifecycle messages', () => {
+    it('should emit running notification for task_started', async () => {
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task-abc',
+        description: 'Running unit tests',
+        task_type: 'agent',
+      } as never);
+
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith({
+        taskId: 'task-abc',
+        status: 'running',
+        description: 'Running unit tests',
+      });
+    });
+
+    it('should skip task_started with skip_transcript flag', async () => {
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task-silent',
+        description: 'Ambient task',
+        skip_transcript: true,
+      } as never);
+
+      expect(callbacks.onTaskNotification).not.toHaveBeenCalled();
+    });
+
+    it('should emit progress notification for task_progress', async () => {
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'task_progress',
+        task_id: 'task-abc',
+        description: 'Running tests',
+        summary: 'Analyzing authentication module',
+        last_tool_name: 'Bash',
+      } as never);
+
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith({
+        taskId: 'task-abc',
+        status: 'running',
+        description: 'Running tests',
+        summary: 'Analyzing authentication module',
+      });
+    });
+
+    it('should emit completion for task_updated with completed status', async () => {
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'task-abc',
+        patch: { status: 'completed', description: 'Tests passed' },
+      } as never);
+
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith({
+        taskId: 'task-abc',
+        status: 'completed',
+        description: 'Tests passed',
+      });
+    });
+
+    it('should emit failure for task_updated with failed status and error', async () => {
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'task-abc',
+        patch: { status: 'failed', error: 'Timeout exceeded' },
+      } as never);
+
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith({
+        taskId: 'task-abc',
+        status: 'failed',
+        error: 'Timeout exceeded',
+      });
+    });
+
+    it('should map killed status to stopped', async () => {
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'task-abc',
+        patch: { status: 'killed' },
+      } as never);
+
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith({
+        taskId: 'task-abc',
+        status: 'stopped',
+      });
+    });
+
+    it('should ignore task_updated with pending status', async () => {
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'task-abc',
+        patch: { status: 'pending' },
+      } as never);
+
+      expect(callbacks.onTaskNotification).not.toHaveBeenCalled();
+    });
+
+    it('should not emit task notification for session_state_changed', async () => {
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+        uuid: 'uuid-123',
+        session_id: 'sess-123',
+      } as never);
+
+      expect(callbacks.onTaskNotification).not.toHaveBeenCalled();
+    });
+  });
 });
