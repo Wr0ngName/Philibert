@@ -193,6 +193,40 @@ export class SessionPermissionCache {
 	}
 
 	/**
+	 * Add a direct session permission for a tool name.
+	 * Used when SDK doesn't provide session-scoped suggestions but user explicitly grants permission.
+	 * Idempotent: skips if an entry with the same toolName already exists.
+	 */
+	addDirectPermission(conversationId: string, toolName: string, ruleContent?: string): void {
+		const entries = this.cache.get(conversationId) ?? [];
+
+		const isDuplicate = entries.some(
+			(e) => e.toolName === toolName && e.ruleContent === ruleContent,
+		);
+		if (isDuplicate) return;
+
+		const entry: SessionPermissionEntry = {
+			id: generateId(ID_PREFIXES.ACTION),
+			toolName,
+			ruleContent,
+			description: ruleContent
+				? `Allow ${toolName} (${ruleContent}) for this session`
+				: `Allow ${toolName} for this session`,
+			grantedAt: Date.now(),
+		};
+		entries.push(entry);
+		this.cache.set(conversationId, entries);
+
+		logger.info('Session permission cached (direct)', {
+			conversationId,
+			toolName,
+			permissionId: entry.id,
+		});
+
+		this.notifyChange(conversationId);
+	}
+
+	/**
 	 * Check if a tool use is covered by a cached session permission.
 	 * Checks:
 	 * 1. Direct toolName match (from addRules or mode expansion)

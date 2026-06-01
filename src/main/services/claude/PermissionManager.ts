@@ -216,7 +216,16 @@ export class PermissionManager {
     suggestions?: PermissionUpdate[]
   ): PermissionSuggestionInfo | undefined {
     if (!suggestions || suggestions.length === 0) {
-      return undefined;
+      return {
+        alwaysAllowLabel: `Allow ${toolName} this session`,
+        description: `Allow ${toolName} for this session`,
+        scope: 'session' as PermissionScope,
+        scopeOptions: [{
+          scope: 'session' as PermissionScope,
+          label: `Allow ${toolName} this session`,
+          description: `Allow ${toolName} for this session`,
+        }],
+      };
     }
 
     const SCOPE_PRIORITY: Record<PermissionScope, number> = { session: 0, project: 1, global: 2 };
@@ -337,6 +346,15 @@ export class PermissionManager {
         : `Allow ${toolLabel} (${scope} scope)`;
 
       scopeOptions.push({ scope, label, description });
+    }
+
+    // Ensure a session scope option always exists (for tools where SDK only provides project/global)
+    if (!scopeOptions.some(o => o.scope === 'session')) {
+      scopeOptions.unshift({
+        scope: 'session',
+        label: `Allow ${toolName} this session`,
+        description: `Allow ${toolName} for this session`,
+      });
     }
 
     // Legacy fields: broadest scope label
@@ -517,7 +535,7 @@ export class PermissionManager {
       };
 
       // Include permission updates if user chose "always allow"
-      if (response.alwaysAllow && pending.suggestions) {
+      if (response.alwaysAllow && pending.suggestions && pending.suggestions.length > 0) {
         // Filter suggestions by chosen scope if specified
         const filteredSuggestions = response.chosenScope
           ? this.filterSuggestionsByScope(pending.suggestions, response.chosenScope)
@@ -530,6 +548,13 @@ export class PermissionManager {
         if (this.sessionPermissionCache && this.conversationId) {
           this.sessionPermissionCache.addPermissions(this.conversationId, filteredSuggestions);
         }
+      }
+
+      // Ensure session permission is cached even when SDK provided no session-scoped suggestions.
+      // This covers tools like WebSearch, WebFetch where the SDK may not offer session rules.
+      // addDirectPermission is idempotent (skips duplicates from SDK-provided entries above).
+      if (response.alwaysAllow && response.chosenScope === 'session' && this.sessionPermissionCache && this.conversationId) {
+        this.sessionPermissionCache.addDirectPermission(this.conversationId, pending.toolName);
       }
 
       pending.resolve(result);

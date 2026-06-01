@@ -54,7 +54,7 @@ describe('PermissionManager', () => {
   });
 
   describe('describePermissionSuggestions (via public API)', () => {
-    it('should return undefined permissionInfo when no suggestions provided', async () => {
+    it('should return synthetic session scope when no suggestions provided', async () => {
       const canUseTool = permissionManager.createCanUseToolCallback();
       const signal = new AbortController().signal;
 
@@ -69,10 +69,17 @@ describe('PermissionManager', () => {
       await new Promise(resolve => setImmediate(resolve));
 
       expect(capturedAction).not.toBeNull();
-      expect(capturedAction?.permissionInfo).toBeUndefined();
+      expect(capturedAction?.permissionInfo).toEqual({
+        alwaysAllowLabel: 'Allow Bash this session',
+        description: 'Allow Bash for this session',
+        scope: 'session',
+        scopeOptions: [
+          { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
+        ],
+      });
     });
 
-    it('should return undefined permissionInfo when suggestions array is empty', async () => {
+    it('should return synthetic session scope when suggestions array is empty', async () => {
       const canUseTool = permissionManager.createCanUseToolCallback();
       const signal = new AbortController().signal;
 
@@ -86,7 +93,14 @@ describe('PermissionManager', () => {
       await new Promise(resolve => setImmediate(resolve));
 
       expect(capturedAction).not.toBeNull();
-      expect(capturedAction?.permissionInfo).toBeUndefined();
+      expect(capturedAction?.permissionInfo).toEqual({
+        alwaysAllowLabel: 'Allow Bash this session',
+        description: 'Allow Bash for this session',
+        scope: 'session',
+        scopeOptions: [
+          { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
+        ],
+      });
     });
 
     it('should create session-scoped label for session destination', async () => {
@@ -175,7 +189,10 @@ describe('PermissionManager', () => {
         alwaysAllowLabel: 'Allow Bash in this project',
         description: 'Allow Bash for this project',
         scope: 'project',
-        scopeOptions: [{ scope: 'project', label: 'Allow Bash in project', description: 'Allow Bash for this project' }],
+        scopeOptions: [
+          { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
+          { scope: 'project', label: 'Allow Bash in project', description: 'Allow Bash for this project' },
+        ],
       });
     });
 
@@ -205,7 +222,10 @@ describe('PermissionManager', () => {
         alwaysAllowLabel: 'Allow Bash in this project',
         description: 'Allow Bash for this project',
         scope: 'project',
-        scopeOptions: [{ scope: 'project', label: 'Allow Bash in project', description: 'Allow Bash for this project' }],
+        scopeOptions: [
+          { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
+          { scope: 'project', label: 'Allow Bash in project', description: 'Allow Bash for this project' },
+        ],
       });
     });
 
@@ -235,7 +255,10 @@ describe('PermissionManager', () => {
         alwaysAllowLabel: 'Always allow Bash',
         description: 'Allow Bash globally',
         scope: 'global',
-        scopeOptions: [{ scope: 'global', label: 'Always allow Bash', description: 'Allow Bash globally' }],
+        scopeOptions: [
+          { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
+          { scope: 'global', label: 'Always allow Bash', description: 'Allow Bash globally' },
+        ],
       });
     });
 
@@ -486,7 +509,10 @@ describe('PermissionManager', () => {
         alwaysAllowLabel: 'Allow Bash in this project',
         description: 'Allow Bash (command contains "git") for this project',
         scope: 'project',
-        scopeOptions: [{ scope: 'project', label: 'Allow Bash (command contains "git") in project', description: 'Allow Bash (command contains "git") for this project' }],
+        scopeOptions: [
+          { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
+          { scope: 'project', label: 'Allow Bash (command contains "git") in project', description: 'Allow Bash (command contains "git") for this project' },
+        ],
       });
     });
 
@@ -539,7 +565,9 @@ describe('PermissionManager', () => {
 
       expect(capturedAction).not.toBeNull();
       // With 3+ directories, should show count instead of listing all
-      expect(capturedAction?.permissionInfo?.scopeOptions[0].label).toBe(
+      // scopeOptions[0] is the synthetic session option, [1] is the project option from SDK
+      const projectOption = capturedAction?.permissionInfo?.scopeOptions.find(o => o.scope === 'project');
+      expect(projectOption?.label).toBe(
         'Allow Bash (3 directories) in project'
       );
     });
@@ -686,7 +714,10 @@ describe('PermissionManager', () => {
         alwaysAllowLabel: 'Allow Bash in this project',
         description: 'Allow Bash for this project',
         scope: 'project',
-        scopeOptions: [{ scope: 'project', label: 'Allow Bash in project', description: 'Allow Bash for this project' }],
+        scopeOptions: [
+          { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
+          { scope: 'project', label: 'Allow Bash in project', description: 'Allow Bash for this project' },
+        ],
       });
     });
 
@@ -718,7 +749,10 @@ describe('PermissionManager', () => {
         alwaysAllowLabel: 'Always allow Write',
         description: 'Allow Write globally',
         scope: 'global',
-        scopeOptions: [{ scope: 'global', label: 'Always allow Write', description: 'Allow Write globally' }],
+        scopeOptions: [
+          { scope: 'session', label: 'Allow Write this session', description: 'Allow Write for this session' },
+          { scope: 'global', label: 'Always allow Write', description: 'Allow Write globally' },
+        ],
       });
     });
 
