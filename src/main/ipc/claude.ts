@@ -212,6 +212,7 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
       return {
         count: claudeService.getActiveQueryCount(),
         maxCount: claudeService.getMaxConcurrentQueries(),
+        processingCount: claudeService.getProcessingQueryCount(),
         activeConversationIds: claudeService.getActiveConversationIds(),
       };
     } catch (error) {

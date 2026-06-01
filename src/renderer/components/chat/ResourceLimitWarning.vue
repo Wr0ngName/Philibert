@@ -8,16 +8,19 @@ import { computed } from 'vue';
 import Icon from '../shared/Icon.vue';
 
 interface Props {
-  /** Current number of active queries */
+  /** Current number of open sessions */
   activeCount: number;
   /** Maximum allowed concurrent queries */
   maxCount: number;
+  /** Number of conversations currently processing a query */
+  processingCount: number;
 }
 
 const props = defineProps<Props>();
 
 const isAtLimit = computed(() => props.activeCount >= props.maxCount);
 const isNearLimit = computed(() => props.activeCount >= props.maxCount - 1);
+const shouldShow = computed(() => props.processingCount > 0 || isNearLimit.value);
 
 const statusClass = computed(() => {
   if (isAtLimit.value) return 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800';
@@ -44,13 +47,13 @@ const statusText = computed(() => {
   if (isNearLimit.value) {
     return 'Approaching resource limit';
   }
-  return `${props.activeCount} active conversation${props.activeCount !== 1 ? 's' : ''}`;
+  return `${props.processingCount} active conversation${props.processingCount !== 1 ? 's' : ''}`;
 });
 </script>
 
 <template>
   <div
-    v-if="activeCount > 0"
+    v-if="shouldShow"
     :class="[
       statusClass,
       'flex items-center gap-2 px-3 py-2 border rounded-lg text-sm'

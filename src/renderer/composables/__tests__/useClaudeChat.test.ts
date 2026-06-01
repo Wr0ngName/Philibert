@@ -638,7 +638,7 @@ describe('useClaudeChat core logic', () => {
       const chatStore = useChatStore();
 
       // Simulate active queries update
-      chatStore.updateActiveQueries(3, 5);
+      chatStore.updateActiveQueries(3, 5, 1);
 
       expect(chatStore.activeQueryCount).toBe(3);
       expect(chatStore.maxConcurrentQueries).toBe(5);
@@ -649,7 +649,7 @@ describe('useClaudeChat core logic', () => {
       const chatStore = useChatStore();
 
       // At resource limit
-      chatStore.updateActiveQueries(5, 5);
+      chatStore.updateActiveQueries(5, 5, 1);
 
       expect(chatStore.isAtResourceLimit).toBe(true);
       expect(chatStore.canStartNewQuery).toBe(false);
@@ -735,14 +735,14 @@ describe('useClaudeChat core logic', () => {
   describe('resource limits', () => {
     it('should allow new query when under limit', () => {
       const chatStore = useChatStore();
-      chatStore.updateActiveQueries(2, 5);
+      chatStore.updateActiveQueries(2, 5, 1);
 
       expect(chatStore.canStartNewQuery).toBe(true);
     });
 
     it('should block new query when at limit', () => {
       const chatStore = useChatStore();
-      chatStore.updateActiveQueries(5, 5);
+      chatStore.updateActiveQueries(5, 5, 1);
 
       expect(chatStore.canStartNewQuery).toBe(false);
     });
@@ -751,7 +751,7 @@ describe('useClaudeChat core logic', () => {
       const chatStore = useChatStore();
       chatStore.setCurrentConversation(TEST_CONV_ID);
       chatStore.setLoading(TEST_CONV_ID, true);
-      chatStore.updateActiveQueries(5, 5);
+      chatStore.updateActiveQueries(5, 5, 1);
 
       // Even at limit, can continue in already-active conversation
       // (The composable handles this check)

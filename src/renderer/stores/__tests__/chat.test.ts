@@ -777,13 +777,14 @@ describe('useChatStore', () => {
     });
 
     it('should track resource limits', () => {
-      store.updateActiveQueries(3, 5);
+      store.updateActiveQueries(3, 5, 1);
       expect(store.activeQueryCount).toBe(3);
       expect(store.maxConcurrentQueries).toBe(5);
+      expect(store.processingQueryCount).toBe(1);
       expect(store.isAtResourceLimit).toBe(false);
       expect(store.canStartNewQuery).toBe(true);
 
-      store.updateActiveQueries(5, 5);
+      store.updateActiveQueries(5, 5, 2);
       expect(store.isAtResourceLimit).toBe(true);
       expect(store.canStartNewQuery).toBe(false);
     });

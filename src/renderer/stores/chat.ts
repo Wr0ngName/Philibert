@@ -74,11 +74,14 @@ export const useChatStore = defineStore('chat', () => {
   // Global Resource Tracking
   // ============================================
 
-  /** Current number of active queries across all conversations */
+  /** Current number of active sessions (persistent SDK connections) */
   const activeQueryCount = ref(0);
 
   /** Maximum concurrent queries allowed */
   const maxConcurrentQueries = ref(5);
+
+  /** Number of conversations currently processing a query */
+  const processingQueryCount = ref(0);
 
   /** IDs of conversations with active queries */
   const activeConversationIds = ref<string[]>([]);
@@ -173,7 +176,7 @@ export const useChatStore = defineStore('chat', () => {
 
   const totalTokensUsed = computed(() => {
     if (!sessionUsage.value) return 0;
-    return sessionUsage.value.usage.inputTokens + sessionUsage.value.usage.outputTokens;
+    return sessionUsage.value.usage.inputTokens + sessionUsage.value.usage.cacheReadInputTokens + sessionUsage.value.usage.outputTokens;
   });
 
   const contextWindowSize = computed(() => {
@@ -673,9 +676,10 @@ export const useChatStore = defineStore('chat', () => {
   // Resource Tracking Actions
   // ============================================
 
-  function updateActiveQueries(count: number, max: number): void {
+  function updateActiveQueries(count: number, max: number, processingCount: number): void {
     activeQueryCount.value = count;
     maxConcurrentQueries.value = max;
+    processingQueryCount.value = processingCount;
   }
 
   function updateActiveConversationIds(ids: string[]): void {
@@ -748,6 +752,7 @@ export const useChatStore = defineStore('chat', () => {
     // Resource tracking
     activeQueryCount,
     maxConcurrentQueries,
+    processingQueryCount,
     activeConversationIds,
 
     // Computed (based on current conversation)

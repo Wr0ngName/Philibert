@@ -22,7 +22,7 @@ const props = defineProps<Props>();
  */
 const totalTokensUsed = computed(() => {
   if (!props.usage) return 0;
-  return props.usage.usage.inputTokens + props.usage.usage.outputTokens;
+  return props.usage.usage.inputTokens + props.usage.usage.cacheReadInputTokens + props.usage.usage.outputTokens;
 });
 
 /**

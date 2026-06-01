@@ -122,8 +122,9 @@ const electronAPI: ElectronAPI = {
       const handler = (
         _event: Electron.IpcRendererEvent,
         count: number,
-        maxCount: number
-      ) => callback(count, maxCount);
+        maxCount: number,
+        processingCount: number
+      ) => callback(count, maxCount, processingCount);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES, handler);
     },

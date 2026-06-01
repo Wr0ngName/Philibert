@@ -93,7 +93,7 @@ export function useClaudeChat() {
   async function loadActiveQueries(): Promise<void> {
     try {
       const status = await window.electron.claude.getActiveQueries();
-      chatStore.updateActiveQueries(status.count, status.maxCount);
+      chatStore.updateActiveQueries(status.count, status.maxCount, status.processingCount);
       chatStore.updateActiveConversationIds(status.activeConversationIds);
     } catch (err) {
       logger.warn('Failed to load active queries', { error: err });
@@ -444,9 +444,9 @@ export function useClaudeChat() {
     });
 
     // Handle active query count changes
-    cleanupActiveQueries = window.electron.claude.onActiveQueriesChange((count, maxCount) => {
-      logger.debug('Active queries changed', { count, maxCount });
-      chatStore.updateActiveQueries(count, maxCount);
+    cleanupActiveQueries = window.electron.claude.onActiveQueriesChange((count, maxCount, processingCount) => {
+      logger.debug('Active queries changed', { count, maxCount, processingCount });
+      chatStore.updateActiveQueries(count, maxCount, processingCount);
     });
 
     // Handle SDK session ID for resume support

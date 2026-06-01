@@ -20,7 +20,7 @@ import Toast from '../shared/Toast.vue';
 import TransitionFade from '../shared/TransitionFade.vue';
 
 const chatStore = useChatStore();
-const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, sessionUsage, hasSessionUsage, activeQueryCount, maxConcurrentQueries } = storeToRefs(chatStore);
+const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, sessionUsage, hasSessionUsage, activeQueryCount, maxConcurrentQueries, processingQueryCount } = storeToRefs(chatStore);
 
 const { sendMessage, approveAction, rejectAction, abort } = useClaudeChat();
 
@@ -81,12 +81,13 @@ function closeTaskDetail() {
     <!-- Resource limit warning -->
     <TransitionFade type="slideDown">
       <div
-        v-if="activeQueryCount > 0"
+        v-if="processingQueryCount > 0 || activeQueryCount >= maxConcurrentQueries - 1"
         class="px-4 pt-2"
       >
         <ResourceLimitWarning
           :active-count="activeQueryCount"
           :max-count="maxConcurrentQueries"
+          :processing-count="processingQueryCount"
         />
       </div>
     </TransitionFade>

@@ -136,6 +136,8 @@ export class ClaudeCodeService {
 
   // Multi-instance support: Map of conversation ID to active session
   private activeSessions: Map<string, SessionInstance> = new Map();
+  // Conversations currently processing a query (subset of activeSessions keys)
+  private processingSessions: Set<string> = new Set();
   private maxConcurrentQueries: number = MAX_CONCURRENT_QUERIES;
 
   // Bound sender function for DRY IPC communication
@@ -214,6 +216,13 @@ export class ClaudeCodeService {
   }
 
   /**
+   * Get the count of conversations currently processing a query
+   */
+  getProcessingQueryCount(): number {
+    return this.processingSessions.size;
+  }
+
+  /**
    * Check if a specific conversation has an active session
    */
   isConversationActive(conversationId: string): boolean {
@@ -259,7 +268,7 @@ export class ClaudeCodeService {
    * Emit active query count to renderer
    */
   private emitActiveQueryCount(): void {
-    this.send(IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES, this.activeSessions.size, this.maxConcurrentQueries);
+    this.send(IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES, this.activeSessions.size, this.maxConcurrentQueries, this.processingSessions.size);
   }
 
   /**
@@ -327,8 +336,14 @@ export class ClaudeCodeService {
     // Check if this is a slash command (starts with /)
     const isSlashCommand = message.trim().startsWith('/');
 
+    // Mark this conversation as actively processing
+    this.processingSessions.add(conversationId);
+    this.emitActiveQueryCount();
+
     // Check if auth is configured
     if (!(await this.authValidator.hasAuth())) {
+      this.processingSessions.delete(conversationId);
+      this.emitActiveQueryCount();
       this.emitError(conversationId, 'Not authenticated. Please login with your Claude account or add an API key in Settings.');
       return;
     }
@@ -886,6 +901,9 @@ export class ClaudeCodeService {
    * Handle query errors
    */
   private handleQueryError(conversationId: string, error: Error, messageHandler: SDKMessageHandler): void {
+    this.processingSessions.delete(conversationId);
+    this.emitActiveQueryCount();
+
     if (this.errorHandler.isAbortError(error)) {
       logger.info('Request aborted', { conversationId });
       return;
@@ -1155,8 +1173,9 @@ export class ClaudeCodeService {
       }
     });
 
-    // Remove from active sessions
+    // Remove from active and processing sessions
     this.activeSessions.delete(conversationId);
+    this.processingSessions.delete(conversationId);
     this.emitActiveQueryCount();
 
     logger.debug('Cleaned up persistent session', {
@@ -1374,6 +1393,8 @@ export class ClaudeCodeService {
    * Emit done event to the renderer for a specific conversation
    */
   private emitDone(conversationId: string): void {
+    this.processingSessions.delete(conversationId);
+    this.emitActiveQueryCount();
     this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
     this.notificationService.showQueryComplete(conversationId);
   }

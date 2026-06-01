@@ -50,6 +50,7 @@ const mockClaudeService = {
   getSlashCommands: vi.fn(),
   getModels: vi.fn(),
   getActiveQueryCount: vi.fn(),
+  getProcessingQueryCount: vi.fn(),
   getMaxConcurrentQueries: vi.fn(),
   getActiveConversationIds: vi.fn(),
 };
@@ -83,6 +84,7 @@ describe('Claude IPC handlers', () => {
     mockClaudeService.getSlashCommands.mockReturnValue([]);
     mockClaudeService.getModels.mockResolvedValue([]);
     mockClaudeService.getActiveQueryCount.mockReturnValue(0);
+    mockClaudeService.getProcessingQueryCount.mockReturnValue(0);
     mockClaudeService.getMaxConcurrentQueries.mockReturnValue(5);
     mockClaudeService.getActiveConversationIds.mockReturnValue([]);
 
@@ -554,6 +556,7 @@ describe('Claude IPC handlers', () => {
 
     it('should return active query status', async () => {
       mockClaudeService.getActiveQueryCount.mockReturnValue(2);
+      mockClaudeService.getProcessingQueryCount.mockReturnValue(1);
       mockClaudeService.getMaxConcurrentQueries.mockReturnValue(5);
       mockClaudeService.getActiveConversationIds.mockReturnValue(['conv1', 'conv2']);
 
@@ -562,12 +565,14 @@ describe('Claude IPC handlers', () => {
       expect(result).toEqual({
         count: 2,
         maxCount: 5,
+        processingCount: 1,
         activeConversationIds: ['conv1', 'conv2'],
       });
     });
 
     it('should return zero counts when no active queries', async () => {
       mockClaudeService.getActiveQueryCount.mockReturnValue(0);
+      mockClaudeService.getProcessingQueryCount.mockReturnValue(0);
       mockClaudeService.getMaxConcurrentQueries.mockReturnValue(5);
       mockClaudeService.getActiveConversationIds.mockReturnValue([]);
 
@@ -576,6 +581,7 @@ describe('Claude IPC handlers', () => {
       expect(result).toEqual({
         count: 0,
         maxCount: 5,
+        processingCount: 0,
         activeConversationIds: [],
       });
     });
