@@ -5,7 +5,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type { ElectronAPI } from '../shared/preload-api';
-import { IPC_CHANNELS, ActionResponse, type SessionPermissionEntry } from '../shared/types';
+import { IPC_CHANNELS, ActionResponse, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData } from '../shared/types';
 
 // Create the API object that will be exposed to the renderer
 const electronAPI: ElectronAPI = {
@@ -176,6 +176,26 @@ const electronAPI: ElectronAPI = {
       ) => callback(conversationId, actionId);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_TOOL_EXECUTED, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TOOL_EXECUTED, handler);
+    },
+
+    onToolCapture: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        conversationId: string,
+        capture: ToolCaptureData
+      ) => callback(conversationId, capture);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_TOOL_CAPTURE, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TOOL_CAPTURE, handler);
+    },
+
+    onToolResult: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        conversationId: string,
+        result: ToolResultData
+      ) => callback(conversationId, result);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_TOOL_RESULT, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TOOL_RESULT, handler);
     },
   },
 

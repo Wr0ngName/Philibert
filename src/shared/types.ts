@@ -47,6 +47,26 @@ export interface ToolUseInfo {
   description: string;
   /** Current status */
   status: 'pending' | 'approved' | 'rejected' | 'executed' | 'failed';
+  /** SDK tool_use block ID (toolu_xxx) — correlates with tool_result */
+  toolUseBlockId?: string;
+  /** Raw input parameters from the tool_use block */
+  input?: Record<string, unknown>;
+  /** Path to temp file containing tool output (lazy-loaded on click) */
+  outputFile?: string;
+}
+
+/** Data emitted for every tool_use block in assistant messages */
+export interface ToolCaptureData {
+  toolUseBlockId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  description: string;
+}
+
+/** Data emitted when a tool result is captured and written to disk */
+export interface ToolResultData {
+  toolUseBlockId: string;
+  outputFile: string;
 }
 
 /**
@@ -791,6 +811,10 @@ export const IPC_CHANNELS = {
   CLAUDE_SESSION_PERMISSIONS_CHANGED: 'claude:session-permissions-changed',
   /** System status note (compaction, model change, etc.) — rendered as a separator, not inline text */
   CLAUDE_SYSTEM_NOTE: 'claude:system-note',
+  /** Tool use captured from assistant message (all tools, including auto-approved) */
+  CLAUDE_TOOL_CAPTURE: 'claude:tool-capture',
+  /** Tool result written to disk (output file path) */
+  CLAUDE_TOOL_RESULT: 'claude:tool-result',
   /** Tool execution completed (action was approved and SDK proceeded) */
   CLAUDE_TOOL_EXECUTED: 'claude:tool-executed',
   /** Channel mode status update (bridge health, session running) */

@@ -17,6 +17,7 @@ import Icon from '../shared/Icon.vue';
 
 const emit = defineEmits<{
   (e: 'open-task-detail', taskId: string): void;
+  (e: 'open-tool-detail', toolUseBlockId: string): void;
 }>();
 
 const chatStore = useChatStore();
@@ -128,6 +129,7 @@ onUnmounted(() => {
         :key="message.id"
         :message="message"
         @open-task-detail="emit('open-task-detail', $event)"
+        @open-tool-detail="emit('open-tool-detail', $event)"
       />
     </TransitionGroup>
   </div>

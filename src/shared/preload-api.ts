@@ -17,6 +17,8 @@ import type {
   SessionUsage,
   SlashCommandInfo,
   TaskNotification,
+  ToolCaptureData,
+  ToolResultData,
   UpdateInfo,
   UpdateProgress,
 } from './types';
@@ -88,6 +90,10 @@ export interface ElectronAPI {
     onSessionPermissionsChanged: (callback: (conversationId: string, permissions: SessionPermissionEntry[]) => void) => () => void;
     /** Tool execution completed (approved and SDK proceeded) */
     onToolExecuted: (callback: (conversationId: string, actionId: string) => void) => () => void;
+    /** Tool use captured from assistant message (all tools, including auto-approved) */
+    onToolCapture: (callback: (conversationId: string, capture: ToolCaptureData) => void) => () => void;
+    /** Tool result written to disk (output file path) */
+    onToolResult: (callback: (conversationId: string, result: ToolResultData) => void) => () => void;
   };
 
   // Git operations

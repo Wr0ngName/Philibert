@@ -6,7 +6,7 @@
 import { ref } from 'vue';
 import { storeToRefs } from 'pinia';
 
-import type { BackgroundTask, PermissionScope } from '@shared/types';
+import type { BackgroundTask, PermissionScope, ToolUseInfo } from '@shared/types';
 import { useChatStore } from '../../stores/chat';
 import { useClaudeChat } from '../../composables/useClaudeChat';
 import ActionApproval from './ActionApproval.vue';
@@ -16,6 +16,7 @@ import ContextUsageBar from './ContextUsageBar.vue';
 import InputBox from './InputBox.vue';
 import MessageList from './MessageList.vue';
 import ResourceLimitWarning from './ResourceLimitWarning.vue';
+import ToolDetailModal from './ToolDetailModal.vue';
 import Toast from '../shared/Toast.vue';
 import TransitionFade from '../shared/TransitionFade.vue';
 
@@ -27,6 +28,10 @@ const { sendMessage, approveAction, rejectAction, abort } = useClaudeChat();
 // Task detail modal state
 const taskDetailOpen = ref(false);
 const taskDetailTask = ref<BackgroundTask | null>(null);
+
+// Tool detail modal state
+const toolDetailOpen = ref(false);
+const toolDetailInfo = ref<ToolUseInfo | null>(null);
 
 function handleSend(message: string) {
   sendMessage(message);
@@ -59,6 +64,21 @@ function openTaskDetail(taskId: string) {
 function closeTaskDetail() {
   taskDetailOpen.value = false;
   taskDetailTask.value = null;
+}
+
+function openToolDetail(id: string) {
+  const msg = chatStore.messages.find(
+    m => m.toolUse && (m.toolUse.toolUseBlockId === id || m.toolUse.actionId === id)
+  );
+  if (msg?.toolUse) {
+    toolDetailInfo.value = msg.toolUse;
+    toolDetailOpen.value = true;
+  }
+}
+
+function closeToolDetail() {
+  toolDetailOpen.value = false;
+  toolDetailInfo.value = null;
 }
 </script>
 
@@ -93,7 +113,10 @@ function closeTaskDetail() {
     </TransitionFade>
 
     <!-- Messages -->
-    <MessageList @open-task-detail="openTaskDetail" />
+    <MessageList
+      @open-task-detail="openTaskDetail"
+      @open-tool-detail="openToolDetail"
+    />
 
     <!-- Background tasks panel (running only) -->
     <TransitionFade type="slideUp">
@@ -113,6 +136,13 @@ function closeTaskDetail() {
       :open="taskDetailOpen"
       :task="taskDetailTask"
       @close="closeTaskDetail"
+    />
+
+    <!-- Tool use detail modal -->
+    <ToolDetailModal
+      :open="toolDetailOpen"
+      :tool-use="toolDetailInfo"
+      @close="closeToolDetail"
     />
 
     <!-- Pending actions -->

@@ -2,6 +2,7 @@
 /**
  * Compact inline tool use indicator displayed in the message stream.
  * Shows tool name, description, and current status as a log-like entry.
+ * Clickable — opens tool detail modal via emitted event.
  */
 
 import { computed } from 'vue';
@@ -18,6 +19,18 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+
+const emit = defineEmits<{
+  (e: 'open-detail', id: string): void;
+}>();
+
+const hasDetail = computed(() => !!props.toolUse.input || !!props.toolUse.outputFile);
+
+function handleClick() {
+  if (hasDetail.value) {
+    emit('open-detail', props.toolUse.toolUseBlockId || props.toolUse.actionId);
+  }
+}
 
 /**
  * Map tool names to appropriate icons
@@ -60,7 +73,17 @@ const showErrorIcon = computed(() => props.toolUse.status === 'rejected' || prop
 </script>
 
 <template>
-  <div class="flex items-center gap-2 py-1.5 px-3 animate-fade-in tool-use-entry">
+  <div
+    :class="[
+      'flex items-center gap-2 py-1.5 px-3 animate-fade-in tool-use-entry rounded transition-colors',
+      hasDetail ? 'cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-700/50' : '',
+    ]"
+    :role="hasDetail ? 'button' : undefined"
+    :tabindex="hasDetail ? 0 : undefined"
+    :title="hasDetail ? 'Click to view tool details' : undefined"
+    @click="handleClick"
+    @keydown.enter="handleClick"
+  >
     <!-- Tool icon -->
     <Icon
       :name="toolIcon"
@@ -100,6 +123,12 @@ const showErrorIcon = computed(() => props.toolUse.status === 'rejected' || prop
       <span :class="['text-xs', statusConfig.colorClass]">
         {{ statusConfig.label }}
       </span>
+      <Icon
+        v-if="hasDetail"
+        name="chevron-right"
+        size="xs"
+        class="text-surface-300 dark:text-surface-600"
+      />
     </div>
   </div>
 </template>

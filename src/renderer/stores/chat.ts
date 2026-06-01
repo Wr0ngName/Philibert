@@ -6,7 +6,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 
-import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, TaskNotification, SessionPermissionEntry, SessionUsage, ModelUsageInfo } from '@shared/types';
+import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, TaskNotification, SessionPermissionEntry, SessionUsage, ModelUsageInfo, ToolCaptureData, ToolUseInfo } from '@shared/types';
 
 import { CONSTANTS } from '../constants/app';
 import { generateId, ID_PREFIXES } from '../utils/id';
@@ -427,9 +427,87 @@ export const useChatStore = defineStore('chat', () => {
         toolName: action.toolName,
         description: action.description,
         status: 'pending',
+        input: action.input,
       },
     };
     addMessage(message);
+  }
+
+  /**
+   * Insert an inline tool use message from a CLAUDE_TOOL_CAPTURE event.
+   * These are emitted for ALL tools (including auto-approved ones).
+   * Sets toolUseBlockId and input so the detail modal can show them.
+   */
+  function addAutoToolUseMessage(conversationId: string, capture: ToolCaptureData): void {
+    if (conversationId !== currentConversationId.value) return;
+
+    const message: ChatMessage = {
+      id: generateId(ID_PREFIXES.MESSAGE),
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      toolUse: {
+        actionId: capture.toolUseBlockId,
+        toolName: capture.toolName,
+        description: capture.description,
+        status: 'approved',
+        toolUseBlockId: capture.toolUseBlockId,
+        input: capture.input,
+      },
+    };
+    addMessage(message);
+  }
+
+  /**
+   * Enrich an existing capture-created ToolUseMessage with the real actionId
+   * from a permission prompt. Falls back to creating a new message if no capture match.
+   */
+  function enrichToolUseFromPermission(conversationId: string, action: PendingAction): void {
+    if (conversationId !== currentConversationId.value) return;
+
+    const inputJson = JSON.stringify(action.input);
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      const msg = messages.value[i];
+      if (
+        msg.toolUse &&
+        msg.toolUse.toolUseBlockId &&
+        msg.toolUse.actionId === msg.toolUse.toolUseBlockId &&
+        msg.toolUse.toolName === action.toolName &&
+        JSON.stringify(msg.toolUse.input) === inputJson
+      ) {
+        msg.toolUse = {
+          ...msg.toolUse,
+          actionId: action.id,
+          status: 'pending',
+        };
+        return;
+      }
+    }
+
+    // No capture match found — create a new message (fallback)
+    addToolUseMessage(conversationId, action);
+  }
+
+  /**
+   * Set the outputFile on a ToolUseMessage matched by toolUseBlockId.
+   * Also marks auto-approved tools as executed.
+   */
+  function updateToolUseResult(conversationId: string, toolUseBlockId: string, outputFile: string): void {
+    if (conversationId !== currentConversationId.value) return;
+
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      const msg = messages.value[i];
+      if (msg.toolUse?.toolUseBlockId === toolUseBlockId) {
+        const newStatus: ToolUseInfo['status'] =
+          msg.toolUse.status === 'approved' ? 'executed' : msg.toolUse.status;
+        msg.toolUse = {
+          ...msg.toolUse,
+          outputFile,
+          status: newStatus,
+        };
+        return;
+      }
+    }
   }
 
   /**
@@ -810,6 +888,9 @@ export const useChatStore = defineStore('chat', () => {
     removePendingAction,
     updateActionStatus,
     addToolUseMessage,
+    addAutoToolUseMessage,
+    enrichToolUseFromPermission,
+    updateToolUseResult,
     updateToolUseStatus,
 
     // Background task actions

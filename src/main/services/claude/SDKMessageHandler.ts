@@ -11,7 +11,7 @@ import type {
   SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 
-import type { SlashCommandInfo, TaskNotification, BackgroundTaskStatus, SessionUsage } from '../../../shared/types';
+import type { SlashCommandInfo, TaskNotification, BackgroundTaskStatus, SessionUsage, ToolCaptureData } from '../../../shared/types';
 import logger from '../../utils/logger';
 
 import { BUILTIN_COMMANDS } from './BuiltinCommandHandler';
@@ -25,6 +25,8 @@ export interface MessageHandlerCallbacks {
   onTaskNotification: (notification: TaskNotification) => void;
   onUsageUpdate: (usage: SessionUsage) => void;
   onSystemNote: (note: string) => void;
+  onToolUseCapture?: (capture: ToolCaptureData) => void;
+  onToolResult?: (result: { toolUseBlockId: string; content: string }) => void;
   onSessionId?: (sessionId: string) => void;
   onAuthError?: () => void;
 }
@@ -228,6 +230,13 @@ export class SDKMessageHandler {
           inputPreview: JSON.stringify(input).slice(0, 200),
         });
 
+        this.callbacks.onToolUseCapture?.({
+          toolUseBlockId: toolBlock.id,
+          toolName: toolBlock.name,
+          input,
+          description: this.generateToolDescription(toolBlock.name, input),
+        });
+
         if (input.run_in_background) {
           // Extract description from tool input
           const description = (input.description as string)
@@ -271,6 +280,25 @@ export class SDKMessageHandler {
         backgroundedByUser?: boolean;
       };
     };
+
+    // Extract tool result content for the detail view
+    const msgContent = userMsg.message?.content;
+    if (Array.isArray(msgContent)) {
+      for (const block of msgContent) {
+        if (block.tool_use_id && block.type === 'tool_result') {
+          const resultBlock = block as { tool_use_id: string; content?: unknown };
+          const content = typeof resultBlock.content === 'string'
+            ? resultBlock.content
+            : Array.isArray(resultBlock.content)
+              ? (resultBlock.content as Array<{ text?: string }>).map(b => b.text || '').join('')
+              : JSON.stringify(resultBlock.content);
+          this.callbacks.onToolResult?.({
+            toolUseBlockId: block.tool_use_id,
+            content,
+          });
+        }
+      }
+    }
 
     // Extract background task info from tool_use_result.
     // When a tool runs in background, the CLI sets backgroundTaskId on the tool_use_result.
@@ -559,6 +587,19 @@ export class SDKMessageHandler {
     // Emit other system messages as system notes
     if (systemMsg.message) {
       this.callbacks.onSystemNote(systemMsg.message);
+    }
+  }
+
+  private generateToolDescription(toolName: string, input: Record<string, unknown>): string {
+    switch (toolName) {
+      case 'Bash': return `Run: ${((input.command as string) || '').slice(0, 80)}`;
+      case 'Read': return `Read: ${input.file_path}`;
+      case 'Edit': return `Edit: ${input.file_path}`;
+      case 'Write': return `Write: ${input.file_path}`;
+      case 'Glob': return `Search files: ${input.pattern}`;
+      case 'Grep': return `Search: ${input.pattern}`;
+      case 'Agent': return `Agent: ${((input.prompt as string) || '').slice(0, 80)}`;
+      default: return `Tool: ${toolName}`;
     }
   }
 }

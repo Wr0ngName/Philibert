@@ -28,6 +28,8 @@
 
 import * as fs from 'fs';
 import { spawn, type ChildProcess } from 'node:child_process';
+import * as os from 'os';
+import * as path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -48,6 +50,7 @@ import {
   ModelInfo,
   TaskNotification,
   SessionUsage,
+  ToolCaptureData,
   MAX_CONCURRENT_QUERIES,
   SessionPermissionEntry,
 } from '../../shared/types';
@@ -498,6 +501,24 @@ export class ClaudeCodeService {
         const session = this.activeSessions.get(conversationId);
         if (session && session.pendingSyntheticPolls > 0) return;
         this.emitSystemNote(conversationId, note);
+      },
+      onToolUseCapture: (capture: ToolCaptureData) => {
+        const session = this.activeSessions.get(conversationId);
+        if (session && session.pendingSyntheticPolls > 0) return;
+        this.send(IPC_CHANNELS.CLAUDE_TOOL_CAPTURE, conversationId, capture);
+      },
+      onToolResult: (result: { toolUseBlockId: string; content: string }) => {
+        const session = this.activeSessions.get(conversationId);
+        if (session && session.pendingSyntheticPolls > 0) return;
+        const outputDir = path.join(os.tmpdir(), 'claude', 'tool-results');
+        fs.mkdirSync(outputDir, { recursive: true });
+        const safeId = result.toolUseBlockId.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const outputFile = path.join(outputDir, `${conversationId}_${safeId}.txt`);
+        fs.writeFileSync(outputFile, result.content, 'utf-8');
+        this.send(IPC_CHANNELS.CLAUDE_TOOL_RESULT, conversationId, {
+          toolUseBlockId: result.toolUseBlockId,
+          outputFile,
+        });
       },
       onSessionId: (sessionId: string) => {
         // Capture session ID for constructing SDKUserMessage

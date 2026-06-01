@@ -35,6 +35,8 @@ let cleanupSessionId: (() => void) | null = null;
 let cleanupSessionPermissions: (() => void) | null = null;
 let cleanupToolExecuted: (() => void) | null = null;
 let cleanupSystemNote: (() => void) | null = null;
+let cleanupToolCapture: (() => void) | null = null;
+let cleanupToolResult: (() => void) | null = null;
 let cleanupAuthInvalidated: (() => void) | null = null;
 
 // Shared slash commands state (singleton)
@@ -344,10 +346,10 @@ export function useClaudeChat() {
     });
 
     // Handle tool use requests - route to correct conversation
-    // Also insert an inline tool use indicator in the message stream
+    // Enriches the capture-created ToolUseMessage with actionId and pending status
     cleanupToolUse = window.electron.claude.onToolUse((conversationId, action) => {
       chatStore.addPendingAction(conversationId, action);
-      chatStore.addToolUseMessage(conversationId, action);
+      chatStore.enrichToolUseFromPermission(conversationId, action);
     });
 
     // Handle errors - route to correct conversation
@@ -484,6 +486,18 @@ export function useClaudeChat() {
       }
     });
 
+    // Handle tool capture (all tools, including auto-approved) — creates inline indicator
+    cleanupToolCapture = window.electron.claude.onToolCapture((conversationId, capture) => {
+      logger.debug('Tool capture received', { conversationId, toolName: capture.toolName, blockId: capture.toolUseBlockId });
+      chatStore.addAutoToolUseMessage(conversationId, capture);
+    });
+
+    // Handle tool result (output file written to disk)
+    cleanupToolResult = window.electron.claude.onToolResult((conversationId, result) => {
+      logger.debug('Tool result received', { conversationId, blockId: result.toolUseBlockId });
+      chatStore.updateToolUseResult(conversationId, result.toolUseBlockId, result.outputFile);
+    });
+
     // Handle auth invalidation (401 from API) - refresh config so UI reacts
     cleanupAuthInvalidated = window.electron.auth.onInvalidated(() => {
       logger.warn('Auth invalidated — credentials cleared by main process, reloading config');
@@ -562,6 +576,14 @@ export function useClaudeChat() {
     if (cleanupSystemNote) {
       cleanupSystemNote();
       cleanupSystemNote = null;
+    }
+    if (cleanupToolCapture) {
+      cleanupToolCapture();
+      cleanupToolCapture = null;
+    }
+    if (cleanupToolResult) {
+      cleanupToolResult();
+      cleanupToolResult = null;
     }
     if (cleanupAuthInvalidated) {
       cleanupAuthInvalidated();

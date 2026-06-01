@@ -23,6 +23,7 @@ const props = defineProps<Props>();
 
 const emit = defineEmits<{
   (e: 'open-task-detail', taskId: string): void;
+  (e: 'open-tool-detail', toolUseBlockId: string): void;
 }>();
 
 const isUser = computed(() => props.message.role === 'user');
@@ -50,6 +51,7 @@ const renderedContent = computed(() => renderMarkdown(props.message.content));
   <ToolUseMessage
     v-else-if="message.toolUse"
     :tool-use="message.toolUse"
+    @open-detail="emit('open-tool-detail', $event)"
   />
 
   <!-- Inline background task indicator -->
