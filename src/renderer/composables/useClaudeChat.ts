@@ -472,10 +472,12 @@ export function useClaudeChat() {
       chatStore.updateSessionPermissions(conversationId, permissions);
     });
 
-    // Handle tool execution completed - update inline tool use indicator in real-time
+    // Handle tool execution completed - update inline tool use indicator and dismiss
+    // any lingering ActionApproval (e.g. auto-resolved by "allow for this session")
     cleanupToolExecuted = window.electron.claude.onToolExecuted((conversationId, actionId) => {
       logger.debug('Tool executed', { conversationId, actionId });
       chatStore.updateToolUseStatus(conversationId, actionId, 'executed');
+      chatStore.removePendingAction(conversationId, actionId);
     });
 
     // Handle system notes (compaction, status changes) — rendered as separators
