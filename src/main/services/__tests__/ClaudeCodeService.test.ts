@@ -370,9 +370,9 @@ describe('ClaudeCodeService', () => {
       await service.sendMessage(TEST_CONV_ID, 'Hi', '/home/user');
 
       expect(mockSend).toHaveBeenCalledWith(
-        IPC_CHANNELS.CLAUDE_CHUNK,
+        IPC_CHANNELS.CLAUDE_SYSTEM_NOTE,
         TEST_CONV_ID,
-        expect.stringContaining('Compacting context')
+        'Compacting context...'
       );
     });
 

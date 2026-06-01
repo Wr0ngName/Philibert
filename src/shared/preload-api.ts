@@ -74,6 +74,8 @@ export interface ElectronAPI {
     onUsageUpdate: (callback: (conversationId: string, usage: SessionUsage) => void) => () => void;
     /** Active query count changed */
     onActiveQueriesChange: (callback: (count: number, maxCount: number, processingCount: number) => void) => () => void;
+    /** System status note (compaction, model change) — rendered as separator */
+    onSystemNote: (callback: (conversationId: string, note: string) => void) => () => void;
     /** SDK session ID received for a conversation (for resume support) */
     onSessionId: (callback: (conversationId: string, sessionId: string) => void) => () => void;
     /** Get session permissions for a conversation */

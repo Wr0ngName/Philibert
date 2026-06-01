@@ -494,6 +494,11 @@ export class ClaudeCodeService {
         if (session && session.pendingSyntheticPolls > 0) return;
         this.emitUsageUpdate(conversationId, usage);
       },
+      onSystemNote: (note: string) => {
+        const session = this.activeSessions.get(conversationId);
+        if (session && session.pendingSyntheticPolls > 0) return;
+        this.emitSystemNote(conversationId, note);
+      },
       onSessionId: (sessionId: string) => {
         // Capture session ID for constructing SDKUserMessage
         const session = this.activeSessions.get(conversationId);
@@ -1403,6 +1408,13 @@ export class ClaudeCodeService {
     this.emitActiveQueryCount();
     this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
     this.notificationService.showQueryComplete(conversationId);
+  }
+
+  /**
+   * Emit a system note to the renderer (rendered as a separator, not inline text)
+   */
+  private emitSystemNote(conversationId: string, note: string): void {
+    this.send(IPC_CHANNELS.CLAUDE_SYSTEM_NOTE, conversationId, note);
   }
 
   /**

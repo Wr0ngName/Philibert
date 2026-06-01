@@ -129,6 +129,16 @@ const electronAPI: ElectronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES, handler);
     },
 
+    onSystemNote: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        conversationId: string,
+        note: string
+      ) => callback(conversationId, note);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_SYSTEM_NOTE, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_SYSTEM_NOTE, handler);
+    },
+
     onSessionId: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

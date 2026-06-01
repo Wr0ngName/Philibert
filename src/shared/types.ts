@@ -789,6 +789,8 @@ export const IPC_CHANNELS = {
   CLAUDE_CLEAR_SESSION_PERMISSIONS: 'claude:clear-session-permissions',
   /** Session permissions changed event */
   CLAUDE_SESSION_PERMISSIONS_CHANGED: 'claude:session-permissions-changed',
+  /** System status note (compaction, model change, etc.) — rendered as a separator, not inline text */
+  CLAUDE_SYSTEM_NOTE: 'claude:system-note',
   /** Tool execution completed (action was approved and SDK proceeded) */
   CLAUDE_TOOL_EXECUTED: 'claude:tool-executed',
   /** Channel mode status update (bridge health, session running) */

@@ -34,6 +34,7 @@ let cleanupActiveQueries: (() => void) | null = null;
 let cleanupSessionId: (() => void) | null = null;
 let cleanupSessionPermissions: (() => void) | null = null;
 let cleanupToolExecuted: (() => void) | null = null;
+let cleanupSystemNote: (() => void) | null = null;
 let cleanupAuthInvalidated: (() => void) | null = null;
 
 // Shared slash commands state (singleton)
@@ -475,6 +476,14 @@ export function useClaudeChat() {
       chatStore.updateToolUseStatus(conversationId, actionId, 'executed');
     });
 
+    // Handle system notes (compaction, status changes) — rendered as separators
+    cleanupSystemNote = window.electron.claude.onSystemNote((conversationId, note) => {
+      logger.info('System note received', { conversationId, note });
+      if (conversationId === conversationsStore.currentConversationId) {
+        chatStore.addSystemMessage(note);
+      }
+    });
+
     // Handle auth invalidation (401 from API) - refresh config so UI reacts
     cleanupAuthInvalidated = window.electron.auth.onInvalidated(() => {
       logger.warn('Auth invalidated — credentials cleared by main process, reloading config');
@@ -549,6 +558,10 @@ export function useClaudeChat() {
     if (cleanupToolExecuted) {
       cleanupToolExecuted();
       cleanupToolExecuted = null;
+    }
+    if (cleanupSystemNote) {
+      cleanupSystemNote();
+      cleanupSystemNote = null;
     }
     if (cleanupAuthInvalidated) {
       cleanupAuthInvalidated();

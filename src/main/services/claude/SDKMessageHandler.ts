@@ -24,6 +24,7 @@ export interface MessageHandlerCallbacks {
   onSlashCommands: (commands: SlashCommandInfo[]) => void;
   onTaskNotification: (notification: TaskNotification) => void;
   onUsageUpdate: (usage: SessionUsage) => void;
+  onSystemNote: (note: string) => void;
   onSessionId?: (sessionId: string) => void;
   onAuthError?: () => void;
 }
@@ -510,11 +511,11 @@ export class SDKMessageHandler {
       }
     }
 
-    // Handle status messages — only emit statuses that represent meaningful
-    // progress (e.g. "compacting"). Skip transient statuses like "requesting"
-    // which get superseded by streaming content and would pollute the message.
+    // Handle status messages — emit as system notes (rendered as separators,
+    // not inline text). Skip transient statuses like "requesting" which get
+    // superseded by streaming content.
     if (systemMsg.subtype === 'status' && systemMsg.status && systemMsg.status !== 'requesting') {
-      this.callbacks.onChunk(`\n_${systemMsg.status}_\n`);
+      this.callbacks.onSystemNote(systemMsg.status);
     }
 
     // Handle task notifications (background tasks/agents)
@@ -555,9 +556,9 @@ export class SDKMessageHandler {
       this.callbacks.onTaskNotification(notification);
     }
 
-    // Emit other system messages to the UI
+    // Emit other system messages as system notes
     if (systemMsg.message) {
-      this.callbacks.onChunk(`\n_${systemMsg.message}_\n`);
+      this.callbacks.onSystemNote(systemMsg.message);
     }
   }
 }

@@ -26,6 +26,7 @@ describe('SDKMessageHandler', () => {
       onSlashCommands: vi.fn(),
       onTaskNotification: vi.fn(),
       onUsageUpdate: vi.fn(),
+      onSystemNote: vi.fn(),
     };
     handler = new SDKMessageHandler(callbacks);
   });
@@ -499,6 +500,7 @@ describe('SDKMessageHandler', () => {
         onSlashCommands: vi.fn(),
         onTaskNotification: vi.fn(),
         onUsageUpdate: vi.fn(),
+        onSystemNote: vi.fn(),
         onAuthError: vi.fn(),
       };
       handlerWithAuth = new SDKMessageHandler(authCallbacks);
