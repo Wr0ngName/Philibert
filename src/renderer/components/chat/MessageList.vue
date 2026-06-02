@@ -101,7 +101,7 @@ const showThinkingPlaceholder = computed(() => {
 const listRef = ref<HTMLDivElement | null>(null);
 
 // Track if user is at/near bottom of scroll (within threshold)
-const SCROLL_THRESHOLD = 150; // pixels from bottom to consider "at bottom"
+const SCROLL_THRESHOLD = 80; // pixels from bottom to consider "at bottom"
 const isUserAtBottom = ref(true);
 const unreadCount = ref(0);
 
