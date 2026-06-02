@@ -14,7 +14,7 @@ import { computed } from 'vue';
 import type { ChatMessage } from '@shared/types';
 
 import { formatTime } from '../../utils/date';
-import { renderMarkdown } from '../../utils/markdown';
+import { renderMarkdown, renderUserMarkdown } from '../../utils/markdown';
 import BackgroundTaskMessage from './BackgroundTaskMessage.vue';
 import Spinner from '../shared/Spinner.vue';
 import ToolUseMessage from './ToolUseMessage.vue';
@@ -40,7 +40,11 @@ const isSystem = computed(() => props.message.role === 'system');
 
 const formattedTime = computed(() => formatTime(props.message.timestamp));
 
-const renderedContent = computed(() => renderMarkdown(props.message.content));
+const renderedContent = computed(() =>
+  isUser.value
+    ? renderUserMarkdown(props.message.content)
+    : renderMarkdown(props.message.content),
+);
 </script>
 
 <template>

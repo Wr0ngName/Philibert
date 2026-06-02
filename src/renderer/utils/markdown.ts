@@ -34,28 +34,44 @@ const CLASSES = {
   LINK: 'text-primary-500 hover:underline',
 } as const;
 
-/**
- * Create a configured Marked instance with custom renderer overrides
- * for code blocks, inline code, and links to apply our CSS classes.
- */
+const sharedRenderer = {
+  code({ text, lang }: { text: string; lang?: string }) {
+    const language = lang || 'text';
+    const escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+    return `<pre class="${CLASSES.CODE_BLOCK}"><code class="language-${language}">${escaped}</code></pre>`;
+  },
+  codespan({ text }: { text: string }) {
+    return `<code class="${CLASSES.INLINE_CODE}">${text}</code>`;
+  },
+  link({ href, text }: { href: string; text: string }) {
+    return `<a href="${href}" class="${CLASSES.LINK}" target="_blank" rel="noopener">${text}</a>`;
+  },
+};
+
 const markedInstance = new Marked({
   gfm: true,
   breaks: true,
+  renderer: sharedRenderer,
+});
+
+// User messages: escape HTML-like content instead of passing it through.
+// Marked tokenizes <word> as inline HTML; the default renderer passes it to
+// DOMPurify which strips unknown tags. This instance converts those tokens
+// to visible escaped text so angle-bracket content is preserved.
+const userMarkedInstance = new Marked({
+  gfm: true,
+  breaks: true,
   renderer: {
-    code({ text, lang }) {
-      const language = lang || 'text';
-      const escaped = text
+    ...sharedRenderer,
+    html({ text }: { text: string }) {
+      return text
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-      return `<pre class="${CLASSES.CODE_BLOCK}"><code class="language-${language}">${escaped}</code></pre>`;
-    },
-    codespan({ text }) {
-      return `<code class="${CLASSES.INLINE_CODE}">${text}</code>`;
-    },
-    link({ href, text }) {
-      return `<a href="${href}" class="${CLASSES.LINK}" target="_blank" rel="noopener">${text}</a>`;
+        .replace(/>/g, '&gt;');
     },
   },
 });
@@ -68,5 +84,14 @@ const markedInstance = new Marked({
  */
 export function renderMarkdown(content: string): string {
   const html = markedInstance.parse(content) as string;
+  return DOMPurify.sanitize(html, SANITIZE_CONFIG);
+}
+
+/**
+ * Render user-authored content — angle-bracket text like <something>
+ * is preserved as visible text instead of being stripped as HTML.
+ */
+export function renderUserMarkdown(content: string): string {
+  const html = userMarkedInstance.parse(content) as string;
   return DOMPurify.sanitize(html, SANITIZE_CONFIG);
 }
