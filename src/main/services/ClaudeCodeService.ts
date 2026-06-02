@@ -1256,11 +1256,11 @@ export class ClaudeCodeService {
     for (const instance of this.activeSessions.values()) {
       try {
         const models = await instance.query.supportedModels();
-        this.cachedModels = models.map((m) => ({
+        this.cachedModels = this.mergeWithKnownModels(models.map((m) => ({
           value: m.value,
           displayName: m.displayName,
           description: m.description,
-        }));
+        })));
         logger.info('Fetched models from SDK', { count: this.cachedModels.length });
         return this.cachedModels;
       } catch (error) {
@@ -1307,11 +1307,11 @@ export class ClaudeCodeService {
       });
 
       const models = await tempQuery.supportedModels();
-      this.cachedModels = models.map((m) => ({
+      this.cachedModels = this.mergeWithKnownModels(models.map((m) => ({
         value: m.value,
         displayName: m.displayName,
         description: m.description,
-      }));
+      })));
       logger.info('Fetched models via temporary session', { count: this.cachedModels.length });
       this.send(IPC_CHANNELS.CLAUDE_MODEL_CHANGED, this.cachedModels);
     } finally {
@@ -1333,11 +1333,11 @@ export class ClaudeCodeService {
   private async fetchAndCacheModels(queryIterator: Query): Promise<void> {
     try {
       const models = await queryIterator.supportedModels();
-      this.cachedModels = models.map((m) => ({
+      this.cachedModels = this.mergeWithKnownModels(models.map((m) => ({
         value: m.value,
         displayName: m.displayName,
         description: m.description,
-      }));
+      })));
       logger.info('Cached models from SDK', {
         count: this.cachedModels.length,
         models: this.cachedModels.map(m => ({ value: m.value, displayName: m.displayName })),
@@ -1346,6 +1346,23 @@ export class ClaudeCodeService {
     } catch (error) {
       logger.warn('Failed to fetch models for caching', error);
     }
+  }
+
+  /**
+   * Merge SDK-returned models with known additional models.
+   * The SDK's supportedModels() only returns the latest per family;
+   * this adds older/cheaper versions the CLI also accepts via setModel().
+   */
+  private mergeWithKnownModels(sdkModels: ModelInfo[]): ModelInfo[] {
+    const ADDITIONAL_MODELS: ModelInfo[] = [
+      { value: 'claude-sonnet-4-5-20250929', displayName: 'Sonnet 4.5', description: '200K context' },
+      { value: 'claude-opus-4-5-20251101', displayName: 'Opus 4.5', description: '200K context' },
+      { value: 'claude-opus-4-6', displayName: 'Opus 4.6', description: '1M context' },
+    ];
+
+    const sdkModelIds = new Set(sdkModels.map(m => m.value));
+    const extras = ADDITIONAL_MODELS.filter(m => !sdkModelIds.has(m.value));
+    return [...sdkModels, ...extras];
   }
 }
 
