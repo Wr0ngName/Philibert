@@ -167,13 +167,16 @@ watch(
 );
 
 // Auto-scroll when loading starts (thinking placeholder appears).
-// No isUserAtBottom check — the user just sent a message, they want to see the response.
+// isUserAtBottom retains its value from the last scroll event, so it reflects the state
+// BEFORE the spinner was rendered — which is correct for the scroll decision.
 watch(
   isLoading,
   (loading) => {
     if (loading) {
       nextTick(() => {
-        scrollToBottom();
+        if (isUserAtBottom.value) {
+          scrollToBottom();
+        }
       });
     }
   }
