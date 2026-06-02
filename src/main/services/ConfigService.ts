@@ -5,7 +5,7 @@
 
 import { safeStorage, dialog } from 'electron';
 
-import { AppConfig, AuthMethod, DEFAULT_CONFIG, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel } from '../../shared/types';
+import { AppConfig, AuthMethod, DEFAULT_CONFIG, ExecutionMode, ExtendedContext, LogLevel, ThinkingMode, UpdateChannel } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { ConfigurationError, ERROR_CODES } from '../errors';
 import logger, { setLogLevel } from '../utils/logger';
@@ -32,6 +32,7 @@ interface StoredConfig {
   updateChannel: UpdateChannel;
   executionMode: ExecutionMode;
   thinkingMode: ThinkingMode;
+  extendedContext: ExtendedContext;
 }
 
 /**
@@ -87,6 +88,7 @@ export class ConfigService {
           updateChannel: 'stable',
           executionMode: 'sdk',
           thinkingMode: 'auto',
+          extendedContext: 'enabled',
         },
       }) as unknown as TypedStore;
       this.isInitialized = true;
@@ -529,6 +531,26 @@ export class ConfigService {
 
     this.store.set('thinkingMode', mode);
     logger.info('Thinking mode changed', { mode });
+  }
+
+  /**
+   * Get extended context setting
+   */
+  async getExtendedContext(): Promise<ExtendedContext> {
+    await this.ensureInitialized();
+    if (!this.store) return 'enabled';
+    return this.store.get('extendedContext', 'enabled');
+  }
+
+  /**
+   * Set extended context setting
+   */
+  async setExtendedContext(mode: ExtendedContext): Promise<void> {
+    await this.ensureInitialized();
+    if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
+
+    this.store.set('extendedContext', mode);
+    logger.info('Extended context changed', { mode });
   }
 
   /**

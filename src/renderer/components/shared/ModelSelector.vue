@@ -21,7 +21,7 @@ import TransitionFade from './TransitionFade.vue';
 const settingsStore = useSettingsStore();
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
-const { selectedModel } = storeToRefs(settingsStore);
+const { selectedModel, thinkingMode, extendedContext, executionMode } = storeToRefs(settingsStore);
 
 const models = ref<ModelInfo[]>([]);
 const { isLoading, execute } = useAsyncOperation();
@@ -128,6 +128,18 @@ async function confirmModelChange(): Promise<void> {
 function cancelModelChange(): void {
   showConfirmDialog.value = false;
   pendingModelValue.value = null;
+}
+
+async function toggleThinking(): Promise<void> {
+  const newMode = thinkingMode.value === 'auto' ? 'disabled' : 'auto';
+  await settingsStore.setThinkingMode(newMode);
+  logger.info('Thinking mode changed', { mode: newMode });
+}
+
+async function toggleExtendedContext(): Promise<void> {
+  const newMode = extendedContext.value === 'enabled' ? 'disabled' : 'enabled';
+  await settingsStore.setExtendedContext(newMode);
+  logger.info('Extended context changed', { mode: newMode });
 }
 
 // Toggle dropdown
@@ -283,6 +295,68 @@ onUnmounted(() => {
             </div>
           </button>
         </template>
+
+        <!-- Model options separator -->
+        <div class="h-px bg-surface-200 dark:bg-surface-700 my-1" />
+
+        <!-- Extended Thinking toggle -->
+        <button
+          class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors"
+          @click.stop="toggleThinking"
+        >
+          <div class="flex items-center gap-2">
+            <span class="shrink-0 w-4 h-4 flex items-center justify-center">
+              <Icon
+                v-if="thinkingMode === 'auto'"
+                name="check"
+                size="sm"
+                class="text-primary-500"
+              />
+            </span>
+            <div class="flex-1 min-w-0">
+              <div class="font-medium text-surface-800 dark:text-surface-200">
+                Extended Thinking
+              </div>
+              <div class="text-xs text-surface-500 dark:text-surface-400">
+                {{ thinkingMode === 'auto' ? 'Auto — Claude decides when to think' : 'Disabled — saves tokens' }}
+              </div>
+            </div>
+          </div>
+        </button>
+
+        <!-- Extended Context toggle (SDK mode only) -->
+        <button
+          class="w-full px-3 py-2 text-left text-sm transition-colors"
+          :class="executionMode === 'channel'
+            ? 'opacity-50 cursor-not-allowed'
+            : 'hover:bg-surface-50 dark:hover:bg-surface-700'"
+          :disabled="executionMode === 'channel'"
+          @click.stop="toggleExtendedContext"
+        >
+          <div class="flex items-center gap-2">
+            <span class="shrink-0 w-4 h-4 flex items-center justify-center">
+              <Icon
+                v-if="extendedContext === 'enabled' && executionMode !== 'channel'"
+                name="check"
+                size="sm"
+                class="text-primary-500"
+              />
+            </span>
+            <div class="flex-1 min-w-0">
+              <div class="font-medium text-surface-800 dark:text-surface-200">
+                Extended Context (1M)
+              </div>
+              <div class="text-xs text-surface-500 dark:text-surface-400">
+                <template v-if="executionMode === 'channel'">
+                  Not available in Channel mode
+                </template>
+                <template v-else>
+                  {{ extendedContext === 'enabled' ? 'Enabled — larger context, higher cost' : 'Disabled — standard context' }}
+                </template>
+              </div>
+            </div>
+          </div>
+        </button>
       </div>
     </TransitionFade>
 

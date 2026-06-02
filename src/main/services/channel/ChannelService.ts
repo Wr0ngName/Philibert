@@ -217,6 +217,7 @@ export class ChannelService {
     }
 
     const selectedModel = await this.configService.getSelectedModel();
+    const thinkingMode = await this.configService.getThinkingMode();
     const authEnv = await this.authValidator.setupAuthEnv();
 
     const session = new ChannelSession({
@@ -228,6 +229,7 @@ export class ChannelService {
       channelServerScript,
       model: selectedModel || 'sonnet',
       authEnv,
+      thinkingMode,
       resumeSessionId,
       onSessionId: (convId, sessionId) => {
         this.send(IPC_CHANNELS.CLAUDE_SESSION_ID, convId, sessionId);

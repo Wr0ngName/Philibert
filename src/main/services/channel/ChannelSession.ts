@@ -17,7 +17,7 @@ import * as path from 'node:path';
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 
-import type { ChannelUsageData, ChannelModelTokens } from '../../../shared/types';
+import type { ChannelUsageData, ChannelModelTokens, ThinkingMode } from '../../../shared/types';
 import { MAIN_CONSTANTS } from '../../constants/app';
 import { stripAnsi } from '../../utils/ansi';
 import logger from '../../utils/logger';
@@ -138,6 +138,7 @@ export interface ChannelSessionOptions {
   channelServerScript: string;
   model: string;
   authEnv: Record<string, string>;
+  thinkingMode: ThinkingMode;
   resumeSessionId?: string;
   onFatalError?: ChannelSessionErrorCallback;
   onPtyError?: ChannelSessionErrorCallback;
@@ -154,6 +155,7 @@ export class ChannelSession {
   private channelServerScript: string;
   private model: string;
   private authEnv: Record<string, string>;
+  private thinkingMode: ThinkingMode;
   private onFatalError?: ChannelSessionErrorCallback;
   private onPtyError?: ChannelSessionErrorCallback;
   private onPermissionRequest?: ChannelSessionPermissionCallback;
@@ -178,6 +180,7 @@ export class ChannelSession {
     this.channelServerScript = options.channelServerScript;
     this.model = options.model;
     this.authEnv = options.authEnv;
+    this.thinkingMode = options.thinkingMode;
     this.resumeSessionId = options.resumeSessionId || null;
     this.onFatalError = options.onFatalError;
     this.onPtyError = options.onPtyError;
@@ -642,12 +645,13 @@ export class ChannelSession {
     fs.mkdirSync(claudeDir, { recursive: true });
 
     const settingsPath = path.join(claudeDir, 'settings.local.json');
-    const localSettings = {
+    const localSettings: Record<string, unknown> = {
       enabledMcpjsonServers: ['philibert'],
       enableAllProjectMcpServers: true,
       permissions: {
         allow: ['mcp__philibert__reply'],
       },
+      alwaysThinkingEnabled: this.thinkingMode !== 'disabled',
     };
 
     fs.writeFileSync(settingsPath, JSON.stringify(localSettings, null, 2) + '\n');

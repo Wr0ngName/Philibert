@@ -420,6 +420,8 @@ export type ExecutionMode = 'sdk' | 'channel';
 
 export type ThinkingMode = 'auto' | 'disabled';
 
+export type ExtendedContext = 'enabled' | 'disabled';
+
 /**
  * Application configuration settings
  */
@@ -462,6 +464,8 @@ export interface AppConfig {
   executionMode: ExecutionMode;
   /** Extended thinking mode: 'auto' lets Claude decide, 'disabled' saves tokens */
   thinkingMode: ThinkingMode;
+  /** Extended context: 'enabled' uses 1M token window (more expensive), 'disabled' uses standard */
+  extendedContext: ExtendedContext;
 }
 
 /**
@@ -487,6 +491,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   updateChannel: 'stable',
   executionMode: 'sdk',
   thinkingMode: 'auto',
+  extendedContext: 'enabled',
 };
 
 // Conversation types
