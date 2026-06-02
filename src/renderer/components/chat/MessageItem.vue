@@ -123,10 +123,6 @@ const renderedContent = computed(() =>
 </template>
 
 <style scoped>
-.message-bubble {
-  padding: calc(var(--chat-line-height, 1.6) * 0.6rem);
-}
-
 .message-header {
   margin-bottom: calc(var(--chat-line-height, 1.6) * 0.3rem);
 }
