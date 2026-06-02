@@ -29,7 +29,6 @@ import * as path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
   Query,
-  SdkBeta,
   SDKUserMessage,
   SpawnOptions,
   SpawnedProcess,
@@ -527,11 +526,6 @@ export class ClaudeCodeService {
       const thinkingConfig: ThinkingConfig = thinkingMode === 'disabled'
         ? { type: 'disabled' }
         : { type: 'adaptive' };
-      const extendedContext = await this.configService.getExtendedContext();
-      const betas: SdkBeta[] = extendedContext === 'enabled'
-        ? ['context-1m-2025-08-07']
-        : [];
-
       // When resuming, don't pass --model (the CLI ignores it during --resume).
       // Instead, resume first to restore context, then call setModel() after init.
       const shouldResume = !!resumeSessionId;
@@ -543,8 +537,6 @@ export class ClaudeCodeService {
         isSlashCommand,
         model: selectedModel || '(SDK default)',
         thinkingMode,
-        extendedContext,
-        betas: betas.length > 0 ? betas : '(none)',
         activeSessions: this.activeSessions.size,
         hasResumeSessionId: !!resumeSessionId,
         willResume: shouldResume,
@@ -575,8 +567,6 @@ export class ClaudeCodeService {
           includePartialMessages: true,
           agentProgressSummaries: true,
           thinking: thinkingConfig,
-          betas,
-          ...(betas.length === 0 ? { extraArgs: { betas: '' } } : {}),
           ...(!shouldResume && selectedModel ? { model: selectedModel } : {}),
           ...(shouldResume ? { resume: resumeSessionId } : {}),
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {

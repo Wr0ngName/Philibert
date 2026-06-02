@@ -21,7 +21,7 @@ import TransitionFade from './TransitionFade.vue';
 const settingsStore = useSettingsStore();
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
-const { selectedModel, thinkingMode, extendedContext, executionMode } = storeToRefs(settingsStore);
+const { selectedModel, thinkingMode } = storeToRefs(settingsStore);
 
 const models = ref<ModelInfo[]>([]);
 const { isLoading, execute } = useAsyncOperation();
@@ -134,12 +134,6 @@ async function toggleThinking(): Promise<void> {
   const newMode = thinkingMode.value === 'auto' ? 'disabled' : 'auto';
   await settingsStore.setThinkingMode(newMode);
   logger.info('Thinking mode changed', { mode: newMode });
-}
-
-async function toggleExtendedContext(): Promise<void> {
-  const newMode = extendedContext.value === 'enabled' ? 'disabled' : 'enabled';
-  await settingsStore.setExtendedContext(newMode);
-  logger.info('Extended context changed', { mode: newMode });
 }
 
 // Toggle dropdown
@@ -324,39 +318,6 @@ onUnmounted(() => {
           </div>
         </button>
 
-        <!-- Extended Context toggle (SDK mode only) -->
-        <button
-          class="w-full px-3 py-2 text-left text-sm transition-colors"
-          :class="executionMode === 'channel'
-            ? 'opacity-50 cursor-not-allowed'
-            : 'hover:bg-surface-50 dark:hover:bg-surface-700'"
-          :disabled="executionMode === 'channel'"
-          @click.stop="toggleExtendedContext"
-        >
-          <div class="flex items-center gap-2">
-            <span class="shrink-0 w-4 h-4 flex items-center justify-center">
-              <Icon
-                v-if="extendedContext === 'enabled' && executionMode !== 'channel'"
-                name="check"
-                size="sm"
-                class="text-primary-500"
-              />
-            </span>
-            <div class="flex-1 min-w-0">
-              <div class="font-medium text-surface-800 dark:text-surface-200">
-                Extended Context (1M)
-              </div>
-              <div class="text-xs text-surface-500 dark:text-surface-400">
-                <template v-if="executionMode === 'channel'">
-                  Not available in Channel mode
-                </template>
-                <template v-else>
-                  {{ extendedContext === 'enabled' ? 'Enabled — larger context, higher cost' : 'Disabled — standard context' }}
-                </template>
-              </div>
-            </div>
-          </div>
-        </button>
       </div>
     </TransitionFade>
 

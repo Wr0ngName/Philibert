@@ -516,7 +516,6 @@ export class SDKMessageHandler {
         slashCommands: systemMsg.slash_commands,
         model: systemMsg.model,
         session_id: systemMsg.session_id,
-        betas: (systemMsg as Record<string, unknown>).betas,
       });
 
       // Emit session ID if present (for conversation continuity)
