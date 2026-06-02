@@ -166,6 +166,20 @@ watch(
   }
 );
 
+// Auto-scroll when loading starts (thinking placeholder appears)
+watch(
+  isLoading,
+  (loading) => {
+    if (loading) {
+      nextTick(() => {
+        if (isUserAtBottom.value) {
+          scrollToBottom();
+        }
+      });
+    }
+  }
+);
+
 defineExpose({ scrollToBottom });
 
 // Set up scroll listener
