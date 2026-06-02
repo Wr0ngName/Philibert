@@ -1256,7 +1256,7 @@ export class ClaudeCodeService {
     for (const instance of this.activeSessions.values()) {
       try {
         const models = await instance.query.supportedModels();
-        this.cachedModels = this.mergeWithKnownModels(models.map((m) => ({
+        this.cachedModels = ClaudeCodeService.mergeWithKnownModels(models.map((m) => ({
           value: m.value,
           displayName: m.displayName,
           description: m.description,
@@ -1307,7 +1307,7 @@ export class ClaudeCodeService {
       });
 
       const models = await tempQuery.supportedModels();
-      this.cachedModels = this.mergeWithKnownModels(models.map((m) => ({
+      this.cachedModels = ClaudeCodeService.mergeWithKnownModels(models.map((m) => ({
         value: m.value,
         displayName: m.displayName,
         description: m.description,
@@ -1333,7 +1333,7 @@ export class ClaudeCodeService {
   private async fetchAndCacheModels(queryIterator: Query): Promise<void> {
     try {
       const models = await queryIterator.supportedModels();
-      this.cachedModels = this.mergeWithKnownModels(models.map((m) => ({
+      this.cachedModels = ClaudeCodeService.mergeWithKnownModels(models.map((m) => ({
         value: m.value,
         displayName: m.displayName,
         description: m.description,
@@ -1349,19 +1349,44 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Merge SDK-returned models with known additional models.
-   * The SDK's supportedModels() only returns the latest per family;
-   * this adds older/cheaper versions the CLI also accepts via setModel().
+   * Known model versions per family, derived from the naming convention at
+   * https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions
+   *
+   * Model ID format: claude-{family}-{major}-{minor}
+   * Display name:    Claude {Family} {major}.{minor}
+   *
+   * Uses alias IDs (e.g. claude-sonnet-4-5) which the API resolves to the
+   * most recent dated snapshot for pre-4.6 models, and which are canonical
+   * pinned snapshots for 4.6+ models.
    */
-  private mergeWithKnownModels(sdkModels: ModelInfo[]): ModelInfo[] {
-    const ADDITIONAL_MODELS: ModelInfo[] = [
-      { value: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5', description: '200K context' },
-      { value: 'claude-opus-4-5-20251101', displayName: 'Claude Opus 4.5', description: '200K context' },
-      { value: 'claude-opus-4-6', displayName: 'Claude Opus 4.6', description: '1M context' },
-    ];
+  private static readonly MODEL_CATALOG: { family: string; major: number; minor: number }[] = [
+    { family: 'opus', major: 4, minor: 8 },
+    { family: 'opus', major: 4, minor: 7 },
+    { family: 'opus', major: 4, minor: 6 },
+    { family: 'opus', major: 4, minor: 5 },
+    { family: 'sonnet', major: 4, minor: 6 },
+    { family: 'sonnet', major: 4, minor: 5 },
+    { family: 'haiku', major: 4, minor: 5 },
+  ];
 
-    const sdkModelIds = new Set(sdkModels.map(m => m.value));
-    const extras = ADDITIONAL_MODELS.filter(m => !sdkModelIds.has(m.value));
+  private static buildModelEntry(entry: { family: string; major: number; minor: number }): ModelInfo {
+    const familyCapitalized = entry.family.charAt(0).toUpperCase() + entry.family.slice(1);
+    return {
+      value: `claude-${entry.family}-${entry.major}-${entry.minor}`,
+      displayName: `Claude ${familyCapitalized} ${entry.major}.${entry.minor}`,
+    };
+  }
+
+  /**
+   * Merge SDK-returned models with the known catalog.
+   * SDK models come first (they may have richer descriptions); catalog entries
+   * that the SDK didn't return are appended.
+   */
+  static mergeWithKnownModels(sdkModels: ModelInfo[]): ModelInfo[] {
+    const sdkIds = new Set(sdkModels.map(m => m.value));
+    const extras = ClaudeCodeService.MODEL_CATALOG
+      .map(ClaudeCodeService.buildModelEntry)
+      .filter(m => !sdkIds.has(m.value));
     return [...sdkModels, ...extras];
   }
 }
