@@ -1355,9 +1355,9 @@ export class ClaudeCodeService {
    */
   private mergeWithKnownModels(sdkModels: ModelInfo[]): ModelInfo[] {
     const ADDITIONAL_MODELS: ModelInfo[] = [
-      { value: 'claude-sonnet-4-5-20250929', displayName: 'Sonnet 4.5', description: '200K context' },
-      { value: 'claude-opus-4-5-20251101', displayName: 'Opus 4.5', description: '200K context' },
-      { value: 'claude-opus-4-6', displayName: 'Opus 4.6', description: '1M context' },
+      { value: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5', description: '200K context' },
+      { value: 'claude-opus-4-5-20251101', displayName: 'Claude Opus 4.5', description: '200K context' },
+      { value: 'claude-opus-4-6', displayName: 'Claude Opus 4.6', description: '1M context' },
     ];
 
     const sdkModelIds = new Set(sdkModels.map(m => m.value));
