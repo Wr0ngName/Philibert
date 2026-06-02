@@ -8,6 +8,7 @@ import { storeToRefs } from 'pinia';
 import { ref, nextTick } from 'vue';
 
 import { useConversationsStore } from '../../stores/conversations';
+import { useChatStore } from '../../stores/chat';
 import { formatRelativeDate } from '../../utils/date';
 import Spinner from '../shared/Spinner.vue';
 import Icon from '../shared/Icon.vue';
@@ -19,6 +20,16 @@ const {
   isLoading,
   isSaving,
 } = storeToRefs(conversationsStore);
+
+const chatStore = useChatStore();
+
+function needsAttention(conversationId: string): boolean {
+  return chatStore.conversationHasPendingActions(conversationId);
+}
+
+function isConversationActive(conversationId: string): boolean {
+  return chatStore.isConversationLoading(conversationId);
+}
 
 const deletingId = ref<string | null>(null);
 const confirmDeleteId = ref<string | null>(null);
@@ -214,21 +225,38 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
             class="w-full text-left px-3 py-2.5 hover:bg-surface-50 dark:hover:bg-surface-800 transition-colors"
             :class="{
               'bg-primary-50 dark:bg-primary-900/20': currentConversationId === conversation.id,
+              'bg-amber-50/50 dark:bg-amber-900/10': needsAttention(conversation.id) && currentConversationId !== conversation.id,
             }"
             @click="handleLoadConversation(conversation.id)"
           >
             <div class="flex items-start justify-between gap-2">
               <div class="flex-1 min-w-0">
-                <p
-                  class="text-sm font-medium truncate"
-                  :class="
-                    currentConversationId === conversation.id
-                      ? 'text-primary-700 dark:text-primary-300'
-                      : 'text-surface-800 dark:text-surface-200'
-                  "
-                >
-                  {{ conversation.title || 'New Conversation' }}
-                </p>
+                <div class="flex items-center gap-1.5">
+                  <!-- Pending action indicator -->
+                  <span
+                    v-if="needsAttention(conversation.id)"
+                    class="shrink-0 w-2 h-2 rounded-full bg-amber-500 animate-pulse"
+                    title="Action required"
+                  />
+                  <!-- Active query indicator -->
+                  <Spinner
+                    v-else-if="isConversationActive(conversation.id) && currentConversationId !== conversation.id"
+                    size="xs"
+                    class="shrink-0 text-primary-400"
+                  />
+                  <p
+                    class="text-sm font-medium truncate"
+                    :class="
+                      currentConversationId === conversation.id
+                        ? 'text-primary-700 dark:text-primary-300'
+                        : needsAttention(conversation.id)
+                          ? 'text-amber-700 dark:text-amber-300'
+                          : 'text-surface-800 dark:text-surface-200'
+                    "
+                  >
+                    {{ conversation.title || 'New Conversation' }}
+                  </p>
+                </div>
                 <p class="text-xs text-surface-500 dark:text-surface-400 mt-0.5 truncate">
                   {{ conversation.workingDirectory }}
                 </p>

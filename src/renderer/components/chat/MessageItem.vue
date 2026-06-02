@@ -1,6 +1,11 @@
 <script setup lang="ts">
 /**
  * Single message display component
+ *
+ * In "grouped" mode (inside an assistant turn bubble), renders only
+ * the content — no outer bubble wrapper or header, since the parent
+ * turn container provides those.
+ *
  * Note: v-html usage is safe - content is sanitized with DOMPurify in renderMarkdown
  */
 
@@ -17,12 +22,12 @@ import ToolUseMessage from './ToolUseMessage.vue';
 interface Props {
   /** The chat message to display */
   message: ChatMessage;
-  /** Whether to show the role header (false for continuation messages in the same assistant turn) */
-  showHeader?: boolean;
+  /** When true, renders only the inner content (no bubble/header) for use inside a turn container */
+  grouped?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  showHeader: true,
+  grouped: false,
 });
 
 const emit = defineEmits<{
@@ -65,21 +70,23 @@ const renderedContent = computed(() => renderMarkdown(props.message.content));
     @open-detail="emit('open-task-detail', $event)"
   />
 
-  <!-- User / Assistant message -->
+  <!-- Grouped text content (inside a turn bubble — no wrapper/header) -->
   <div
-    v-else
+    v-else-if="grouped && message.content.trim()"
+    class="prose prose-sm dark:prose-invert max-w-full text-surface-800 dark:text-surface-200 message-content"
+    v-html="renderedContent"
+  />
+
+  <!-- User / standalone assistant message -->
+  <div
+    v-else-if="!grouped"
     :class="[
-      'animate-fade-in message-bubble',
-      isUser ? 'message-user rounded-lg' : 'message-assistant',
-      !isUser && showHeader ? 'rounded-lg' : '',
-      !isUser && !showHeader ? 'message-continuation' : '',
+      'rounded-lg animate-fade-in message-bubble',
+      isUser ? 'message-user' : 'message-assistant',
     ]"
   >
-    <!-- Header (hidden for continuation messages in the same assistant turn) -->
-    <div
-      v-if="showHeader"
-      class="flex items-center gap-2 message-header"
-    >
+    <!-- Header -->
+    <div class="flex items-center gap-2 message-header">
       <div
         :class="[
           'w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium',
@@ -102,11 +109,6 @@ const renderedContent = computed(() => renderMarkdown(props.message.content));
         class="ml-2 text-primary-500"
       />
     </div>
-    <Spinner
-      v-else-if="message.isStreaming"
-      size="sm"
-      class="text-primary-500 mb-1"
-    />
 
     <!-- Content -->
     <div
@@ -119,11 +121,6 @@ const renderedContent = computed(() => renderMarkdown(props.message.content));
 <style scoped>
 .message-bubble {
   padding: calc(var(--chat-line-height, 1.6) * 0.6rem);
-}
-
-.message-continuation {
-  padding-top: 0;
-  margin-top: calc(var(--chat-line-height, 1.6) * -0.3rem);
 }
 
 .message-header {

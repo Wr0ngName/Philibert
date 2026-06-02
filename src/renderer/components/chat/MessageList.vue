@@ -6,14 +6,21 @@
  * - Scrolls to bottom when new messages arrive IF user is already at bottom
  * - Scrolls during streaming IF user is at bottom
  * - Does NOT scroll if user has scrolled up to read previous messages
+ *
+ * Grouping: consecutive assistant messages (text, tool, task) are rendered
+ * inside a single visual bubble ("turn") with one header.
  */
 
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { storeToRefs } from 'pinia';
 
+import type { ChatMessage } from '@shared/types';
+
 import { useChatStore } from '../../stores/chat';
+import { formatTime } from '../../utils/date';
 import MessageItem from './MessageItem.vue';
 import Icon from '../shared/Icon.vue';
+import Spinner from '../shared/Spinner.vue';
 
 const emit = defineEmits<{
   (e: 'open-task-detail', taskId: string): void;
@@ -23,23 +30,50 @@ const emit = defineEmits<{
 const chatStore = useChatStore();
 const { messages, hasMessages, currentStreamingContent } = storeToRefs(chatStore);
 
-/**
- * Determine which messages should show the assistant header.
- * Consecutive assistant messages (text, tool, task) form a visual group;
- * only the first text message in a group shows the header.
- */
-const showHeaderMap = computed(() => {
-  const map = new Map<string, boolean>();
-  for (let i = 0; i < messages.value.length; i++) {
-    const msg = messages.value[i];
-    if (msg.role !== 'assistant' || msg.toolUse || msg.backgroundTask || i === 0) {
-      map.set(msg.id, true);
-      continue;
+interface MessageGroup {
+  id: string;
+  type: 'standalone' | 'assistant-turn';
+  messages: ChatMessage[];
+}
+
+const messageGroups = computed((): MessageGroup[] => {
+  const groups: MessageGroup[] = [];
+  let currentTurn: ChatMessage[] = [];
+
+  for (const msg of messages.value) {
+    if (msg.role === 'assistant') {
+      currentTurn.push(msg);
+    } else {
+      if (currentTurn.length > 0) {
+        groups.push({
+          id: currentTurn[0].id,
+          type: 'assistant-turn',
+          messages: [...currentTurn],
+        });
+        currentTurn = [];
+      }
+      groups.push({
+        id: msg.id,
+        type: 'standalone',
+        messages: [msg],
+      });
     }
-    map.set(msg.id, messages.value[i - 1].role !== 'assistant');
   }
-  return map;
+
+  if (currentTurn.length > 0) {
+    groups.push({
+      id: currentTurn[0].id,
+      type: 'assistant-turn',
+      messages: [...currentTurn],
+    });
+  }
+
+  return groups;
 });
+
+function isTurnStreaming(group: MessageGroup): boolean {
+  return group.messages.some(m => m.isStreaming);
+}
 
 const listRef = ref<HTMLDivElement | null>(null);
 
@@ -137,28 +171,74 @@ onUnmounted(() => {
       </p>
     </div>
 
-    <!-- Messages -->
-    <TransitionGroup
+    <!-- Messages grouped by turn -->
+    <div
       v-else
-      name="message"
-      tag="div"
       class="message-list-spacing"
     >
-      <MessageItem
-        v-for="message in messages"
-        :key="message.id"
-        :message="message"
-        :show-header="showHeaderMap.get(message.id) ?? true"
-        @open-task-detail="emit('open-task-detail', $event)"
-        @open-tool-detail="emit('open-tool-detail', $event)"
-      />
-    </TransitionGroup>
+      <template
+        v-for="group in messageGroups"
+        :key="group.id"
+      >
+        <!-- Standalone (user/system) message -->
+        <MessageItem
+          v-if="group.type === 'standalone'"
+          :message="group.messages[0]"
+          @open-task-detail="emit('open-task-detail', $event)"
+          @open-tool-detail="emit('open-tool-detail', $event)"
+        />
+
+        <!-- Assistant turn: single bubble with header + interleaved content -->
+        <div
+          v-else
+          class="rounded-lg animate-fade-in message-bubble message-assistant"
+        >
+          <!-- Turn header -->
+          <div class="flex items-center gap-2 assistant-turn-header">
+            <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200">
+              C
+            </div>
+            <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
+              Claude
+            </span>
+            <span class="text-xs text-surface-400 dark:text-surface-500">
+              {{ formatTime(group.messages[0].timestamp) }}
+            </span>
+            <Spinner
+              v-if="isTurnStreaming(group)"
+              size="sm"
+              class="ml-2 text-primary-500"
+            />
+          </div>
+
+          <!-- Turn content -->
+          <div class="assistant-turn-content">
+            <MessageItem
+              v-for="msg in group.messages"
+              :key="msg.id"
+              :message="msg"
+              grouped
+              @open-task-detail="emit('open-task-detail', $event)"
+              @open-tool-detail="emit('open-tool-detail', $event)"
+            />
+          </div>
+        </div>
+      </template>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .message-list-spacing > * + * {
   margin-top: calc(var(--chat-line-height, 1.6) * 0.6rem);
+}
+
+.assistant-turn-header {
+  margin-bottom: calc(var(--chat-line-height, 1.6) * 0.3rem);
+}
+
+.assistant-turn-content > * + * {
+  margin-top: calc(var(--chat-line-height, 1.6) * 0.25rem);
 }
 
 .message-enter-active,
