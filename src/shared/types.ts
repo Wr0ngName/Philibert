@@ -491,7 +491,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   updateChannel: 'stable',
   executionMode: 'sdk',
   thinkingMode: 'auto',
-  extendedContext: 'enabled',
+  extendedContext: 'disabled',
 };
 
 // Conversation types

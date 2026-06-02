@@ -539,7 +539,7 @@ export class ConfigService {
   async getExtendedContext(): Promise<ExtendedContext> {
     await this.ensureInitialized();
     if (!this.store) return 'enabled';
-    return this.store.get('extendedContext', 'enabled');
+    return this.store.get('extendedContext', 'disabled');
   }
 
   /**
