@@ -123,7 +123,7 @@ const inputParams = computed((): InputParam[] => {
   <Modal
     :open="open"
     title="Tool Details"
-    size="lg"
+    size="3xl"
     @close="emit('close')"
   >
     <div

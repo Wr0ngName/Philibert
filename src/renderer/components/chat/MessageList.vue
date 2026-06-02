@@ -103,6 +103,7 @@ const listRef = ref<HTMLDivElement | null>(null);
 // Track if user is at/near bottom of scroll (within threshold)
 const SCROLL_THRESHOLD = 50; // pixels from bottom to consider "at bottom"
 const isUserAtBottom = ref(true);
+const unreadCount = ref(0);
 
 /**
  * Check if scroll position is at/near bottom
@@ -127,12 +128,24 @@ function scrollToBottom(): void {
  */
 function handleScroll(): void {
   isUserAtBottom.value = checkIfAtBottom();
+  if (isUserAtBottom.value) {
+    unreadCount.value = 0;
+  }
+}
+
+function handleScrollToBottom(): void {
+  scrollToBottom();
+  unreadCount.value = 0;
 }
 
 // Auto-scroll to bottom when new messages arrive (if user is at bottom)
 watch(
   () => messages.value.length,
-  () => {
+  (newLen, oldLen) => {
+    const added = newLen - (oldLen ?? 0);
+    if (added > 0 && !isUserAtBottom.value) {
+      unreadCount.value += added;
+    }
     nextTick(() => {
       if (isUserAtBottom.value) {
         scrollToBottom();
@@ -170,9 +183,10 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <div class="relative flex-1 min-w-0">
   <div
     ref="listRef"
-    class="flex-1 overflow-y-auto overflow-x-hidden min-w-0 p-4 message-list-spacing"
+    class="absolute inset-0 overflow-y-auto overflow-x-hidden p-4 message-list-spacing"
   >
     <!-- Empty state -->
     <div
@@ -268,6 +282,23 @@ onUnmounted(() => {
       </div>
     </div>
   </div>
+
+  <!-- Scroll to new messages button -->
+  <Transition name="scroll-badge">
+    <button
+      v-if="!isUserAtBottom && (unreadCount > 0 || isLoading)"
+      class="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary-500 hover:bg-primary-600 text-white text-xs font-medium shadow-lg transition-colors z-10"
+      @click="handleScrollToBottom"
+    >
+      <Icon
+        name="chevron-down"
+        size="xs"
+      />
+      <span v-if="unreadCount > 0">{{ unreadCount }} new message{{ unreadCount > 1 ? 's' : '' }}</span>
+      <span v-else>New activity</span>
+    </button>
+  </Transition>
+  </div>
 </template>
 
 <style scoped>
@@ -295,5 +326,16 @@ onUnmounted(() => {
 
 .message-leave-to {
   opacity: 0;
+}
+
+.scroll-badge-enter-active,
+.scroll-badge-leave-active {
+  transition: all 0.2s ease;
+}
+
+.scroll-badge-enter-from,
+.scroll-badge-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 10px);
 }
 </style>

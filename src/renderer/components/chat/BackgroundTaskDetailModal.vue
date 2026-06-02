@@ -86,7 +86,7 @@ const statusDisplay = computed(() => {
   <Modal
     :open="open"
     title="Background Task Details"
-    size="lg"
+    size="3xl"
     @close="emit('close')"
   >
     <div
