@@ -67,13 +67,55 @@ const statusDisplay = computed(() => {
   }
 });
 
-const formattedInput = computed(() => {
-  if (!props.toolUse?.input) return null;
-  try {
-    return JSON.stringify(props.toolUse.input, null, 2);
-  } catch {
-    return String(props.toolUse.input);
-  }
+interface InputParam {
+  key: string;
+  label: string;
+  value: string;
+  isBlock: boolean;
+}
+
+const PARAM_LABELS: Record<string, string> = {
+  file_path: 'File',
+  content: 'Content',
+  command: 'Command',
+  old_string: 'Original',
+  new_string: 'Replacement',
+  pattern: 'Pattern',
+  path: 'Path',
+  offset: 'Offset',
+  limit: 'Limit',
+  description: 'Description',
+  replace_all: 'Replace All',
+  timeout: 'Timeout',
+  cwd: 'Working Directory',
+};
+
+const BLOCK_THRESHOLD = 80;
+
+function isBlockValue(key: string, value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  if (['content', 'command', 'old_string', 'new_string'].includes(key)) return true;
+  return value.length > BLOCK_THRESHOLD || value.includes('\n');
+}
+
+const inputParams = computed((): InputParam[] => {
+  if (!props.toolUse?.input) return [];
+  const input = props.toolUse.input;
+  return Object.entries(input).map(([key, value]) => {
+    const label = PARAM_LABELS[key] || key;
+    const isBlock = isBlockValue(key, value);
+    let displayValue: string;
+    if (value === null || value === undefined) {
+      displayValue = '';
+    } else if (typeof value === 'string') {
+      displayValue = value;
+    } else if (typeof value === 'boolean' || typeof value === 'number') {
+      displayValue = String(value);
+    } else {
+      displayValue = JSON.stringify(value, null, 2);
+    }
+    return { key, label, value: displayValue, isBlock };
+  });
 });
 </script>
 
@@ -119,10 +161,10 @@ const formattedInput = computed(() => {
         </div>
       </div>
 
-      <!-- Input Parameters -->
+      <!-- Input Parameters (structured) -->
       <div
-        v-if="formattedInput"
-        class="space-y-2"
+        v-if="inputParams.length > 0"
+        class="space-y-3"
       >
         <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
           <Icon
@@ -131,8 +173,29 @@ const formattedInput = computed(() => {
           />
           <span>Input</span>
         </div>
-        <div class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 max-h-60 overflow-y-auto">
-          <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono">{{ formattedInput }}</pre>
+
+        <div
+          v-for="param in inputParams"
+          :key="param.key"
+          class="space-y-1"
+        >
+          <!-- Inline parameter (short values) -->
+          <template v-if="!param.isBlock">
+            <div class="flex items-baseline gap-2 text-xs">
+              <span class="font-medium text-surface-500 dark:text-surface-400 shrink-0">{{ param.label }}</span>
+              <span class="font-mono text-surface-800 dark:text-surface-200 break-all">{{ param.value }}</span>
+            </div>
+          </template>
+
+          <!-- Block parameter (code/content) -->
+          <template v-else>
+            <div class="text-xs font-medium text-surface-500 dark:text-surface-400">
+              {{ param.label }}
+            </div>
+            <div class="code-block !p-3 max-h-60 overflow-y-auto">
+              <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap">{{ param.value }}</pre>
+            </div>
+          </template>
         </div>
       </div>
 
@@ -164,9 +227,9 @@ const formattedInput = computed(() => {
         </div>
         <div
           v-else-if="outputContent !== null"
-          class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 max-h-80 overflow-y-auto"
+          class="code-block !p-3 max-h-80 overflow-y-auto"
         >
-          <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono">{{ outputContent }}</pre>
+          <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap">{{ outputContent }}</pre>
         </div>
       </div>
 

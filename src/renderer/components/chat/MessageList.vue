@@ -8,7 +8,7 @@
  * - Does NOT scroll if user has scrolled up to read previous messages
  */
 
-import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import { useChatStore } from '../../stores/chat';
@@ -22,6 +22,24 @@ const emit = defineEmits<{
 
 const chatStore = useChatStore();
 const { messages, hasMessages, currentStreamingContent } = storeToRefs(chatStore);
+
+/**
+ * Determine which messages should show the assistant header.
+ * Consecutive assistant messages (text, tool, task) form a visual group;
+ * only the first text message in a group shows the header.
+ */
+const showHeaderMap = computed(() => {
+  const map = new Map<string, boolean>();
+  for (let i = 0; i < messages.value.length; i++) {
+    const msg = messages.value[i];
+    if (msg.role !== 'assistant' || msg.toolUse || msg.backgroundTask || i === 0) {
+      map.set(msg.id, true);
+      continue;
+    }
+    map.set(msg.id, messages.value[i - 1].role !== 'assistant');
+  }
+  return map;
+});
 
 const listRef = ref<HTMLDivElement | null>(null);
 
@@ -130,6 +148,7 @@ onUnmounted(() => {
         v-for="message in messages"
         :key="message.id"
         :message="message"
+        :show-header="showHeaderMap.get(message.id) ?? true"
         @open-task-detail="emit('open-task-detail', $event)"
         @open-tool-detail="emit('open-tool-detail', $event)"
       />

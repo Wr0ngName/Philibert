@@ -41,8 +41,6 @@ export const MAIN_CONSTANTS = {
     API_KEY_MIN_LENGTH: 40,
   },
   CLAUDE: {
-    /** Permission request timeout - 60 seconds (SDK requirement) */
-    PERMISSION_TIMEOUT_MS: 60000,
     /** Delay when interrupting Claude operations - 1 second */
     INTERRUPT_DELAY_MS: 1000,
   },

@@ -413,11 +413,40 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * Finalize the current streaming message so that subsequent text chunks
+   * create a new message AFTER any tool/task messages inserted in between.
+   * This preserves the correct interleaved ordering of text and tool uses.
+   */
+  function splitStreamingForTool(conversationId: string): void {
+    const state = conversationStates.value.get(conversationId);
+    if (!state?.streamingMessageId) return;
+
+    if (conversationId === currentConversationId.value) {
+      for (let i = messages.value.length - 1; i >= 0; i--) {
+        const msg = messages.value[i];
+        if (msg.id === state.streamingMessageId) {
+          if (msg.content.trim()) {
+            msg.isStreaming = false;
+          } else {
+            messages.value.splice(i, 1);
+          }
+          break;
+        }
+      }
+    }
+
+    state.streamingMessageId = null;
+    state.currentStreamingContent = '';
+  }
+
+  /**
    * Insert an inline tool use message into the message stream.
    * Shows the user what tool Claude is invoking, interleaved with text.
    */
   function addToolUseMessage(conversationId: string, action: PendingAction): void {
     if (conversationId !== currentConversationId.value) return;
+
+    splitStreamingForTool(conversationId);
 
     const message: ChatMessage = {
       id: generateId(ID_PREFIXES.MESSAGE),
@@ -442,6 +471,8 @@ export const useChatStore = defineStore('chat', () => {
    */
   function addAutoToolUseMessage(conversationId: string, capture: ToolCaptureData): void {
     if (conversationId !== currentConversationId.value) return;
+
+    splitStreamingForTool(conversationId);
 
     const message: ChatMessage = {
       id: generateId(ID_PREFIXES.MESSAGE),

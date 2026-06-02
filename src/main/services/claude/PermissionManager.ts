@@ -13,7 +13,6 @@ import type {
 
 import { generateId, ID_PREFIXES } from '../../../shared/id';
 import { PendingAction, ActionResponse, PermissionSuggestionInfo, PermissionScope, PermissionScopeOption, PermissionContext } from '../../../shared/types';
-import { MAIN_CONSTANTS } from '../../constants/app';
 import logger from '../../utils/logger';
 import type ConfigService from '../ConfigService';
 
@@ -158,20 +157,6 @@ export class PermissionManager {
 
         this.pendingPermissions.set(actionId, pendingPermission);
         options.signal.addEventListener('abort', abortHandler);
-
-        // Timeout after configured duration (SDK requirement)
-        setTimeout(() => {
-          const pending = this.pendingPermissions.get(actionId);
-          if (pending) {
-            this.pendingPermissions.delete(actionId);
-            logger.warn('Permission request timed out', { actionId });
-            resolve({
-              behavior: 'deny',
-              message: 'Permission request timed out',
-              interrupt: false,
-            });
-          }
-        }, MAIN_CONSTANTS.CLAUDE.PERMISSION_TIMEOUT_MS);
       });
     };
   }

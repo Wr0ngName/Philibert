@@ -17,9 +17,13 @@ import ToolUseMessage from './ToolUseMessage.vue';
 interface Props {
   /** The chat message to display */
   message: ChatMessage;
+  /** Whether to show the role header (false for continuation messages in the same assistant turn) */
+  showHeader?: boolean;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+  showHeader: true,
+});
 
 const emit = defineEmits<{
   (e: 'open-task-detail', taskId: string): void;
@@ -65,12 +69,17 @@ const renderedContent = computed(() => renderMarkdown(props.message.content));
   <div
     v-else
     :class="[
-      'rounded-lg animate-fade-in message-bubble',
-      isUser ? 'message-user' : 'message-assistant',
+      'animate-fade-in message-bubble',
+      isUser ? 'message-user rounded-lg' : 'message-assistant',
+      !isUser && showHeader ? 'rounded-lg' : '',
+      !isUser && !showHeader ? 'message-continuation' : '',
     ]"
   >
-    <!-- Header -->
-    <div class="flex items-center gap-2 message-header">
+    <!-- Header (hidden for continuation messages in the same assistant turn) -->
+    <div
+      v-if="showHeader"
+      class="flex items-center gap-2 message-header"
+    >
       <div
         :class="[
           'w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium',
@@ -93,6 +102,11 @@ const renderedContent = computed(() => renderMarkdown(props.message.content));
         class="ml-2 text-primary-500"
       />
     </div>
+    <Spinner
+      v-else-if="message.isStreaming"
+      size="sm"
+      class="text-primary-500 mb-1"
+    />
 
     <!-- Content -->
     <div
@@ -105,6 +119,11 @@ const renderedContent = computed(() => renderMarkdown(props.message.content));
 <style scoped>
 .message-bubble {
   padding: calc(var(--chat-line-height, 1.6) * 0.6rem);
+}
+
+.message-continuation {
+  padding-top: 0;
+  margin-top: calc(var(--chat-line-height, 1.6) * -0.3rem);
 }
 
 .message-header {
