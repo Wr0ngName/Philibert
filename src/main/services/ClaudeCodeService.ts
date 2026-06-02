@@ -1354,40 +1354,91 @@ export class ClaudeCodeService {
    *
    * Model ID format: claude-{family}-{major}-{minor}
    * Display name:    Claude {Family} {major}.{minor}
-   *
-   * Uses alias IDs (e.g. claude-sonnet-4-5) which the API resolves to the
-   * most recent dated snapshot for pre-4.6 models, and which are canonical
-   * pinned snapshots for 4.6+ models.
    */
-  private static readonly MODEL_CATALOG: { family: string; major: number; minor: number }[] = [
-    { family: 'opus', major: 4, minor: 8 },
-    { family: 'opus', major: 4, minor: 7 },
-    { family: 'opus', major: 4, minor: 6 },
-    { family: 'opus', major: 4, minor: 5 },
-    { family: 'sonnet', major: 4, minor: 6 },
-    { family: 'sonnet', major: 4, minor: 5 },
-    { family: 'haiku', major: 4, minor: 5 },
-  ];
+  private static readonly MODEL_CATALOG = [
+    { family: 'opus',   major: 4, minor: 8, context: '1M' },
+    { family: 'opus',   major: 4, minor: 7, context: '1M' },
+    { family: 'opus',   major: 4, minor: 6, context: '1M' },
+    { family: 'opus',   major: 4, minor: 5, context: '200K' },
+    { family: 'sonnet', major: 4, minor: 6, context: '1M' },
+    { family: 'sonnet', major: 4, minor: 5, context: '200K' },
+    { family: 'haiku',  major: 4, minor: 5, context: '200K' },
+  ] as const;
 
-  private static buildModelEntry(entry: { family: string; major: number; minor: number }): ModelInfo {
-    const familyCapitalized = entry.family.charAt(0).toUpperCase() + entry.family.slice(1);
-    return {
-      value: `claude-${entry.family}-${entry.major}-${entry.minor}`,
-      displayName: `Claude ${familyCapitalized} ${entry.major}.${entry.minor}`,
-    };
+  private static readonly FAMILY_ORDER = ['opus', 'sonnet', 'haiku'];
+
+  /**
+   * Extract the alias form (claude-{family}-{major}-{minor}) from any model ID,
+   * stripping dated suffixes like -20250929.
+   */
+  private static toAlias(modelId: string): string {
+    return modelId.replace(/-\d{8}(-v\d+)?$/, '');
   }
 
   /**
    * Merge SDK-returned models with the known catalog.
-   * SDK models come first (they may have richer descriptions); catalog entries
-   * that the SDK didn't return are appended.
+   * Deduplicates by alias (so dated SDK IDs like claude-sonnet-4-5-20250929
+   * match catalog entry claude-sonnet-4-5). Result is grouped by family
+   * (Opus, Sonnet, Haiku) and sorted by version descending within each family.
    */
   static mergeWithKnownModels(sdkModels: ModelInfo[]): ModelInfo[] {
-    const sdkIds = new Set(sdkModels.map(m => m.value));
-    const extras = ClaudeCodeService.MODEL_CATALOG
-      .map(ClaudeCodeService.buildModelEntry)
-      .filter(m => !sdkIds.has(m.value));
-    return [...sdkModels, ...extras];
+    const seen = new Set<string>();
+    const merged: ModelInfo[] = [];
+
+    const catalogByAlias = new Map<string, (typeof ClaudeCodeService.MODEL_CATALOG)[number]>();
+    for (const entry of ClaudeCodeService.MODEL_CATALOG) {
+      catalogByAlias.set(`claude-${entry.family}-${entry.major}-${entry.minor}`, entry);
+    }
+
+    for (const sdk of sdkModels) {
+      const alias = ClaudeCodeService.toAlias(sdk.value);
+      if (seen.has(alias)) continue;
+      seen.add(alias);
+
+      const catalogEntry = catalogByAlias.get(alias);
+      if (catalogEntry) {
+        const familyCapitalized = catalogEntry.family.charAt(0).toUpperCase() + catalogEntry.family.slice(1);
+        merged.push({
+          value: sdk.value,
+          displayName: `Claude ${familyCapitalized} ${catalogEntry.major}.${catalogEntry.minor}`,
+          description: `${catalogEntry.context} context`,
+        });
+      } else {
+        merged.push(sdk);
+      }
+    }
+
+    for (const entry of ClaudeCodeService.MODEL_CATALOG) {
+      const alias = `claude-${entry.family}-${entry.major}-${entry.minor}`;
+      if (seen.has(alias)) continue;
+      seen.add(alias);
+      const familyCapitalized = entry.family.charAt(0).toUpperCase() + entry.family.slice(1);
+      merged.push({
+        value: alias,
+        displayName: `Claude ${familyCapitalized} ${entry.major}.${entry.minor}`,
+        description: `${entry.context} context`,
+      });
+    }
+
+    const familyOrder = ClaudeCodeService.FAMILY_ORDER;
+    const parseModel = (m: ModelInfo) => {
+      const alias = ClaudeCodeService.toAlias(m.value);
+      const match = alias.match(/claude-(\w+)-(\d+)-(\d+)/);
+      if (!match) return { familyIdx: 99, version: 0 };
+      return {
+        familyIdx: familyOrder.indexOf(match[1]),
+        version: Number(match[2]) * 100 + Number(match[3]),
+      };
+    };
+
+    merged.sort((a, b) => {
+      const pa = parseModel(a);
+      const pb = parseModel(b);
+      if (pa.familyIdx !== pb.familyIdx) return pa.familyIdx - pb.familyIdx;
+      return pb.version - pa.version;
+    });
+
+    return merged;
   }
 }
 

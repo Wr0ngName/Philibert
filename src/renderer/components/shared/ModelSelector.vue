@@ -35,6 +35,26 @@ const pendingModelValue = ref<string | null>(null);
 // Cleanup function for models listener
 let cleanupModelsListener: (() => void) | null = null;
 
+interface ModelGroup {
+  family: string;
+  models: ModelInfo[];
+}
+
+const modelGroups = computed<ModelGroup[]>(() => {
+  const groups: ModelGroup[] = [];
+  let currentFamily = '';
+  for (const model of models.value) {
+    const match = model.value.match(/claude-(\w+)-/);
+    const family = match ? match[1].charAt(0).toUpperCase() + match[1].slice(1) : 'Other';
+    if (family !== currentFamily) {
+      currentFamily = family;
+      groups.push({ family, models: [] });
+    }
+    groups[groups.length - 1].models.push(model);
+  }
+  return groups;
+});
+
 // Current model display name
 const currentModelDisplay = computed(() => {
   if (!selectedModel.value) {
@@ -254,40 +274,50 @@ onUnmounted(() => {
             </div>
           </button>
 
-          <div class="h-px bg-surface-200 dark:bg-surface-700 my-1" />
-
-          <!-- Available models -->
-          <button
-            v-for="model in models"
-            :key="model.value"
-            class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors"
-            :class="{ 'bg-primary-50 dark:bg-primary-900/20': selectedModel === model.value }"
-            @click="selectModel(model.value)"
+          <!-- Model groups -->
+          <template
+            v-for="group in modelGroups"
+            :key="group.family"
           >
-            <div class="flex items-center gap-2">
-              <span
-                class="shrink-0 w-4 h-4 flex items-center justify-center"
-              >
-                <Icon
-                  v-if="selectedModel === model.value"
-                  name="check"
-                  size="sm"
-                  class="text-primary-500"
-                />
-              </span>
-              <div class="flex-1 min-w-0">
-                <div class="font-medium text-surface-800 dark:text-surface-200">
-                  {{ model.displayName }}
-                </div>
-                <div
-                  v-if="model.description"
-                  class="text-xs text-surface-500 dark:text-surface-400 truncate"
+            <div class="h-px bg-surface-200 dark:bg-surface-700 my-1" />
+            <div
+              v-if="modelGroups.length > 1"
+              class="px-3 py-1 text-xs font-semibold text-surface-400 dark:text-surface-500 uppercase tracking-wider"
+            >
+              {{ group.family }}
+            </div>
+            <button
+              v-for="model in group.models"
+              :key="model.value"
+              class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors"
+              :class="{ 'bg-primary-50 dark:bg-primary-900/20': selectedModel === model.value }"
+              @click="selectModel(model.value)"
+            >
+              <div class="flex items-center gap-2">
+                <span
+                  class="shrink-0 w-4 h-4 flex items-center justify-center"
                 >
-                  {{ model.description }}
+                  <Icon
+                    v-if="selectedModel === model.value"
+                    name="check"
+                    size="sm"
+                    class="text-primary-500"
+                  />
+                </span>
+                <div class="flex-1 min-w-0">
+                  <div class="font-medium text-surface-800 dark:text-surface-200">
+                    {{ model.displayName }}
+                  </div>
+                  <div
+                    v-if="model.description"
+                    class="text-xs text-surface-500 dark:text-surface-400 truncate"
+                  >
+                    {{ model.description }}
+                  </div>
                 </div>
               </div>
-            </div>
-          </button>
+            </button>
+          </template>
         </template>
 
         <!-- Model options separator -->

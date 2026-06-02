@@ -1593,6 +1593,102 @@ describe('ClaudeCodeService', () => {
       expect(mockQuery).toHaveBeenCalledTimes(1);
     });
   });
+
+  // =========================================================================
+  // mergeWithKnownModels — pure static method
+  // =========================================================================
+  describe('mergeWithKnownModels', () => {
+    it('should deduplicate SDK models with dated IDs against catalog aliases', () => {
+      const sdkModels = [
+        { value: 'claude-opus-4-7-20260101', displayName: 'Opus 4.7', description: '' },
+        { value: 'claude-sonnet-4-6-20260201', displayName: 'Sonnet 4.6', description: '' },
+      ];
+      const result = ClaudeCodeService.mergeWithKnownModels(sdkModels);
+
+      const opusEntries = result.filter(m => m.value.includes('opus-4-7'));
+      expect(opusEntries).toHaveLength(1);
+
+      const sonnetEntries = result.filter(m => m.value.includes('sonnet-4-6'));
+      expect(sonnetEntries).toHaveLength(1);
+    });
+
+    it('should enrich SDK models with catalog display names and context descriptions', () => {
+      const sdkModels = [
+        { value: 'claude-opus-4-7-20260101', displayName: 'raw-sdk-name', description: '' },
+      ];
+      const result = ClaudeCodeService.mergeWithKnownModels(sdkModels);
+
+      const opus = result.find(m => m.value.includes('opus-4-7'));
+      expect(opus!.displayName).toBe('Claude Opus 4.7');
+      expect(opus!.description).toBe('1M context');
+    });
+
+    it('should add catalog models not present in SDK output', () => {
+      const sdkModels = [
+        { value: 'claude-sonnet-4-6-20260201', displayName: 'Sonnet', description: '' },
+      ];
+      const result = ClaudeCodeService.mergeWithKnownModels(sdkModels);
+
+      const haiku = result.find(m => m.value === 'claude-haiku-4-5');
+      expect(haiku).toBeDefined();
+      expect(haiku!.displayName).toBe('Claude Haiku 4.5');
+      expect(haiku!.description).toBe('200K context');
+    });
+
+    it('should sort by family (Opus, Sonnet, Haiku) then version descending', () => {
+      const sdkModels = [
+        { value: 'claude-haiku-4-5', displayName: 'Haiku', description: '' },
+        { value: 'claude-opus-4-6', displayName: 'Opus 4.6', description: '' },
+      ];
+      const result = ClaudeCodeService.mergeWithKnownModels(sdkModels);
+      const families = result.map(m => {
+        const match = m.value.match(/claude-(\w+)-/);
+        return match ? match[1] : 'unknown';
+      });
+
+      const firstOpus = families.indexOf('opus');
+      const firstSonnet = families.indexOf('sonnet');
+      const firstHaiku = families.indexOf('haiku');
+      expect(firstOpus).toBeLessThan(firstSonnet);
+      expect(firstSonnet).toBeLessThan(firstHaiku);
+    });
+
+    it('should sort versions descending within the same family', () => {
+      const result = ClaudeCodeService.mergeWithKnownModels([]);
+
+      const opusModels = result.filter(m => m.value.includes('opus'));
+      const opusVersions = opusModels.map(m => {
+        const match = m.value.match(/claude-opus-(\d+)-(\d+)/);
+        return match ? Number(match[1]) * 100 + Number(match[2]) : 0;
+      });
+      for (let i = 1; i < opusVersions.length; i++) {
+        expect(opusVersions[i - 1]).toBeGreaterThan(opusVersions[i]);
+      }
+    });
+
+    it('should preserve SDK value (dated ID) when enriching with catalog data', () => {
+      const sdkModels = [
+        { value: 'claude-sonnet-4-5-20250929', displayName: 'raw', description: '' },
+      ];
+      const result = ClaudeCodeService.mergeWithKnownModels(sdkModels);
+
+      const sonnet45 = result.find(m => m.value === 'claude-sonnet-4-5-20250929');
+      expect(sonnet45).toBeDefined();
+      expect(sonnet45!.displayName).toBe('Claude Sonnet 4.5');
+    });
+
+    it('should pass through unknown SDK models that are not in the catalog', () => {
+      const sdkModels = [
+        { value: 'claude-mystery-9-9', displayName: 'Mystery', description: 'experimental' },
+      ];
+      const result = ClaudeCodeService.mergeWithKnownModels(sdkModels);
+
+      const mystery = result.find(m => m.value === 'claude-mystery-9-9');
+      expect(mystery).toBeDefined();
+      expect(mystery!.displayName).toBe('Mystery');
+      expect(mystery!.description).toBe('experimental');
+    });
+  });
 });
 
 // ===========================================================================
