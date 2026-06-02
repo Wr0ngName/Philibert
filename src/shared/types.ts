@@ -418,6 +418,8 @@ export type UpdateChannel = 'stable' | 'rc';
  */
 export type ExecutionMode = 'sdk' | 'channel';
 
+export type ThinkingMode = 'auto' | 'disabled';
+
 /**
  * Application configuration settings
  */
@@ -458,6 +460,8 @@ export interface AppConfig {
   updateChannel: UpdateChannel;
   /** Execution mode: 'sdk' for Agent SDK (credit pool), 'channel' for PTY/MCP (subscription) */
   executionMode: ExecutionMode;
+  /** Extended thinking mode: 'auto' lets Claude decide, 'disabled' saves tokens */
+  thinkingMode: ThinkingMode;
 }
 
 /**
@@ -482,6 +486,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   lastConversationId: '',
   updateChannel: 'stable',
   executionMode: 'sdk',
+  thinkingMode: 'auto',
 };
 
 // Conversation types

@@ -32,6 +32,7 @@ import type {
   SDKUserMessage,
   SpawnOptions,
   SpawnedProcess,
+  ThinkingConfig,
 } from '@anthropic-ai/claude-agent-sdk';
 import { BrowserWindow } from 'electron';
 
@@ -521,6 +522,10 @@ export class ClaudeCodeService {
     try {
       // Get selected model from config
       const selectedModel = await this.configService.getSelectedModel();
+      const thinkingMode = await this.configService.getThinkingMode();
+      const thinkingConfig: ThinkingConfig = thinkingMode === 'disabled'
+        ? { type: 'disabled' }
+        : { type: 'adaptive' };
 
       // When resuming, don't pass --model (the CLI ignores it during --resume).
       // Instead, resume first to restore context, then call setModel() after init.
@@ -561,6 +566,7 @@ export class ClaudeCodeService {
           canUseTool: permissionManager.createCanUseToolCallback(),
           includePartialMessages: true,
           agentProgressSummaries: true,
+          thinking: thinkingConfig,
           ...(!shouldResume && selectedModel ? { model: selectedModel } : {}),
           ...(shouldResume ? { resume: resumeSessionId } : {}),
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {

@@ -3,7 +3,7 @@
  * Settings panel component with OAuth login support
  */
 
-import type { ExecutionMode, LogLevel, UpdateChannel } from '@shared/types';
+import type { ExecutionMode, LogLevel, ThinkingMode, UpdateChannel } from '@shared/types';
 import { ref, computed, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
@@ -33,6 +33,7 @@ const localLogLevel = ref<LogLevel>('info');
 const localEnableNotifications = ref(true);
 const localUpdateChannel = ref<UpdateChannel>('stable');
 const localExecutionMode = ref<ExecutionMode>('sdk');
+const localThinkingMode = ref<ThinkingMode>('auto');
 const authFormRef = ref<InstanceType<typeof AuthForm>>();
 
 const isOAuthUser = computed(() =>
@@ -59,6 +60,7 @@ watch(
     localEnableNotifications.value = newConfig.enableNotifications;
     localUpdateChannel.value = newConfig.updateChannel;
     localExecutionMode.value = newConfig.executionMode;
+    localThinkingMode.value = newConfig.thinkingMode;
   },
   { immediate: true }
 );
@@ -84,6 +86,7 @@ async function saveSettings() {
   await settingsStore.setUpdateChannel(localUpdateChannel.value);
   const effectiveMode = config.value.authMethod === 'oauth' ? localExecutionMode.value : 'sdk';
   await settingsStore.setExecutionMode(effectiveMode);
+  await settingsStore.setThinkingMode(localThinkingMode.value);
 
   emit('close');
 }
@@ -97,6 +100,7 @@ function cancel() {
   localEnableNotifications.value = config.value.enableNotifications;
   localUpdateChannel.value = config.value.updateChannel;
   localExecutionMode.value = config.value.executionMode;
+  localThinkingMode.value = config.value.thinkingMode;
   authFormRef.value?.resetState();
   emit('close');
 }
@@ -161,6 +165,55 @@ function cancel() {
         >
           Channel mode uses your Pro/Max subscription for billing with no credit cap.
           Trade-offs: no real-time streaming (replies arrive complete), no mid-session model switching.
+          Takes effect on the next new conversation.
+        </div>
+      </div>
+
+      <!-- Extended Thinking -->
+      <div>
+        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+          Extended Thinking
+        </label>
+        <div class="flex gap-2">
+          <button
+            :class="[
+              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
+              localThinkingMode === 'auto'
+                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+            ]"
+            @click="localThinkingMode = 'auto'"
+          >
+            <div class="font-medium">
+              Auto
+            </div>
+            <div class="text-xs opacity-75">
+              Claude decides when to think deeply
+            </div>
+          </button>
+          <button
+            :class="[
+              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
+              localThinkingMode === 'disabled'
+                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+            ]"
+            @click="localThinkingMode = 'disabled'"
+          >
+            <div class="font-medium">
+              Disabled
+            </div>
+            <div class="text-xs opacity-75">
+              No extended thinking, saves tokens
+            </div>
+          </button>
+        </div>
+        <div
+          v-if="localThinkingMode === 'auto'"
+          class="mt-2 p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-xs text-blue-800 dark:text-blue-200"
+        >
+          Claude will use extended thinking when it determines complex reasoning is needed.
+          This can significantly increase token usage but improves response quality for complex tasks.
           Takes effect on the next new conversation.
         </div>
       </div>

@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 
-import type { AppConfig, ExecutionMode, LogLevel, UpdateChannel } from '@shared/types';
+import type { AppConfig, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 
 import { useEventCleanup } from '../composables/useEventCleanup';
@@ -35,6 +35,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const enableNotifications = computed(() => config.value.enableNotifications);
   const updateChannel = computed(() => config.value.updateChannel);
   const executionMode = computed(() => config.value.executionMode);
+  const thinkingMode = computed(() => config.value.thinkingMode);
   const needsSetup = computed(() => !workingDirectory.value || !hasAuth.value);
   const isDarkMode = computed(() => {
     if (config.value.theme === 'system') {
@@ -129,6 +130,10 @@ export const useSettingsStore = defineStore('settings', () => {
     await saveConfig({ executionMode: mode });
   }
 
+  async function setThinkingMode(mode: ThinkingMode): Promise<void> {
+    await saveConfig({ thinkingMode: mode });
+  }
+
   function applyFontSize(size: number): void {
     if (typeof document !== 'undefined' && document.documentElement?.style) {
       document.documentElement.style.setProperty('--chat-font-size', `${size}px`);
@@ -216,6 +221,7 @@ export const useSettingsStore = defineStore('settings', () => {
     enableNotifications,
     updateChannel,
     executionMode,
+    thinkingMode,
     isDarkMode,
     needsSetup,
 
@@ -235,6 +241,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setEnableNotifications,
     setUpdateChannel,
     setExecutionMode,
+    setThinkingMode,
     applyTheme,
     applyFontSize,
     applyLineHeight,

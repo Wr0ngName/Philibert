@@ -5,7 +5,7 @@
 
 import { safeStorage, dialog } from 'electron';
 
-import { AppConfig, AuthMethod, DEFAULT_CONFIG, ExecutionMode, LogLevel, UpdateChannel } from '../../shared/types';
+import { AppConfig, AuthMethod, DEFAULT_CONFIG, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { ConfigurationError, ERROR_CODES } from '../errors';
 import logger, { setLogLevel } from '../utils/logger';
@@ -31,6 +31,7 @@ interface StoredConfig {
   lastConversationId: string;
   updateChannel: UpdateChannel;
   executionMode: ExecutionMode;
+  thinkingMode: ThinkingMode;
 }
 
 /**
@@ -85,6 +86,7 @@ export class ConfigService {
           lastConversationId: '',
           updateChannel: 'stable',
           executionMode: 'sdk',
+          thinkingMode: 'auto',
         },
       }) as unknown as TypedStore;
       this.isInitialized = true;
@@ -507,6 +509,26 @@ export class ConfigService {
 
     this.store.set('executionMode', mode);
     logger.info('Execution mode changed', { mode });
+  }
+
+  /**
+   * Get thinking mode
+   */
+  async getThinkingMode(): Promise<ThinkingMode> {
+    await this.ensureInitialized();
+    if (!this.store) return 'auto';
+    return this.store.get('thinkingMode', 'auto');
+  }
+
+  /**
+   * Set thinking mode
+   */
+  async setThinkingMode(mode: ThinkingMode): Promise<void> {
+    await this.ensureInitialized();
+    if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
+
+    this.store.set('thinkingMode', mode);
+    logger.info('Thinking mode changed', { mode });
   }
 
   /**
