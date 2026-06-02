@@ -575,7 +575,7 @@ export class ClaudeCodeService {
           includePartialMessages: true,
           agentProgressSummaries: true,
           thinking: thinkingConfig,
-          ...(betas.length > 0 ? { betas } : {}),
+          betas,
           ...(!shouldResume && selectedModel ? { model: selectedModel } : {}),
           ...(shouldResume ? { resume: resumeSessionId } : {}),
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {
