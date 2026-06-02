@@ -166,15 +166,14 @@ watch(
   }
 );
 
-// Auto-scroll when loading starts (thinking placeholder appears)
+// Auto-scroll when loading starts (thinking placeholder appears).
+// No isUserAtBottom check — the user just sent a message, they want to see the response.
 watch(
   isLoading,
   (loading) => {
     if (loading) {
       nextTick(() => {
-        if (isUserAtBottom.value) {
-          scrollToBottom();
-        }
+        scrollToBottom();
       });
     }
   }
