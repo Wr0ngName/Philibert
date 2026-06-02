@@ -184,120 +184,120 @@ onUnmounted(() => {
 
 <template>
   <div class="relative flex-1 min-w-0">
-  <div
-    ref="listRef"
-    class="absolute inset-0 overflow-y-auto overflow-x-hidden p-4 message-list-spacing"
-  >
-    <!-- Empty state -->
     <div
-      v-if="!hasMessages"
-      class="flex flex-col items-center justify-center h-full text-center"
+      ref="listRef"
+      class="absolute inset-0 overflow-y-auto overflow-x-hidden p-4 message-list-spacing"
     >
-      <div class="w-16 h-16 mb-4 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center">
-        <Icon
-          name="chat"
-          size="lg"
-          class="text-primary-500"
-        />
-      </div>
-      <h3 class="text-lg font-medium text-surface-700 dark:text-surface-300 mb-2">
-        Start a conversation
-      </h3>
-      <p class="text-sm text-surface-500 dark:text-surface-400 max-w-sm">
-        Ask Claude to help you with coding, explain concepts, or make changes to your files.
-      </p>
-    </div>
-
-    <!-- Messages grouped by turn -->
-    <div
-      v-else
-      class="message-list-spacing"
-    >
-      <template
-        v-for="group in messageGroups"
-        :key="group.id"
+      <!-- Empty state -->
+      <div
+        v-if="!hasMessages"
+        class="flex flex-col items-center justify-center h-full text-center"
       >
-        <!-- Standalone (user/system) message -->
-        <MessageItem
-          v-if="group.type === 'standalone'"
-          :message="group.messages[0]"
-          @open-task-detail="emit('open-task-detail', $event)"
-          @open-tool-detail="emit('open-tool-detail', $event)"
-        />
+        <div class="w-16 h-16 mb-4 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center">
+          <Icon
+            name="chat"
+            size="lg"
+            class="text-primary-500"
+          />
+        </div>
+        <h3 class="text-lg font-medium text-surface-700 dark:text-surface-300 mb-2">
+          Start a conversation
+        </h3>
+        <p class="text-sm text-surface-500 dark:text-surface-400 max-w-sm">
+          Ask Claude to help you with coding, explain concepts, or make changes to your files.
+        </p>
+      </div>
 
-        <!-- Assistant turn: single bubble with header + interleaved content -->
+      <!-- Messages grouped by turn -->
+      <div
+        v-else
+        class="message-list-spacing"
+      >
+        <template
+          v-for="group in messageGroups"
+          :key="group.id"
+        >
+          <!-- Standalone (user/system) message -->
+          <MessageItem
+            v-if="group.type === 'standalone'"
+            :message="group.messages[0]"
+            @open-task-detail="emit('open-task-detail', $event)"
+            @open-tool-detail="emit('open-tool-detail', $event)"
+          />
+
+          <!-- Assistant turn: single bubble with header + interleaved content -->
+          <div
+            v-else
+            class="rounded-lg animate-fade-in message-bubble message-assistant"
+          >
+            <!-- Turn header -->
+            <div class="flex items-center gap-2 assistant-turn-header">
+              <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200">
+                C
+              </div>
+              <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
+                Claude
+              </span>
+              <span class="text-xs text-surface-400 dark:text-surface-500">
+                {{ formatTime(group.messages[0].timestamp) }}
+              </span>
+              <Spinner
+                v-if="showTurnSpinner(group)"
+                size="sm"
+                class="ml-2 text-primary-500"
+              />
+            </div>
+
+            <!-- Turn content -->
+            <div class="assistant-turn-content">
+              <MessageItem
+                v-for="msg in group.messages"
+                :key="msg.id"
+                :message="msg"
+                grouped
+                @open-task-detail="emit('open-task-detail', $event)"
+                @open-tool-detail="emit('open-tool-detail', $event)"
+              />
+            </div>
+          </div>
+        </template>
+
+        <!-- Thinking placeholder: shown when loading but no assistant output yet -->
         <div
-          v-else
+          v-if="showThinkingPlaceholder"
           class="rounded-lg animate-fade-in message-bubble message-assistant"
         >
-          <!-- Turn header -->
-          <div class="flex items-center gap-2 assistant-turn-header">
+          <div class="flex items-center gap-2">
             <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200">
               C
             </div>
             <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
               Claude
             </span>
-            <span class="text-xs text-surface-400 dark:text-surface-500">
-              {{ formatTime(group.messages[0].timestamp) }}
-            </span>
             <Spinner
-              v-if="showTurnSpinner(group)"
               size="sm"
               class="ml-2 text-primary-500"
             />
           </div>
-
-          <!-- Turn content -->
-          <div class="assistant-turn-content">
-            <MessageItem
-              v-for="msg in group.messages"
-              :key="msg.id"
-              :message="msg"
-              grouped
-              @open-task-detail="emit('open-task-detail', $event)"
-              @open-tool-detail="emit('open-tool-detail', $event)"
-            />
-          </div>
-        </div>
-      </template>
-
-      <!-- Thinking placeholder: shown when loading but no assistant output yet -->
-      <div
-        v-if="showThinkingPlaceholder"
-        class="rounded-lg animate-fade-in message-bubble message-assistant"
-      >
-        <div class="flex items-center gap-2">
-          <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200">
-            C
-          </div>
-          <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
-            Claude
-          </span>
-          <Spinner
-            size="sm"
-            class="ml-2 text-primary-500"
-          />
         </div>
       </div>
     </div>
-  </div>
 
-  <!-- Scroll to new messages button -->
-  <Transition name="scroll-badge">
-    <button
-      v-if="!isUserAtBottom && (unreadCount > 0 || isLoading)"
-      class="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary-500 hover:bg-primary-600 text-white text-xs font-medium shadow-lg transition-colors z-10"
-      @click="handleScrollToBottom"
-    >
-      <Icon
-        name="chevron-down"
-        size="xs"
-      />
-      <span v-if="unreadCount > 0">{{ unreadCount }} new message{{ unreadCount > 1 ? 's' : '' }}</span>
-      <span v-else>New activity</span>
-    </button>
-  </Transition>
+    <!-- Scroll to new messages button -->
+    <Transition name="scroll-badge">
+      <button
+        v-if="!isUserAtBottom && (unreadCount > 0 || isLoading)"
+        class="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary-500 hover:bg-primary-600 text-white text-xs font-medium shadow-lg transition-colors z-10"
+        @click="handleScrollToBottom"
+      >
+        <Icon
+          name="chevron-down"
+          size="xs"
+        />
+        <span v-if="unreadCount > 0">{{ unreadCount }} new message{{ unreadCount > 1 ? 's' : '' }}</span>
+        <span v-else>New activity</span>
+      </button>
+    </Transition>
   </div>
 </template>
 
