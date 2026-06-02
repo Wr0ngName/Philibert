@@ -28,7 +28,7 @@ const emit = defineEmits<{
 }>();
 
 const chatStore = useChatStore();
-const { messages, hasMessages, currentStreamingContent } = storeToRefs(chatStore);
+const { messages, hasMessages, currentStreamingContent, isLoading } = storeToRefs(chatStore);
 
 interface MessageGroup {
   id: string;
@@ -74,6 +74,29 @@ const messageGroups = computed((): MessageGroup[] => {
 function isTurnStreaming(group: MessageGroup): boolean {
   return group.messages.some(m => m.isStreaming);
 }
+
+/**
+ * Whether an assistant turn should show its spinner.
+ * True when streaming text, OR when this is the last group and the
+ * conversation is still loading (tools running before any text arrives).
+ */
+function showTurnSpinner(group: MessageGroup): boolean {
+  if (isTurnStreaming(group)) return true;
+  if (!isLoading.value) return false;
+  const groups = messageGroups.value;
+  return groups.length > 0 && groups[groups.length - 1].id === group.id;
+}
+
+/**
+ * Whether to show a placeholder "Claude is thinking" bubble.
+ * True when loading and the last message is NOT an assistant message
+ * (i.e., Claude hasn't produced any output yet — no text, no tools).
+ */
+const showThinkingPlaceholder = computed(() => {
+  if (!isLoading.value || messages.value.length === 0) return false;
+  const last = messages.value[messages.value.length - 1];
+  return last.role !== 'assistant';
+});
 
 const listRef = ref<HTMLDivElement | null>(null);
 
@@ -205,7 +228,7 @@ onUnmounted(() => {
               {{ formatTime(group.messages[0].timestamp) }}
             </span>
             <Spinner
-              v-if="isTurnStreaming(group)"
+              v-if="showTurnSpinner(group)"
               size="sm"
               class="ml-2 text-primary-500"
             />
@@ -224,6 +247,25 @@ onUnmounted(() => {
           </div>
         </div>
       </template>
+
+      <!-- Thinking placeholder: shown when loading but no assistant output yet -->
+      <div
+        v-if="showThinkingPlaceholder"
+        class="rounded-lg animate-fade-in message-bubble message-assistant"
+      >
+        <div class="flex items-center gap-2">
+          <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200">
+            C
+          </div>
+          <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
+            Claude
+          </span>
+          <Spinner
+            size="sm"
+            class="ml-2 text-primary-500"
+          />
+        </div>
+      </div>
     </div>
   </div>
 </template>
