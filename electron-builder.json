@@ -19,7 +19,7 @@
     "guid": "5b2b6917-e80e-512b-a356-aaa04d83de67",
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
-    "createDesktopShortcut": true,
+    "createDesktopShortcut": false,
     "createStartMenuShortcut": true,
     "shortcutName": "Philibert",
     "artifactName": "${productName}-Setup-${version}.${ext}",
