@@ -35,9 +35,21 @@
 ; inside the default finish-page branch. Because we define customFinishPage,
 ; that branch is skipped, so we must declare the function ourselves. The
 ; StartApp *macro* (common.nsh:123) carries the actual launch logic.
-Function StartApp
-  !insertmacro StartApp
-FunctionEnd
+;
+; We define it through the customHeader hook because electron-builder includes
+; this file via sharedHeader, which is processed BEFORE installer.nsi loads
+; common.nsh — so `!insertmacro StartApp` at top-level fails with
+; "macro not found". customHeader is inserted by installer.nsi after both
+; common.nsh and the $launchLink Var declaration, so both are available.
+; Skipped during the uninstaller pass (BUILD_UNINSTALLER) where $launchLink
+; is not declared and the function is unused.
+!macro customHeader
+  !ifndef BUILD_UNINSTALLER
+    Function StartApp
+      !insertmacro StartApp
+    FunctionEnd
+  !endif
+!macroend
 
 Function finishPageCreateDesktopShortcut
   ${If} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
