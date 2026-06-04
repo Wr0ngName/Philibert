@@ -33,8 +33,7 @@
 
 ; electron-builder's assistedInstaller.nsh only declares `Function StartApp`
 ; inside the default finish-page branch. Because we define customFinishPage,
-; that branch is skipped, so we must declare the function ourselves. The
-; StartApp *macro* (common.nsh:123) carries the actual launch logic.
+; that branch is skipped, so we must declare the function ourselves.
 ;
 ; We define our installer-side Functions through the customHeader hook because
 ; electron-builder includes this file via sharedHeader, which is processed
@@ -47,10 +46,21 @@
 ; $launchLink Var declaration, so all symbols are available. Skipped during
 ; the uninstaller pass (BUILD_UNINSTALLER) where these symbols/vars are not
 ; declared and these installer-only functions are unused.
+;
+; StartApp body is inlined (using $1 as scratch) rather than calling
+; `!insertmacro StartApp` because that macro declares `Var /GLOBAL startAppArgs`,
+; and installSection.nsh:108 already inserts it via doStartApp — a second
+; expansion would fail with "variable already declared". This mirrors what
+; assistedInstaller.nsh:51-58 does for its own default StartApp function.
 !macro customHeader
   !ifndef BUILD_UNINSTALLER
     Function StartApp
-      !insertmacro StartApp
+      ${if} ${isUpdated}
+        StrCpy $1 "--updated"
+      ${else}
+        StrCpy $1 ""
+      ${endif}
+      ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
     FunctionEnd
 
     Function finishPageCreateDesktopShortcut
