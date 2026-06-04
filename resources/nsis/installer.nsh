@@ -36,29 +36,33 @@
 ; that branch is skipped, so we must declare the function ourselves. The
 ; StartApp *macro* (common.nsh:123) carries the actual launch logic.
 ;
-; We define it through the customHeader hook because electron-builder includes
-; this file via sharedHeader, which is processed BEFORE installer.nsi loads
-; common.nsh — so `!insertmacro StartApp` at top-level fails with
-; "macro not found". customHeader is inserted by installer.nsi after both
-; common.nsh and the $launchLink Var declaration, so both are available.
-; Skipped during the uninstaller pass (BUILD_UNINSTALLER) where $launchLink
-; is not declared and the function is unused.
+; We define our installer-side Functions through the customHeader hook because
+; electron-builder includes this file via sharedHeader, which is processed
+; BEFORE installer.nsi loads common.nsh. Any reference to common.nsh-defined
+; symbols (StartApp macro, APP_EXECUTABLE_FILENAME, APP_DESCRIPTION, APP_ID,
+; ...) at script-top therefore fails with "macro not found" or "unknown
+; variable/constant" warnings (treated as errors).
+;
+; customHeader is inserted by installer.nsi after both common.nsh and the
+; $launchLink Var declaration, so all symbols are available. Skipped during
+; the uninstaller pass (BUILD_UNINSTALLER) where these symbols/vars are not
+; declared and these installer-only functions are unused.
 !macro customHeader
   !ifndef BUILD_UNINSTALLER
     Function StartApp
       !insertmacro StartApp
     FunctionEnd
+
+    Function finishPageCreateDesktopShortcut
+      ${If} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+        CreateShortCut "$newDesktopLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" 0 "" "" "${APP_DESCRIPTION}"
+        ClearErrors
+        WinShell::SetLnkAUMI "$newDesktopLink" "${APP_ID}"
+        System::Call 'Shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
+      ${EndIf}
+    FunctionEnd
   !endif
 !macroend
-
-Function finishPageCreateDesktopShortcut
-  ${If} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
-    CreateShortCut "$newDesktopLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" 0 "" "" "${APP_DESCRIPTION}"
-    ClearErrors
-    WinShell::SetLnkAUMI "$newDesktopLink" "${APP_ID}"
-    System::Call 'Shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
-  ${EndIf}
-FunctionEnd
 
 !macro customFinishPage
   ; "Run Philibert" checkbox — same StartApp function the default finish page
