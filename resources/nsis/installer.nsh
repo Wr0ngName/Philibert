@@ -8,9 +8,11 @@
 ;      so the second progress-bar reset (Git Bash unpacking) does not feel
 ;      unexplained.
 ;   2. Customizes the Finish page so the desktop shortcut becomes an opt-in
-;      checkbox (defaulted on) rather than being silently force-created.
-;   3. Re-enables DetailPrint output and logs the Git Bash extraction phase
-;      so users who open "Show details" see meaningful status messages.
+;      checkbox (defaulted OFF) rather than being silently force-created.
+;   3. Forces the details pane open by default (ShowInstDetails show) and
+;      re-enables DetailPrint output, so users see meaningful status messages
+;      during the Git Bash extraction phase without having to click
+;      "Show details".
 ;
 ; The desktop shortcut is created manually here because electron-builder.json
 ; sets `createDesktopShortcut: false`, which defines DO_NOT_CREATE_DESKTOP_SHORTCUT
@@ -53,6 +55,13 @@
 ; expansion would fail with "variable already declared". This mirrors what
 ; assistedInstaller.nsh:51-58 does for its own default StartApp function.
 !macro customHeader
+  ; Auto-expand the details pane so users see DetailPrint messages (Git Bash
+  ; extraction progress, finalization step) without having to click
+  ; "Show details". Compiler directive — must be at script level, which is
+  ; where customHeader gets inserted.
+  ShowInstDetails show
+  ShowUnInstDetails show
+
   !ifndef BUILD_UNINSTALLER
     Function StartApp
       ${if} ${isUpdated}
@@ -86,9 +95,10 @@
   ; Repurpose the SHOWREADME slot as a "Create a desktop shortcut" checkbox.
   ; Defining MUI_FINISHPAGE_SHOWREADME (even as empty) makes MUI render the
   ; checkbox; supplying _FUNCTION makes it call our handler instead of
-  ; ShellExec'ing a readme file. The checkbox defaults to checked because we
-  ; do not define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED.
+  ; ShellExec'ing a readme file. MUI_FINISHPAGE_SHOWREADME_NOTCHECKED makes
+  ; the checkbox default to unchecked so users opt IN to a desktop shortcut.
   !define MUI_FINISHPAGE_SHOWREADME ""
+  !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
   !define MUI_FINISHPAGE_SHOWREADME_TEXT "Create a desktop shortcut for ${PRODUCT_NAME}"
   !define MUI_FINISHPAGE_SHOWREADME_FUNCTION "finishPageCreateDesktopShortcut"
 
