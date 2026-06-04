@@ -4,15 +4,16 @@
 ; assistedInstaller.nsh (customWelcomePage, customFinishPage, customInstall).
 ;
 ; What it does:
-;   1. Adds a Welcome page that explains the two extraction phases up-front,
-;      so the second progress-bar reset (Git Bash unpacking) does not feel
-;      unexplained.
+;   1. Adds a Welcome page so users see what they're about to install.
 ;   2. Customizes the Finish page so the desktop shortcut becomes an opt-in
 ;      checkbox (defaulted OFF) rather than being silently force-created.
-;   3. Forces the details pane open by default (ShowInstDetails show) and
-;      re-enables DetailPrint output, so users see meaningful status messages
-;      during the Git Bash extraction phase without having to click
-;      "Show details".
+;   3. Restores the standard "Show details" button on the install/uninstall
+;      pages (electron-builder hides it by default).
+;   4. Labels the status bar above the install progress bar with the current
+;      phase ("Installing application files...", then "Extracting bundled
+;      Git Bash environment...", then "Finalizing installation...") so the
+;      user knows what each progress reset corresponds to without having to
+;      open the details panel.
 ;
 ; The desktop shortcut is created manually here because electron-builder.json
 ; sets `createDesktopShortcut: false`, which defines DO_NOT_CREATE_DESKTOP_SHORTCUT
@@ -25,8 +26,18 @@
 ; ---------------------------------------------------------------------------
 !macro customWelcomePage
   !define MUI_WELCOMEPAGE_TITLE "Welcome to the ${PRODUCT_NAME} Setup Wizard"
-  !define MUI_WELCOMEPAGE_TEXT "This wizard will install ${PRODUCT_NAME} ${VERSION} on your computer.$\r$\n$\r$\n${PRODUCT_NAME} bundles a portable Git Bash environment alongside the application, so the installer runs two extraction phases: first the app files, then the Git Bash bundle. The second phase can take a minute the first time.$\r$\n$\r$\nIt is recommended that you close other applications before continuing. Click Next to continue."
+  !define MUI_WELCOMEPAGE_TEXT "This wizard will install ${PRODUCT_NAME} ${VERSION} on your computer.$\r$\n$\r$\nIt is recommended that you close other applications before continuing. Click Next to continue."
   !insertmacro MUI_PAGE_WELCOME
+
+  ; Hook the next MUI page (the install/progress page) with a SHOW callback
+  ; so we can label what is happening on the status bar. SHOW runs after the
+  ; page is created but before installSection.nsh starts running file
+  ; operations — perfect spot to set a status text that survives
+  ; installSection.nsh's `SetDetailsPrint none`. The label persists through
+  ; the multiple progress-bar resets inside installApplicationFiles (which
+  ; runs File extraction, then Nsis7z::Extract, then CopyFiles, with no hook
+  ; between them). customInstall later swaps the label for the Git Bash phase.
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW instFilesPageShow
 !macroend
 
 ; ---------------------------------------------------------------------------
@@ -55,12 +66,14 @@
 ; expansion would fail with "variable already declared". This mirrors what
 ; assistedInstaller.nsh:51-58 does for its own default StartApp function.
 !macro customHeader
-  ; Auto-expand the details pane so users see DetailPrint messages (Git Bash
-  ; extraction progress, finalization step) without having to click
-  ; "Show details". Compiler directive — must be at script level, which is
-  ; where customHeader gets inserted.
-  ShowInstDetails show
-  ShowUnInstDetails show
+  ; electron-builder's common.nsh:5 sets `ShowInstDetails nevershow`, which
+  ; removes the "Show details" button entirely. Override to `hide` so the
+  ; button is visible but the details pane stays collapsed by default —
+  ; users can click to expand if they want to see what's happening.
+  ; Same for the uninstaller (common.nsh:7 sets ShowUninstDetails nevershow
+  ; when BUILD_UNINSTALLER is defined).
+  ShowInstDetails hide
+  ShowUninstDetails hide
 
   !ifndef BUILD_UNINSTALLER
     Function StartApp
@@ -70,6 +83,16 @@
         StrCpy $1 ""
       ${endif}
       ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
+    FunctionEnd
+
+    ; Status-bar label for the install/progress page. Runs once when the page
+    ; is shown, before the install Section starts. SetDetailsPrint=textonly
+    ; routes our DetailPrint to the status bar (label above progress bar);
+    ; installSection.nsh:6 then sets none, which suppresses further prints
+    ; but does not clear the text we already wrote.
+    Function instFilesPageShow
+      SetDetailsPrint textonly
+      DetailPrint "Installing application files..."
     FunctionEnd
 
     Function finishPageCreateDesktopShortcut
@@ -133,13 +156,17 @@
 ; Custom install step (Git Bash extraction + detail logging)
 ; ---------------------------------------------------------------------------
 !macro customInstall
-  ; electron-builder's installSection.nsh sets `SetDetailsPrint none` for
-  ; non-silent installs, which silences the details pane entirely. Re-enable
-  ; it so the messages below are visible when the user opens "Show details".
+  ; Swap the status-bar label so the user sees we have moved past the
+  ; application-files stage. textonly routes the next DetailPrint to the
+  ; status bar above the progress bar.
+  SetDetailsPrint textonly
+  DetailPrint "Extracting bundled Git Bash environment..."
+
+  ; Switch to both so the tar output (piped via nsExec::ExecToLog) shows in
+  ; the "Show details" log too — useful if the user expands the panel.
   SetDetailsPrint both
 
   ${If} ${FileExists} "$INSTDIR\resources\git-bash.tar.bz2"
-    DetailPrint "Extracting bundled Git Bash environment (this can take a minute)..."
     CreateDirectory "$INSTDIR\resources\git-bash"
     nsExec::ExecToLog 'tar -xjf "$INSTDIR\resources\git-bash.tar.bz2" -C "$INSTDIR\resources\git-bash" --exclude="dev" --exclude="etc/mtab"'
     Pop $0
@@ -154,5 +181,6 @@
     ${EndIf}
   ${EndIf}
 
+  SetDetailsPrint textonly
   DetailPrint "Finalizing installation..."
 !macroend
