@@ -1,7 +1,8 @@
 ; Custom NSIS macros for the Philibert installer.
 ;
 ; This file plugs into the macro hooks exposed by electron-builder's
-; assistedInstaller.nsh (customWelcomePage, customFinishPage, customInstall).
+; assistedInstaller.nsh (customWelcomePage, customPageAfterChangeDir,
+; customFinishPage, customInstall).
 ;
 ; What it does:
 ;   1. Adds a Welcome page so users see what they're about to install.
@@ -12,13 +13,24 @@
 ;   4. Drives the install page header ("Step X of 3 — ...") so
 ;      non-technical users always see what the installer is doing, even
 ;      while Nsis7z::Extract and CopyFiles repaint the status bar above
-;      the progress bar. Step 1 is set at COMPILE time via
-;      MUI_PAGE_HEADER_TEXT/_SUBTEXT (overriding MUI's "Installing /
-;      Please wait..." defaults before MUI_PAGE_INSTFILES is processed),
-;      because MUI_HEADER_TEXT from a custom PAGE_SHOW callback is run
-;      BEFORE MUI sets the page defaults and gets clobbered. Steps 2 and
-;      3 use MUI_HEADER_TEXT from inside the install Section (which runs
-;      AFTER MUI's PAGE_SHOW, so our values win).
+;      the progress bar.
+;
+;      Step 1 is set at COMPILE time via MUI_PAGE_HEADER_TEXT/_SUBTEXT,
+;      defined in customPageAfterChangeDir — NOT customWelcomePage. These
+;      defines are scoped to the next MUI_PAGE_* macro NSIS encounters
+;      (see Pages.nsh:60-75 in the MUI2 source: MUI_HEADER_TEXT_PAGE
+;      consumes them and !unsets them). assistedInstaller.nsh processes
+;      MUI_PAGE_DIRECTORY at line 26 before MUI_PAGE_INSTFILES at line 46,
+;      so defines set in customWelcomePage would be eaten by Directory.
+;      customPageAfterChangeDir (line 43) is the only hook between them.
+;
+;      The same scoping rule applies to MUI_PAGE_CUSTOMFUNCTION_SHOW —
+;      it must be set in customPageAfterChangeDir or it ends up bound to
+;      the Directory page's SHOW handler instead of InstFiles's.
+;
+;      Steps 2 and 3 use runtime MUI_HEADER_TEXT from inside the install
+;      Section (customInstall hook); the install page is already showing
+;      by then, so SendMessage to $mui.Header.Text takes effect immediately.
 ;
 ; The desktop shortcut is created manually here because electron-builder.json
 ; sets `createDesktopShortcut: false`, which defines DO_NOT_CREATE_DESKTOP_SHORTCUT
@@ -45,30 +57,29 @@
   !define MUI_WELCOMEPAGE_TEXT "This wizard will install ${PRODUCT_NAME} ${VERSION} on your computer.$\r$\n$\r$\nIt is recommended that you close other applications before continuing. Click Next to continue."
   !insertmacro MUI_PAGE_WELCOME
 
-  ; Override the install (instfiles) page header at COMPILE TIME so the
-  ; user sees "Step 1 of 3 — ..." from the moment the page appears.
-  ; MUI_PAGE_HEADER_TEXT / MUI_PAGE_HEADER_SUBTEXT apply to the next
-  ; MUI_PAGE_* declaration (MUI_PAGE_INSTFILES in assistedInstaller.nsh:46)
-  ; and are !undef'd by MUI after use, so they do not bleed into the
-  ; Finish page that follows.
-  ;
-  ; This compile-time override is necessary because MUI sets its default
-  ; header text ("Installing" / "Please wait while ${MUI_PRODUCT} is being
-  ; installed") inside the install page's internal SHOW handler, which
-  ; runs AFTER any custom MUI_PAGE_CUSTOMFUNCTION_SHOW we wire up — so a
-  ; runtime MUI_HEADER_TEXT call from instFilesPageShow gets clobbered
-  ; immediately. Steps 2 and 3 do use the runtime MUI_HEADER_TEXT in
-  ; customInstall because that runs inside the install Section, AFTER
-  ; MUI's PAGE_SHOW, so our header value wins.
+  ; NOTE: Do NOT set MUI_PAGE_HEADER_TEXT/_SUBTEXT or MUI_PAGE_CUSTOMFUNCTION_SHOW
+  ; here — they would be consumed by MUI_PAGE_DIRECTORY (assistedInstaller.nsh:26),
+  ; not by MUI_PAGE_INSTFILES. They are set in customPageAfterChangeDir below.
+!macroend
+
+; ---------------------------------------------------------------------------
+; Hook right before MUI_PAGE_INSTFILES — wire the install page header and
+; SHOW callback here so they actually reach MUI_PAGE_INSTFILES.
+; ---------------------------------------------------------------------------
+; assistedInstaller.nsh:43 inserts this macro immediately before
+; MUI_PAGE_INSTFILES at line 46. Nothing else sits between, so any MUI
+; per-page defines we set here are consumed by MUI_PAGE_INSTFILES exactly
+; once and then !unset by MUI.
+!macro customPageAfterChangeDir
+  ; Step 1 page header. MUI_PAGE_INSTFILES → MUI_FUNCTION_INSTFILESPAGE → PRE
+  ; → MUI_HEADER_TEXT_PAGE picks these up (Pages.nsh:60-75 of MUI2 source).
   !define MUI_PAGE_HEADER_TEXT "${STEP1_TITLE}"
   !define MUI_PAGE_HEADER_SUBTEXT "${STEP1_SUBTITLE}"
 
-  ; SHOW callback is still useful for seeding the details listbox (via
-  ; DetailPrint with `both` before installSection.nsh:6 sets
-  ; SetDetailsPrint=none) and the status bar above the progress bar (the
-  ; latter will get clobbered by file-extraction output during the
-  ; section, but the page header above stays intact thanks to the
-  ; compile-time defines above).
+  ; SHOW callback fires after MUI's PRE (which already set the Step 1
+  ; header via the defines above) and after MUI's SHOW captured dialog
+  ; handles. Used here only to seed the details listbox — the header
+  ; itself is already set, so we don't re-set it at runtime.
   !define MUI_PAGE_CUSTOMFUNCTION_SHOW instFilesPageShow
 !macroend
 
@@ -117,14 +128,15 @@
       ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
     FunctionEnd
 
-    ; Step 1 setup. Runs once when the install page is shown, BEFORE the
-    ; install Section starts. The page header is already set via the
-    ; compile-time MUI_PAGE_HEADER_TEXT/_SUBTEXT defines in
-    ; customWelcomePage; here we only seed the details listbox (so the
-    ; "Show details" panel is not blank) and the status bar above the
-    ; progress bar (which will get repainted by file-extraction output
-    ; once the section starts running, but at least shows something
-    ; until then).
+    ; InstFiles page SHOW callback. Wired up via MUI_PAGE_CUSTOMFUNCTION_SHOW
+    ; in customPageAfterChangeDir. By the time we run, MUI's PRE has already
+    ; set the page header to "Step 1 of 3 — ..." (from the compile-time
+    ; MUI_PAGE_HEADER_TEXT/_SUBTEXT defines), and MUI's SHOW has captured
+    ; dialog handles. We seed the details listbox (with `both`) so the
+    ; "Show details" panel isn't blank when expanded, plus a textonly print
+    ; for the status bar above the progress bar (which file-extraction output
+    ; will then repaint — that's fine, the persistent page header is the
+    ; primary indicator).
     Function instFilesPageShow
       SetDetailsPrint both
       DetailPrint "${STEP1_TITLE}"
