@@ -398,6 +398,11 @@ create:release:
       TAG=${CI_COMMIT_TAG}
       echo "Creating release for ${TAG}"
 
+      # Job-local path so concurrent release jobs from other projects on the
+      # same shell-executor runner can't clobber each other's description file
+      # (the previous /tmp/release_description.md was a shared race window).
+      RELEASE_DESC="${CI_PROJECT_DIR}/release_description.md"
+
       # Load URLs from publish:packages artifact
       source release-info/urls.env
 
@@ -410,7 +415,7 @@ create:release:
       fi
 
       # Create description file with actual URLs
-      cat > /tmp/release_description.md << DESCEOF
+      cat > "${RELEASE_DESC}" << DESCEOF
       ## Philibert ${TAG}
       ${RC_NOTICE}
       ### Downloads
@@ -434,13 +439,13 @@ create:release:
       *Built automatically by GitLab CI/CD*
       DESCEOF
 
-      cat /tmp/release_description.md
+      cat "${RELEASE_DESC}"
 
       docker run --rm \
         -e CI_JOB_TOKEN \
         -e CI_SERVER_URL \
         -e CI_PROJECT_ID \
-        -v /tmp/release_description.md:/work/description.md:ro \
+        -v "${RELEASE_DESC}":/work/description.md:ro \
         -w /work \
         registry.gitlab.com/gitlab-org/release-cli:latest release-cli create \
           --name "Philibert ${TAG}" \
