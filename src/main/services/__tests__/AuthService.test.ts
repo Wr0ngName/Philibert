@@ -515,6 +515,27 @@ describe('AuthService', () => {
       expect(result.token).not.toContain('Store');
     });
 
+    it('should preserve leading "o" when CLI emits stray ESC before token (v2.1.150 regression)', async () => {
+      // CLI v2.1.150 prints a stray \x1b right before the OAuth token line.
+      // A greedy /\x1b./g strip ate the 'o' of `oat01-`, yielding `sk-ant-at01-…`
+      // which the server then rejected with 401 "Invalid bearer token".
+      const completePromise = service.completeOAuthFlow('testcode12');
+
+      await vi.advanceTimersByTimeAsync(200);
+
+      const fullToken = 'sk-ant-oat01-' + 'X'.repeat(95);
+      mockPty.emitData(`Your OAuth token:\n\x1b${fullToken}\nStore this token securely\n`);
+
+      await vi.advanceTimersByTimeAsync(600);
+
+      const result = await completePromise;
+
+      expect(result.success).toBe(true);
+      expect(result.token).toBe(fullToken);
+      expect(result.token?.startsWith('sk-ant-oat01-')).toBe(true);
+      expect(result.token?.length).toBe(fullToken.length);
+    });
+
     it('should return error when no pending flow', async () => {
       service.cleanupOAuthFlow();
 

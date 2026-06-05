@@ -19,8 +19,18 @@ const ANSI_PATTERNS = {
   OSC: /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g,
   /** DCS, SOS, PM, APC sequences */
   CONTROL: /\x1b[PX^_][^\x1b]*\x1b\\/g,
-  /** Other single-character escapes */
-  SINGLE: /\x1b./g,
+  /**
+   * Lone/stray ESC bytes that aren't part of a structured sequence above.
+   *
+   * IMPORTANT: strips only the ESC byte itself, never the following byte.
+   * Standard 2-byte escapes (e.g. \x1bD IND, \x1bo LS3) have alphanumeric
+   * finals that collide with data — the Claude Code CLI v2.1.150 emits a
+   * stray \x1b immediately before OAuth tokens, and a greedy `/\x1b./g`
+   * would eat the leading 'o' of the `oat01-` prefix, corrupting the token.
+   * Leaving an unrecognized 2-byte escape's final byte in the output is
+   * cosmetically harmless; eating a data byte is catastrophic.
+   */
+  LONE_ESC: /\x1b/g,
   /** Backspace characters used by spinners — a char followed by \b overwrites it */
   BACKSPACE_OVERWRITE: /[^\n\x08]\x08/g,
   /** Any remaining standalone backspace characters */
@@ -55,8 +65,8 @@ export function stripAnsi(str: string): string {
   clean = clean.replace(ANSI_PATTERNS.OSC, '');
   // DCS, SOS, PM, APC
   clean = clean.replace(ANSI_PATTERNS.CONTROL, '');
-  // Other single-char escapes
-  clean = clean.replace(ANSI_PATTERNS.SINGLE, '');
+  // Lone ESC bytes (strips ESC only, never the following data byte)
+  clean = clean.replace(ANSI_PATTERNS.LONE_ESC, '');
   // Backspace overwrites (spinner animations: char + \b = erase) — loop until stable
   let prev;
   do {
@@ -74,11 +84,12 @@ export function stripAnsi(str: string): string {
  * @returns true if the string contains ANSI codes
  */
 export function hasAnsi(str: string): boolean {
+  // Create fresh non-global copies to avoid lastIndex state leaking across calls
   return (
-    ANSI_PATTERNS.CSI.test(str) ||
-    ANSI_PATTERNS.OSC.test(str) ||
-    ANSI_PATTERNS.CONTROL.test(str) ||
-    ANSI_PATTERNS.SINGLE.test(str)
+    /\x1b\[[0-9;?]*[a-zA-Z]/.test(str) ||
+    /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.test(str) ||
+    /\x1b[PX^_][^\x1b]*\x1b\\/.test(str) ||
+    /\x1b/.test(str)
   );
 }
 
