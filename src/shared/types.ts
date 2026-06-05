@@ -53,6 +53,10 @@ export interface ToolUseInfo {
   input?: Record<string, unknown>;
   /** Path to temp file containing tool output (lazy-loaded on click) */
   outputFile?: string;
+  /** SDK tool_use ID of the parent Agent/Task tool that spawned this sub-agent.
+   *  Set on tool_use messages emitted from inside a sub-agent so the renderer
+   *  can group them under the parent agent invocation. */
+  parentToolUseId?: string;
 }
 
 /** Data emitted for every tool_use block in assistant messages */
@@ -61,6 +65,8 @@ export interface ToolCaptureData {
   toolName: string;
   input: Record<string, unknown>;
   description: string;
+  /** SDK parent_tool_use_id — present on tool_use blocks emitted from sub-agents */
+  parentToolUseId?: string;
 }
 
 /** Data emitted when a tool result is captured and written to disk */

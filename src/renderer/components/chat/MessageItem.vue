@@ -24,15 +24,22 @@ interface Props {
   message: ChatMessage;
   /** When true, renders only the inner content (no bubble/header) for use inside a turn container */
   grouped?: boolean;
+  /** For tool-use messages: number of sub-agent actions this tool spawned (transitive) */
+  childCount?: number;
+  /** For tool-use messages: whether the sub-agent group is expanded */
+  isExpanded?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   grouped: false,
+  childCount: 0,
+  isExpanded: false,
 });
 
 const emit = defineEmits<{
   (e: 'open-task-detail', taskId: string): void;
   (e: 'open-tool-detail', toolUseBlockId: string): void;
+  (e: 'toggle-agent-expand', toolUseId: string): void;
 }>();
 
 const isUser = computed(() => props.message.role === 'user');
@@ -64,7 +71,10 @@ const renderedContent = computed(() =>
   <ToolUseMessage
     v-else-if="message.toolUse"
     :tool-use="message.toolUse"
+    :child-count="props.childCount"
+    :is-expanded="props.isExpanded"
     @open-detail="emit('open-tool-detail', $event)"
+    @toggle-expand="emit('toggle-agent-expand', $event)"
   />
 
   <!-- Inline background task indicator -->

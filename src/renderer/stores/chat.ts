@@ -486,6 +486,7 @@ export const useChatStore = defineStore('chat', () => {
         status: 'approved',
         toolUseBlockId: capture.toolUseBlockId,
         input: capture.input,
+        ...(capture.parentToolUseId && { parentToolUseId: capture.parentToolUseId }),
       },
     };
     addMessage(message);

@@ -36,11 +36,97 @@ interface MessageGroup {
   messages: ChatMessage[];
 }
 
+interface VisibleItem {
+  msg: ChatMessage;
+  depth: number;
+  childCount: number;
+  isExpanded: boolean;
+}
+
+// Tracks which sub-agent groups are expanded, keyed by parent tool_use block ID.
+// Collapsed by default — sub-agent activity hides behind a "N actions ▸" pill.
+const expandedAgents = ref<Set<string>>(new Set());
+
+function toggleAgentExpand(toolUseId: string): void {
+  const next = new Set(expandedAgents.value);
+  if (next.has(toolUseId)) {
+    next.delete(toolUseId);
+  } else {
+    next.add(toolUseId);
+  }
+  expandedAgents.value = next;
+}
+
+// Index: parent tool_use ID → direct child messages
+const childrenByParent = computed((): Map<string, ChatMessage[]> => {
+  const map = new Map<string, ChatMessage[]>();
+  for (const m of messages.value) {
+    const parent = m.toolUse?.parentToolUseId;
+    if (!parent) continue;
+    const list = map.get(parent);
+    if (list) {
+      list.push(m);
+    } else {
+      map.set(parent, [m]);
+    }
+  }
+  return map;
+});
+
+// Set of tool_use block IDs that exist in the conversation.
+// Used to detect orphan children (parent missing) so they surface at top level
+// instead of disappearing.
+const knownToolUseIds = computed((): Set<string> => {
+  const s = new Set<string>();
+  for (const m of messages.value) {
+    const id = m.toolUse?.toolUseBlockId;
+    if (id) s.add(id);
+  }
+  return s;
+});
+
+// Transitive count of tool_use descendants per parent tool_use ID.
+const descendantCount = computed((): Map<string, number> => {
+  const counts = new Map<string, number>();
+  const visiting = new Set<string>();
+  function count(id: string): number {
+    const cached = counts.get(id);
+    if (cached !== undefined) return cached;
+    if (visiting.has(id)) return 0; // cycle guard
+    visiting.add(id);
+    const kids = childrenByParent.value.get(id) ?? [];
+    let n = 0;
+    for (const k of kids) {
+      if (!k.toolUse) continue;
+      n++;
+      const kid = k.toolUse.toolUseBlockId;
+      if (kid) n += count(kid);
+    }
+    visiting.delete(id);
+    counts.set(id, n);
+    return n;
+  }
+  for (const m of messages.value) {
+    const id = m.toolUse?.toolUseBlockId;
+    if (id) count(id);
+  }
+  return counts;
+});
+
+// Messages whose parent is unknown (or absent) — these get rendered at top level.
+const topLevelMessages = computed((): ChatMessage[] => {
+  return messages.value.filter((m) => {
+    const parent = m.toolUse?.parentToolUseId;
+    if (!parent) return true;
+    return !knownToolUseIds.value.has(parent);
+  });
+});
+
 const messageGroups = computed((): MessageGroup[] => {
   const groups: MessageGroup[] = [];
   let currentTurn: ChatMessage[] = [];
 
-  for (const msg of messages.value) {
+  for (const msg of topLevelMessages.value) {
     if (msg.role === 'assistant') {
       currentTurn.push(msg);
     } else {
@@ -70,6 +156,26 @@ const messageGroups = computed((): MessageGroup[] => {
 
   return groups;
 });
+
+/**
+ * Flatten a turn's top-level messages into a visible list, recursively
+ * including the children of any expanded sub-agent.
+ */
+function getVisibleTurnItems(group: MessageGroup): VisibleItem[] {
+  const out: VisibleItem[] = [];
+  function walk(msg: ChatMessage, depth: number): void {
+    const id = msg.toolUse?.toolUseBlockId;
+    const childCount = id ? (descendantCount.value.get(id) ?? 0) : 0;
+    const isExpanded = id ? expandedAgents.value.has(id) : false;
+    out.push({ msg, depth, childCount, isExpanded });
+    if (id && isExpanded) {
+      const kids = childrenByParent.value.get(id) ?? [];
+      for (const k of kids) walk(k, depth + 1);
+    }
+  }
+  for (const m of group.messages) walk(m, 0);
+  return out;
+}
 
 function isTurnStreaming(group: MessageGroup): boolean {
   return group.messages.some(m => m.isStreaming);
@@ -266,14 +372,22 @@ onUnmounted(() => {
 
             <!-- Turn content -->
             <div class="assistant-turn-content">
-              <MessageItem
-                v-for="msg in group.messages"
-                :key="msg.id"
-                :message="msg"
-                grouped
-                @open-task-detail="emit('open-task-detail', $event)"
-                @open-tool-detail="emit('open-tool-detail', $event)"
-              />
+              <div
+                v-for="item in getVisibleTurnItems(group)"
+                :key="item.msg.id"
+                :class="item.depth > 0 ? 'nested-agent-item' : ''"
+                :style="item.depth > 0 ? { paddingLeft: (item.depth * 0.75) + 'rem' } : undefined"
+              >
+                <MessageItem
+                  :message="item.msg"
+                  :child-count="item.childCount"
+                  :is-expanded="item.isExpanded"
+                  grouped
+                  @open-task-detail="emit('open-task-detail', $event)"
+                  @open-tool-detail="emit('open-tool-detail', $event)"
+                  @toggle-agent-expand="toggleAgentExpand"
+                />
+              </div>
             </div>
           </div>
         </template>
@@ -328,6 +442,17 @@ onUnmounted(() => {
 
 .assistant-turn-content > * + * {
   margin-top: calc(var(--chat-line-height, 1.6) * 0.25rem);
+}
+
+/* Subtle left rail for sub-agent activity to anchor depth visually */
+.nested-agent-item {
+  border-left: 1px dashed rgb(163 163 163 / 0.35);
+  margin-left: 0.5rem;
+}
+
+:root.dark .nested-agent-item,
+.dark .nested-agent-item {
+  border-color: rgb(120 120 120 / 0.4);
 }
 
 .message-enter-active,

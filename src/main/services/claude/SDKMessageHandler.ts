@@ -178,12 +178,17 @@ export class SDKMessageHandler {
    */
   private async processAssistantMessage(message: SDKAssistantMessage): Promise<void> {
     const content = message.message.content;
+    // SDK sets parent_tool_use_id on messages emitted from a sub-agent.
+    // Forward it on tool captures so the renderer can group sub-agent activity
+    // under the Agent/Task tool that spawned them.
+    const parentToolUseId = message.parent_tool_use_id ?? undefined;
 
     // Log message content for debugging
     logger.debug('Assistant message content', {
       blockCount: content.length,
       blockTypes: content.map(b => b.type),
       isSlashCommandResponse: this.lastMessageWasSlashCommand,
+      parentToolUseId,
     });
 
     // Special handling for slash command responses
@@ -235,6 +240,7 @@ export class SDKMessageHandler {
           toolName: toolBlock.name,
           input,
           description: this.generateToolDescription(toolBlock.name, input),
+          ...(parentToolUseId && { parentToolUseId }),
         });
 
         if (input.run_in_background) {

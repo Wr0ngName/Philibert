@@ -16,13 +16,29 @@ import Spinner from '../shared/Spinner.vue';
 interface Props {
   /** Tool use information to display */
   toolUse: ToolUseInfo;
+  /** Number of sub-agent actions spawned by this tool (transitive). 0 means no sub-agent. */
+  childCount?: number;
+  /** Whether the sub-agent group is currently expanded */
+  isExpanded?: boolean;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+  childCount: 0,
+  isExpanded: false,
+});
 
 const emit = defineEmits<{
   (e: 'open-detail', id: string): void;
+  (e: 'toggle-expand', id: string): void;
 }>();
+
+const hasChildren = computed(() => props.childCount > 0);
+
+function handleToggleExpand(event: Event) {
+  event.stopPropagation();
+  const id = props.toolUse.toolUseBlockId || props.toolUse.actionId;
+  emit('toggle-expand', id);
+}
 
 const hasDetail = computed(() => !!props.toolUse.input || !!props.toolUse.outputFile);
 
@@ -100,6 +116,26 @@ const showErrorIcon = computed(() => props.toolUse.status === 'rejected' || prop
     <span class="text-xs text-surface-400 dark:text-surface-500 truncate">
       {{ toolUse.description }}
     </span>
+
+    <!-- Expand/collapse toggle for sub-agent activity -->
+    <button
+      v-if="hasChildren"
+      type="button"
+      :class="[
+        'flex items-center gap-1 px-1.5 py-0.5 rounded text-xs shrink-0 transition-colors',
+        'text-surface-500 dark:text-surface-400',
+        'hover:bg-surface-200 dark:hover:bg-surface-700',
+      ]"
+      :title="isExpanded ? 'Collapse sub-agent actions' : 'Expand sub-agent actions'"
+      @click="handleToggleExpand"
+      @keydown.enter.stop="handleToggleExpand"
+    >
+      <Icon
+        :name="isExpanded ? 'chevron-down' : 'chevron-right'"
+        size="xs"
+      />
+      <span>{{ childCount }} action{{ childCount === 1 ? '' : 's' }}</span>
+    </button>
 
     <!-- Status indicator -->
     <div class="ml-auto flex items-center gap-1 shrink-0">
