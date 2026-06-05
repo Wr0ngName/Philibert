@@ -72,16 +72,26 @@ pipeline (`.gitlab-ci.yml`):
 1. `publish:packages` — uploads all artifacts to the GitLab Package Registry
    at `${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/releases/<version>/`.
    Generates `latest.yml` (SHA-512 hash + metadata) for electron-updater.
-2. `publish:update-info` — publishes `latest.yml` as a permanent job artifact
-   for electron-updater auto-update discovery.
-3. `create:release` — creates a GitLab Release with download links for all
+2. `create:release` — creates a GitLab Release with download links for all
    platforms and variants.
 
+### Cleanup Stage
+- `cleanup:old` — deletes older releases and Package Registry versions,
+  keeping the most recent `KEEP_LAST_N` (default 3). Runs `scripts/cleanup-old-releases.sh`
+  inside an alpine container with `curl` + `jq`. Marked `allow_failure: true`
+  so a transient API issue won't fail the release pipeline.
+
 ### Auto-Updates
-- Windows auto-updates use electron-updater which fetches `latest.yml` from
-  the job artifacts API.
+- `src/main/services/UpdateService.ts` queries the **Releases API**
+  (`/api/v4/projects/.../releases`) to find the latest tag for the user's
+  update channel, then points electron-updater at the Package Registry
+  (`/api/v4/projects/.../packages/generic/releases/<version>/latest.yml`)
+  to download the installer.
 - Auto-updates always download the offline (full) installer.
 - RC releases (`v*-rc.*`) only reach users whose update channel is set to "rc".
+- Because the auto-updater reads from the Releases API and Package Registry
+  (not job artifacts), the `cleanup:old` job can safely prune both — as long
+  as at least one release survives, users can still update.
 
 ## Manual Builds
 

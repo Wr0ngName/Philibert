@@ -6,6 +6,7 @@ stages:
   - test
   - build
   - release
+  - cleanup
 
 variables:
   # Node.js version
@@ -357,34 +358,6 @@ publish:packages:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(-rc\.\d+)?$/
 
-# Publish update metadata for electron-updater via Job Artifacts API
-# This job creates artifacts that can be accessed via:
-# ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/jobs/artifacts/${CI_COMMIT_TAG}/raw/latest.yml?job=publish:update-info
-publish:update-info:
-  stage: release
-  tags:
-    - shell
-  needs:
-    - job: publish:packages
-      artifacts: true
-  script:
-    - |
-      echo "Publishing update info for electron-updater..."
-      cat release-info/latest.yml
-
-      # Create update directory structure for electron-updater
-      mkdir -p update-info
-      cp release-info/latest.yml update-info/latest.yml
-
-      echo "Update info published. Access via Job Artifacts API:"
-      echo "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/jobs/artifacts/${CI_COMMIT_TAG}/raw/update-info/latest.yml?job=publish:update-info"
-  artifacts:
-    paths:
-      - update-info/latest.yml
-    expire_in: never
-  rules:
-    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(-rc\.\d+)?$/
-
 # Create GitLab Release using release-cli
 create:release:
   stage: release
@@ -453,3 +426,38 @@ create:release:
           --description description.md
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(-rc\.\d+)?$/
+
+# =============================================================================
+# CLEANUP STAGE
+# =============================================================================
+
+# Delete older releases and Package Registry versions, keeping the last N.
+# Runs after a successful release pipeline so there is always at least one
+# release left to update to. The script is run inside an alpine container so
+# we don't depend on jq being installed on the shell runner.
+#
+# allow_failure: true — if cleanup fails (transient API, auth, ...), the
+# release itself is already done; we'd rather not fail the whole pipeline
+# red over a janitorial step. Watch the job log if the registry starts
+# growing again.
+cleanup:old:
+  stage: cleanup
+  tags:
+    - shell
+  needs:
+    - job: create:release
+  variables:
+    KEEP_LAST_N: "3"
+  script:
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR:/work:ro" \
+        -w /work \
+        -e CI_API_V4_URL \
+        -e CI_PROJECT_ID \
+        -e CI_JOB_TOKEN \
+        -e KEEP_LAST_N \
+        alpine:latest sh -c "apk add --no-cache --quiet curl jq >/dev/null && sh scripts/cleanup-old-releases.sh"
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(-rc\.\d+)?$/
+  allow_failure: true
