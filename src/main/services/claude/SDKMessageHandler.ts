@@ -506,6 +506,10 @@ export class SDKMessageHandler {
       // task_started fields
       task_type?: string;
       skip_transcript?: boolean;
+      // Present on task_started / task_notification / task_progress when the task
+      // was spawned by a tool_use (e.g. Task/Agent tool). Links the task back to
+      // its tool_use indicator so the renderer can dedupe.
+      tool_use_id?: string;
     };
 
     // Log ALL system messages at info level for debugging task flow
@@ -571,6 +575,7 @@ export class SDKMessageHandler {
     if (systemMsg.subtype === 'task_notification' && systemMsg.task_id) {
       logger.info('Task notification received', {
         taskId: systemMsg.task_id,
+        toolUseId: systemMsg.tool_use_id,
         status: systemMsg.status,
         description: systemMsg.description,
         summary: systemMsg.summary,
@@ -594,6 +599,7 @@ export class SDKMessageHandler {
         sessionId: systemMsg.session_id,
         error: systemMsg.error,
         uuid: systemMsg.uuid,
+        ...(systemMsg.tool_use_id && { toolUseId: systemMsg.tool_use_id }),
       });
     }
 
@@ -601,6 +607,7 @@ export class SDKMessageHandler {
     if (systemMsg.subtype === 'task_started' && systemMsg.task_id) {
       logger.info('Task started', {
         taskId: systemMsg.task_id,
+        toolUseId: systemMsg.tool_use_id,
         description: systemMsg.description,
         taskType: systemMsg.task_type,
         skipTranscript: systemMsg.skip_transcript,
@@ -610,6 +617,7 @@ export class SDKMessageHandler {
           taskId: systemMsg.task_id,
           status: 'running',
           description: systemMsg.description,
+          ...(systemMsg.tool_use_id && { toolUseId: systemMsg.tool_use_id }),
         });
       }
     }
@@ -618,6 +626,7 @@ export class SDKMessageHandler {
     if (systemMsg.subtype === 'task_progress' && systemMsg.task_id) {
       logger.debug('Task progress', {
         taskId: systemMsg.task_id,
+        toolUseId: systemMsg.tool_use_id,
         description: systemMsg.description,
         summary: systemMsg.summary,
         lastToolName: systemMsg.last_tool_name,
@@ -627,6 +636,7 @@ export class SDKMessageHandler {
         status: 'running',
         description: systemMsg.description,
         summary: systemMsg.summary,
+        ...(systemMsg.tool_use_id && { toolUseId: systemMsg.tool_use_id }),
       });
     }
 

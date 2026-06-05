@@ -490,6 +490,38 @@ export const useChatStore = defineStore('chat', () => {
       },
     };
     addMessage(message);
+
+    // Dedupe: if a backgroundTask inline message already exists for this
+    // tool_use (e.g. task_started arrived before the assistant message
+    // carrying the tool_use block), remove it — the tool_use indicator now
+    // represents that task in the chat.
+    removeBackgroundTaskMessageByToolUseId(capture.toolUseBlockId);
+  }
+
+  /**
+   * Remove an inline backgroundTask message whose underlying task is tied
+   * to the given tool_use ID. Background task still tracked in the Map.
+   */
+  function removeBackgroundTaskMessageByToolUseId(toolUseId: string): void {
+    const state = getCurrentState();
+    if (!state) return;
+
+    let linkedTaskId: string | null = null;
+    for (const [id, task] of state.backgroundTasks.entries()) {
+      if (task.toolUseId === toolUseId) {
+        linkedTaskId = id;
+        break;
+      }
+    }
+    if (!linkedTaskId) return;
+
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      const msg = messages.value[i];
+      if (msg.backgroundTask?.taskId === linkedTaskId) {
+        messages.value.splice(i, 1);
+        return;
+      }
+    }
   }
 
   /**
@@ -668,15 +700,34 @@ export const useChatStore = defineStore('chat', () => {
         outputFile: notification.outputFile,
         sessionId: notification.sessionId,
         error: notification.error,
+        ...(notification.toolUseId && { toolUseId: notification.toolUseId }),
       };
       if (notification.status !== 'running') {
         task.completedAt = Date.now();
       }
       state.backgroundTasks.set(notification.taskId, task);
 
-      // Insert inline chat message for new task
+      // Dedupe: a task spawned by a tool_use (Task/Agent) is already
+      // represented inline by its tool_use indicator. Only add an inline
+      // backgroundTask entry when there's no matching tool_use yet — or no
+      // tool_use link at all (true background commands).
+      if (notification.toolUseId && hasToolUseMessage(conversationId, notification.toolUseId)) {
+        return;
+      }
       addBackgroundTaskMessage(conversationId, task);
     }
+  }
+
+  /**
+   * Whether the message stream already contains a tool_use indicator with
+   * the given SDK tool_use block ID.
+   */
+  function hasToolUseMessage(conversationId: string, toolUseBlockId: string): boolean {
+    if (conversationId !== currentConversationId.value) return false;
+    for (const m of messages.value) {
+      if (m.toolUse?.toolUseBlockId === toolUseBlockId) return true;
+    }
+    return false;
   }
 
   /**

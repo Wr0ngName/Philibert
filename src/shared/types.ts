@@ -584,6 +584,10 @@ export interface BackgroundTask {
   sessionId?: string;
   /** Error message if task failed */
   error?: string;
+  /** SDK tool_use ID of the tool that spawned this task (e.g. the Task/Agent
+   *  tool). When set, the inline tool_use indicator already represents this
+   *  task in the chat — no separate inline backgroundTask entry is created. */
+  toolUseId?: string;
 }
 
 /**
@@ -608,6 +612,9 @@ export interface TaskNotification {
   uuid?: string;
   /** Previous task ID when remapping (e.g., tool_use ID → background task ID) */
   previousTaskId?: string;
+  /** SDK tool_use ID of the tool that spawned this task (e.g. Task/Agent).
+   *  Used by the renderer to deduplicate against the inline tool_use indicator. */
+  toolUseId?: string;
 }
 
 // Channel mode types
