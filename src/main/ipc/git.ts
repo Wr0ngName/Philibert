@@ -33,13 +33,19 @@ export function setupGitIPC(
   // Commit changes
   ipcMain.handle(
     IPC_CHANNELS.GIT_COMMIT,
-    async (_event, workingDir: string, message: string, stageAll: boolean) => {
+    async (
+      _event,
+      workingDir: string,
+      message: string,
+      stageAll: boolean,
+      expectedBranch?: string
+    ) => {
       try {
         ensureService(gitService, 'GitService');
         validateString(workingDir, 'Working directory');
         validateString(message, 'Commit message');
 
-        return await gitService.commit(workingDir, message, stageAll);
+        return await gitService.commit(workingDir, message, stageAll, expectedBranch);
       } catch (error) {
         logger.error('Failed to commit', { error, workingDir });
         throw new Error(formatErrorMessage('Failed to commit', error), { cause: error });
@@ -48,30 +54,36 @@ export function setupGitIPC(
   );
 
   // Pull from remote
-  ipcMain.handle(IPC_CHANNELS.GIT_PULL, async (_event, workingDir: string) => {
-    try {
-      ensureService(gitService, 'GitService');
-      validateString(workingDir, 'Working directory');
+  ipcMain.handle(
+    IPC_CHANNELS.GIT_PULL,
+    async (_event, workingDir: string, expectedBranch?: string) => {
+      try {
+        ensureService(gitService, 'GitService');
+        validateString(workingDir, 'Working directory');
 
-      return await gitService.pull(workingDir);
-    } catch (error) {
-      logger.error('Failed to pull', { error, workingDir });
-      throw new Error(formatErrorMessage('Failed to pull', error), { cause: error });
+        return await gitService.pull(workingDir, expectedBranch);
+      } catch (error) {
+        logger.error('Failed to pull', { error, workingDir });
+        throw new Error(formatErrorMessage('Failed to pull', error), { cause: error });
+      }
     }
-  });
+  );
 
   // Push to remote
-  ipcMain.handle(IPC_CHANNELS.GIT_PUSH, async (_event, workingDir: string) => {
-    try {
-      ensureService(gitService, 'GitService');
-      validateString(workingDir, 'Working directory');
+  ipcMain.handle(
+    IPC_CHANNELS.GIT_PUSH,
+    async (_event, workingDir: string, expectedBranch?: string) => {
+      try {
+        ensureService(gitService, 'GitService');
+        validateString(workingDir, 'Working directory');
 
-      return await gitService.push(workingDir);
-    } catch (error) {
-      logger.error('Failed to push', { error, workingDir });
-      throw new Error(formatErrorMessage('Failed to push', error), { cause: error });
+        return await gitService.push(workingDir, expectedBranch);
+      } catch (error) {
+        logger.error('Failed to push', { error, workingDir });
+        throw new Error(formatErrorMessage('Failed to push', error), { cause: error });
+      }
     }
-  });
+  );
 
   // Fetch from remote (background operation)
   ipcMain.handle(IPC_CHANNELS.GIT_FETCH, async (_event, workingDir: string) => {

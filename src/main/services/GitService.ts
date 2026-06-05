@@ -184,16 +184,50 @@ export class GitService {
   }
 
   /**
+   * Read HEAD's branch name. Returns null when HEAD is detached.
+   */
+  private async getCurrentBranch(cwd: string): Promise<string | null> {
+    try {
+      return await this.runGit(['symbolic-ref', '--short', 'HEAD'], cwd);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Backstop check that the renderer's expected branch still matches HEAD
+   * just before a destructive op (push/pull/commit). Closes the renderer-side
+   * time-of-check-to-time-of-use window between the UI's preflight and the
+   * IPC dispatch.
+   */
+  private async assertCurrentBranch(cwd: string, expected: string | undefined): Promise<void> {
+    if (expected === undefined) return;
+    const current = await this.getCurrentBranch(cwd);
+    if (current !== expected) {
+      throw new Error(
+        `Branch changed from "${expected}" to "${current ?? '(detached HEAD)'}" — operation aborted to avoid acting on the wrong branch.`
+      );
+    }
+  }
+
+  /**
    * Commit changes.
    * @param cwd Working directory
    * @param message Commit message
    * @param stageAll If true (default), stages all changes with `git add -A` first.
    *                 If false, commits only already-staged changes.
+   * @param expectedBranch If set, abort unless HEAD currently points at this branch.
    */
-  async commit(cwd: string, message: string, stageAll = true): Promise<string> {
+  async commit(
+    cwd: string,
+    message: string,
+    stageAll = true,
+    expectedBranch?: string
+  ): Promise<string> {
     if (!message.trim()) {
       throw new Error('Commit message must not be empty');
     }
+    await this.assertCurrentBranch(cwd, expectedBranch);
 
     if (stageAll) {
       await this.runGit(['add', '-A'], cwd);
@@ -205,18 +239,22 @@ export class GitService {
   }
 
   /**
-   * Pull from remote
+   * Pull from remote.
+   * @param expectedBranch If set, abort unless HEAD currently points at this branch.
    */
-  async pull(cwd: string): Promise<string> {
+  async pull(cwd: string, expectedBranch?: string): Promise<string> {
+    await this.assertCurrentBranch(cwd, expectedBranch);
     const output = await this.runGit(['pull'], cwd);
     logger.info('Git pull', { cwd });
     return output;
   }
 
   /**
-   * Push to remote
+   * Push to remote.
+   * @param expectedBranch If set, abort unless HEAD currently points at this branch.
    */
-  async push(cwd: string): Promise<string> {
+  async push(cwd: string, expectedBranch?: string): Promise<string> {
+    await this.assertCurrentBranch(cwd, expectedBranch);
     const output = await this.runGit(['push'], cwd);
     logger.info('Git push', { cwd });
     return output;

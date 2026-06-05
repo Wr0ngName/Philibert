@@ -204,14 +204,14 @@ const electronAPI: ElectronAPI = {
     status: (workingDir: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.GIT_STATUS, workingDir),
 
-    commit: (workingDir: string, message: string, stageAll: boolean) =>
-      ipcRenderer.invoke(IPC_CHANNELS.GIT_COMMIT, workingDir, message, stageAll),
+    commit: (workingDir: string, message: string, stageAll: boolean, expectedBranch?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.GIT_COMMIT, workingDir, message, stageAll, expectedBranch),
 
-    pull: (workingDir: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.GIT_PULL, workingDir),
+    pull: (workingDir: string, expectedBranch?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.GIT_PULL, workingDir, expectedBranch),
 
-    push: (workingDir: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.GIT_PUSH, workingDir),
+    push: (workingDir: string, expectedBranch?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.GIT_PUSH, workingDir, expectedBranch),
 
     fetch: (workingDir: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.GIT_FETCH, workingDir),

@@ -23,6 +23,11 @@ const { workingDirectory } = storeToRefs(settingsStore);
 const status = ref<GitStatus | null>(null);
 const isGitRepo = computed(() => status.value?.isGitRepo ?? false);
 
+// Monotonic epoch so a slow fetchStatus can't overwrite a newer status that
+// arrived in the meantime (either a more recent fetch or a push from main
+// via onStatusChanged). Bumped on every initiated read and on every event.
+let statusEpoch = 0;
+
 // Commit dropdown state
 const commitDropdownOpen = ref(false);
 const commitMessage = ref('');
@@ -41,6 +46,7 @@ const createBranchMode = ref(false);
 const createBranchName = ref('');
 const createBranchInputRef = ref<HTMLInputElement | null>(null);
 const loadingBranches = ref(false);
+const branchLoadError = ref('');
 const switchingBranch = ref<string | null>(null);
 const loadingCreateBranch = ref(false);
 
@@ -53,6 +59,18 @@ let errorTimer: ReturnType<typeof setTimeout> | null = null;
 
 // IPC cleanup
 let cleanupStatusListener: (() => void) | null = null;
+
+// Cross-disable: while any mutation is in flight, no new mutation should be
+// initiated. Prevents push during checkout, commit during pull, etc. — any of
+// which could otherwise leave the displayed branch out of sync with HEAD.
+const isMutating = computed(
+  () =>
+    loadingCommit.value ||
+    loadingPull.value ||
+    loadingPush.value ||
+    loadingCreateBranch.value ||
+    switchingBranch.value !== null
+);
 
 function showError(msg: string): void {
   errorMessage.value = msg;
@@ -67,13 +85,54 @@ async function fetchStatus(): Promise<void> {
     status.value = null;
     return;
   }
+  const myEpoch = ++statusEpoch;
   try {
     const result = await window.electron.git.status(workingDirectory.value);
+    if (myEpoch !== statusEpoch) return; // a newer status arrived; drop this one
     status.value = result;
   } catch (err) {
+    if (myEpoch !== statusEpoch) return;
     logger.warn('Failed to fetch git status', { error: err });
     status.value = null;
   }
+}
+
+/**
+ * Refetch status synchronously and verify the on-disk branch still matches
+ * what we're displaying. Updates the display to the fresh value either way.
+ * Returns true iff the displayed branch is consistent with HEAD so the caller
+ * can proceed. On mismatch (e.g. user switched branches in a terminal between
+ * status events), surfaces a toast and returns false so the operation is
+ * aborted — the user must click again with full knowledge of the new state.
+ */
+async function ensureBranchConsistent(): Promise<boolean> {
+  if (!workingDirectory.value) {
+    showError('No working directory set');
+    return false;
+  }
+  const before = status.value?.branch;
+  let fresh: GitStatus;
+  try {
+    fresh = await window.electron.git.status(workingDirectory.value);
+  } catch (err) {
+    showError(`Failed to verify git status: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+  // Apply the fresh read as the new displayed truth (bump epoch so any older
+  // in-flight fetch drops its result).
+  ++statusEpoch;
+  status.value = fresh.isGitRepo ? fresh : null;
+  if (!fresh.isGitRepo) {
+    showError('Working directory is no longer a git repository.');
+    return false;
+  }
+  if (before !== undefined && fresh.branch !== before) {
+    showError(
+      `Branch changed to "${fresh.branch}" since the UI last refreshed. Confirm and click again.`
+    );
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -94,11 +153,15 @@ async function backgroundFetch(): Promise<void> {
 async function loadBranches(): Promise<void> {
   if (!workingDirectory.value) return;
   loadingBranches.value = true;
+  branchLoadError.value = '';
   try {
     branches.value = await window.electron.git.listBranches(workingDirectory.value);
   } catch (err) {
     logger.warn('Failed to list branches', { error: err });
     branches.value = [];
+    // Surface explicitly — an empty list and a load failure mean very
+    // different things to a user about to switch branches.
+    branchLoadError.value = err instanceof Error ? err.message : String(err);
   } finally {
     loadingBranches.value = false;
   }
@@ -122,25 +185,33 @@ const filteredRemoteBranches = computed(() => {
 });
 
 async function doCommit(): Promise<void> {
-  if (!workingDirectory.value || !commitMessage.value.trim()) return;
+  if (!workingDirectory.value || !commitMessage.value.trim() || isMutating.value) return;
   if (commitOnNewBranch.value && !newBranchName.value.trim()) {
     showError('Enter a branch name or uncheck "Commit on a new branch"');
     return;
   }
   loadingCommit.value = true;
   try {
+    if (!(await ensureBranchConsistent())) return;
+    const branchAtClick = status.value?.branch ?? '';
     if (commitOnNewBranch.value) {
-      await window.electron.git.createBranch(
+      const newBranch = newBranchName.value.trim();
+      await window.electron.git.createBranch(workingDirectory.value, newBranch, true);
+      // After createBranch HEAD is the new branch; commit must run there.
+      await window.electron.git.commit(
         workingDirectory.value,
-        newBranchName.value.trim(),
-        true
+        commitMessage.value.trim(),
+        stageAll.value,
+        newBranch
+      );
+    } else {
+      await window.electron.git.commit(
+        workingDirectory.value,
+        commitMessage.value.trim(),
+        stageAll.value,
+        branchAtClick
       );
     }
-    await window.electron.git.commit(
-      workingDirectory.value,
-      commitMessage.value.trim(),
-      stageAll.value
-    );
     commitMessage.value = '';
     newBranchName.value = '';
     commitOnNewBranch.value = false;
@@ -148,39 +219,48 @@ async function doCommit(): Promise<void> {
     await fetchStatus();
   } catch (err) {
     showError(`Commit failed: ${err instanceof Error ? err.message : String(err)}`);
+    // Status may be out of sync after a partial failure (e.g. created branch
+    // but commit failed) — refresh so the displayed branch reflects reality.
+    await fetchStatus();
   } finally {
     loadingCommit.value = false;
   }
 }
 
 async function doPull(): Promise<void> {
-  if (!workingDirectory.value) return;
+  if (!workingDirectory.value || isMutating.value) return;
   loadingPull.value = true;
   try {
-    await window.electron.git.pull(workingDirectory.value);
+    if (!(await ensureBranchConsistent())) return;
+    const branchAtClick = status.value?.branch ?? '';
+    await window.electron.git.pull(workingDirectory.value, branchAtClick);
     await fetchStatus();
   } catch (err) {
     showError(`Pull failed: ${err instanceof Error ? err.message : String(err)}`);
+    await fetchStatus();
   } finally {
     loadingPull.value = false;
   }
 }
 
 async function doPush(): Promise<void> {
-  if (!workingDirectory.value) return;
+  if (!workingDirectory.value || isMutating.value) return;
   loadingPush.value = true;
   try {
-    await window.electron.git.push(workingDirectory.value);
+    if (!(await ensureBranchConsistent())) return;
+    const branchAtClick = status.value?.branch ?? '';
+    await window.electron.git.push(workingDirectory.value, branchAtClick);
     await fetchStatus();
   } catch (err) {
     showError(`Push failed: ${err instanceof Error ? err.message : String(err)}`);
+    await fetchStatus();
   } finally {
     loadingPush.value = false;
   }
 }
 
 async function doCheckout(branchName: string): Promise<void> {
-  if (!workingDirectory.value || switchingBranch.value) return;
+  if (!workingDirectory.value || isMutating.value) return;
   if (status.value?.branch === branchName) {
     branchDropdownOpen.value = false;
     return;
@@ -193,15 +273,20 @@ async function doCheckout(branchName: string): Promise<void> {
     await fetchStatus();
   } catch (err) {
     showError(`Checkout failed: ${err instanceof Error ? err.message : String(err)}`);
+    await fetchStatus();
   } finally {
     switchingBranch.value = null;
   }
 }
 
 async function doCreateBranchFromPicker(): Promise<void> {
-  if (!workingDirectory.value || !createBranchName.value.trim()) return;
+  if (!workingDirectory.value || !createBranchName.value.trim() || isMutating.value) return;
   loadingCreateBranch.value = true;
   try {
+    // Ensure the displayed "from <branch>" label matches HEAD — otherwise the
+    // new branch would silently fork from a different parent than the user
+    // expects.
+    if (!(await ensureBranchConsistent())) return;
     await window.electron.git.createBranch(
       workingDirectory.value,
       createBranchName.value.trim(),
@@ -214,6 +299,7 @@ async function doCreateBranchFromPicker(): Promise<void> {
     await fetchStatus();
   } catch (err) {
     showError(`Create branch failed: ${err instanceof Error ? err.message : String(err)}`);
+    await fetchStatus();
   } finally {
     loadingCreateBranch.value = false;
   }
@@ -225,12 +311,16 @@ async function toggleBranchDropdown(): Promise<void> {
     branchDropdownOpen.value = false;
     return;
   }
+  // Refuse to open while another mutation is in flight — opening would imply
+  // imminent checkout, which we can't safely interleave with push/pull/commit.
+  if (isMutating.value) return;
   // Opening
   branchDropdownOpen.value = true;
   commitDropdownOpen.value = false;
   branchFilter.value = '';
   createBranchMode.value = false;
   createBranchName.value = '';
+  branchLoadError.value = '';
   await loadBranches();
   await nextTick();
   branchFilterInputRef.value?.focus();
@@ -317,6 +407,8 @@ onMounted(() => {
 
   // Listen for event-driven git status changes
   cleanupStatusListener = window.electron.git.onStatusChanged((newStatus) => {
+    // Newer than any in-flight fetchStatus — bump so they drop their results.
+    ++statusEpoch;
     status.value = newStatus;
   });
 });
@@ -343,9 +435,10 @@ onUnmounted(() => {
       class="relative"
     >
       <button
-        class="flex items-center gap-1 px-2 py-1 text-xs rounded-md bg-surface-100 dark:bg-surface-700 text-surface-600 dark:text-surface-400 hover:bg-surface-200 dark:hover:bg-surface-600 transition-colors"
+        class="flex items-center gap-1 px-2 py-1 text-xs rounded-md bg-surface-100 dark:bg-surface-700 text-surface-600 dark:text-surface-400 hover:bg-surface-200 dark:hover:bg-surface-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         :class="{ 'bg-surface-200 dark:bg-surface-600': branchDropdownOpen }"
-        title="Switch or create branch"
+        :disabled="isMutating && switchingBranch === null"
+        :title="`Switch or create branch (current: ${status.branch})`"
         @click.stop="toggleBranchDropdown"
       >
         <Icon
@@ -392,6 +485,23 @@ onUnmounted(() => {
           >
             <Spinner size="xs" />
             <span class="ml-2">Loading branches...</span>
+          </div>
+
+          <!-- Error state — distinguished from an empty list so the user
+               doesn't act on stale/missing data. Retry re-runs loadBranches. -->
+          <div
+            v-else-if="branchLoadError"
+            class="px-3 py-3 text-xs"
+          >
+            <div class="text-red-600 dark:text-red-400 mb-2">
+              Failed to load branches: {{ branchLoadError }}
+            </div>
+            <button
+              class="px-2 py-1 text-xs rounded-md bg-surface-100 dark:bg-surface-700 hover:bg-surface-200 dark:hover:bg-surface-600 text-surface-700 dark:text-surface-300 transition-colors"
+              @click="loadBranches"
+            >
+              Retry
+            </button>
           </div>
 
           <!-- Branch list -->
@@ -547,8 +657,8 @@ onUnmounted(() => {
       <button
         class="btn-icon relative"
         :class="{ 'bg-surface-200 dark:bg-surface-700': commitDropdownOpen }"
-        :disabled="loadingCommit"
-        title="Commit changes"
+        :disabled="isMutating && !loadingCommit"
+        :title="`Commit changes on ${status.branch}`"
         @click.stop="toggleCommitDropdown"
       >
         <Spinner
@@ -638,8 +748,8 @@ onUnmounted(() => {
     <!-- Pull button -->
     <button
       class="btn-icon relative"
-      :disabled="loadingPull"
-      title="Pull from remote"
+      :disabled="isMutating && !loadingPull"
+      :title="`Pull ${status.branch} from remote`"
       @click="doPull"
     >
       <Spinner
@@ -663,8 +773,8 @@ onUnmounted(() => {
     <!-- Push button -->
     <button
       class="btn-icon relative"
-      :disabled="loadingPush"
-      title="Push to remote"
+      :disabled="isMutating && !loadingPush"
+      :title="`Push ${status.branch} to remote`"
       @click="doPush"
     >
       <Spinner

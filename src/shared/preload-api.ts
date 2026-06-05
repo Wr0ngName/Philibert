@@ -101,12 +101,27 @@ export interface ElectronAPI {
   git: {
     /** Get repository status */
     status: (workingDir: string) => Promise<GitStatus>;
-    /** Commit changes (optionally stage all first) */
-    commit: (workingDir: string, message: string, stageAll: boolean) => Promise<string>;
-    /** Pull from remote */
-    pull: (workingDir: string) => Promise<string>;
-    /** Push to remote */
-    push: (workingDir: string) => Promise<string>;
+    /**
+     * Commit changes (optionally stage all first).
+     * If `expectedBranch` is supplied, the main process verifies HEAD matches
+     * before committing and rejects with a descriptive error otherwise.
+     */
+    commit: (
+      workingDir: string,
+      message: string,
+      stageAll: boolean,
+      expectedBranch?: string
+    ) => Promise<string>;
+    /**
+     * Pull from remote. If `expectedBranch` is supplied, the main process
+     * verifies HEAD matches before pulling and rejects otherwise.
+     */
+    pull: (workingDir: string, expectedBranch?: string) => Promise<string>;
+    /**
+     * Push to remote. If `expectedBranch` is supplied, the main process
+     * verifies HEAD matches before pushing and rejects otherwise.
+     */
+    push: (workingDir: string, expectedBranch?: string) => Promise<string>;
     /** Fetch from remote (updates tracking refs for ahead/behind) */
     fetch: (workingDir: string) => Promise<void>;
     /** List local and remote-tracking branches */
