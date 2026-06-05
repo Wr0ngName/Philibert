@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import type { GitStatus } from '../../shared/types';
+import type { GitBranch, GitStatus } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import logger from '../utils/logger';
 import { WindowsPaths } from '../utils/resourcePaths';
@@ -220,6 +220,95 @@ export class GitService {
     const output = await this.runGit(['push'], cwd);
     logger.info('Git push', { cwd });
     return output;
+  }
+
+  /**
+   * List local and remote-tracking branches.
+   * Remote symbolic refs (e.g. origin/HEAD) are filtered out.
+   */
+  async listBranches(cwd: string): Promise<GitBranch[]> {
+    const output = await this.runGit(
+      [
+        'for-each-ref',
+        '--format=%(refname)%09%(refname:short)%09%(upstream:short)',
+        'refs/heads',
+        'refs/remotes',
+      ],
+      cwd
+    );
+    if (!output) return [];
+
+    const branches: GitBranch[] = [];
+    for (const line of output.split('\n')) {
+      const [refname, shortName, upstream] = line.split('\t');
+      if (!refname || !shortName) continue;
+      const isRemote = refname.startsWith('refs/remotes/');
+      // Skip remote symbolic refs like "origin/HEAD" — they point at another ref.
+      if (isRemote && shortName.endsWith('/HEAD')) continue;
+      branches.push({ name: shortName, isRemote, upstream: upstream ?? '' });
+    }
+    return branches;
+  }
+
+  /**
+   * Validate a branch name client-side before invoking git. We intentionally
+   * stay conservative — git's own validation (`check-ref-format`) is stricter
+   * and will reject anything we miss. This catches the obvious cases up front
+   * so the error toast is meaningful instead of a cryptic git message.
+   */
+  private validateBranchName(name: string): void {
+    if (!name || !name.trim()) {
+      throw new Error('Branch name must not be empty');
+    }
+    // Reject whitespace, control chars, and the characters git always rejects.
+    if (/[\s~^:?*[\\]/.test(name) || name.includes('..') || name.includes('@{')) {
+      throw new Error(`Invalid branch name: ${name}`);
+    }
+    if (name.startsWith('-') || name.startsWith('/') || name.endsWith('/') || name.endsWith('.lock')) {
+      throw new Error(`Invalid branch name: ${name}`);
+    }
+  }
+
+  /**
+   * Check out an existing branch. If given a remote-tracking ref like
+   * "origin/foo", git's DWIM rules create a local "foo" tracking it.
+   * Throws if the working tree has conflicting changes.
+   */
+  async checkoutBranch(cwd: string, branchName: string): Promise<string> {
+    this.validateBranchName(branchName.replace(/^[^/]+\//, '')); // validate the local-name portion
+    // Strip the remote prefix so git's DWIM creates/updates the local branch
+    // instead of detaching HEAD on the remote ref.
+    const target = branchName.includes('/') && (await this.isRemoteRef(cwd, branchName))
+      ? branchName.substring(branchName.indexOf('/') + 1)
+      : branchName;
+    const output = await this.runGit(['checkout', target], cwd);
+    logger.info('Git checkout', { cwd, branch: target });
+    return output;
+  }
+
+  /**
+   * Create a branch from HEAD. If checkout is true (default), switches to it.
+   */
+  async createBranch(cwd: string, branchName: string, checkout = true): Promise<string> {
+    this.validateBranchName(branchName);
+    const args = checkout ? ['checkout', '-b', branchName] : ['branch', branchName];
+    const output = await this.runGit(args, cwd);
+    logger.info('Git create branch', { cwd, branch: branchName, checkout });
+    return output;
+  }
+
+  /**
+   * Check whether the given name resolves to a remote-tracking ref.
+   * Used to disambiguate "origin/foo" (remote ref → DWIM to local) from
+   * a local branch whose name happens to contain "/" (e.g. "feature/foo").
+   */
+  private async isRemoteRef(cwd: string, name: string): Promise<boolean> {
+    try {
+      await this.runGit(['rev-parse', '--verify', `refs/remotes/${name}`], cwd);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**

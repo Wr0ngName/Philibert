@@ -531,6 +531,18 @@ export interface GitStatus {
   behind: number;
 }
 
+/**
+ * Git branch metadata returned by {@link IPC_CHANNELS.GIT_LIST_BRANCHES}.
+ */
+export interface GitBranch {
+  /** Short display name. For locals: "main". For remotes: "origin/main". */
+  name: string;
+  /** True for refs under refs/remotes/. */
+  isRemote: boolean;
+  /** Configured upstream short name for local branches (e.g. "origin/main"). Empty if none. */
+  upstream: string;
+}
+
 // Update types
 
 // Background Task types
@@ -840,6 +852,12 @@ export const IPC_CHANNELS = {
   GIT_PUSH: 'git:push',
   /** Fetch from remote (background, updates tracking refs) */
   GIT_FETCH: 'git:fetch',
+  /** List local + remote-tracking branches */
+  GIT_LIST_BRANCHES: 'git:list-branches',
+  /** Checkout an existing branch (or DWIM-create local from a remote ref) */
+  GIT_CHECKOUT: 'git:checkout',
+  /** Create a new branch from HEAD and (optionally) check it out */
+  GIT_CREATE_BRANCH: 'git:create-branch',
   /** Git status changed (event from main to renderer) */
   GIT_STATUS_CHANGED: 'git:status-changed',
 

@@ -216,6 +216,15 @@ const electronAPI: ElectronAPI = {
     fetch: (workingDir: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.GIT_FETCH, workingDir),
 
+    listBranches: (workingDir: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.GIT_LIST_BRANCHES, workingDir),
+
+    checkout: (workingDir: string, branchName: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.GIT_CHECKOUT, workingDir, branchName),
+
+    createBranch: (workingDir: string, branchName: string, checkout: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.GIT_CREATE_BRANCH, workingDir, branchName, checkout),
+
     onStatusChanged: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

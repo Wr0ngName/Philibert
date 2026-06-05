@@ -86,6 +86,53 @@ export function setupGitIPC(
     }
   });
 
+  // List branches (local + remote-tracking)
+  ipcMain.handle(IPC_CHANNELS.GIT_LIST_BRANCHES, async (_event, workingDir: string) => {
+    try {
+      ensureService(gitService, 'GitService');
+      validateString(workingDir, 'Working directory');
+
+      return await gitService.listBranches(workingDir);
+    } catch (error) {
+      logger.error('Failed to list branches', { error, workingDir });
+      throw new Error(formatErrorMessage('Failed to list branches', error), { cause: error });
+    }
+  });
+
+  // Checkout an existing branch
+  ipcMain.handle(
+    IPC_CHANNELS.GIT_CHECKOUT,
+    async (_event, workingDir: string, branchName: string) => {
+      try {
+        ensureService(gitService, 'GitService');
+        validateString(workingDir, 'Working directory');
+        validateString(branchName, 'Branch name');
+
+        return await gitService.checkoutBranch(workingDir, branchName);
+      } catch (error) {
+        logger.error('Failed to checkout branch', { error, workingDir, branchName });
+        throw new Error(formatErrorMessage('Failed to checkout branch', error), { cause: error });
+      }
+    }
+  );
+
+  // Create a new branch from HEAD (and optionally check it out)
+  ipcMain.handle(
+    IPC_CHANNELS.GIT_CREATE_BRANCH,
+    async (_event, workingDir: string, branchName: string, checkout: boolean) => {
+      try {
+        ensureService(gitService, 'GitService');
+        validateString(workingDir, 'Working directory');
+        validateString(branchName, 'Branch name');
+
+        return await gitService.createBranch(workingDir, branchName, checkout);
+      } catch (error) {
+        logger.error('Failed to create branch', { error, workingDir, branchName });
+        throw new Error(formatErrorMessage('Failed to create branch', error), { cause: error });
+      }
+    }
+  );
+
   // Set up event-driven git status notifications
   gitService.onStatusChange((status) => {
     sendToRenderer(getMainWindow, IPC_CHANNELS.GIT_STATUS_CHANGED, status);
