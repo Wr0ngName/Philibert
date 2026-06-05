@@ -1,7 +1,7 @@
 {
   "name": "philibert",
   "productName": "Philibert",
-  "version": "0.17.21",
+  "version": "0.17.22",
   "description": "Desktop GUI for Claude Code - AI-powered coding assistant for non-technical users",
   "main": ".vite/build/index.js",
   "private": true,
