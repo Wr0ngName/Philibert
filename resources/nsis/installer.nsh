@@ -9,17 +9,27 @@
 ;      checkbox (defaulted OFF) rather than being silently force-created.
 ;   3. Restores the standard "Show details" button on the install/uninstall
 ;      pages (electron-builder hides it by default).
-;   4. Labels the status bar above the install progress bar with the current
-;      phase ("Installing application files...", then "Extracting bundled
-;      Git Bash environment...", then "Finalizing installation...") so the
-;      user knows what each progress reset corresponds to without having to
-;      open the details panel.
+;   4. Drives the install page header ("Step X of 3 — ...") via
+;      MUI_HEADER_TEXT at three transitions so non-technical users always
+;      see what the installer is doing, even while Nsis7z::Extract and
+;      CopyFiles are repainting the status bar above the progress bar.
 ;
 ; The desktop shortcut is created manually here because electron-builder.json
 ; sets `createDesktopShortcut: false`, which defines DO_NOT_CREATE_DESKTOP_SHORTCUT
 ; and turns the built-in addDesktopLink macro into a no-op.
 
 !include "LogicLib.nsh"
+
+; ---------------------------------------------------------------------------
+; Step labels — kept in one place so the title and subtitle are consistent
+; across the header, the status bar, and the details listbox.
+; ---------------------------------------------------------------------------
+!define STEP1_TITLE      "Step 1 of 3 — Installing application files"
+!define STEP1_SUBTITLE   "Copying ${PRODUCT_NAME} program files. The progress bar may reset a couple of times during this step — that's normal."
+!define STEP2_TITLE      "Step 2 of 3 — Setting up bundled Git tools"
+!define STEP2_SUBTITLE   "Extracting the portable Git Bash environment. This is the longest step (up to a couple of minutes on slower disks)."
+!define STEP3_TITLE      "Step 3 of 3 — Finalizing installation"
+!define STEP3_SUBTITLE   "Almost done. Tidying up and registering ${PRODUCT_NAME}..."
 
 ; ---------------------------------------------------------------------------
 ; Welcome page
@@ -30,13 +40,12 @@
   !insertmacro MUI_PAGE_WELCOME
 
   ; Hook the next MUI page (the install/progress page) with a SHOW callback
-  ; so we can label what is happening on the status bar. SHOW runs after the
-  ; page is created but before installSection.nsh starts running file
-  ; operations — perfect spot to set a status text that survives
-  ; installSection.nsh's `SetDetailsPrint none`. The label persists through
-  ; the multiple progress-bar resets inside installApplicationFiles (which
-  ; runs File extraction, then Nsis7z::Extract, then CopyFiles, with no hook
-  ; between them). customInstall later swaps the label for the Git Bash phase.
+  ; so we can set the initial Step 1 header before installSection.nsh starts
+  ; running file operations. SHOW runs after the page is created but before
+  ; the install Section executes — the perfect spot to drive both the page
+  ; header (via MUI_HEADER_TEXT, persists through file ops) and the details
+  ; listbox (via DetailPrint with `both`, before installSection.nsh:6 sets
+  ; SetDetailsPrint=none).
   !define MUI_PAGE_CUSTOMFUNCTION_SHOW instFilesPageShow
 !macroend
 
@@ -85,14 +94,24 @@
       ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
     FunctionEnd
 
-    ; Status-bar label for the install/progress page. Runs once when the page
-    ; is shown, before the install Section starts. SetDetailsPrint=textonly
-    ; routes our DetailPrint to the status bar (label above progress bar);
-    ; installSection.nsh:6 then sets none, which suppresses further prints
-    ; but does not clear the text we already wrote.
+    ; Step 1 setup. Runs once when the install page is shown, BEFORE the
+    ; install Section starts. We set the page header (persists through the
+    ; whole installApplicationFiles phase) and seed the details listbox so
+    ; users who click "Show details" see a Step 1 marker even after
+    ; installSection.nsh:6 switches SetDetailsPrint to `none`.
     Function instFilesPageShow
+      !insertmacro MUI_HEADER_TEXT "${STEP1_TITLE}" "${STEP1_SUBTITLE}"
+
+      SetDetailsPrint both
+      DetailPrint "${STEP1_TITLE}"
+      DetailPrint "${STEP1_SUBTITLE}"
+
+      ; Switch to textonly so the status bar above the progress bar reflects
+      ; the step while Nsis7z hasn't yet started repainting it. The label
+      ; will get clobbered by file-extraction output during the section, but
+      ; the page header set above stays put — that is the primary indicator.
       SetDetailsPrint textonly
-      DetailPrint "Installing application files..."
+      DetailPrint "${STEP1_TITLE}..."
     FunctionEnd
 
     Function finishPageCreateDesktopShortcut
@@ -153,17 +172,24 @@
 !macroend
 
 ; ---------------------------------------------------------------------------
-; Custom install step (Git Bash extraction + detail logging)
+; Custom install step (Step 2: Git Bash extraction, then Step 3: finalize)
 ; ---------------------------------------------------------------------------
 !macro customInstall
-  ; Swap the status-bar label so the user sees we have moved past the
-  ; application-files stage. textonly routes the next DetailPrint to the
-  ; status bar above the progress bar.
-  SetDetailsPrint textonly
-  DetailPrint "Extracting bundled Git Bash environment..."
+  ; --- Step 2 of 3: Git Bash extraction ---------------------------------
+  ;
+  ; Update the page header (top of page, persistent) and re-enable both
+  ; status-bar and details-listbox output so users see what's happening
+  ; during the longest single step of the install.
+  !insertmacro MUI_HEADER_TEXT "${STEP2_TITLE}" "${STEP2_SUBTITLE}"
 
-  ; Switch to both so the tar output (piped via nsExec::ExecToLog) shows in
-  ; the "Show details" log too — useful if the user expands the panel.
+  SetDetailsPrint both
+  DetailPrint ""
+  DetailPrint "${STEP2_TITLE}"
+  DetailPrint "${STEP2_SUBTITLE}"
+
+  SetDetailsPrint textonly
+  DetailPrint "${STEP2_TITLE}..."
+
   SetDetailsPrint both
 
   ${If} ${FileExists} "$INSTDIR\resources\git-bash.tar.bz2"
@@ -181,6 +207,19 @@
     ${EndIf}
   ${EndIf}
 
+  ; --- Step 3 of 3: Finalizing -----------------------------------------
+  ;
+  ; Brief — once customInstall returns, the install Section ends and MUI
+  ; transitions to the Finish page. The header label still gives the user a
+  ; clear "we're wrapping up" signal even if it's only on screen for a
+  ; moment.
+  !insertmacro MUI_HEADER_TEXT "${STEP3_TITLE}" "${STEP3_SUBTITLE}"
+
+  SetDetailsPrint both
+  DetailPrint ""
+  DetailPrint "${STEP3_TITLE}"
+  DetailPrint "${STEP3_SUBTITLE}"
+
   SetDetailsPrint textonly
-  DetailPrint "Finalizing installation..."
+  DetailPrint "${STEP3_TITLE}..."
 !macroend
