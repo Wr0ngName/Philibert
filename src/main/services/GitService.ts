@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 import type { GitStatus } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import logger from '../utils/logger';
+import { WindowsPaths } from '../utils/resourcePaths';
 
 const execFileAsync = promisify(execFile);
 
@@ -20,9 +21,40 @@ export class GitService {
   private isFullyWatching = false;
   private debounceTimer: NodeJS.Timeout | null = null;
   private statusCallbacks: Set<(status: GitStatus) => void> = new Set();
+  private resolvedGitBinary: string | null = null;
 
   constructor() {
     logger.info('GitService initialized');
+  }
+
+  /**
+   * Resolve the git binary path. On Windows, prefer the bundled Git for
+   * Windows so behavior is consistent across installs regardless of whether
+   * the user has a system git on PATH. Falls back to PATH lookup otherwise.
+   */
+  private getGitBinary(): string {
+    if (this.resolvedGitBinary !== null) {
+      return this.resolvedGitBinary;
+    }
+    if (process.platform === 'win32' && WindowsPaths.hasBundledGit()) {
+      this.resolvedGitBinary = WindowsPaths.getGitExe();
+      logger.info('GitService using bundled git', { path: this.resolvedGitBinary });
+    } else {
+      this.resolvedGitBinary = 'git';
+    }
+    return this.resolvedGitBinary;
+  }
+
+  /**
+   * Build the env for git subprocesses. On Windows we prepend the bundled
+   * git-bash bin dirs so sh.exe, credential helpers, and other tools git
+   * shells out to resolve from the bundle rather than (or before) system PATH.
+   */
+  private getGitEnv(): NodeJS.ProcessEnv {
+    if (process.platform === 'win32' && WindowsPaths.hasBundledGitBash()) {
+      return { ...process.env, PATH: WindowsPaths.buildEnhancedPath() };
+    }
+    return process.env;
   }
 
   /**
@@ -30,10 +62,11 @@ export class GitService {
    */
   private async runGit(args: string[], cwd: string): Promise<string> {
     try {
-      const { stdout } = await execFileAsync('git', args, {
+      const { stdout } = await execFileAsync(this.getGitBinary(), args, {
         cwd,
         timeout: 15000,
         maxBuffer: 1024 * 1024,
+        env: this.getGitEnv(),
       });
       return stdout.trim();
     } catch (error) {

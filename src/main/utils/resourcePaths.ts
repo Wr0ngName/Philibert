@@ -75,6 +75,16 @@ export const WindowsPaths = {
     return path.join(this.getGitBashBinDir(), 'bash.exe');
   },
 
+  // Standard Git for Windows wrapper at <bundle>/cmd/git.exe — sets up
+  // environment and dispatches to mingw64/libexec/git-core/git.exe.
+  getGitExe(): string {
+    return path.join(this.getGitBashDir(), 'cmd', 'git.exe');
+  },
+
+  hasBundledGit(): boolean {
+    return this._findExtractedGitBash() !== null && fs.existsSync(this.getGitExe());
+  },
+
   hasBundledGitBash(): boolean {
     return this._findExtractedGitBash() !== null;
   },
