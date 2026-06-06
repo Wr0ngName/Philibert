@@ -116,8 +116,18 @@ describe('AuthValidator', () => {
   // validateOAuthToken
   // ===========================================================================
   describe('validateOAuthToken', () => {
-    it('should accept valid sk-ant- prefixed tokens', () => {
-      expect(validator.validateOAuthToken('sk-ant-oat01-abc').valid).toBe(true);
+    // Valid baseline: real-shape OAuth long-lived token from `setup-token`.
+    // Prefix `sk-ant-oat01-` is followed by ~95 chars of base64url-ish data.
+    const realisticOAuthToken = 'sk-ant-oat01-' + 'A'.repeat(95);
+    const realisticApiKey = 'sk-ant-api03-' + 'B'.repeat(95);
+
+    it('should accept a realistic-length OAuth token', () => {
+      expect(validator.validateOAuthToken(realisticOAuthToken).valid).toBe(true);
+    });
+
+    it('should accept a realistic-length API key', () => {
+      // API keys (`api03-`) are also valid OAuth-flow inputs (some users paste them).
+      expect(validator.validateOAuthToken(realisticApiKey).valid).toBe(true);
     });
 
     it('should reject empty token', () => {
@@ -127,9 +137,74 @@ describe('AuthValidator', () => {
     });
 
     it('should reject token without sk-ant- prefix', () => {
-      const result = validator.validateOAuthToken('bad-prefix-token');
+      const result = validator.validateOAuthToken('bad-prefix-token-padded-to-realistic-length-12345');
       expect(result.valid).toBe(false);
-      expect(result.error).toContain('sk-ant-');
+      expect(result.error).toBeTruthy();
+    });
+
+    // ---- Strict format checks (catch PTY corruption like the v0.17.27 bug) ----
+
+    it('should reject the v0.17.27 mangled shape (sk-ant-at01-…, missing leading o)', () => {
+      // This is the EXACT corruption that v0.17.23 failed to detect. The
+      // mangled token had the `sk-ant-` prefix so the old loose check passed,
+      // it got stored and silently 401'd against the API. Validator must
+      // reject anything that's not `sk-ant-oat01-` or `sk-ant-api03-`.
+      const mangled = 'sk-ant-at01-' + 'A'.repeat(95);
+      const result = validator.validateOAuthToken(mangled);
+      expect(result.valid).toBe(false);
+      expect(result.error).toMatch(/(oat01|api03|prefix|format)/i);
+    });
+
+    it('should reject tokens with unknown type prefix', () => {
+      const result = validator.validateOAuthToken('sk-ant-xxx99-' + 'A'.repeat(90));
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject tokens shorter than the realistic minimum', () => {
+      // Even with the correct `sk-ant-oat01-` prefix, anything tiny is suspect.
+      // OAuth tokens are ~108 chars; below 40 is definitely corrupt.
+      const result = validator.validateOAuthToken('sk-ant-oat01-abc');
+      expect(result.valid).toBe(false);
+      expect(result.error).toMatch(/short|length/i);
+    });
+
+    it('should reject tokens containing whitespace', () => {
+      const tainted = 'sk-ant-oat01-' + 'A'.repeat(40) + ' ' + 'B'.repeat(40);
+      expect(validator.validateOAuthToken(tainted).valid).toBe(false);
+    });
+
+    it('should reject tokens containing newlines', () => {
+      const tainted = 'sk-ant-oat01-' + 'A'.repeat(40) + '\n' + 'B'.repeat(40);
+      expect(validator.validateOAuthToken(tainted).valid).toBe(false);
+    });
+
+    it('should reject tokens containing control bytes (ESC, BS, NUL)', () => {
+      const cases = [
+        'sk-ant-oat01-' + 'A'.repeat(40) + '\x1b' + 'B'.repeat(40),
+        'sk-ant-oat01-' + 'A'.repeat(40) + '\x08' + 'B'.repeat(40),
+        'sk-ant-oat01-' + 'A'.repeat(40) + '\x00' + 'B'.repeat(40),
+      ];
+      for (const tainted of cases) {
+        expect(validator.validateOAuthToken(tainted).valid).toBe(false);
+      }
+    });
+
+    it('should reject tokens with non-base64url characters', () => {
+      // The body of a real token is [A-Za-z0-9_-]. Anything else is suspicious.
+      const tainted = 'sk-ant-oat01-' + 'A'.repeat(40) + '!' + 'B'.repeat(40);
+      expect(validator.validateOAuthToken(tainted).valid).toBe(false);
+    });
+
+    it('should accept tokens with hyphens and underscores in body (real format)', () => {
+      const real = 'sk-ant-oat01-XAt2gbKqdOfN8oHgKzkuJbK97kjTCVTk-dXijxl-qazzkyuj5dK5vrrLfQYpJPkPXIhKd5p610u5mbjBdz9pTg-wyuk6AA_';
+      expect(validator.validateOAuthToken(real).valid).toBe(true);
+    });
+
+    it('should reject tokens that are absurdly long (cap to prevent storage abuse)', () => {
+      const huge = 'sk-ant-oat01-' + 'A'.repeat(10_000);
+      const result = validator.validateOAuthToken(huge);
+      expect(result.valid).toBe(false);
+      expect(result.error).toMatch(/long|length/i);
     });
   });
 

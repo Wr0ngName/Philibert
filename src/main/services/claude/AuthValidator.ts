@@ -21,6 +21,50 @@ export interface ValidationResult {
 }
 
 /**
+ * Pure (config-independent) OAuth token format validator. Exposed as a
+ * free function so callers that don't have a ConfigService — notably
+ * AuthService at extraction time — can vet a token before storage.
+ */
+export function validateOAuthTokenFormat(token: string): ValidationResult {
+  if (!token || token.trim().length === 0) {
+    return { valid: false, error: 'Token is empty' };
+  }
+
+  if (token.length < MAIN_CONSTANTS.AUTH.OAUTH_TOKEN_MIN_LENGTH) {
+    return {
+      valid: false,
+      error: `Token too short (${token.length} chars, expected at least ${MAIN_CONSTANTS.AUTH.OAUTH_TOKEN_MIN_LENGTH}). Likely PTY stripping corrupted the capture.`,
+    };
+  }
+
+  if (token.length > MAIN_CONSTANTS.AUTH.OAUTH_TOKEN_MAX_LENGTH) {
+    return {
+      valid: false,
+      error: `Token too long (${token.length} chars, max ${MAIN_CONSTANTS.AUTH.OAUTH_TOKEN_MAX_LENGTH}). Likely extraction captured surrounding output.`,
+    };
+  }
+
+  const prefixes = MAIN_CONSTANTS.AUTH.KNOWN_TOKEN_TYPE_PREFIXES;
+  const matchedPrefix = prefixes.find(p => token.startsWith(p));
+  if (!matchedPrefix) {
+    return {
+      valid: false,
+      error: `Token prefix unrecognised (got "${token.slice(0, 14)}…", expected one of: ${prefixes.join(', ')}). Possible PTY corruption.`,
+    };
+  }
+
+  const body = token.slice(matchedPrefix.length);
+  if (!/^[A-Za-z0-9_-]+$/.test(body)) {
+    return {
+      valid: false,
+      error: 'Token body contains characters outside the base64url alphabet. Possible PTY corruption or leaked terminal escape.',
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
  * Validates authentication credentials
  */
 export class AuthValidator {
@@ -38,20 +82,11 @@ export class AuthValidator {
   }
 
   /**
-   * Validate OAuth token format
-   * OAuth tokens start with sk-ant- prefix
+   * Validate OAuth token format. Delegates to the pure free function so
+   * AuthService can vet tokens without instantiating this class.
    */
   validateOAuthToken(token: string): ValidationResult {
-    if (!token || token.trim().length === 0) {
-      return { valid: false, error: 'Token is empty' };
-    }
-
-    // OAuth tokens should start with sk-ant-
-    if (!token.startsWith('sk-ant-')) {
-      return { valid: false, error: 'Token must start with sk-ant-' };
-    }
-
-    return { valid: true };
+    return validateOAuthTokenFormat(token);
   }
 
   /**

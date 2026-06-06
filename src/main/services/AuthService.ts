@@ -22,6 +22,8 @@ import logger from '../utils/logger';
 import { getResourcesPath, WindowsPaths, ClaudeCliPaths } from '../utils/resourcePaths';
 import { sanitizeForLog } from '../utils/stringUtils';
 
+import { validateOAuthTokenFormat } from './claude/AuthValidator';
+
 export interface OAuthFlowState {
   pty: IPty | null;
   isPtyAlive: boolean;
@@ -739,9 +741,45 @@ export class AuthService {
     // but can work if we detect known junk patterns to trim
     const tokenResult = this.extractTokenFromOutput(clean);
     if (tokenResult) {
+      // Gate storage on strict format validation. Two prior versions shipped
+      // with PTY ANSI-stripping bugs that corrupted the extracted token by a
+      // single byte — the token was stored, every API call 401'd, and the
+      // user got logged out repeatedly. Refuse to proceed with a token that
+      // doesn't match the known shape; surface a diagnostic error so the
+      // bug is visible up-front instead of silently downstream.
+      const validation = validateOAuthTokenFormat(tokenResult);
+      if (!validation.valid) {
+        // Capture diagnostic context for future bug fixes. Include hex around
+        // the sk-ant- position so the exact byte pattern is recoverable from
+        // production logs without needing kotik to re-instrument.
+        const skAntIdx = output.indexOf('sk-ant-');
+        const rawWindow = skAntIdx >= 0
+          ? output.slice(Math.max(0, skAntIdx - 20), skAntIdx + 140)
+          : '';
+        const rawHex = Buffer.from(rawWindow, 'utf8').toString('hex');
+        logger.error('Extracted OAuth token failed format validation — refusing to store', {
+          reason: validation.error,
+          tokenPreview: tokenResult.slice(0, 20),
+          tokenLength: tokenResult.length,
+          rawOutputLength: output.length,
+          rawWindowAroundSkAntHex: rawHex,
+        });
+        handlers.resolved = true;
+        handlers.cleanup();
+        this.cleanupOAuthFlow();
+        resolve({
+          success: false,
+          error: `Authentication captured a malformed token (${validation.error}). This usually means a Claude Code CLI version changed its output format. Please report this with the Philibert logs; meanwhile try logging in again.`,
+        });
+        return true;
+      }
+
       handlers.resolved = true;
       handlers.cleanup();
-      logger.info('OAuth authentication successful (extracted from output)');
+      logger.info('OAuth authentication successful (extracted from output)', {
+        tokenLength: tokenResult.length,
+        tokenPrefix: tokenResult.slice(0, 14),
+      });
       // Do NOT call cleanupOAuthFlow() here — let the PTY exit naturally so
       // setup-token can complete its server-side registration.  The PTY exit
       // handler calls cleanupOAuthFlow() after a final credentials-file check.
@@ -778,6 +816,21 @@ export class AuthService {
 
     let token = tokenMatch[1];
     const originalLength = token.length;
+
+    // Defer extraction if the match runs to the end of the buffer — i.e. we
+    // haven't yet seen a non-token-character boundary after the candidate.
+    // The streaming PTY data may have only emitted part of the token so far,
+    // and extracting prematurely yields a truncated string that fails
+    // downstream format validation and aborts the flow. Real CLI output
+    // always emits a newline (or further text) after the token, so by the
+    // time the line is genuinely complete the match is bounded by a
+    // non-token char. The PTY exit handler does one final check after the
+    // full output is in, so we don't risk hanging on a malformed exit.
+    const matchEnd = (tokenMatch.index ?? 0) + originalLength;
+    const isAtBufferEnd = matchEnd >= cleanOutput.length;
+    if (isAtBufferEnd) {
+      return null;
+    }
 
     // Only trim at known junk patterns that indicate where the token ends
     const junkPatterns = [
@@ -824,8 +877,19 @@ export class AuthService {
       const raw = fs.readFileSync(credsFile, 'utf8');
       const creds = JSON.parse(raw);
       const token = creds.oauthToken || creds.claudeAiOauth?.accessToken;
-      if (token && typeof token === 'string' && token.startsWith('sk-ant-')) {
-        return { token, credentialsJson: raw };
+      if (token && typeof token === 'string') {
+        // Strict-validate even though the credentials file is normally
+        // a trusted source — if it contains garbage, surface that rather
+        // than blindly storing it.
+        const validation = validateOAuthTokenFormat(token);
+        if (validation.valid) {
+          return { token, credentialsJson: raw };
+        }
+        logger.warn('Credentials file token failed format validation — ignoring', {
+          reason: validation.error,
+          tokenLength: token.length,
+          tokenPrefix: token.slice(0, 14),
+        });
       }
     } catch {
       // Credentials file not ready yet

@@ -599,6 +599,152 @@ describe('AuthService', () => {
       expect(result.token?.length).toBe(expected.length);
     });
 
+    // ========================================================================
+    // Defense-in-depth: many shapes of PTY output, all must capture the token
+    // intact OR refuse with a clear error. No silent storage of garbage.
+    // ========================================================================
+    describe('robustness against PTY output variants', () => {
+      const TOKEN = 'sk-ant-oat01-' + 'Q'.repeat(95);
+
+      it('captures token wrapped in SGR styling escapes', async () => {
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        mockPty.emitData(`\x1b[1m${TOKEN}\x1b[0m\n`);
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(true);
+        expect(result.token).toBe(TOKEN);
+      });
+
+      it('captures token with per-character SGR styling', async () => {
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        const styled = [...TOKEN].map(c => `\x1b[1m${c}\x1b[0m`).join('');
+        mockPty.emitData(`${styled}\n`);
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(true);
+        expect(result.token).toBe(TOKEN);
+      });
+
+      it('captures token wrapped in OSC hyperlink', async () => {
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        mockPty.emitData(`\x1b]8;;https://anthropic.com\x1b\\${TOKEN}\x1b]8;;\x1b\\\n`);
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(true);
+        expect(result.token).toBe(TOKEN);
+      });
+
+      it('captures token preceded by spinner residue', async () => {
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        const spinner = '*\b✶\b✻\b✽\b';
+        mockPty.emitData(`Your token:\n${spinner}${TOKEN}\n`);
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(true);
+        expect(result.token).toBe(TOKEN);
+      });
+
+      it('captures token followed immediately by junk (Store)', async () => {
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        mockPty.emitData(`${TOKEN}Store this securely\n`);
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(true);
+        expect(result.token).toBe(TOKEN);
+      });
+
+      it('captures token even when emitted across multiple PTY chunks', async () => {
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        mockPty.emitData(TOKEN.slice(0, 30));
+        mockPty.emitData(TOKEN.slice(30, 60));
+        mockPty.emitData(TOKEN.slice(60));
+        mockPty.emitData('\n');
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(true);
+        expect(result.token).toBe(TOKEN);
+      });
+
+      it('captures token when chunk boundary splits at the sk-ant- prefix', async () => {
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        mockPty.emitData('sk-ant');
+        mockPty.emitData('-oat01-' + 'Q'.repeat(95) + '\n');
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(true);
+        expect(result.token).toBe(TOKEN);
+      });
+
+      it('captures token when ANSI escape sits inside the token body', async () => {
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        const half = TOKEN.length >> 1;
+        mockPty.emitData(`${TOKEN.slice(0, half)}\x1b[0m${TOKEN.slice(half)}\n`);
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(true);
+        expect(result.token).toBe(TOKEN);
+      });
+
+      it('captures API-key-shaped token (sk-ant-api03-) too', async () => {
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        const apiKey = 'sk-ant-api03-' + 'K'.repeat(80);
+        mockPty.emitData(`${apiKey}\n`);
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(true);
+        expect(result.token).toBe(apiKey);
+      });
+
+      // ----- Refusal cases: corruption must surface, not be silently stored -----
+
+      it('refuses to store a token with unknown type prefix (defense gate)', async () => {
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        // sk-ant-xyz99- is not a recognised type prefix. The extractor will
+        // capture it (it does match `sk-ant-…`) but the validator must reject.
+        const fake = 'sk-ant-xyz99-' + 'A'.repeat(95);
+        mockPty.emitData(`${fake}\n`);
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/malformed|prefix|format/i);
+      });
+
+      it('refuses to store a truncated token (defense gate)', async () => {
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        // Below OAUTH_TOKEN_MIN_LENGTH (40) — would 401 against the API.
+        const truncated = 'sk-ant-oat01-abc';
+        mockPty.emitData(`${truncated}\n`);
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/malformed|short|length/i);
+      });
+
+      it('refuses to store the v0.17.27 mangled shape (sk-ant-at01-…, missing o)', async () => {
+        // If the BS-overwrite fix regresses for some future CLI quirk, the
+        // validator must still catch the symptom and prevent storage.
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+        const mangled = 'sk-ant-at01-' + 'A'.repeat(95);
+        mockPty.emitData(`${mangled}\n`);
+        await vi.advanceTimersByTimeAsync(600);
+        const result = await promise;
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/malformed|prefix/i);
+      });
+    });
+
     it('should return error when no pending flow', async () => {
       service.cleanupOAuthFlow();
 

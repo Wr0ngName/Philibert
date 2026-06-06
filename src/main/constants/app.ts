@@ -39,6 +39,25 @@ export const MAIN_CONSTANTS = {
     PTY_CLEANUP_DELAY_MS: 1000,
     /** Minimum API key length for validation */
     API_KEY_MIN_LENGTH: 40,
+    /**
+     * Minimum length for an OAuth token. Real tokens from `claude setup-token`
+     * are ~108 chars (sk-ant-oat01- + ~95 base64url chars). Below 40 is
+     * always corruption (e.g. ANSI strip ate part of the body).
+     */
+    OAUTH_TOKEN_MIN_LENGTH: 40,
+    /**
+     * Hard cap on OAuth token length. Defends storage against pathological
+     * extraction that captures the entire CLI output as the "token". Real
+     * tokens never exceed ~300 chars.
+     */
+    OAUTH_TOKEN_MAX_LENGTH: 512,
+    /**
+     * Recognised OAuth token type prefixes. The full prefix `sk-ant-` is
+     * followed by a type segment then `-` then the base64url body.
+     * - `oat01-` : OAuth long-lived access token from `setup-token`
+     * - `api03-` : API key (some users paste these into the OAuth flow)
+     */
+    KNOWN_TOKEN_TYPE_PREFIXES: ['sk-ant-oat01-', 'sk-ant-api03-'] as const,
   },
   CLAUDE: {
     /** Delay when interrupting Claude operations - 1 second */
