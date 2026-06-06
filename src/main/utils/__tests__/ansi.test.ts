@@ -79,28 +79,66 @@ describe('stripAnsi', () => {
   });
 
   describe('Backspace handling (spinner animations)', () => {
-    it('removes backspace + previous char', () => {
-      expect(stripAnsi('a\bb')).toBe('b');
+    it('removes overwrite when overwritten char is a spinner glyph (non-data)', () => {
+      expect(stripAnsi('*\b/')).toBe('/');
     });
 
     it('removes standalone backspace', () => {
       expect(stripAnsi('\bhello')).toBe('hello');
     });
 
-    it('handles repeated overwrites (spinner)', () => {
-      // Spinner pattern: each frame writes a char then \b to erase
-      expect(stripAnsi('|\b/\b-\b\\\bDone')).toBe('Done');
+    it('handles repeated spinner overwrites for non-data glyphs', () => {
+      // Pure animation glyphs (none in the token char class) get fully stripped.
+      expect(stripAnsi('|\b/\b\\\b*\bDone')).toBe('Done');
+    });
+
+    it('preserves dash chars in spinners (cosmetic trade-off for data safety)', () => {
+      // `-` is a valid token char (sk-ant-), so we refuse to consume it via
+      // backspace-overwrite. A spinner using `-` leaks the dash. Acceptable.
+      expect(stripAnsi('|\b-\b/\bDone')).toBe('-Done');
     });
 
     it('preserves newlines (does not treat \\n\\b as overwrite)', () => {
       expect(stripAnsi('line1\n\bline2')).toBe('line1\nline2');
     });
+
+    it('preserves data when CLI backspaces over an alphanumeric token char (v2.1.150 real regression)', () => {
+      // Real chunk pattern from kotik's PTY logs on v0.17.27: the CLI emits
+      // a leading 'o', then \b, then the rest of the token starting with
+      // 'at01-…'. The old `/[^\n\x08]\x08/g` rule ate the 'o' as if it were
+      // a spinner glyph, producing `sk-ant-at01-…` (107 chars) which the
+      // API rejected with 401. The 'o' is data, not animation, so we must
+      // NOT consume it. Cosmetically the displayed text would be wrong
+      // (terminal semantics: 'o' is overwritten), but data preservation
+      // beats display fidelity in this code path — the cleaned string is
+      // fed to token extraction, not rendered to a screen.
+      expect(stripAnsi('sk-ant-o\bat01-XYZ')).toBe('sk-ant-oat01-XYZ');
+    });
+
+    it('preserves leading data char of a wrapping token across backspace', () => {
+      const fullToken = 'sk-ant-oat01-' + 'A'.repeat(95);
+      // Equivalent to: 'Your token:\nsk-ant-o\bat01-AAA...'
+      const clean = stripAnsi(`Your token:\n${fullToken.slice(0, 8)}\b${fullToken.slice(8)}`);
+      expect(clean).toContain(fullToken);
+    });
+
+    it('strips animation glyphs even with multi-byte unicode (spinner UTF-8 chars)', () => {
+      expect(stripAnsi('✶\b✻\b✽\bDone')).toBe('Done');
+    });
+
+    it('preserves digits across backspace too', () => {
+      expect(stripAnsi('1\b2')).toBe('12');
+    });
   });
 
   describe('Combinations', () => {
     it('handles mixed CSI + OSC + lone ESC + backspace', () => {
+      // Note `foo\bbar`: 'o' is in the token class, so the overwrite-pass
+      // refuses to consume it. The standalone \b is then removed, yielding
+      // `foobar` rather than the terminal-semantic `fobar`. This is the
+      // documented trade-off — data preservation over display fidelity.
       const input = '\x1b]0;Title\x07\x1b[31mErr\x1b[0m: \x1bofoo\bbar\x1b';
-      expect(stripAnsi(input)).toBe('Err: ofobar');
+      expect(stripAnsi(input)).toBe('Err: ofoobar');
     });
 
     it('idempotent: stripping already-clean text returns the same text', () => {

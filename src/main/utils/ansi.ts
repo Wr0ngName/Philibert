@@ -22,17 +22,29 @@ const ANSI_PATTERNS = {
   /**
    * Lone/stray ESC bytes that aren't part of a structured sequence above.
    *
-   * IMPORTANT: strips only the ESC byte itself, never the following byte.
-   * Standard 2-byte escapes (e.g. \x1bD IND, \x1bo LS3) have alphanumeric
-   * finals that collide with data — the Claude Code CLI v2.1.150 emits a
-   * stray \x1b immediately before OAuth tokens, and a greedy `/\x1b./g`
-   * would eat the leading 'o' of the `oat01-` prefix, corrupting the token.
-   * Leaving an unrecognized 2-byte escape's final byte in the output is
-   * cosmetically harmless; eating a data byte is catastrophic.
+   * Strips only the ESC byte itself, never the following byte. Standard
+   * 2-byte escapes (e.g. \x1bD IND, \x1bo LS3) have alphanumeric finals
+   * that overlap with data characters, so a greedy `/\x1b./g` could
+   * destroy data if such an escape ever sat next to it. Leaving an
+   * unrecognized 2-byte escape's final byte in the output is cosmetically
+   * harmless; eating a data byte would be catastrophic.
    */
   LONE_ESC: /\x1b/g,
-  /** Backspace characters used by spinners — a char followed by \b overwrites it */
-  BACKSPACE_OVERWRITE: /[^\n\x08]\x08/g,
+  /**
+   * Spinner-overwrite pattern: an animation glyph followed by \b that erases it.
+   *
+   * IMPORTANT: we exclude data characters (`[A-Za-z0-9_-]`) from the overwritten
+   * position. Claude Code CLI v2.1.150 in PTY mode renders the OAuth token with
+   * a backspace animation that emits `sk-ant-o\bat01-…`; the unrestricted rule
+   * `/[^\n\x08]\x08/g` happily ate the `o` as if it were a spinner glyph,
+   * mangling the captured token to `sk-ant-at01-…` and breaking 401-handling
+   * downstream. Animation glyphs are *non*-alphanumeric (`*`, `|`, `/`, `\`,
+   * unicode dots/blocks), so excluding the token character class strips real
+   * animations without ever destroying token data. The cosmetic cost is that
+   * `a\bb` becomes `ab` (instead of `b`) — visually wrong per terminal
+   * semantics, but we don't render this string, we parse it.
+   */
+  BACKSPACE_OVERWRITE: /[^\n\x08A-Za-z0-9_-]\x08/g,
   /** Any remaining standalone backspace characters */
   BACKSPACE: /\x08/g,
 } as const;

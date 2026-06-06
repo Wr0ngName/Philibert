@@ -536,6 +536,69 @@ describe('AuthService', () => {
       expect(result.token?.length).toBe(fullToken.length);
     });
 
+    it('should preserve "o" when CLI emits CSI ending in `o` before the token', async () => {
+      // Defense-in-depth: a CSI whose final byte happens to be a letter the
+      // token also uses would historically consume the terminator letter.
+      // Verifies we tolerate that shape adjacent to a token.
+      const completePromise = service.completeOAuthFlow('testcode12');
+
+      await vi.advanceTimersByTimeAsync(200);
+
+      const fullToken = 'sk-ant-oat01-' + 'Y'.repeat(95);
+      mockPty.emitData(`Your OAuth token:\n\x1b[1024o${fullToken}\nStore this token securely\n`);
+
+      await vi.advanceTimersByTimeAsync(600);
+
+      const result = await completePromise;
+
+      expect(result.success).toBe(true);
+      expect(result.token).toBe(fullToken);
+      expect(result.token?.startsWith('sk-ant-oat01-')).toBe(true);
+      expect(result.token?.length).toBe(fullToken.length);
+    });
+
+    it('should preserve token when CLI emits CSI with other alpha terminators adjacent to token', async () => {
+      const completePromise = service.completeOAuthFlow('testcode12');
+
+      await vi.advanceTimersByTimeAsync(200);
+
+      const fullToken = 'sk-ant-oat01-' + 'Z'.repeat(95);
+      mockPty.emitData(`\x1b[?25h\x1b[2K${fullToken}\x1b[0m\n`);
+
+      await vi.advanceTimersByTimeAsync(600);
+
+      const result = await completePromise;
+
+      expect(result.success).toBe(true);
+      expect(result.token).toBe(fullToken);
+      expect(result.token?.startsWith('sk-ant-oat01-')).toBe(true);
+    });
+
+    it('should preserve leading "o" when CLI uses backspace animation across the token (v0.17.27 real-world regression)', async () => {
+      // The real bug observed on kotik's v0.17.27 install. The CLI in PTY
+      // mode emits the token with a backspace animation: `sk-ant-o\bat01-…`.
+      // The old BACKSPACE_OVERWRITE rule `/[^\n\x08]\x08/g` ate the `o`,
+      // producing `sk-ant-at01-…` (107 chars) which the API rejected with
+      // 401 "Invalid bearer token". The fix excludes alphanumeric chars
+      // from the overwrite class so token data survives.
+      const completePromise = service.completeOAuthFlow('testcode12');
+
+      await vi.advanceTimersByTimeAsync(200);
+
+      const tokenTail = 'at01-' + 'M'.repeat(90);  // 95 chars after the leading 'o'
+      const expected = 'sk-ant-o' + tokenTail;
+      mockPty.emitData(`Your OAuth token:\nsk-ant-o\b${tokenTail}\nStore this token securely\n`);
+
+      await vi.advanceTimersByTimeAsync(600);
+
+      const result = await completePromise;
+
+      expect(result.success).toBe(true);
+      expect(result.token).toBe(expected);
+      expect(result.token?.startsWith('sk-ant-oat01-')).toBe(true);
+      expect(result.token?.length).toBe(expected.length);
+    });
+
     it('should return error when no pending flow', async () => {
       service.cleanupOAuthFlow();
 
