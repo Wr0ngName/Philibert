@@ -11,8 +11,6 @@
  * extraction loses characters due to cursor-forward sequences.
  */
 
-/* eslint-disable no-control-regex */
-
 /**
  * Render raw PTY output through a virtual screen buffer and return the
  * final screen content as plain text (one string per row, joined by \n).
@@ -159,5 +157,3 @@ export function renderPtyScreen(raw: string): string {
   }
   return lines.join('\n');
 }
-
-/* eslint-enable no-control-regex */
