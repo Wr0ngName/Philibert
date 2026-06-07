@@ -49,7 +49,7 @@ export function renderPtyScreen(raw: string): string {
       const final = raw[i];
       i++;
 
-      const numParams = params.replace(/^[^0-9;]*/, '').split(';').map(s => parseInt(s || '1', 10));
+      const numParams = params.replace(/^[^0-9;]*/, '').split(';').map(s => parseInt(s || '0', 10));
 
       switch (final) {
         case 'H': case 'f':
