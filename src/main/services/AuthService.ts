@@ -766,8 +766,9 @@ export class AuthService {
         // from the previous frame. Render the raw PTY output through a
         // virtual screen buffer that tracks every write, so characters from
         // previous frames survive cursor-forward.
-        const rendered = renderPtyScreen(output) + '\n';
-        const renderedToken = this.extractTokenFromOutput(rendered);
+        const rendered = renderPtyScreen(output);
+        const renderedMatch = rendered.match(/(sk-ant-[A-Za-z0-9_-]+)/);
+        const renderedToken = renderedMatch?.[1] ?? null;
         if (renderedToken) {
           const renderedValidation = validateOAuthTokenFormat(renderedToken);
           if (renderedValidation.valid) {
