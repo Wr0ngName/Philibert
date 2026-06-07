@@ -35,18 +35,21 @@ export function renderPtyScreen(raw: string): string {
     const ch = raw[i];
 
     if (ch === '\x1b' && i + 1 < raw.length && raw[i + 1] === '[') {
-      // CSI sequence: ESC [ <params> <final>
+      // CSI sequence: ESC [ <params> <intermediates> <final>
       i += 2;
       let params = '';
-      while (i < raw.length && (raw[i] >= '0' && raw[i] <= '9' || raw[i] === ';' || raw[i] === '?')) {
+      while (i < raw.length && raw[i] >= '0' && raw[i] <= '?') {
         params += raw[i];
+        i++;
+      }
+      while (i < raw.length && raw[i] >= ' ' && raw[i] <= '/') {
         i++;
       }
       if (i >= raw.length) break;
       const final = raw[i];
       i++;
 
-      const numParams = params.replace(/^\?/, '').split(';').map(s => parseInt(s || '1', 10));
+      const numParams = params.replace(/^[^0-9;]*/, '').split(';').map(s => parseInt(s || '1', 10));
 
       switch (final) {
         case 'H': case 'f':

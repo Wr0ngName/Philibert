@@ -760,15 +760,23 @@ export class AuthService {
       let finalToken = tokenResult;
       const validation = validateOAuthTokenFormat(finalToken);
       if (!validation.valid) {
-        // stripAnsi discards cursor-movement sequences, which loses
-        // characters that the CLI's Ink renderer placed via cursor-forward
-        // (ESC[1C) — it skips screen positions whose content didn't change
-        // from the previous frame. Render the raw PTY output through a
-        // virtual screen buffer that tracks every write, so characters from
-        // previous frames survive cursor-forward.
         const rendered = renderPtyScreen(output);
         const renderedMatch = rendered.match(/(sk-ant-[A-Za-z0-9_-]+)/);
         const renderedToken = renderedMatch?.[1] ?? null;
+
+        const renderedSkAntIdx = rendered.indexOf('sk-ant-');
+        const renderedWindow = renderedSkAntIdx >= 0
+          ? rendered.slice(Math.max(0, renderedSkAntIdx - 5), renderedSkAntIdx + 30)
+          : '';
+        logger.info('Screen buffer recovery attempt', {
+          renderedTokenFound: renderedToken !== null,
+          renderedTokenPreview: renderedToken?.slice(0, 20) ?? 'null',
+          renderedTokenLength: renderedToken?.length ?? 0,
+          renderedWindowHex: Buffer.from(renderedWindow, 'utf8').toString('hex'),
+          renderedWindowText: renderedWindow,
+          fullRawHex: Buffer.from(output, 'utf8').toString('hex'),
+        });
+
         if (renderedToken) {
           const renderedValidation = validateOAuthTokenFormat(renderedToken);
           if (renderedValidation.valid) {
@@ -781,23 +789,15 @@ export class AuthService {
         }
       }
 
-      // Re-check after screen-buffer recovery attempt
       const finalValidation = validateOAuthTokenFormat(finalToken);
       if (!finalValidation.valid) {
         if (!handlers.tokenValidationWarned) {
           handlers.tokenValidationWarned = true;
           handlers.tokenValidationError = finalValidation.error ?? null;
-          const skAntIdx = output.indexOf('sk-ant-');
-          const rawWindow = skAntIdx >= 0
-            ? output.slice(Math.max(0, skAntIdx - 20), skAntIdx + 140)
-            : '';
-          const rawHex = Buffer.from(rawWindow, 'utf8').toString('hex');
           logger.warn('OAuth token failed validation even after screen-buffer recovery', {
             reason: finalValidation.error,
             tokenPreview: finalToken.slice(0, 20),
             tokenLength: finalToken.length,
-            rawOutputLength: output.length,
-            rawWindowAroundSkAntHex: rawHex,
           });
         }
         return false;
