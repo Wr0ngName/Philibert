@@ -709,11 +709,13 @@ describe('AuthService', () => {
       it('refuses to store a token with unknown type prefix (defense gate)', async () => {
         const promise = service.completeOAuthFlow('testcode12');
         await vi.advanceTimersByTimeAsync(200);
-        // sk-ant-xyz99- is not a recognised type prefix. The extractor will
-        // capture it (it does match `sk-ant-…`) but the validator must reject.
         const fake = 'sk-ant-xyz99-' + 'A'.repeat(95);
         mockPty.emitData(`${fake}\n`);
         await vi.advanceTimersByTimeAsync(600);
+        // Flow does NOT abort — waits for credentials file. Simulate PTY
+        // exit without credentials file to trigger the final failure path.
+        mockPty.emitExit(0);
+        await vi.advanceTimersByTimeAsync(1500);
         const result = await promise;
         expect(result.success).toBe(false);
         expect(result.error).toMatch(/malformed|prefix|format/i);
@@ -722,26 +724,62 @@ describe('AuthService', () => {
       it('refuses to store a truncated token (defense gate)', async () => {
         const promise = service.completeOAuthFlow('testcode12');
         await vi.advanceTimersByTimeAsync(200);
-        // Below OAUTH_TOKEN_MIN_LENGTH (40) — would 401 against the API.
         const truncated = 'sk-ant-oat01-abc';
         mockPty.emitData(`${truncated}\n`);
         await vi.advanceTimersByTimeAsync(600);
+        mockPty.emitExit(0);
+        await vi.advanceTimersByTimeAsync(1500);
         const result = await promise;
         expect(result.success).toBe(false);
         expect(result.error).toMatch(/malformed|short|length/i);
       });
 
       it('refuses to store the v0.17.27 mangled shape (sk-ant-at01-…, missing o)', async () => {
-        // If the BS-overwrite fix regresses for some future CLI quirk, the
-        // validator must still catch the symptom and prevent storage.
         const promise = service.completeOAuthFlow('testcode12');
         await vi.advanceTimersByTimeAsync(200);
         const mangled = 'sk-ant-at01-' + 'A'.repeat(95);
         mockPty.emitData(`${mangled}\n`);
         await vi.advanceTimersByTimeAsync(600);
+        mockPty.emitExit(0);
+        await vi.advanceTimersByTimeAsync(1500);
         const result = await promise;
         expect(result.success).toBe(false);
         expect(result.error).toMatch(/malformed|prefix/i);
+      });
+
+      it('recovers via credentials file when output token is mangled by cursor-forward', async () => {
+        // Reproduces the v0.17.29 regression: CLI renders sk-ant-ESC[1Cat01-
+        // in PTY, ANSI stripping eats the cursor-forward and the 'o' position,
+        // yielding sk-ant-at01-. The flow must NOT abort — it should wait for
+        // setup-token to write .credentials.json with the correct token.
+        const correctToken = 'sk-ant-oat01-' + 'R'.repeat(95);
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+
+        // Emit the mangled token (as stripAnsi would produce from ESC[1C)
+        const mangled = 'sk-ant-at01-' + 'R'.repeat(95);
+        mockPty.emitData(`${mangled}\n`);
+        await vi.advanceTimersByTimeAsync(600);
+
+        // setup-token writes credentials file before exiting
+        const credsJson = JSON.stringify({ oauthToken: correctToken });
+        mockFsExistsSync.mockImplementation((p: string) => {
+          if (typeof p === 'string' && p.endsWith('.credentials.json')) return true;
+          if (typeof p === 'string' && p.includes('cli.js')) return true;
+          if (typeof p === 'string' && p.includes('node.exe')) return true;
+          return false;
+        });
+        mockFsReadFileSync.mockImplementation((p: string) => {
+          if (typeof p === 'string' && p.endsWith('.credentials.json')) return credsJson;
+          throw new Error('not found');
+        });
+
+        // Next polling check finds the credentials file
+        await vi.advanceTimersByTimeAsync(500);
+        const result = await promise;
+        expect(result.success).toBe(true);
+        expect(result.token).toBe(correctToken);
+        expect(result.credentialsJson).toBe(credsJson);
       });
     });
 

@@ -49,6 +49,8 @@ interface OAuthResourceHandlers {
   dataHandler: { dispose: () => void } | null;
   pollInterval: ReturnType<typeof setInterval> | null;
   resolved: boolean;
+  tokenValidationWarned: boolean;
+  tokenValidationError: string | null;
   cleanup: () => void;
 }
 
@@ -663,6 +665,8 @@ export class AuthService {
       dataHandler: null,
       pollInterval: null,
       resolved: false,
+      tokenValidationWarned: false,
+      tokenValidationError: null,
       cleanup: () => {
         if (handlers.dataHandler) {
           handlers.dataHandler.dispose();
@@ -745,33 +749,34 @@ export class AuthService {
       // with PTY ANSI-stripping bugs that corrupted the extracted token by a
       // single byte — the token was stored, every API call 401'd, and the
       // user got logged out repeatedly. Refuse to proceed with a token that
-      // doesn't match the known shape; surface a diagnostic error so the
-      // bug is visible up-front instead of silently downstream.
+      // doesn't match the known shape.
+      //
+      // However, do NOT abort the flow — the credentials file (written by
+      // setup-token shortly after displaying the token) contains the correct
+      // un-corrupted token. Aborting here kills the PTY before it can write
+      // that file, which is exactly what happened in v0.17.29. Instead, log
+      // the diagnostic and continue waiting for the credentials file.
       const validation = validateOAuthTokenFormat(tokenResult);
       if (!validation.valid) {
-        // Capture diagnostic context for future bug fixes. Include hex around
-        // the sk-ant- position so the exact byte pattern is recoverable from
-        // production logs without needing kotik to re-instrument.
-        const skAntIdx = output.indexOf('sk-ant-');
-        const rawWindow = skAntIdx >= 0
-          ? output.slice(Math.max(0, skAntIdx - 20), skAntIdx + 140)
-          : '';
-        const rawHex = Buffer.from(rawWindow, 'utf8').toString('hex');
-        logger.error('Extracted OAuth token failed format validation — refusing to store', {
-          reason: validation.error,
-          tokenPreview: tokenResult.slice(0, 20),
-          tokenLength: tokenResult.length,
-          rawOutputLength: output.length,
-          rawWindowAroundSkAntHex: rawHex,
-        });
-        handlers.resolved = true;
-        handlers.cleanup();
-        this.cleanupOAuthFlow();
-        resolve({
-          success: false,
-          error: `Authentication captured a malformed token (${validation.error}). This usually means a Claude Code CLI version changed its output format. Please report this with the Philibert logs; meanwhile try logging in again.`,
-        });
-        return true;
+        if (!handlers.tokenValidationWarned) {
+          handlers.tokenValidationWarned = true;
+          handlers.tokenValidationError = validation.error ?? null;
+          const skAntIdx = output.indexOf('sk-ant-');
+          const rawWindow = skAntIdx >= 0
+            ? output.slice(Math.max(0, skAntIdx - 20), skAntIdx + 140)
+            : '';
+          const rawHex = Buffer.from(rawWindow, 'utf8').toString('hex');
+          logger.warn('Extracted OAuth token failed format validation — waiting for credentials file instead', {
+            reason: validation.error,
+            tokenPreview: tokenResult.slice(0, 20),
+            tokenLength: tokenResult.length,
+            rawOutputLength: output.length,
+            rawWindowAroundSkAntHex: rawHex,
+          });
+        }
+        // Don't store the corrupt token. Continue waiting — the credentials
+        // file or PTY exit handler will resolve the flow.
+        return false;
       }
 
       handlers.resolved = true;
@@ -984,7 +989,10 @@ export class AuthService {
             handlers.resolved = true;
             handlers.cleanup();
             this.cleanupOAuthFlow();
-            resolve({ success: false, error: 'Authentication failed. Please try again.' });
+            const error = handlers.tokenValidationError
+              ? `Authentication captured a malformed token (${handlers.tokenValidationError}). The credentials file was not written before the CLI exited. Please try logging in again.`
+              : 'Authentication failed. Please try again.';
+            resolve({ success: false, error });
           }
         } else {
           // Already resolved (from output extraction).  Do a final
