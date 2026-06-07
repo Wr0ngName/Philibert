@@ -747,6 +747,29 @@ describe('AuthService', () => {
         expect(result.error).toMatch(/malformed|prefix/i);
       });
 
+      it('recovers token via PTY screen buffer when cursor-forward hides a character', async () => {
+        // Simulates real Ink rendering: "Paste code here" is on the same row,
+        // then the token is written to the same row with ESC[1C skipping the
+        // 'o' position because Ink sees it hasn't changed from frame 1.
+        // stripAnsi removes ESC[1C → "sk-ant-at01-..." (missing o)
+        // renderPtyScreen preserves the 'o' from frame 1 → "sk-ant-oat01-..."
+        const tokenBody = 'R'.repeat(95);
+        const promise = service.completeOAuthFlow('testcode12');
+        await vi.advanceTimersByTimeAsync(200);
+
+        // Frame 1: "Paste code here" at row 3 col 2 — the 'o' in "code" sits at col 9
+        // Frame 2: token at row 3 col 2, cursor-forward skips col 9 (the 'o')
+        const rawPty =
+          '\x1b[3;2HPaste\x1b[1Ccode\x1b[1Chere' +
+          '\x1b[3;2Hsk-ant-\x1b[1Cat01-' + tokenBody + '\n';
+        mockPty.emitData(rawPty);
+        await vi.advanceTimersByTimeAsync(600);
+
+        const result = await promise;
+        expect(result.success).toBe(true);
+        expect(result.token).toBe('sk-ant-oat01-' + tokenBody);
+      });
+
       it('recovers via credentials file when output token is mangled by cursor-forward', async () => {
         // Reproduces the v0.17.29 regression: CLI renders sk-ant-ESC[1Cat01-
         // in PTY, ANSI stripping eats the cursor-forward and the 'o' position,

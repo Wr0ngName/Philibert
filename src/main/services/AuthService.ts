@@ -19,6 +19,7 @@ import type { IPty } from 'node-pty';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { stripAnsi } from '../utils/ansi';
 import logger from '../utils/logger';
+import { renderPtyScreen } from '../utils/ptyScreen';
 import { getResourcesPath, WindowsPaths, ClaudeCliPaths } from '../utils/resourcePaths';
 import { sanitizeForLog } from '../utils/stringUtils';
 
@@ -756,39 +757,61 @@ export class AuthService {
       // un-corrupted token. Aborting here kills the PTY before it can write
       // that file, which is exactly what happened in v0.17.29. Instead, log
       // the diagnostic and continue waiting for the credentials file.
-      const validation = validateOAuthTokenFormat(tokenResult);
+      let finalToken = tokenResult;
+      const validation = validateOAuthTokenFormat(finalToken);
       if (!validation.valid) {
+        // stripAnsi discards cursor-movement sequences, which loses
+        // characters that the CLI's Ink renderer placed via cursor-forward
+        // (ESC[1C) — it skips screen positions whose content didn't change
+        // from the previous frame. Render the raw PTY output through a
+        // virtual screen buffer that tracks every write, so characters from
+        // previous frames survive cursor-forward.
+        const rendered = renderPtyScreen(output);
+        const renderedToken = this.extractTokenFromOutput(rendered, true);
+        if (renderedToken) {
+          const renderedValidation = validateOAuthTokenFormat(renderedToken);
+          if (renderedValidation.valid) {
+            logger.info('Recovered token via PTY screen buffer (cursor-forward had hidden a character)', {
+              strippedPrefix: finalToken.slice(0, 14),
+              recoveredPrefix: renderedToken.slice(0, 14),
+            });
+            finalToken = renderedToken;
+          }
+        }
+      }
+
+      // Re-check after screen-buffer recovery attempt
+      const finalValidation = validateOAuthTokenFormat(finalToken);
+      if (!finalValidation.valid) {
         if (!handlers.tokenValidationWarned) {
           handlers.tokenValidationWarned = true;
-          handlers.tokenValidationError = validation.error ?? null;
+          handlers.tokenValidationError = finalValidation.error ?? null;
           const skAntIdx = output.indexOf('sk-ant-');
           const rawWindow = skAntIdx >= 0
             ? output.slice(Math.max(0, skAntIdx - 20), skAntIdx + 140)
             : '';
           const rawHex = Buffer.from(rawWindow, 'utf8').toString('hex');
-          logger.warn('Extracted OAuth token failed format validation — waiting for credentials file instead', {
-            reason: validation.error,
-            tokenPreview: tokenResult.slice(0, 20),
-            tokenLength: tokenResult.length,
+          logger.warn('OAuth token failed validation even after screen-buffer recovery', {
+            reason: finalValidation.error,
+            tokenPreview: finalToken.slice(0, 20),
+            tokenLength: finalToken.length,
             rawOutputLength: output.length,
             rawWindowAroundSkAntHex: rawHex,
           });
         }
-        // Don't store the corrupt token. Continue waiting — the credentials
-        // file or PTY exit handler will resolve the flow.
         return false;
       }
 
       handlers.resolved = true;
       handlers.cleanup();
       logger.info('OAuth authentication successful (extracted from output)', {
-        tokenLength: tokenResult.length,
-        tokenPrefix: tokenResult.slice(0, 14),
+        tokenLength: finalToken.length,
+        tokenPrefix: finalToken.slice(0, 14),
       });
       // Do NOT call cleanupOAuthFlow() here — let the PTY exit naturally so
       // setup-token can complete its server-side registration.  The PTY exit
       // handler calls cleanupOAuthFlow() after a final credentials-file check.
-      resolve({ success: true, token: tokenResult });
+      resolve({ success: true, token: finalToken });
       return true;
     }
 
@@ -814,7 +837,7 @@ export class AuthService {
    * We ONLY trim at known junk patterns - no length assumptions.
    * Returns null if no token found or if we can't reliably extract it.
    */
-  private extractTokenFromOutput(cleanOutput: string): string | null {
+  private extractTokenFromOutput(cleanOutput: string, skipBufferEndGuard = false): string | null {
     // Match any sk-ant- token (don't assume specific format after prefix)
     const tokenMatch = cleanOutput.match(/(sk-ant-[A-Za-z0-9_-]+)/);
     if (!tokenMatch) return null;
@@ -833,7 +856,7 @@ export class AuthService {
     // full output is in, so we don't risk hanging on a malformed exit.
     const matchEnd = (tokenMatch.index ?? 0) + originalLength;
     const isAtBufferEnd = matchEnd >= cleanOutput.length;
-    if (isAtBufferEnd) {
+    if (isAtBufferEnd && !skipBufferEndGuard) {
       return null;
     }
 
