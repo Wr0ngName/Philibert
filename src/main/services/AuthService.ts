@@ -766,8 +766,8 @@ export class AuthService {
         // from the previous frame. Render the raw PTY output through a
         // virtual screen buffer that tracks every write, so characters from
         // previous frames survive cursor-forward.
-        const rendered = renderPtyScreen(output);
-        const renderedToken = this.extractTokenFromOutput(rendered, true);
+        const rendered = renderPtyScreen(output) + '\n';
+        const renderedToken = this.extractTokenFromOutput(rendered);
         if (renderedToken) {
           const renderedValidation = validateOAuthTokenFormat(renderedToken);
           if (renderedValidation.valid) {
@@ -837,7 +837,7 @@ export class AuthService {
    * We ONLY trim at known junk patterns - no length assumptions.
    * Returns null if no token found or if we can't reliably extract it.
    */
-  private extractTokenFromOutput(cleanOutput: string, skipBufferEndGuard = false): string | null {
+  private extractTokenFromOutput(cleanOutput: string): string | null {
     // Match any sk-ant- token (don't assume specific format after prefix)
     const tokenMatch = cleanOutput.match(/(sk-ant-[A-Za-z0-9_-]+)/);
     if (!tokenMatch) return null;
@@ -856,7 +856,7 @@ export class AuthService {
     // full output is in, so we don't risk hanging on a malformed exit.
     const matchEnd = (tokenMatch.index ?? 0) + originalLength;
     const isAtBufferEnd = matchEnd >= cleanOutput.length;
-    if (isAtBufferEnd && !skipBufferEndGuard) {
+    if (isAtBufferEnd) {
       return null;
     }
 
