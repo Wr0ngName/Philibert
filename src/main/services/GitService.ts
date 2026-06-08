@@ -15,6 +15,26 @@ import { WindowsPaths } from '../utils/resourcePaths';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Detect git's "identity not configured" failure modes from an error message.
+ *
+ * Git renders these from src/ident.c / builtin/commit.c — known phrasings:
+ *   - "Please tell me who you are."
+ *   - "fatal: unable to auto-detect email address"
+ *   - "fatal: empty ident name"
+ *   - "fatal: no email was given"
+ *
+ * Exported so the renderer error toast can branch on it via a dedicated IPC.
+ */
+export function isIdentityError(message: string): boolean {
+  const m = message.toLowerCase();
+  return m.includes('please tell me who you are')
+    || m.includes('unable to auto-detect email')
+    || m.includes('empty ident name')
+    || m.includes('no email was given')
+    || m.includes('no name was given');
+}
+
 export class GitService {
   private watchers: fs.FSWatcher[] = [];
   private watchedDir: string | null = null;
@@ -236,6 +256,49 @@ export class GitService {
     const output = await this.runGit(['commit', '-m', message], cwd);
     logger.info('Git commit', { cwd, stageAll, message: message.slice(0, 50) });
     return output;
+  }
+
+  /**
+   * Read git's user.name / user.email config for a working directory.
+   *
+   * Falls through git's normal precedence (local repo → global → system).
+   * Empty strings indicate the value isn't set at any scope.
+   */
+  async getIdentity(cwd: string): Promise<{ name: string; email: string }> {
+    let name = '';
+    let email = '';
+    try {
+      name = await this.runGit(['config', '--get', 'user.name'], cwd);
+    } catch {
+      // Not set — leave empty
+    }
+    try {
+      email = await this.runGit(['config', '--get', 'user.email'], cwd);
+    } catch {
+      // Not set — leave empty
+    }
+    return { name, email };
+  }
+
+  /**
+   * Write user.name and user.email. `scope: 'global'` writes to the user's
+   * ~/.gitconfig; `scope: 'local'` writes to .git/config for this repo.
+   */
+  async setIdentity(
+    cwd: string,
+    name: string,
+    email: string,
+    scope: 'local' | 'global' = 'local',
+  ): Promise<void> {
+    const trimmedName = name.trim();
+    const trimmedEmail = email.trim();
+    if (!trimmedName) throw new Error('Name must not be empty');
+    if (!trimmedEmail) throw new Error('Email must not be empty');
+
+    const scopeFlag = scope === 'global' ? '--global' : '--local';
+    await this.runGit(['config', scopeFlag, 'user.name', trimmedName], cwd);
+    await this.runGit(['config', scopeFlag, 'user.email', trimmedEmail], cwd);
+    logger.info('Git identity set', { cwd, scope, name: trimmedName, email: trimmedEmail });
   }
 
   /**

@@ -228,6 +228,12 @@ const electronAPI: ElectronAPI = {
     createBranch: (workingDir: string, branchName: string, checkout: boolean) =>
       ipcRenderer.invoke(IPC_CHANNELS.GIT_CREATE_BRANCH, workingDir, branchName, checkout),
 
+    getIdentity: (workingDir: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.GIT_GET_IDENTITY, workingDir),
+
+    setIdentity: (workingDir: string, name: string, email: string, scope: 'local' | 'global') =>
+      ipcRenderer.invoke(IPC_CHANNELS.GIT_SET_IDENTITY, workingDir, name, email, scope),
+
     onStatusChanged: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

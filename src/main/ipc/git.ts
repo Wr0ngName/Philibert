@@ -145,6 +145,41 @@ export function setupGitIPC(
     }
   );
 
+  // Read git's user.name + user.email config
+  ipcMain.handle(
+    IPC_CHANNELS.GIT_GET_IDENTITY,
+    async (_event, workingDir: string) => {
+      try {
+        ensureService(gitService, 'GitService');
+        validateString(workingDir, 'Working directory');
+        return await gitService.getIdentity(workingDir);
+      } catch (error) {
+        logger.error('Failed to get git identity', { error, workingDir });
+        throw new Error(formatErrorMessage('Failed to get git identity', error), { cause: error });
+      }
+    },
+  );
+
+  // Write user.name + user.email at the chosen scope
+  ipcMain.handle(
+    IPC_CHANNELS.GIT_SET_IDENTITY,
+    async (_event, workingDir: string, name: string, email: string, scope: 'local' | 'global') => {
+      try {
+        ensureService(gitService, 'GitService');
+        validateString(workingDir, 'Working directory');
+        validateString(name, 'Name');
+        validateString(email, 'Email');
+        if (scope !== 'local' && scope !== 'global') {
+          throw new Error('Invalid scope: must be "local" or "global"');
+        }
+        await gitService.setIdentity(workingDir, name, email, scope);
+      } catch (error) {
+        logger.error('Failed to set git identity', { error, workingDir });
+        throw new Error(formatErrorMessage('Failed to set git identity', error), { cause: error });
+      }
+    },
+  );
+
   // Set up event-driven git status notifications
   gitService.onStatusChange((status) => {
     sendToRenderer(getMainWindow, IPC_CHANNELS.GIT_STATUS_CHANGED, status);

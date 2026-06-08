@@ -133,6 +133,10 @@ export interface ElectronAPI {
     checkout: (workingDir: string, branchName: string) => Promise<string>;
     /** Create a new branch from HEAD (and optionally check it out) */
     createBranch: (workingDir: string, branchName: string, checkout: boolean) => Promise<string>;
+    /** Read git's user.name / user.email config for this repo (falls through to global/system) */
+    getIdentity: (workingDir: string) => Promise<{ name: string; email: string }>;
+    /** Write user.name + user.email at the chosen scope ('local' = this repo, 'global' = ~/.gitconfig) */
+    setIdentity: (workingDir: string, name: string, email: string, scope: 'local' | 'global') => Promise<void>;
     /** Listen for git status changes */
     onStatusChanged: (callback: (status: GitStatus) => void) => () => void;
   };

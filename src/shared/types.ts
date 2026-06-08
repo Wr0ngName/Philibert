@@ -1023,6 +1023,10 @@ export const IPC_CHANNELS = {
   GIT_CREATE_BRANCH: 'git:create-branch',
   /** Git status changed (event from main to renderer) */
   GIT_STATUS_CHANGED: 'git:status-changed',
+  /** Get local + global git user.name and user.email */
+  GIT_GET_IDENTITY: 'git:get-identity',
+  /** Write user.name and user.email to local repo or global config */
+  GIT_SET_IDENTITY: 'git:set-identity',
 
   // File operations
   /** Open directory picker dialog */

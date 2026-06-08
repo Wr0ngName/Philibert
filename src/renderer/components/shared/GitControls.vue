@@ -57,6 +57,66 @@ const loadingPush = ref(false);
 const errorMessage = ref('');
 let errorTimer: ReturnType<typeof setTimeout> | null = null;
 
+// Identity prompt state — shown inside the commit dropdown when git rejects a
+// commit because user.name / user.email aren't set.
+const identityPromptOpen = ref(false);
+const identityName = ref('');
+const identityEmail = ref('');
+const identityScope = ref<'local' | 'global'>('global');
+const savingIdentity = ref(false);
+const identityError = ref('');
+
+function isIdentityError(message: string): boolean {
+  const m = message.toLowerCase();
+  return m.includes('please tell me who you are')
+    || m.includes('unable to auto-detect email')
+    || m.includes('empty ident name')
+    || m.includes('no email was given')
+    || m.includes('no name was given');
+}
+
+async function openIdentityPrompt(): Promise<void> {
+  if (!workingDirectory.value) return;
+  identityError.value = '';
+  try {
+    // Prefill with whatever git already has (e.g. user has name globally but
+    // not email, or vice versa).
+    const existing = await window.electron.git.getIdentity(workingDirectory.value);
+    identityName.value = existing.name || '';
+    identityEmail.value = existing.email || '';
+  } catch {
+    identityName.value = '';
+    identityEmail.value = '';
+  }
+  identityPromptOpen.value = true;
+}
+
+async function saveIdentityAndRetry(): Promise<void> {
+  if (!workingDirectory.value) return;
+  if (!identityName.value.trim() || !identityEmail.value.trim()) {
+    identityError.value = 'Both name and email are required.';
+    return;
+  }
+
+  savingIdentity.value = true;
+  identityError.value = '';
+  try {
+    await window.electron.git.setIdentity(
+      workingDirectory.value,
+      identityName.value.trim(),
+      identityEmail.value.trim(),
+      identityScope.value,
+    );
+    identityPromptOpen.value = false;
+    // Retry the commit that just failed
+    await doCommit();
+  } catch (err) {
+    identityError.value = `Failed to save identity: ${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    savingIdentity.value = false;
+  }
+}
+
 // IPC cleanup
 let cleanupStatusListener: (() => void) | null = null;
 
@@ -218,7 +278,17 @@ async function doCommit(): Promise<void> {
     commitDropdownOpen.value = false;
     await fetchStatus();
   } catch (err) {
-    showError(`Commit failed: ${err instanceof Error ? err.message : String(err)}`);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    // Git rejects commits when user.name / user.email isn't set — surface a
+    // proper "configure your identity" form instead of dumping the raw
+    // multi-line git error in a toast. Save-and-retry runs through doCommit
+    // again, so a second-pass failure (for a different reason) falls back
+    // to the normal toast path.
+    if (isIdentityError(errMsg)) {
+      await openIdentityPrompt();
+    } else {
+      showError(`Commit failed: ${errMsg}`);
+    }
     // Status may be out of sync after a partial failure (e.g. created branch
     // but commit failed) — refresh so the displayed branch reflects reality.
     await fetchStatus();
@@ -683,64 +753,151 @@ onUnmounted(() => {
       <TransitionFade type="scale">
         <div
           v-if="commitDropdownOpen"
-          class="absolute right-0 top-full mt-1 z-50 w-[300px] rounded-lg shadow-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-3 overflow-hidden"
+          class="absolute right-0 top-full mt-1 z-50 w-[320px] rounded-lg shadow-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-3 overflow-hidden"
         >
-          <div class="text-sm font-medium text-surface-800 dark:text-surface-200 mb-2">
-            Commit Changes
-          </div>
+          <!-- Identity prompt (shown when git rejected the commit because
+               user.name / user.email isn't configured) -->
+          <template v-if="identityPromptOpen">
+            <div class="text-sm font-medium text-surface-800 dark:text-surface-200 mb-1">
+              Configure your git identity
+            </div>
+            <p class="text-xs text-surface-600 dark:text-surface-400 mb-2">
+              Git needs your name and email to record commits. We'll save these,
+              save your commit, and retry automatically.
+            </p>
 
-          <input
-            v-model="commitMessage"
-            type="text"
-            class="w-full px-2.5 py-1.5 text-sm rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 text-surface-800 dark:text-surface-200 placeholder-surface-400 dark:placeholder-surface-500 focus:outline-hidden focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
-            placeholder="Commit message..."
-            :disabled="loadingCommit"
-            @keydown="handleCommitKeydown"
-          >
-
-          <!-- Stage all toggle -->
-          <label class="flex items-center gap-2 mt-2 cursor-pointer select-none">
+            <label class="block text-[11px] uppercase tracking-wide text-surface-500 dark:text-surface-400 mb-1">
+              Name
+            </label>
             <input
-              v-model="stageAll"
-              type="checkbox"
-              class="w-3.5 h-3.5 rounded-sm border-surface-300 dark:border-surface-600 text-primary-500 focus:ring-primary-500"
+              v-model="identityName"
+              type="text"
+              class="w-full px-2.5 py-1.5 text-sm rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 text-surface-800 dark:text-surface-200 placeholder-surface-400 dark:placeholder-surface-500 focus:outline-hidden focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+              placeholder="Your Name"
+              :disabled="savingIdentity"
             >
-            <span class="text-xs text-surface-600 dark:text-surface-400">
-              Stage all changes
-            </span>
-          </label>
 
-          <!-- Commit on a new branch toggle -->
-          <label class="flex items-center gap-2 mt-1.5 cursor-pointer select-none">
+            <label class="block text-[11px] uppercase tracking-wide text-surface-500 dark:text-surface-400 mt-2 mb-1">
+              Email
+            </label>
             <input
-              v-model="commitOnNewBranch"
-              type="checkbox"
-              class="w-3.5 h-3.5 rounded-sm border-surface-300 dark:border-surface-600 text-primary-500 focus:ring-primary-500"
+              v-model="identityEmail"
+              type="email"
+              class="w-full px-2.5 py-1.5 text-sm rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 text-surface-800 dark:text-surface-200 placeholder-surface-400 dark:placeholder-surface-500 focus:outline-hidden focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+              placeholder="you@example.com"
+              :disabled="savingIdentity"
             >
-            <span class="text-xs text-surface-600 dark:text-surface-400">
-              Commit on a new branch
-            </span>
-          </label>
 
-          <input
-            v-if="commitOnNewBranch"
-            v-model="newBranchName"
-            type="text"
-            class="w-full mt-1.5 px-2.5 py-1.5 text-sm rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 text-surface-800 dark:text-surface-200 placeholder-surface-400 dark:placeholder-surface-500 focus:outline-hidden focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
-            placeholder="new-branch-name"
-            :disabled="loadingCommit"
-            @keydown="handleCommitKeydown"
-          >
+            <fieldset class="mt-3 text-xs text-surface-700 dark:text-surface-300">
+              <legend class="text-[11px] uppercase tracking-wide text-surface-500 dark:text-surface-400 mb-1">
+                Save as
+              </legend>
+              <label class="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  v-model="identityScope"
+                  type="radio"
+                  value="global"
+                  class="text-primary-500 focus:ring-primary-500"
+                  :disabled="savingIdentity"
+                >
+                Global default (used by every repo)
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer select-none mt-1">
+                <input
+                  v-model="identityScope"
+                  type="radio"
+                  value="local"
+                  class="text-primary-500 focus:ring-primary-500"
+                  :disabled="savingIdentity"
+                >
+                This repository only
+              </label>
+            </fieldset>
 
-          <button
-            class="w-full mt-2 px-3 py-1.5 text-sm rounded-md bg-primary-500 text-white hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            :disabled="!commitMessage.trim() || (commitOnNewBranch && !newBranchName.trim()) || loadingCommit"
-            @click="doCommit"
-          >
-            <span v-if="loadingCommit">Committing...</span>
-            <span v-else-if="commitOnNewBranch">{{ stageAll ? 'Create branch & commit all' : 'Create branch & commit staged' }}</span>
-            <span v-else>{{ stageAll ? 'Commit all' : 'Commit staged' }}</span>
-          </button>
+            <div
+              v-if="identityError"
+              class="mt-2 text-xs text-red-600 dark:text-red-400"
+            >
+              {{ identityError }}
+            </div>
+
+            <div class="flex gap-2 mt-3">
+              <button
+                class="flex-1 px-3 py-1.5 text-sm rounded-md border border-surface-300 dark:border-surface-600 text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-700 disabled:opacity-50 transition-colors"
+                :disabled="savingIdentity"
+                @click="identityPromptOpen = false"
+              >
+                Cancel
+              </button>
+              <button
+                class="flex-1 px-3 py-1.5 text-sm rounded-md bg-primary-500 text-white hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                :disabled="savingIdentity || !identityName.trim() || !identityEmail.trim()"
+                @click="saveIdentityAndRetry"
+              >
+                <span v-if="savingIdentity">Saving…</span>
+                <span v-else>Save & commit</span>
+              </button>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="text-sm font-medium text-surface-800 dark:text-surface-200 mb-2">
+              Commit Changes
+            </div>
+
+            <input
+              v-model="commitMessage"
+              type="text"
+              class="w-full px-2.5 py-1.5 text-sm rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 text-surface-800 dark:text-surface-200 placeholder-surface-400 dark:placeholder-surface-500 focus:outline-hidden focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+              placeholder="Commit message..."
+              :disabled="loadingCommit"
+              @keydown="handleCommitKeydown"
+            >
+
+            <!-- Stage all toggle -->
+            <label class="flex items-center gap-2 mt-2 cursor-pointer select-none">
+              <input
+                v-model="stageAll"
+                type="checkbox"
+                class="w-3.5 h-3.5 rounded-sm border-surface-300 dark:border-surface-600 text-primary-500 focus:ring-primary-500"
+              >
+              <span class="text-xs text-surface-600 dark:text-surface-400">
+                Stage all changes
+              </span>
+            </label>
+
+            <!-- Commit on a new branch toggle -->
+            <label class="flex items-center gap-2 mt-1.5 cursor-pointer select-none">
+              <input
+                v-model="commitOnNewBranch"
+                type="checkbox"
+                class="w-3.5 h-3.5 rounded-sm border-surface-300 dark:border-surface-600 text-primary-500 focus:ring-primary-500"
+              >
+              <span class="text-xs text-surface-600 dark:text-surface-400">
+                Commit on a new branch
+              </span>
+            </label>
+
+            <input
+              v-if="commitOnNewBranch"
+              v-model="newBranchName"
+              type="text"
+              class="w-full mt-1.5 px-2.5 py-1.5 text-sm rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 text-surface-800 dark:text-surface-200 placeholder-surface-400 dark:placeholder-surface-500 focus:outline-hidden focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+              placeholder="new-branch-name"
+              :disabled="loadingCommit"
+              @keydown="handleCommitKeydown"
+            >
+
+            <button
+              class="w-full mt-2 px-3 py-1.5 text-sm rounded-md bg-primary-500 text-white hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              :disabled="!commitMessage.trim() || (commitOnNewBranch && !newBranchName.trim()) || loadingCommit"
+              @click="doCommit"
+            >
+              <span v-if="loadingCommit">Committing...</span>
+              <span v-else-if="commitOnNewBranch">{{ stageAll ? 'Create branch & commit all' : 'Create branch & commit staged' }}</span>
+              <span v-else>{{ stageAll ? 'Commit all' : 'Commit staged' }}</span>
+            </button>
+          </template>
         </div>
       </TransitionFade>
     </div>
