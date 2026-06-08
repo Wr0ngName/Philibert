@@ -17,6 +17,23 @@ import logger from '../../utils/logger';
 import { BUILTIN_COMMANDS } from './BuiltinCommandHandler';
 
 /**
+ * Best-effort extraction of an error string from an SDK result message.
+ *
+ * The SDK exposes errors as `errors: string[]` on SDKResultError (sdk.d.ts:3304).
+ * Older builds used a singular `error: string`. Use whichever is populated;
+ * join multi-entry arrays so the caller sees the full failure context.
+ */
+export function resolveResultError(
+  result: { error?: string; errors?: string[] },
+): string {
+  if (Array.isArray(result.errors) && result.errors.length > 0) {
+    return result.errors.filter((s) => typeof s === 'string').join('; ');
+  }
+  if (typeof result.error === 'string') return result.error;
+  return '';
+}
+
+/**
  * Callbacks for emitting events to the renderer
  */
 export interface MessageHandlerCallbacks {
@@ -344,7 +361,13 @@ export class SDKMessageHandler {
     const resultMessage = message as {
       subtype?: string;
       result?: string;
+      /**
+       * Per sdk.d.ts:3304 (SDKResultError) the SDK exposes this as `errors: string[]`.
+       * We keep `error` as a defensive read for older SDKs, but `errors[]` is the
+       * canonical source — see resolvedError() below.
+       */
       error?: string;
+      errors?: string[];
       num_turns?: number;
       duration_ms?: number;
       total_cost_usd?: number;
@@ -367,6 +390,8 @@ export class SDKMessageHandler {
       }>;
     };
 
+    const errorText = resolveResultError(resultMessage);
+
     // Log full result details for debugging
     logger.info('SDK result message', {
       subtype: resultMessage.subtype,
@@ -374,7 +399,7 @@ export class SDKMessageHandler {
       duration: resultMessage.duration_ms,
       hasResult: !!resultMessage.result,
       resultPreview: resultMessage.result?.slice(0, 200),
-      error: resultMessage.error,
+      error: errorText,
       totalCostUSD: resultMessage.total_cost_usd,
       hasUsage: !!resultMessage.usage,
     });
@@ -439,8 +464,8 @@ export class SDKMessageHandler {
         this.callbacks.onChunk(resultMessage.result);
       }
     } else {
-      logger.warn('Query ended with non-success', { subtype: message.subtype });
-      const resultError = (resultMessage.error || '').toLowerCase();
+      logger.warn('Query ended with non-success', { subtype: message.subtype, error: errorText });
+      const resultError = errorText.toLowerCase();
       if (resultError.includes('401') ||
           resultError.includes('unauthorized') ||
           resultError.includes('invalid bearer') ||

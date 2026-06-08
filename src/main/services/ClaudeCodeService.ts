@@ -65,6 +65,7 @@ import {
   BuiltinCommandHandler,
   SessionPermissionCache,
 } from './claude';
+import { resolveResultError } from './claude/SDKMessageHandler';
 
 /**
  * Represents a persistent SDK session for a specific conversation.
@@ -682,7 +683,9 @@ export class ClaudeCodeService {
 
           // Detect resume failure from result message (before the thrown error path)
           if (session?.isResumeAttempt && resultSubtype?.startsWith('error')) {
-            const resultError = (sdkMessage as { error?: string }).error || '';
+            const resultError = resolveResultError(
+              sdkMessage as { error?: string; errors?: string[] },
+            );
             if (this.isResumeSessionError(resultError)) {
               logger.warn('Resume session failed (result message) — clearing stale session ID', {
                 conversationId,
@@ -700,6 +703,25 @@ export class ClaudeCodeService {
           // Resume succeeded — subsequent auth errors are real, not stale-session artifacts
           if (session?.isResumeAttempt) {
             session.isResumeAttempt = false;
+          }
+
+          // Any other error result subtype must reach the user. Without this, an
+          // error_during_execution result that doesn't match the resume-failure
+          // pattern would silently emit DONE and leave the user with no
+          // explanation of why nothing came back from Claude.
+          if (resultSubtype && resultSubtype !== 'success') {
+            const resultError = resolveResultError(
+              sdkMessage as { error?: string; errors?: string[] },
+            );
+            const friendly = this.errorHandler.getHumanReadableError(
+              resultError || `SDK ended the turn with ${resultSubtype}.`,
+            );
+            logger.warn('Surfacing non-success result to user', {
+              conversationId,
+              subtype: resultSubtype,
+              error: resultError,
+            });
+            this.emitError(conversationId, friendly);
           }
 
           logger.info('Turn completed (result message received), emitting done', {
@@ -850,6 +872,27 @@ export class ClaudeCodeService {
           pid: childProcess.pid,
           stderr: stderrData.slice(0, 1000),
         });
+
+        // Safety net: if the process died without any result message reaching
+        // the user (the message loop's catch handles thrown errors, but a
+        // silent stderr exit could slip past every other path), surface what
+        // we saw on stderr so the user is never left with a frozen UI.
+        // Defer to the next tick so handleQueryError (if it fires from the
+        // iterator throw) runs first and we don't double-emit.
+        setImmediate(() => {
+          if (!this.activeSessions.has(conversationId)) return;
+          const trimmed = stderrData.trim();
+          if (!trimmed) return;
+          logger.warn('Surfacing SDK process stderr as fallback error', {
+            conversationId,
+            preview: trimmed.slice(0, 200),
+          });
+          this.emitError(
+            conversationId,
+            this.errorHandler.getHumanReadableError(trimmed),
+          );
+          this.emitDone(conversationId);
+        });
       } else {
         logger.debug('SDK process exited', { conversationId, code, signal });
       }
@@ -857,7 +900,13 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Handle query errors
+   * Handle query errors.
+   *
+   * Every exit path here must leave the renderer in a clean state — emit
+   * CLAUDE_ERROR (so the user sees what happened) and CLAUDE_DONE (so the
+   * loading spinner clears and the input gate unlocks). The DONE is
+   * belt-and-suspenders since onError also clears loading, but a missed
+   * DONE here would compound badly with any future renderer change.
    */
   private handleQueryError(conversationId: string, error: Error, messageHandler: SDKMessageHandler): void {
     this.processingSessions.delete(conversationId);
@@ -865,6 +914,7 @@ export class ClaudeCodeService {
 
     if (this.errorHandler.isAbortError(error)) {
       logger.info('Request aborted', { conversationId });
+      this.emitDone(conversationId);
       return;
     }
 
@@ -901,6 +951,7 @@ export class ClaudeCodeService {
         'Could not resume conversation context — the session has expired or was cleaned up. ' +
         'Your conversation history is preserved, but Claude will not remember previous messages. ' +
         'Send your message again to continue with a fresh context.');
+      this.emitDone(conversationId);
       return;
     }
 
@@ -909,11 +960,14 @@ export class ClaudeCodeService {
     // Detect 401/auth errors and auto-clear credentials
     if (isAuthError) {
       this.handleAuthInvalidated().catch(() => {});
+      this.emitError(conversationId, 'Authentication failed. Please log in again in Settings.');
+      this.emitDone(conversationId);
       return;
     }
 
     const userMessage = this.errorHandler.getHumanReadableError(errorMessage);
     this.emitError(conversationId, userMessage);
+    this.emitDone(conversationId);
   }
 
   /**

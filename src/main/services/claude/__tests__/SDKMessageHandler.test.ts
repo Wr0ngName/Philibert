@@ -14,7 +14,7 @@ vi.mock('../../../utils/logger', () => ({
     debug: vi.fn(),
   },
 }));
-import { SDKMessageHandler, MessageHandlerCallbacks } from '../SDKMessageHandler';
+import { SDKMessageHandler, MessageHandlerCallbacks, resolveResultError } from '../SDKMessageHandler';
 
 describe('SDKMessageHandler', () => {
   let callbacks: MessageHandlerCallbacks;
@@ -708,6 +708,41 @@ describe('SDKMessageHandler', () => {
       } as never);
 
       expect(callbacks.onTaskNotification).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resolveResultError', () => {
+    it('extracts the canonical errors[] array used by SDKResultError', () => {
+      expect(resolveResultError({ errors: ['No conversation found with session ID abc'] }))
+        .toBe('No conversation found with session ID abc');
+    });
+
+    it('joins multiple errors with "; "', () => {
+      expect(resolveResultError({ errors: ['first failure', 'second failure'] }))
+        .toBe('first failure; second failure');
+    });
+
+    it('skips non-string entries when joining', () => {
+      expect(resolveResultError({ errors: ['a', 42 as unknown as string, 'b'] }))
+        .toBe('a; b');
+    });
+
+    it('falls back to legacy singular `error` when errors[] is missing', () => {
+      expect(resolveResultError({ error: 'something broke' }))
+        .toBe('something broke');
+    });
+
+    it('returns empty string when neither errors nor error is set', () => {
+      expect(resolveResultError({})).toBe('');
+    });
+
+    it('prefers errors[] over error when both are present', () => {
+      expect(resolveResultError({ errors: ['new shape'], error: 'old shape' }))
+        .toBe('new shape');
+    });
+
+    it('returns empty string for empty errors[] array', () => {
+      expect(resolveResultError({ errors: [] })).toBe('');
     });
   });
 });
