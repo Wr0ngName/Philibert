@@ -12,16 +12,28 @@
  * has finished its turn.
  */
 
-import type { ChannelUsageData, PendingAction, SessionUsage } from '../../../shared/types';
+import type {
+  AskUserQuestionAction,
+  AskUserQuestionDetails,
+  AskUserQuestionEntry,
+  AskUserQuestionResponse,
+  ChannelUsageData,
+  PendingAction,
+  SessionUsage,
+} from '../../../shared/types';
 import { IPC_CHANNELS } from '../../../shared/types';
 import { MAIN_CONSTANTS } from '../../constants/app';
 import logger from '../../utils/logger';
 import { ClaudeCliPaths, ChannelPaths } from '../../utils/resourcePaths';
 import type ConfigService from '../ConfigService';
 import type NotificationService from '../NotificationService';
-import { AuthValidator } from '../claude';
+import { AuthValidator, ASK_USER_QUESTION_PREFIX } from '../claude';
 
-import { ChannelBridge, type PermissionRequestPayload } from './ChannelBridge';
+import {
+  ChannelBridge,
+  type PermissionRequestPayload,
+  type QuestionRequestPayload,
+} from './ChannelBridge';
 import { ChannelSession } from './ChannelSession';
 
 const TURN_DONE_DELAY_MS = 2000;
@@ -89,6 +101,10 @@ export class ChannelService {
       this.handlePermissionFailed(conversationId, toolName);
     });
 
+    this.bridge.setQuestionRequestCallback((conversationId, request) => {
+      this.handleQuestionRequest(conversationId, request);
+    });
+
     await this.bridge.start();
     logger.info('ChannelService bridge started', { port: this.bridge.getPort() });
     return this.bridge;
@@ -125,6 +141,52 @@ export class ChannelService {
       this.send(IPC_CHANNELS.CLAUDE_ERROR, conversationId, `Channel mode error: ${msg}`);
       this.emitDone(conversationId);
     }
+  }
+
+  /**
+   * Deliver the user's answer to a pending AskUserQuestion back through the
+   * bridge → channel-server. The channel-server side issues the deny verdict
+   * and injects the `[User answered AskUserQuestion]:` user message.
+   */
+  handleQuestionAnswer(response: AskUserQuestionResponse): void {
+    if (!this.bridge) {
+      logger.warn('Cannot deliver question answer — bridge not running', {
+        conversationId: response.conversationId,
+        actionId: response.actionId,
+      });
+      return;
+    }
+
+    const followUpText = this.formatFollowUpMessage(response);
+
+    const ok = this.bridge.submitQuestionAnswer(response.conversationId, {
+      requestId: response.actionId,
+      cancelled: response.cancelled,
+      followUpText,
+    });
+
+    if (!ok) {
+      logger.warn('Question answer not routed — no matching pending question', {
+        conversationId: response.conversationId,
+        actionId: response.actionId,
+      });
+    }
+  }
+
+  /**
+   * Build the `[User answered AskUserQuestion]:` follow-up text from the
+   * response — same shape produced in SDK mode so the model sees consistent
+   * input regardless of execution mode.
+   */
+  private formatFollowUpMessage(response: AskUserQuestionResponse): string {
+    if (response.cancelled || response.answers.length === 0) return '';
+
+    const lines = response.answers.map((a) => {
+      const note = a.notes ? ` (${a.notes})` : '';
+      return `${a.question} ${a.answer}${note}`;
+    });
+    const body = lines.length === 1 ? lines[0] : lines.map((l) => `- ${l}`).join('\n');
+    return `${ASK_USER_QUESTION_PREFIX} ${body}`;
   }
 
   handlePermissionResponse(
@@ -302,6 +364,54 @@ export class ChannelService {
       this.notificationService.showQueryComplete(conversationId);
       this.pollUsage(conversationId);
     }, TURN_DONE_DELAY_MS);
+  }
+
+  private handleQuestionRequest(
+    conversationId: string,
+    request: QuestionRequestPayload,
+  ): void {
+    const questions: AskUserQuestionEntry[] = (request.questions || []).map((q) => ({
+      question: q.question,
+      header: q.header,
+      multiSelect: q.multiSelect,
+      options: q.options.map((o) => ({
+        label: o.label,
+        description: o.description,
+        ...(o.preview ? { preview: o.preview } : {}),
+      })),
+    }));
+
+    const details: AskUserQuestionDetails = {
+      questions,
+      truncated: request.truncated,
+      ...(request.truncated && request.description
+        ? { fallbackDescription: request.description }
+        : {}),
+    };
+
+    const description = questions.length > 0
+      ? questions[0].question
+      : (request.description || 'Claude is asking a question');
+
+    const action: AskUserQuestionAction = {
+      id: request.requestId,
+      type: 'ask-user-question',
+      toolName: 'AskUserQuestion',
+      input: {},
+      description,
+      status: 'pending',
+      timestamp: Date.now(),
+      details,
+    };
+
+    logger.info('AskUserQuestion via channel', {
+      conversationId,
+      requestId: request.requestId,
+      questionCount: questions.length,
+      truncated: request.truncated,
+    });
+
+    this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
   }
 
   private handlePermissionRequestFromBridge(

@@ -13,6 +13,6 @@
 export { AuthValidator } from './AuthValidator';
 export { BuiltinCommandHandler } from './BuiltinCommandHandler';
 export { ErrorHandler } from './ErrorHandler';
-export { PermissionManager } from './PermissionManager';
+export { PermissionManager, ASK_USER_QUESTION_TOOL, ASK_USER_QUESTION_PREFIX } from './PermissionManager';
 export { SDKMessageHandler } from './SDKMessageHandler';
 export { SessionPermissionCache } from './SessionPermissionCache';

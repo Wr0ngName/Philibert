@@ -10,7 +10,7 @@
 
 import { onMounted, onUnmounted, shallowRef } from 'vue';
 
-import type { SlashCommandInfo, ChatMessage, PendingAction, PermissionScope } from '@shared/types';
+import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, PendingAction, PermissionScope } from '@shared/types';
 
 import { useChatStore } from '../stores/chat';
 import { useConversationsStore } from '../stores/conversations';
@@ -254,6 +254,40 @@ export function useClaudeChat() {
     } catch (err) {
       logger.error('Failed to reject action', err);
       chatStore.setError(currentConvId, 'Failed to reject action');
+    }
+  }
+
+  /**
+   * Send the user's answer to a pending AskUserQuestion (or cancel it).
+   * Marks the action as approved (or rejected when cancelled) in the store
+   * and pings main via CLAUDE_USER_QUESTION_ANSWER.
+   */
+  async function sendQuestionAnswer(
+    actionId: string,
+    answers: AskUserQuestionAnswer[],
+    cancelled: boolean,
+  ) {
+    const currentConvId = conversationsStore.currentConversationId;
+    if (!currentConvId) {
+      logger.error('Cannot send question answer: no active conversation');
+      return;
+    }
+
+    try {
+      chatStore.updateActionStatus(currentConvId, actionId, cancelled ? 'rejected' : 'approved');
+      chatStore.updateToolUseStatus(currentConvId, actionId, cancelled ? 'rejected' : 'approved');
+
+      const response: AskUserQuestionResponse = {
+        conversationId: currentConvId,
+        actionId,
+        answers,
+        ...(cancelled ? { cancelled: true } : {}),
+      };
+      await window.electron.claude.answerQuestion(response);
+      chatStore.removePendingAction(currentConvId, actionId);
+    } catch (err) {
+      logger.error('Failed to send question answer', err);
+      chatStore.setError(currentConvId, 'Failed to send question answer');
     }
   }
 
@@ -621,6 +655,7 @@ export function useClaudeChat() {
     sendMessage,
     approveAction,
     rejectAction,
+    sendQuestionAnswer,
     abort,
     abortConversation,
     clearChat,

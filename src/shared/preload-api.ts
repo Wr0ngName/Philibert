@@ -5,6 +5,7 @@
 import type {
   ActionResponse,
   AppConfig,
+  AskUserQuestionResponse,
   AuthStatus,
   Conversation,
   FileChange,
@@ -47,6 +48,8 @@ export interface ElectronAPI {
     ) => Promise<void>;
     /** Reject a pending action for a specific conversation */
     reject: (conversationId: string, actionId: string, message?: string) => Promise<void>;
+    /** Deliver the user's answer (or cancellation) for a pending AskUserQuestion */
+    answerQuestion: (response: AskUserQuestionResponse) => Promise<void>;
     /** Send full action response (includes conversationId in response object) */
     respondToAction: (response: ActionResponse) => Promise<void>;
     /** Abort the request for a specific conversation */

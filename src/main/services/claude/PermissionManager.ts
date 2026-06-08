@@ -12,11 +12,30 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 
 import { generateId, ID_PREFIXES } from '../../../shared/id';
-import { PendingAction, ActionResponse, PermissionSuggestionInfo, PermissionScope, PermissionScopeOption, PermissionContext } from '../../../shared/types';
+import {
+  PendingAction,
+  ActionResponse,
+  PermissionSuggestionInfo,
+  PermissionScope,
+  PermissionScopeOption,
+  PermissionContext,
+  AskUserQuestionAction,
+  AskUserQuestionDetails,
+  AskUserQuestionEntry,
+  AskUserQuestionOption,
+  AskUserQuestionResponse,
+  AskUserQuestionAnswer,
+} from '../../../shared/types';
 import logger from '../../utils/logger';
 import type ConfigService from '../ConfigService';
 
 import type { SessionPermissionCache } from './SessionPermissionCache';
+
+/** Tool name for the SDK's built-in AskUserQuestion */
+export const ASK_USER_QUESTION_TOOL = 'AskUserQuestion';
+
+/** Prefix used by Claude Code for user messages that answer an AskUserQuestion */
+export const ASK_USER_QUESTION_PREFIX = '[User answered AskUserQuestion]:';
 
 /**
  * Internal representation of a pending permission request
@@ -33,6 +52,23 @@ interface PendingPermission {
 }
 
 /**
+ * Internal representation of a pending AskUserQuestion request.
+ *
+ * Unlike a normal permission, AskUserQuestion needs the user to *answer*, not
+ * just allow/deny. We hold the canUseTool resolver until the answer arrives,
+ * then short-circuit the tool execution with a synthetic result and inject a
+ * follow-up `[User answered AskUserQuestion]:` user message — matching the
+ * CLI's documented convention so the model treats the answer as direct user
+ * intent.
+ */
+interface PendingQuestion {
+  actionId: string;
+  questions: AskUserQuestionEntry[];
+  resolve: (result: PermissionResult) => void;
+  cleanupAbortHandler?: () => void;
+}
+
+/**
  * Callback for emitting tool use events to the renderer
  */
 type ToolUseEmitter = (action: PendingAction) => void;
@@ -43,13 +79,21 @@ type ToolUseEmitter = (action: PendingAction) => void;
 type ToolExecutedEmitter = (actionId: string) => void;
 
 /**
+ * Callback for pushing a follow-up `[User answered AskUserQuestion]:` SDKUserMessage
+ * into the conversation's input channel after the user answers a question.
+ */
+type AskUserQuestionFollowUpEmitter = (text: string) => void;
+
+/**
  * Manages tool permission requests and user approval flow
  */
 export class PermissionManager {
   private configService: ConfigService;
   private pendingPermissions: Map<string, PendingPermission> = new Map();
+  private pendingQuestions: Map<string, PendingQuestion> = new Map();
   private emitToolUse: ToolUseEmitter;
   private emitToolExecuted?: ToolExecutedEmitter;
+  private emitQuestionFollowUp?: AskUserQuestionFollowUpEmitter;
 
   constructor(
     configService: ConfigService,
@@ -57,10 +101,12 @@ export class PermissionManager {
     private sessionPermissionCache?: SessionPermissionCache,
     private conversationId?: string,
     emitToolExecuted?: ToolExecutedEmitter,
+    emitQuestionFollowUp?: AskUserQuestionFollowUpEmitter,
   ) {
     this.configService = configService;
     this.emitToolUse = emitToolUse;
     this.emitToolExecuted = emitToolExecuted;
+    this.emitQuestionFollowUp = emitQuestionFollowUp;
   }
 
   /**
@@ -80,6 +126,15 @@ export class PermissionManager {
           message: 'Operation was cancelled',
           interrupt: true,
         };
+      }
+
+      // AskUserQuestion intercept: surface the question in the UI and await
+      // the user's answer. We short-circuit the SDK's built-in TTY renderer
+      // (which would otherwise fail in the pipe-stdio SDK subprocess) and
+      // inject the answer back via a `[User answered AskUserQuestion]:`
+      // user message (CLI convention).
+      if (toolName === ASK_USER_QUESTION_TOOL) {
+        return this.handleAskUserQuestionRequest(actionId, input, options.signal);
       }
 
       // Auto-approve read operations if configured
@@ -159,6 +214,233 @@ export class PermissionManager {
         options.signal.addEventListener('abort', abortHandler);
       });
     };
+  }
+
+  /**
+   * Surface an AskUserQuestion to the user and await their answer.
+   *
+   * Returns a PermissionResult that short-circuits the SDK's built-in
+   * tool execution. We resolve the canUseTool promise with `behavior: 'deny'`
+   * carrying a synthetic result that mirrors AskUserQuestionOutput so the
+   * model has a structured tool_result to read. Independently, we push a
+   * follow-up `[User answered AskUserQuestion]:` user message via the
+   * emitQuestionFollowUp callback — matching the CLI convention so the
+   * model treats the answer as direct user intent.
+   */
+  private handleAskUserQuestionRequest(
+    actionId: string,
+    input: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<PermissionResult> {
+    const questions = this.parseAskUserQuestionInput(input);
+
+    if (questions.length === 0) {
+      logger.warn('AskUserQuestion called with no parseable questions', { input });
+      return Promise.resolve({
+        behavior: 'deny',
+        message: 'AskUserQuestion was called with an invalid or empty questions payload.',
+        interrupt: false,
+      });
+    }
+
+    const details: AskUserQuestionDetails = {
+      questions,
+      truncated: false,
+    };
+
+    const action: AskUserQuestionAction = {
+      id: actionId,
+      type: 'ask-user-question',
+      toolName: ASK_USER_QUESTION_TOOL,
+      input,
+      description: questions[0].question,
+      status: 'pending',
+      timestamp: Date.now(),
+      details,
+    };
+
+    this.emitToolUse(action);
+
+    return new Promise<PermissionResult>((resolve) => {
+      const pending: PendingQuestion = {
+        actionId,
+        questions,
+        resolve,
+      };
+
+      const abortHandler = () => {
+        if (this.pendingQuestions.delete(actionId)) {
+          resolve({
+            behavior: 'deny',
+            message: 'AskUserQuestion was cancelled.',
+            interrupt: true,
+          });
+        }
+      };
+
+      pending.cleanupAbortHandler = () => {
+        if (typeof signal.removeEventListener === 'function') {
+          signal.removeEventListener('abort', abortHandler);
+        }
+      };
+
+      this.pendingQuestions.set(actionId, pending);
+      signal.addEventListener('abort', abortHandler);
+    });
+  }
+
+  /**
+   * Parse the raw AskUserQuestion input into validated, typed questions.
+   * Silently drops malformed entries; returns an empty array if nothing is usable.
+   */
+  private parseAskUserQuestionInput(input: Record<string, unknown>): AskUserQuestionEntry[] {
+    const rawQuestions = Array.isArray(input.questions) ? input.questions : [];
+    const out: AskUserQuestionEntry[] = [];
+
+    for (const raw of rawQuestions) {
+      if (!raw || typeof raw !== 'object') continue;
+      const q = raw as Record<string, unknown>;
+
+      const question = typeof q.question === 'string' ? q.question : '';
+      const header = typeof q.header === 'string' ? q.header : '';
+      const multiSelect = typeof q.multiSelect === 'boolean' ? q.multiSelect : false;
+      const rawOptions = Array.isArray(q.options) ? q.options : [];
+      if (!question || rawOptions.length === 0) continue;
+
+      const options: AskUserQuestionOption[] = [];
+      for (const rawOpt of rawOptions) {
+        if (!rawOpt || typeof rawOpt !== 'object') continue;
+        const opt = rawOpt as Record<string, unknown>;
+        const label = typeof opt.label === 'string' ? opt.label : '';
+        if (!label) continue;
+        options.push({
+          label,
+          description: typeof opt.description === 'string' ? opt.description : '',
+          ...(typeof opt.preview === 'string' && opt.preview ? { preview: opt.preview } : {}),
+        });
+      }
+      if (options.length === 0) continue;
+
+      out.push({ question, header, multiSelect, options });
+    }
+
+    return out;
+  }
+
+  /**
+   * Handle the user's answer to an AskUserQuestion.
+   *
+   * Returns true if an answer was applied, false if the actionId wasn't pending
+   * (e.g. already cancelled).
+   */
+  handleQuestionAnswer(response: AskUserQuestionResponse): boolean {
+    const pending = this.pendingQuestions.get(response.actionId);
+    if (!pending) {
+      logger.warn('No pending question for action', { actionId: response.actionId });
+      return false;
+    }
+
+    this.pendingQuestions.delete(response.actionId);
+    pending.cleanupAbortHandler?.();
+
+    if (response.cancelled) {
+      logger.info('User cancelled AskUserQuestion', { actionId: response.actionId });
+      pending.resolve({
+        behavior: 'deny',
+        message: 'User cancelled the question.',
+        interrupt: false,
+      });
+      return true;
+    }
+
+    const syntheticResult = this.buildSyntheticQuestionResult(pending.questions, response.answers);
+
+    logger.info('User answered AskUserQuestion', {
+      actionId: response.actionId,
+      answerCount: response.answers.length,
+    });
+
+    // Resolve canUseTool with deny + structured payload so the model has a
+    // tool_result even though we suppressed the built-in tool execution.
+    pending.resolve({
+      behavior: 'deny',
+      message: JSON.stringify(syntheticResult),
+      interrupt: false,
+    });
+
+    // Inject the prefixed user message so the model treats the answer as
+    // direct user intent (CLI convention from `[User answered AskUserQuestion]:`).
+    if (this.emitQuestionFollowUp) {
+      const followUp = this.formatFollowUpMessage(pending.questions, response.answers);
+      this.emitQuestionFollowUp(followUp);
+    }
+
+    return true;
+  }
+
+  /**
+   * Build the synthetic AskUserQuestionOutput-shaped payload returned as the
+   * tool_result (via canUseTool deny message). Mirrors the SDK's
+   * AskUserQuestionOutput type.
+   */
+  private buildSyntheticQuestionResult(
+    questions: AskUserQuestionEntry[],
+    answers: AskUserQuestionAnswer[],
+  ): {
+    questions: AskUserQuestionEntry[];
+    answers: Record<string, string>;
+    annotations?: Record<string, { preview?: string; notes?: string }>;
+  } {
+    const answersMap: Record<string, string> = {};
+    const annotations: Record<string, { preview?: string; notes?: string }> = {};
+
+    for (const a of answers) {
+      answersMap[a.question] = a.answer;
+      if (a.preview || a.notes) {
+        annotations[a.question] = {
+          ...(a.preview ? { preview: a.preview } : {}),
+          ...(a.notes ? { notes: a.notes } : {}),
+        };
+      }
+    }
+
+    const result: ReturnType<PermissionManager['buildSyntheticQuestionResult']> = {
+      questions,
+      answers: answersMap,
+    };
+    if (Object.keys(annotations).length > 0) {
+      result.annotations = annotations;
+    }
+    return result;
+  }
+
+  /**
+   * Format the `[User answered AskUserQuestion]:` follow-up user message.
+   *
+   * For a single question, uses a compact `<question>: <answer>` form.
+   * For multiple questions, lists each on its own line.
+   */
+  private formatFollowUpMessage(
+    questions: AskUserQuestionEntry[],
+    answers: AskUserQuestionAnswer[],
+  ): string {
+    const answeredByQuestion = new Map(answers.map((a) => [a.question, a]));
+    const lines: string[] = [];
+
+    for (const q of questions) {
+      const a = answeredByQuestion.get(q.question);
+      if (!a) continue;
+      const note = a.notes ? ` (${a.notes})` : '';
+      lines.push(`${q.question} ${a.answer}${note}`);
+    }
+
+    const body = lines.length === 0
+      ? '(user provided no answer)'
+      : lines.length === 1
+        ? lines[0]
+        : lines.map((l) => `- ${l}`).join('\n');
+
+    return `${ASK_USER_QUESTION_PREFIX} ${body}`;
   }
 
   /**
@@ -390,6 +672,18 @@ export class PermissionManager {
       ...(permissionContext ? { permissionContext } : {}),
     };
 
+    // Defense-in-depth: AskUserQuestion must always be routed through
+    // handleAskUserQuestionRequest, never built as a generic permission
+    // dialog. If we reach this point with AskUserQuestion the intercept
+    // was bypassed — return null so the caller surfaces a clean error
+    // instead of showing a misleading "Tool: AskUserQuestion" prompt.
+    if (toolName === ASK_USER_QUESTION_TOOL) {
+      logger.error('createPendingAction reached with AskUserQuestion — intercept was bypassed', {
+        actionId,
+      });
+      return null;
+    }
+
     switch (toolName) {
       case 'Edit':
         return {
@@ -604,13 +898,23 @@ export class PermissionManager {
       });
     }
     this.pendingPermissions.clear();
+
+    for (const [, pending] of this.pendingQuestions) {
+      pending.cleanupAbortHandler?.();
+      pending.resolve({
+        behavior: 'deny',
+        message: 'AskUserQuestion was cancelled.',
+        interrupt: true,
+      });
+    }
+    this.pendingQuestions.clear();
   }
 
   /**
-   * Get the number of pending permissions
+   * Get the number of pending permissions (questions + standard approvals)
    */
   getPendingCount(): number {
-    return this.pendingPermissions.size;
+    return this.pendingPermissions.size + this.pendingQuestions.size;
   }
 }
 

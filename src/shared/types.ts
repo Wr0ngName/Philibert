@@ -121,8 +121,9 @@ export interface ChatMessage {
  * - file-delete: Delete an existing file
  * - bash-command: Execute a bash command
  * - read-file: Read the contents of a file
+ * - ask-user-question: Claude is asking the user a multiple-choice question
  */
-export type ActionType = 'file-edit' | 'file-create' | 'file-delete' | 'bash-command' | 'read-file';
+export type ActionType = 'file-edit' | 'file-create' | 'file-delete' | 'bash-command' | 'read-file' | 'ask-user-question';
 
 /**
  * Current status of an action in its lifecycle
@@ -185,9 +186,85 @@ export interface ReadFileDetails {
 }
 
 /**
+ * A single selectable option in an AskUserQuestion.
+ * Mirrors the SDK's AskUserQuestionInput option shape.
+ */
+export interface AskUserQuestionOption {
+  /** Display label shown on the button */
+  label: string;
+  /** Explanation of the option's implication */
+  description: string;
+  /** Optional preview content (markdown or html). Renders in side-by-side preview pane. */
+  preview?: string;
+}
+
+/**
+ * A single question in an AskUserQuestion call.
+ * Mirrors the SDK's AskUserQuestionInput question shape.
+ */
+export interface AskUserQuestionEntry {
+  /** Complete question text */
+  question: string;
+  /** Short chip-style header (≤12 chars) */
+  header: string;
+  /** Available options (2-4 entries) */
+  options: AskUserQuestionOption[];
+  /** Whether multiple options can be selected */
+  multiSelect: boolean;
+}
+
+/**
+ * Details for an AskUserQuestion action.
+ *
+ * When `truncated` is true, the underlying channel-mode payload was clipped by
+ * Claude Code's 200-char input_preview limit and we couldn't reconstruct the
+ * structured questions/options. UI should fall back to showing `description`
+ * with a free-text answer field.
+ */
+export interface AskUserQuestionDetails {
+  /** The structured questions (empty when truncated) */
+  questions: AskUserQuestionEntry[];
+  /** Whether the payload was truncated by the channel preview limit */
+  truncated: boolean;
+  /** Fallback description shown when truncated (from Claude Code's `description` field) */
+  fallbackDescription?: string;
+}
+
+/**
+ * A single answer the user selected for an AskUserQuestion.
+ * - For non-multiSelect: a single label, or free-text from "Other".
+ * - For multiSelect: comma-separated labels (matching the SDK's expected shape).
+ */
+export interface AskUserQuestionAnswer {
+  /** The question text (matches the question field, used as key in the SDK output) */
+  question: string;
+  /** The answer string (single label, free text, or comma-separated for multiSelect) */
+  answer: string;
+  /** Optional preview content of the chosen option */
+  preview?: string;
+  /** Optional free-text notes the user added */
+  notes?: string;
+}
+
+/**
+ * Renderer → main response for an AskUserQuestion request.
+ * Sent over CLAUDE_USER_QUESTION_ANSWER IPC.
+ */
+export interface AskUserQuestionResponse {
+  /** Conversation the question belongs to */
+  conversationId: string;
+  /** ID of the pending action being answered */
+  actionId: string;
+  /** Per-question answers in the same order as the original questions */
+  answers: AskUserQuestionAnswer[];
+  /** Whether the user cancelled (no answer provided) */
+  cancelled?: boolean;
+}
+
+/**
  * Union type of all possible action details
  */
-export type ActionDetails = FileEditDetails | FileCreateDetails | FileDeleteDetails | BashCommandDetails | ReadFileDetails;
+export type ActionDetails = FileEditDetails | FileCreateDetails | FileDeleteDetails | BashCommandDetails | ReadFileDetails | AskUserQuestionDetails;
 
 /**
  * The scope at which a permission rule applies
@@ -316,10 +393,22 @@ export interface ReadFileAction extends BaseAction {
 }
 
 /**
+ * Action for surfacing an AskUserQuestion to the user.
+ *
+ * Unlike permission actions, this is NOT an approval gate — the user must
+ * provide an answer, not just allow/deny. The renderer responds via
+ * CLAUDE_USER_QUESTION_ANSWER (not CLAUDE_APPROVE/REJECT).
+ */
+export interface AskUserQuestionAction extends BaseAction {
+  type: 'ask-user-question';
+  details: AskUserQuestionDetails;
+}
+
+/**
  * Discriminated union of all possible pending actions
  * Allows type-safe narrowing based on the 'type' field
  */
-export type PendingAction = FileEditAction | FileCreateAction | FileDeleteAction | BashCommandAction | ReadFileAction;
+export type PendingAction = FileEditAction | FileCreateAction | FileDeleteAction | BashCommandAction | ReadFileAction | AskUserQuestionAction;
 
 /**
  * Response from renderer for action approval
@@ -853,6 +942,10 @@ export const IPC_CHANNELS = {
   CLAUDE_TOOL_EXECUTED: 'claude:tool-executed',
   /** Channel mode status update (bridge health, session running) */
   CLAUDE_CHANNEL_STATUS: 'claude:channel-status',
+  /** Claude wants to ask the user a multiple-choice question (AskUserQuestion tool) */
+  CLAUDE_ASK_USER_QUESTION: 'claude:ask-user-question',
+  /** Renderer sends the user's answer back to main for an AskUserQuestion */
+  CLAUDE_USER_QUESTION_ANSWER: 'claude:user-question-answer',
 
   // Git operations
   /** Get git repository status */

@@ -1304,6 +1304,186 @@ describe('PermissionManager', () => {
       expect(pm.getPendingCount()).toBe(1);
     });
 
+    it('AskUserQuestion intercept: emits ask-user-question action and short-circuits SDK execution', async () => {
+      const followUps: string[] = [];
+      const permissionManager = new PermissionManager(
+        mockConfigService,
+        emitToolUse,
+        undefined,
+        'conv-1',
+        undefined,
+        (text) => followUps.push(text),
+      );
+
+      const canUseTool = permissionManager.createCanUseToolCallback();
+      const abortController = new AbortController();
+
+      const input = {
+        questions: [
+          {
+            question: 'Which library should we use?',
+            header: 'Library',
+            multiSelect: false,
+            options: [
+              { label: 'axios', description: 'Popular HTTP client' },
+              { label: 'fetch', description: 'Native browser API' },
+            ],
+          },
+        ],
+      };
+
+      const promise = canUseTool('AskUserQuestion', input, {
+        signal: abortController.signal,
+        toolUseID: 'tu-1',
+        suggestions: undefined,
+      });
+
+      await new Promise((r) => setImmediate(r));
+
+      expect(capturedAction).not.toBeNull();
+      expect(capturedAction!.type).toBe('ask-user-question');
+      const action = capturedAction as PendingAction & { details: { questions: unknown[]; truncated: boolean } };
+      expect(action.details.truncated).toBe(false);
+      expect(action.details.questions).toHaveLength(1);
+
+      // User answers
+      permissionManager.handleQuestionAnswer({
+        conversationId: 'conv-1',
+        actionId: capturedAction!.id,
+        answers: [{ question: 'Which library should we use?', answer: 'axios' }],
+      });
+
+      const result = await promise;
+      expect(result.behavior).toBe('deny');
+      const parsed = JSON.parse((result as { message: string }).message);
+      expect(parsed.answers['Which library should we use?']).toBe('axios');
+      expect((result as { interrupt?: boolean }).interrupt).toBe(false);
+      expect(followUps).toHaveLength(1);
+      expect(followUps[0]).toContain('[User answered AskUserQuestion]:');
+      expect(followUps[0]).toContain('axios');
+    });
+
+    it('AskUserQuestion intercept: cancellation returns deny without a follow-up message', async () => {
+      const followUps: string[] = [];
+      const permissionManager = new PermissionManager(
+        mockConfigService,
+        emitToolUse,
+        undefined,
+        'conv-1',
+        undefined,
+        (text) => followUps.push(text),
+      );
+
+      const canUseTool = permissionManager.createCanUseToolCallback();
+      const abortController = new AbortController();
+
+      const promise = canUseTool('AskUserQuestion', {
+        questions: [
+          {
+            question: 'Approach?',
+            header: 'Approach',
+            multiSelect: false,
+            options: [
+              { label: 'A', description: '' },
+              { label: 'B', description: '' },
+            ],
+          },
+        ],
+      }, {
+        signal: abortController.signal,
+        toolUseID: 'tu-2',
+        suggestions: undefined,
+      });
+
+      await new Promise((r) => setImmediate(r));
+      expect(capturedAction).not.toBeNull();
+
+      permissionManager.handleQuestionAnswer({
+        conversationId: 'conv-1',
+        actionId: capturedAction!.id,
+        answers: [],
+        cancelled: true,
+      });
+
+      const result = await promise;
+      expect(result.behavior).toBe('deny');
+      expect((result as { message: string }).message).toContain('cancelled');
+      expect(followUps).toHaveLength(0);
+    });
+
+    it('AskUserQuestion intercept: invalid payload denies with a clear message', async () => {
+      const permissionManager = new PermissionManager(mockConfigService, emitToolUse);
+      const canUseTool = permissionManager.createCanUseToolCallback();
+      const abortController = new AbortController();
+
+      const result = await canUseTool('AskUserQuestion', { questions: [] }, {
+        signal: abortController.signal,
+        toolUseID: 'tu-3',
+        suggestions: undefined,
+      });
+
+      expect(result.behavior).toBe('deny');
+      expect((result as { message: string }).message).toMatch(/empty|invalid/i);
+      // No action should have been emitted for an invalid payload
+      expect(capturedAction).toBeNull();
+    });
+
+    it('AskUserQuestion intercept: multiSelect answers are formatted as comma-separated', async () => {
+      const followUps: string[] = [];
+      const permissionManager = new PermissionManager(
+        mockConfigService,
+        emitToolUse,
+        undefined,
+        'conv-1',
+        undefined,
+        (text) => followUps.push(text),
+      );
+
+      const canUseTool = permissionManager.createCanUseToolCallback();
+      const abortController = new AbortController();
+
+      const input = {
+        questions: [
+          {
+            question: 'Pick features',
+            header: 'Features',
+            multiSelect: true,
+            options: [
+              { label: 'a', description: '' },
+              { label: 'b', description: '' },
+              { label: 'c', description: '' },
+            ],
+          },
+        ],
+      };
+
+      const promise = canUseTool('AskUserQuestion', input, {
+        signal: abortController.signal,
+        toolUseID: 'tu-4',
+        suggestions: undefined,
+      });
+
+      await new Promise((r) => setImmediate(r));
+      permissionManager.handleQuestionAnswer({
+        conversationId: 'conv-1',
+        actionId: capturedAction!.id,
+        answers: [{ question: 'Pick features', answer: 'a, b' }],
+      });
+
+      const result = await promise;
+      const parsed = JSON.parse((result as { message: string }).message);
+      expect(parsed.answers['Pick features']).toBe('a, b');
+    });
+
+    it('AskUserQuestion: createPendingAction returns null as defense-in-depth', async () => {
+      const permissionManager = new PermissionManager(mockConfigService, emitToolUse);
+      // Call the private method via casting; verifies the safety net at line ~470
+      const result = (permissionManager as unknown as {
+        createPendingAction: (id: string, toolName: string, input: Record<string, unknown>) => unknown | null;
+      }).createPendingAction('action-x', 'AskUserQuestion', {});
+      expect(result).toBeNull();
+    });
+
     it('should work without cache (backward compatibility)', async () => {
       // Create PermissionManager without cache args
       const permissionManager = new PermissionManager(

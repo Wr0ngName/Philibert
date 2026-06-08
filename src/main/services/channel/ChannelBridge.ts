@@ -28,11 +28,53 @@ export type PermissionFailedCallback = (
   toolName: string,
 ) => void;
 
+/**
+ * Callback invoked when Claude Code is asking the user a multiple-choice question
+ * (AskUserQuestion tool) — distinct from a normal permission ask.
+ */
+export type QuestionRequestCallback = (
+  conversationId: string,
+  request: QuestionRequestPayload,
+) => void;
+
 export interface PermissionRequestPayload {
   requestId: string;
   toolName: string;
   description: string;
   inputPreview: string;
+}
+
+/**
+ * AskUserQuestion payload as forwarded by channel-server.
+ *
+ * `questions` is populated when the channel-server successfully parsed the
+ * truncated input_preview JSON; otherwise it's an empty array and
+ * `truncated: true` — UI should fall back to `description` plus a free-text input.
+ */
+export interface QuestionRequestPayload {
+  requestId: string;
+  description: string;
+  questions: QuestionEntryPayload[];
+  truncated: boolean;
+}
+
+export interface QuestionEntryPayload {
+  question: string;
+  header: string;
+  multiSelect: boolean;
+  options: { label: string; description: string; preview?: string }[];
+}
+
+/**
+ * AskUserQuestion answer sent back to channel-server.
+ * The channel-server will issue a deny verdict for the original permission_request
+ * and inject a `[User answered AskUserQuestion]:` user message via the channel.
+ */
+export interface QuestionAnswerPayload {
+  requestId: string;
+  cancelled?: boolean;
+  /** Pre-formatted `[User answered AskUserQuestion]:` text to inject as a user message */
+  followUpText: string;
 }
 
 interface PermissionVerdict {
@@ -46,12 +88,20 @@ interface PendingPermission {
   createdAt: number;
 }
 
+interface PendingQuestion {
+  requestId: string;
+  createdAt: number;
+}
+
 interface ConversationState {
   messageQueue: Array<{ content: string; meta: Record<string, string> }>;
   messageEmitter: EventEmitter;
   verdictQueue: PermissionVerdict[];
   verdictEmitter: EventEmitter;
   pendingPermissions: Map<string, PendingPermission>;
+  questionAnswerQueue: QuestionAnswerPayload[];
+  questionAnswerEmitter: EventEmitter;
+  pendingQuestions: Map<string, PendingQuestion>;
 }
 
 export class ChannelBridge {
@@ -62,6 +112,7 @@ export class ChannelBridge {
   private onReply: ReplyCallback | null = null;
   private onPermissionRequest: PermissionRequestCallback | null = null;
   private onPermissionFailed: PermissionFailedCallback | null = null;
+  private onQuestionRequest: QuestionRequestCallback | null = null;
 
   constructor() {
     this.token = crypto.randomBytes(32).toString('hex');
@@ -77,6 +128,10 @@ export class ChannelBridge {
 
   setPermissionFailedCallback(cb: PermissionFailedCallback): void {
     this.onPermissionFailed = cb;
+  }
+
+  setQuestionRequestCallback(cb: QuestionRequestCallback): void {
+    this.onQuestionRequest = cb;
   }
 
   async start(): Promise<{ port: number }> {
@@ -164,6 +219,28 @@ export class ChannelBridge {
     return true;
   }
 
+  /**
+   * Submit the user's answer (or cancellation) for an AskUserQuestion.
+   * The channel-server will pick it up via long-polling, send a deny verdict
+   * for the original permission_request, and inject the follow-up user message
+   * into the channel notification stream.
+   */
+  submitQuestionAnswer(
+    conversationId: string,
+    payload: QuestionAnswerPayload,
+  ): boolean {
+    const state = this.conversations.get(conversationId);
+    if (!state) return false;
+
+    const pending = state.pendingQuestions.get(payload.requestId);
+    if (!pending) return false;
+
+    state.pendingQuestions.delete(payload.requestId);
+    state.questionAnswerQueue.push(payload);
+    state.questionAnswerEmitter.emit('answer');
+    return true;
+  }
+
   removeConversation(conversationId: string): void {
     this.conversations.delete(conversationId);
   }
@@ -177,6 +254,9 @@ export class ChannelBridge {
         verdictQueue: [],
         verdictEmitter: new EventEmitter(),
         pendingPermissions: new Map(),
+        questionAnswerQueue: [],
+        questionAnswerEmitter: new EventEmitter(),
+        pendingQuestions: new Map(),
       };
       this.conversations.set(conversationId, state);
     }
@@ -257,6 +337,23 @@ export class ChannelBridge {
       const convId = decodeURIComponent(permPollMatch[1]);
       const timeout = this.parseTimeout(url.searchParams.get('timeout'));
       this.handlePollVerdicts(convId, timeout, res);
+      return;
+    }
+
+    const questionReqMatch = path.match(/^\/api\/channel\/question\/request\/(.+)$/);
+    if (method === 'POST' && questionReqMatch) {
+      const convId = decodeURIComponent(questionReqMatch[1]);
+      this.readBody(req, (body) => {
+        this.handleQuestionRequest(convId, body, res);
+      });
+      return;
+    }
+
+    const questionPollMatch = path.match(/^\/api\/channel\/question\/poll\/(.+)$/);
+    if (method === 'GET' && questionPollMatch) {
+      const convId = decodeURIComponent(questionPollMatch[1]);
+      const timeout = this.parseTimeout(url.searchParams.get('timeout'));
+      this.handlePollQuestionAnswers(convId, timeout, res);
       return;
     }
 
@@ -417,5 +514,87 @@ export class ChannelBridge {
         });
       }
     }
+
+    for (const [id, q] of state.pendingQuestions) {
+      if (now - q.createdAt > ttl) {
+        state.pendingQuestions.delete(id);
+        state.questionAnswerQueue.push({
+          requestId: id,
+          cancelled: true,
+          followUpText: '',
+        });
+        state.questionAnswerEmitter.emit('answer');
+        logger.warn('Auto-cancelled stale AskUserQuestion', {
+          requestId: id,
+          ageMs: now - q.createdAt,
+        });
+      }
+    }
+  }
+
+  private handleQuestionRequest(
+    conversationId: string,
+    body: Record<string, unknown>,
+    res: http.ServerResponse,
+  ): void {
+    const state = this.ensureConversation(conversationId);
+
+    const requestId = typeof body.requestId === 'string' ? body.requestId : '';
+    const description = typeof body.description === 'string' ? body.description : '';
+    const truncated = body.truncated === true;
+    const rawQuestions = Array.isArray(body.questions) ? body.questions : [];
+
+    if (!requestId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing requestId' }));
+      return;
+    }
+
+    this.expireStalePermissions(state);
+
+    state.pendingQuestions.set(requestId, {
+      requestId,
+      createdAt: Date.now(),
+    });
+
+    if (this.onQuestionRequest) {
+      this.onQuestionRequest(conversationId, {
+        requestId,
+        description,
+        truncated,
+        questions: rawQuestions as QuestionEntryPayload[],
+      });
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  }
+
+  private handlePollQuestionAnswers(
+    conversationId: string,
+    timeoutMs: number,
+    res: http.ServerResponse,
+  ): void {
+    const state = this.ensureConversation(conversationId);
+
+    if (state.questionAnswerQueue.length > 0) {
+      const answers = state.questionAnswerQueue.splice(0);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ answers }));
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      state.questionAnswerEmitter.removeAllListeners('answer');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ answers: [] }));
+    }, timeoutMs);
+
+    state.questionAnswerEmitter.once('answer', () => {
+      clearTimeout(timer);
+      const answers = state.questionAnswerQueue.splice(0);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ answers }));
+    });
   }
 }

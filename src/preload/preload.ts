@@ -5,7 +5,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type { ElectronAPI } from '../shared/preload-api';
-import { IPC_CHANNELS, ActionResponse, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData } from '../shared/types';
+import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData } from '../shared/types';
 
 // Create the API object that will be exposed to the renderer
 const electronAPI: ElectronAPI = {
@@ -24,6 +24,9 @@ const electronAPI: ElectronAPI = {
 
     reject: (conversationId: string, actionId: string, message?: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_REJECT, conversationId, actionId, message),
+
+    answerQuestion: (response: AskUserQuestionResponse) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_USER_QUESTION_ANSWER, response),
 
     respondToAction: (response: ActionResponse) =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_ACTION_RESPONSE, response),

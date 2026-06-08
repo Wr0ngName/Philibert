@@ -29,6 +29,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import type { JSONRPCNotification } from '@modelcontextprotocol/sdk/types.js';
 
+import { parseQuestionsFromPreview } from './question-preview-parser';
+
 const BRIDGE_URL = process.env.PHILIBERT_BRIDGE_URL || 'http://127.0.0.1:8080';
 const CONVERSATION_ID = process.env.PHILIBERT_CONVERSATION_ID || 'default';
 const CHANNEL_TOKEN = process.env.PHILIBERT_CHANNEL_TOKEN || '';
@@ -99,6 +101,15 @@ server.fallbackNotificationHandler = async (notification: { method: string; para
       description: description.slice(0, 100),
     });
 
+    // AskUserQuestion is routed to a separate UI flow that captures the user's
+    // answer (not just allow/deny). We forward to /question/request and the bridge
+    // returns the answer via /question/poll; this side then issues the deny
+    // verdict + injects the `[User answered AskUserQuestion]:` user message.
+    if (toolName === 'AskUserQuestion') {
+      await forwardAskUserQuestion(requestId, description, inputPreview);
+      return;
+    }
+
     try {
       const resp = await fetch(
         `${BRIDGE_URL}/api/channel/permission/request/${encodeURIComponent(CONVERSATION_ID)}`,
@@ -126,6 +137,71 @@ server.fallbackNotificationHandler = async (notification: { method: string; para
     log('debug', 'Unhandled notification', { method: notification.method });
   }
 };
+
+/**
+ * Track pending AskUserQuestion requests so the verdict poller can issue
+ * the correct deny + user-message follow-up when the answer arrives.
+ */
+const pendingQuestions = new Map<string, { description: string }>();
+
+/**
+ * Forward an AskUserQuestion permission_request to the bridge's question endpoint.
+ *
+ * Claude Code's permission_request carries `input_preview` truncated to 200 chars
+ * (see CLI binary's `St7` function). We try to parse it as JSON to extract the
+ * structured questions; if it's truncated or unparseable we send an empty
+ * questions array with `truncated: true` so the UI can fall back to showing
+ * `description` plus a free-text input.
+ */
+async function forwardAskUserQuestion(
+  requestId: string,
+  description: string,
+  inputPreview: string,
+): Promise<void> {
+  const { questions, truncated } = parseQuestionsFromPreview(inputPreview);
+
+  pendingQuestions.set(requestId, { description });
+
+  log('info', 'Forwarding AskUserQuestion to bridge', {
+    requestId,
+    questionCount: questions.length,
+    truncated,
+  });
+
+  try {
+    const resp = await fetch(
+      `${BRIDGE_URL}/api/channel/question/request/${encodeURIComponent(CONVERSATION_ID)}`,
+      {
+        method: 'POST',
+        headers: HEADERS,
+        body: JSON.stringify({ requestId, description, questions, truncated }),
+      },
+    );
+
+    if (!resp.ok) {
+      log('error', 'Failed to forward AskUserQuestion to bridge', {
+        status: resp.status,
+        body: await resp.text(),
+      });
+      pendingQuestions.delete(requestId);
+      // Fall back: deny the permission_request so Claude Code doesn't hang.
+      await sendRawNotification('notifications/claude/channel/permission', {
+        request_id: requestId,
+        behavior: 'deny',
+      });
+    }
+  } catch (err) {
+    log('error', 'AskUserQuestion forwarding failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    pendingQuestions.delete(requestId);
+    await sendRawNotification('notifications/claude/channel/permission', {
+      request_id: requestId,
+      behavior: 'deny',
+    });
+  }
+}
+
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -306,6 +382,100 @@ async function pollMessages(): Promise<void> {
   }
 }
 
+async function pollQuestionAnswers(): Promise<void> {
+  log('info', 'Question answer poller started', { conversationId: CONVERSATION_ID });
+  let backoffMs = 0;
+
+  while (!shuttingDown) {
+    try {
+      const resp = await fetch(
+        `${BRIDGE_URL}/api/channel/question/poll/${encodeURIComponent(CONVERSATION_ID)}?timeout=30`,
+        { method: 'GET', headers: HEADERS, signal: AbortSignal.timeout(35000) },
+      );
+
+      if (!resp.ok) {
+        backoffMs = nextBackoff(backoffMs);
+        await sleep(backoffMs);
+        continue;
+      }
+
+      backoffMs = 0;
+
+      const data = (await resp.json()) as {
+        answers?: Array<{ requestId: string; cancelled?: boolean; followUpText: string }>;
+      };
+      const answers = data.answers || [];
+
+      for (const ans of answers) {
+        await handleQuestionAnswer(ans);
+      }
+    } catch (err) {
+      if (shuttingDown) break;
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        continue;
+      }
+      log('error', 'Question answer poll error', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      backoffMs = nextBackoff(backoffMs);
+      await sleep(backoffMs);
+    }
+  }
+}
+
+/**
+ * Apply a user's AskUserQuestion answer:
+ *   1) Send a `deny` permission verdict for the original request — the SDK's
+ *      built-in tool would otherwise hang waiting for a TTY answer.
+ *   2) Inject a `[User answered AskUserQuestion]:` user message via the
+ *      channel so Claude treats the answer as direct user intent
+ *      (matching the CLI's documented convention).
+ */
+async function handleQuestionAnswer(
+  ans: { requestId: string; cancelled?: boolean; followUpText: string },
+): Promise<void> {
+  pendingQuestions.delete(ans.requestId);
+
+  try {
+    await sendRawNotification('notifications/claude/channel/permission', {
+      request_id: ans.requestId,
+      behavior: 'deny',
+    });
+  } catch (err) {
+    log('error', 'Failed to send deny verdict for AskUserQuestion', {
+      requestId: ans.requestId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  if (ans.cancelled || !ans.followUpText) {
+    log('info', 'AskUserQuestion cancelled or empty answer — no follow-up message', {
+      requestId: ans.requestId,
+    });
+    return;
+  }
+
+  try {
+    await sendRawNotification('notifications/claude/channel', {
+      content: ans.followUpText,
+      meta: {
+        sender: 'user',
+        timestamp: String(Math.floor(Date.now() / 1000)),
+        kind: 'ask_user_question_answer',
+      },
+    });
+    log('info', 'Injected AskUserQuestion follow-up user message', {
+      requestId: ans.requestId,
+      textLength: ans.followUpText.length,
+    });
+  } catch (err) {
+    log('error', 'Failed to inject AskUserQuestion follow-up', {
+      requestId: ans.requestId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 async function pollVerdicts(): Promise<void> {
   log('info', 'Verdict poller started', { conversationId: CONVERSATION_ID });
   let backoffMs = 0;
@@ -395,7 +565,7 @@ async function main(): Promise<void> {
   // the first polled message arrives before the handler is set up (~13ms race).
   await sleep(2000);
 
-  await Promise.all([pollMessages(), pollVerdicts(), heartbeat()]);
+  await Promise.all([pollMessages(), pollVerdicts(), pollQuestionAnswers(), heartbeat()]);
 }
 
 main().catch((err) => {

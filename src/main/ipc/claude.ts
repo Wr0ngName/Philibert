@@ -13,7 +13,7 @@
 
 import { ipcMain } from 'electron';
 
-import { IPC_CHANNELS, ActionResponse, PermissionScope } from '../../shared/types';
+import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionScope } from '../../shared/types';
 import { IpcError, ValidationError, AppError, ERROR_CODES } from '../errors';
 import ClaudeCodeService from '../services/ClaudeCodeService';
 import { validateString, validateObject, validateBoolean, formatErrorMessage, ensureService } from '../utils/ipc-helpers';
@@ -114,6 +114,44 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
         throw new IpcError(formatErrorMessage('Failed to reject action', error), IPC_CHANNELS.CLAUDE_REJECT, ERROR_CODES.IPC_HANDLER_FAILED, error);
       }
     }
+  );
+
+  // Deliver the user's answer (or cancellation) for a pending AskUserQuestion
+  ipcMain.handle(
+    IPC_CHANNELS.CLAUDE_USER_QUESTION_ANSWER,
+    async (_event, response: AskUserQuestionResponse) => {
+      try {
+        logger.debug('IPC: claude:user-question-answer', {
+          conversationId: response?.conversationId,
+          actionId: response?.actionId,
+          answerCount: response?.answers?.length ?? 0,
+          cancelled: !!response?.cancelled,
+        });
+
+        ensureService(claudeService, 'ClaudeCodeService');
+        validateObject(response, 'Response');
+
+        if (typeof response.conversationId !== 'string' || !response.conversationId.trim()) {
+          throw new ValidationError('Invalid conversation ID', 'conversationId', ERROR_CODES.VALIDATION_REQUIRED);
+        }
+        if (typeof response.actionId !== 'string' || !response.actionId.trim()) {
+          throw new ValidationError('Invalid action ID', 'actionId', ERROR_CODES.VALIDATION_REQUIRED);
+        }
+        if (!Array.isArray(response.answers)) {
+          throw new ValidationError('Invalid answers: must be an array', 'answers', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+        }
+
+        await claudeService.handleQuestionAnswer(response);
+      } catch (error) {
+        logger.error('Failed to handle question answer', { error });
+        throw new IpcError(
+          formatErrorMessage('Failed to handle question answer', error),
+          IPC_CHANNELS.CLAUDE_USER_QUESTION_ANSWER,
+          ERROR_CODES.IPC_HANDLER_FAILED,
+          error,
+        );
+      }
+    },
   );
 
   // Handle full action response (alternative to approve/reject)

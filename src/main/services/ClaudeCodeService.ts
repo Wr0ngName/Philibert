@@ -429,6 +429,7 @@ export class ClaudeCodeService {
       this.sessionPermissionCache,
       conversationId,
       (actionId: string) => this.emitToolExecuted(conversationId, actionId),
+      (text: string) => this.pushAskUserQuestionFollowUp(conversationId, text),
     );
 
     // Create session ready promise (resolves when we get session_id from init)
@@ -1012,6 +1013,56 @@ export class ClaudeCodeService {
     } else {
       logger.warn('Cannot reject action - no active session for conversation', { conversationId, actionId });
     }
+  }
+
+  /**
+   * Deliver the user's answer to a pending AskUserQuestion (called from IPC handler).
+   * Routes to the channel service in channel mode, or PermissionManager in SDK mode.
+   */
+  async handleQuestionAnswer(
+    response: import('../../shared/types').AskUserQuestionResponse,
+  ): Promise<void> {
+    // Channel mode
+    if (this.channelService && this.channelService.isConversationActive(response.conversationId)) {
+      this.channelService.handleQuestionAnswer(response);
+      return;
+    }
+
+    // SDK mode
+    const instance = this.activeSessions.get(response.conversationId);
+    if (!instance) {
+      logger.warn('Cannot deliver question answer - no active session', {
+        conversationId: response.conversationId,
+        actionId: response.actionId,
+      });
+      return;
+    }
+    instance.permissionManager.handleQuestionAnswer(response);
+  }
+
+  /**
+   * Push a `[User answered AskUserQuestion]:` follow-up message into the session's
+   * input channel so the model treats the answer as direct user intent (CLI convention).
+   */
+  private pushAskUserQuestionFollowUp(conversationId: string, text: string): void {
+    const session = this.activeSessions.get(conversationId);
+    if (!session) {
+      logger.warn('Cannot push question follow-up - no active session', { conversationId });
+      return;
+    }
+
+    const userMessage: SDKUserMessage = {
+      type: 'user',
+      message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      ...(session.sdkSessionId ? { session_id: session.sdkSessionId } : {}),
+    };
+
+    session.inputChannel.push(userMessage);
+    logger.info('Pushed AskUserQuestion follow-up user message', {
+      conversationId,
+      textLength: text.length,
+    });
   }
 
   /**

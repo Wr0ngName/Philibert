@@ -6,10 +6,11 @@
 import { ref, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
 
-import type { BackgroundTask, PermissionScope, ToolUseInfo } from '@shared/types';
+import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, PendingAction, PermissionScope, ToolUseInfo } from '@shared/types';
 import { useChatStore } from '../../stores/chat';
 import { useClaudeChat } from '../../composables/useClaudeChat';
 import ActionApproval from './ActionApproval.vue';
+import AskUserQuestionMessage from './AskUserQuestionMessage.vue';
 import BackgroundTaskDetailModal from './BackgroundTaskDetailModal.vue';
 import BackgroundTaskPanel from './BackgroundTaskPanel.vue';
 import ContextUsageBar from './ContextUsageBar.vue';
@@ -23,7 +24,7 @@ import TransitionFade from '../shared/TransitionFade.vue';
 const chatStore = useChatStore();
 const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, sessionUsage, hasSessionUsage, activeQueryCount, maxConcurrentQueries, processingQueryCount } = storeToRefs(chatStore);
 
-const { sendMessage, approveAction, rejectAction, abort } = useClaudeChat();
+const { sendMessage, approveAction, rejectAction, abort, sendQuestionAnswer } = useClaudeChat();
 
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 
@@ -50,6 +51,18 @@ function handleApprove(actionId: string, alwaysAllow?: boolean, chosenScope?: Pe
 
 function handleReject(actionId: string) {
   rejectAction(actionId);
+}
+
+function isQuestionAction(action: PendingAction): action is AskUserQuestionAction {
+  return action.type === 'ask-user-question';
+}
+
+function handleQuestionAnswer(actionId: string, answers: AskUserQuestionAnswer[]) {
+  sendQuestionAnswer(actionId, answers, false);
+}
+
+function handleQuestionCancel(actionId: string) {
+  sendQuestionAnswer(actionId, [], true);
 }
 
 function clearError() {
@@ -159,13 +172,23 @@ function closeToolDetail() {
         tag="div"
         class="space-y-3"
       >
-        <ActionApproval
+        <template
           v-for="action in pendingActions"
           :key="action.id"
-          :action="action"
-          @approve="handleApprove"
-          @reject="handleReject"
-        />
+        >
+          <AskUserQuestionMessage
+            v-if="isQuestionAction(action)"
+            :action="action"
+            @answer="handleQuestionAnswer"
+            @cancel="handleQuestionCancel"
+          />
+          <ActionApproval
+            v-else
+            :action="action"
+            @approve="handleApprove"
+            @reject="handleReject"
+          />
+        </template>
       </TransitionGroup>
     </div>
 
