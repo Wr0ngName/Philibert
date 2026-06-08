@@ -28,6 +28,7 @@ import { ClaudeCliPaths, ChannelPaths } from '../../utils/resourcePaths';
 import type ConfigService from '../ConfigService';
 import type NotificationService from '../NotificationService';
 import { AuthValidator, ASK_USER_QUESTION_PREFIX } from '../claude';
+import { parseGenericToolInput, buildGenericToolDescription } from '../claude/tool-input-parser';
 
 import {
   ChannelBridge,
@@ -498,8 +499,22 @@ export class ChannelService {
         return { ...base, type: 'file-edit', details: { filePath: inputPreview, originalContent: '', newContent: '', diff: '' } };
       case 'Write':
         return { ...base, type: 'file-create', details: { filePath: inputPreview, content: '' } };
-      default:
+      case 'Bash':
         return { ...base, type: 'bash-command', details: { command: inputPreview, workingDirectory: '' } };
+      default: {
+        // Channel mode receives a JSON-stringified preview truncated at 200
+        // chars (Claude Code's St7). Try to parse it; mark truncated when
+        // the parse fails or the suffix indicates clipping.
+        const { parsed, truncated } = tryParseInputPreview(inputPreview);
+        const details = parseGenericToolInput(parsed, truncated);
+        return {
+          ...base,
+          type: 'generic-tool',
+          input: details.rawInput,
+          description: buildGenericToolDescription(toolName, details),
+          details,
+        };
+      }
     }
   }
 
@@ -646,5 +661,24 @@ export class ChannelService {
       bridgeHealthy,
       sessionRunning,
     });
+  }
+}
+
+/**
+ * Best-effort parse of the channel-mode `input_preview` string into a
+ * structured object. Returns `{ parsed: null, truncated: true }` when the
+ * payload is empty, clipped (suffix `…`/`...`), or not valid JSON.
+ */
+function tryParseInputPreview(
+  inputPreview: string,
+): { parsed: unknown; truncated: boolean } {
+  if (!inputPreview) return { parsed: null, truncated: true };
+
+  const isTruncated = inputPreview.endsWith('…') || inputPreview.endsWith('...');
+  try {
+    const parsed = JSON.parse(inputPreview);
+    return { parsed, truncated: isTruncated };
+  } catch {
+    return { parsed: null, truncated: true };
   }
 }

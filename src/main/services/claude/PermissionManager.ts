@@ -30,6 +30,7 @@ import logger from '../../utils/logger';
 import type ConfigService from '../ConfigService';
 
 import type { SessionPermissionCache } from './SessionPermissionCache';
+import { parseGenericToolInput, buildGenericToolDescription } from './tool-input-parser';
 
 /** Tool name for the SDK's built-in AskUserQuestion */
 export const ASK_USER_QUESTION_TOOL = 'AskUserQuestion';
@@ -751,17 +752,19 @@ export class PermissionManager {
           },
         };
 
-      default:
-        // Handle unknown tools generically
+      default: {
+        // Generic rendering for tools without a dedicated card (MCP tools,
+        // Task, WebFetch, etc.). The old behaviour was to dump
+        // `JSON.stringify(input)` into a bash-command card, which mangled
+        // multi-line commands and buried the input.description.
+        const details = parseGenericToolInput(input);
         return {
           ...baseFields,
-          type: 'bash-command' as const,
-          description: `Tool: ${toolName}`,
-          details: {
-            command: JSON.stringify(input),
-            workingDirectory: '',
-          },
+          type: 'generic-tool' as const,
+          description: buildGenericToolDescription(toolName, details),
+          details,
         };
+      }
     }
   }
 

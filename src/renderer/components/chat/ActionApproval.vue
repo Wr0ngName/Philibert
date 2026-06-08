@@ -7,7 +7,7 @@
 
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
-import type { PendingAction, FileEditDetails, BashCommandDetails, PermissionScope, PermissionScopeOption, PermissionContext } from '@shared/types';
+import type { PendingAction, FileEditDetails, BashCommandDetails, GenericToolDetails, PermissionScope, PermissionScopeOption, PermissionContext } from '@shared/types';
 import type { IconName } from '../shared/Icon.vue';
 
 import Button from '../shared/Button.vue';
@@ -138,6 +138,7 @@ const isFileAction = computed(() =>
 );
 
 const isBashAction = computed(() => props.action.type === 'bash-command');
+const isGenericToolAction = computed(() => props.action.type === 'generic-tool');
 
 const fileDetails = computed(() => {
   if (isFileAction.value) {
@@ -153,6 +154,25 @@ const bashDetails = computed(() => {
   return null;
 });
 
+const genericToolDetails = computed((): GenericToolDetails | null => {
+  if (isGenericToolAction.value) {
+    return props.action.details as GenericToolDetails;
+  }
+  return null;
+});
+
+const showRawInput = ref(false);
+
+const rawInputJson = computed(() => {
+  const details = genericToolDetails.value;
+  if (!details) return '';
+  try {
+    return JSON.stringify(details.rawInput, null, 2);
+  } catch {
+    return '[unserializable]';
+  }
+});
+
 const actionIcon = computed((): IconName => {
   switch (props.action.type) {
     case 'file-edit':
@@ -162,6 +182,8 @@ const actionIcon = computed((): IconName => {
     case 'file-delete':
       return 'trash';
     case 'bash-command':
+      return 'terminal';
+    case 'generic-tool':
       return 'terminal';
     default:
       return 'info';
@@ -173,6 +195,7 @@ const actionColor = computed(() => {
     case 'file-delete':
       return 'text-red-500';
     case 'bash-command':
+    case 'generic-tool':
       return 'text-yellow-500';
     default:
       return 'text-blue-500';
@@ -288,8 +311,8 @@ const shortcutHint = computed(() => {
 
       <!-- Bash command details -->
       <template v-if="bashDetails">
-        <div class="code-block text-xs font-mono">
-          <span class="text-green-500">$</span> {{ bashDetails.command }}
+        <div class="code-block text-xs font-mono whitespace-pre-wrap">
+          {{ bashDetails.command }}
         </div>
         <div
           v-if="bashDetails.workingDirectory"
@@ -297,6 +320,80 @@ const shortcutHint = computed(() => {
         >
           Working directory: {{ bashDetails.workingDirectory }}
         </div>
+      </template>
+
+      <!-- Generic tool details (MCP tools, Task, WebFetch, …) -->
+      <template v-if="genericToolDetails">
+        <div
+          v-if="genericToolDetails.truncated"
+          class="text-[11px] text-amber-700 dark:text-amber-300 mb-2"
+        >
+          Input was truncated by the channel preview limit.
+        </div>
+
+        <div
+          v-if="genericToolDetails.inputDescription"
+          class="text-sm text-surface-700 dark:text-surface-200 mb-2 italic"
+        >
+          {{ genericToolDetails.inputDescription }}
+        </div>
+
+        <div
+          v-if="genericToolDetails.primaryText"
+          class="mb-2"
+        >
+          <div class="text-[11px] uppercase tracking-wider text-surface-500 dark:text-surface-400 mb-1">
+            {{ genericToolDetails.primaryText.label }}
+          </div>
+          <pre class="code-block text-xs font-mono whitespace-pre-wrap max-h-60 overflow-auto">{{ genericToolDetails.primaryText.content }}</pre>
+        </div>
+
+        <div
+          v-if="genericToolDetails.secondaryFields.length > 0"
+          class="space-y-1.5"
+        >
+          <div
+            v-for="field in genericToolDetails.secondaryFields"
+            :key="field.label"
+            class="text-xs"
+          >
+            <span class="text-surface-500 dark:text-surface-400 font-medium">{{ field.label }}:</span>
+            <pre
+              v-if="field.multiline"
+              class="code-block font-mono whitespace-pre-wrap mt-1 max-h-40 overflow-auto"
+            >{{ field.value }}</pre>
+            <span
+              v-else
+              class="font-mono ml-1 break-all text-surface-700 dark:text-surface-200"
+            >{{ field.value }}</span>
+          </div>
+        </div>
+
+        <div
+          v-if="genericToolDetails.jsonFields.length > 0"
+          class="space-y-1.5 mt-2"
+        >
+          <div
+            v-for="field in genericToolDetails.jsonFields"
+            :key="field.label"
+            class="text-xs"
+          >
+            <span class="text-surface-500 dark:text-surface-400 font-medium">{{ field.label }}:</span>
+            <pre class="code-block font-mono whitespace-pre-wrap mt-1 max-h-40 overflow-auto">{{ field.json }}</pre>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          class="mt-2 text-[11px] text-surface-500 dark:text-surface-400 hover:text-surface-700 dark:hover:text-surface-200 underline"
+          @click="showRawInput = !showRawInput"
+        >
+          {{ showRawInput ? 'Hide raw input' : 'Show raw input' }}
+        </button>
+        <pre
+          v-if="showRawInput"
+          class="code-block font-mono text-[11px] whitespace-pre-wrap mt-1 max-h-60 overflow-auto"
+        >{{ rawInputJson }}</pre>
       </template>
     </div>
 

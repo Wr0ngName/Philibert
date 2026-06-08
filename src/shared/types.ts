@@ -123,7 +123,7 @@ export interface ChatMessage {
  * - read-file: Read the contents of a file
  * - ask-user-question: Claude is asking the user a multiple-choice question
  */
-export type ActionType = 'file-edit' | 'file-create' | 'file-delete' | 'bash-command' | 'read-file' | 'ask-user-question';
+export type ActionType = 'file-edit' | 'file-create' | 'file-delete' | 'bash-command' | 'read-file' | 'ask-user-question' | 'generic-tool';
 
 /**
  * Current status of an action in its lifecycle
@@ -247,6 +247,43 @@ export interface AskUserQuestionAnswer {
 }
 
 /**
+ * A scalar/string field extracted from a tool input for compact display.
+ */
+export interface GenericToolField {
+  /** Display label (e.g. "file_path", "path") */
+  label: string;
+  /** String value (already coerced) */
+  value: string;
+  /** True when the value is multi-line and should render as a `<pre>` block */
+  multiline: boolean;
+}
+
+/**
+ * Details for a generic tool that isn't one of the well-known built-ins
+ * (Edit/Write/Bash/Read/Glob/Grep). Replaces the old behaviour of stuffing
+ * `JSON.stringify(input)` into the bash-command template.
+ *
+ * The parser extracts a primary text field (command/script/query/prompt/...),
+ * the input's own `description` string (if any), and the remaining scalar
+ * fields as `secondaryFields`. The full raw object is preserved in `rawInput`
+ * for an optional "show raw" disclosure.
+ */
+export interface GenericToolDetails {
+  /** Original tool input object (unmodified) */
+  rawInput: Record<string, unknown>;
+  /** Tool description from the input.description field, if any */
+  inputDescription?: string;
+  /** Primary content (the "command", "script", "prompt", "query"…) */
+  primaryText?: { label: string; content: string };
+  /** Other scalar inputs (file paths, URLs, IDs…) */
+  secondaryFields: GenericToolField[];
+  /** Complex (object/array) fields rendered as compact JSON */
+  jsonFields: { label: string; json: string }[];
+  /** True when the source payload was truncated (channel-mode preview cap) */
+  truncated?: boolean;
+}
+
+/**
  * Renderer → main response for an AskUserQuestion request.
  * Sent over CLAUDE_USER_QUESTION_ANSWER IPC.
  */
@@ -264,7 +301,7 @@ export interface AskUserQuestionResponse {
 /**
  * Union type of all possible action details
  */
-export type ActionDetails = FileEditDetails | FileCreateDetails | FileDeleteDetails | BashCommandDetails | ReadFileDetails | AskUserQuestionDetails;
+export type ActionDetails = FileEditDetails | FileCreateDetails | FileDeleteDetails | BashCommandDetails | ReadFileDetails | AskUserQuestionDetails | GenericToolDetails;
 
 /**
  * The scope at which a permission rule applies
@@ -393,6 +430,16 @@ export interface ReadFileAction extends BaseAction {
 }
 
 /**
+ * Action for a tool that has no dedicated specialised renderer (most MCP
+ * tools, custom commands, etc.). Replaces the legacy default-case behaviour
+ * of dumping `JSON.stringify(input)` into a bash-command card.
+ */
+export interface GenericToolAction extends BaseAction {
+  type: 'generic-tool';
+  details: GenericToolDetails;
+}
+
+/**
  * Action for surfacing an AskUserQuestion to the user.
  *
  * Unlike permission actions, this is NOT an approval gate — the user must
@@ -408,7 +455,7 @@ export interface AskUserQuestionAction extends BaseAction {
  * Discriminated union of all possible pending actions
  * Allows type-safe narrowing based on the 'type' field
  */
-export type PendingAction = FileEditAction | FileCreateAction | FileDeleteAction | BashCommandAction | ReadFileAction | AskUserQuestionAction;
+export type PendingAction = FileEditAction | FileCreateAction | FileDeleteAction | BashCommandAction | ReadFileAction | AskUserQuestionAction | GenericToolAction;
 
 /**
  * Response from renderer for action approval
