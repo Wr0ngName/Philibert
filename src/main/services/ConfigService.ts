@@ -54,10 +54,26 @@ export class ConfigService {
   private store: StoreInstance = null;
   private initPromise: Promise<void> | null = null;
   private isInitialized: boolean = false;
+  private workingDirectoryListeners: Set<(directory: string) => void> = new Set();
 
   constructor() {
     // Don't start initialization in constructor - let ensureInitialized handle it
     // This avoids race conditions when multiple callers try to initialize
+  }
+
+  /**
+   * Subscribe to working-directory changes. Fires after the new directory is
+   * persisted. Used by main process to rewire the file watcher and git
+   * watcher to whichever directory the active conversation/session uses,
+   * so callers don't have to know about those services.
+   *
+   * Returns an unsubscribe function.
+   */
+  onWorkingDirectoryChange(callback: (directory: string) => void): () => void {
+    this.workingDirectoryListeners.add(callback);
+    return () => {
+      this.workingDirectoryListeners.delete(callback);
+    };
   }
 
   private async initialize(): Promise<void> {
@@ -170,6 +186,10 @@ export class ConfigService {
       await this.setOAuthToken(oauthToken);
     }
 
+    // Capture old working directory before mutating so we only fire the event
+    // when the value actually changed (renderer often re-saves the same value).
+    const previousWorkingDirectory = this.store.get('workingDirectory', '') as string;
+
     // Store other config values
     Object.entries(rest).forEach(([key, value]) => {
       if (value !== undefined) {
@@ -182,7 +202,29 @@ export class ConfigService {
       setLogLevel(rest.logLevel);
     }
 
+    // Fire working-directory change so file/git watchers can retarget.
+    if (rest.workingDirectory !== undefined && rest.workingDirectory !== previousWorkingDirectory) {
+      this.emitWorkingDirectoryChange(rest.workingDirectory);
+    }
+
     logger.info('Config updated', { keys: Object.keys(config) });
+  }
+
+  /**
+   * Notify subscribers of a working-directory change. Each listener gets the
+   * new directory. Errors in listeners are swallowed so one bad subscriber
+   * can't block others.
+   */
+  private emitWorkingDirectoryChange(directory: string): void {
+    for (const listener of this.workingDirectoryListeners) {
+      try {
+        listener(directory);
+      } catch (err) {
+        logger.warn('workingDirectory listener threw', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 
   /**
@@ -422,6 +464,7 @@ export class ConfigService {
     await this.ensureInitialized();
     if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
 
+    const previous = this.store.get('workingDirectory', '') as string;
     this.store.set('workingDirectory', directory);
 
     // Update recent projects
@@ -429,6 +472,10 @@ export class ConfigService {
     const filtered = recent.filter((p: string) => p !== directory);
     const updated = [directory, ...filtered].slice(0, MAIN_CONSTANTS.CONFIG.MAX_RECENT_PROJECTS);
     this.store.set('recentProjects', updated);
+
+    if (directory !== previous) {
+      this.emitWorkingDirectoryChange(directory);
+    }
 
     logger.info('Working directory updated', { directory });
   }

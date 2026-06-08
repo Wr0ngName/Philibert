@@ -186,6 +186,19 @@ async function main(): Promise<void> {
         await setupWindowsDependencies(mainWindow);
       }
 
+      // Rewire both watchers whenever the working directory changes — fires
+      // when the user picks a new directory, when settings.setExecutionMode
+      // adopts a new value, AND when a conversation switch ripples through
+      // settingsStore.setWorkingDirectory. Without this, only the file picker
+      // would retarget the watchers; conversation switches would leave both
+      // services pointed at the startup directory.
+      configService.onWorkingDirectoryChange((directory) => {
+        if (!directory) return;
+        fileWatcher.watch(directory);
+        gitService.startWatching(directory);
+        logger.info('Rewired watchers for new working directory', { directory });
+      });
+
       const lastWorkingDir = await configService.getWorkingDirectory();
       if (lastWorkingDir) {
         fileWatcher.watch(lastWorkingDir);
