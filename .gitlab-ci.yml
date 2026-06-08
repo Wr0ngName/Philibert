@@ -456,6 +456,7 @@ cleanup:old:
         -e CI_API_V4_URL \
         -e CI_PROJECT_ID \
         -e CI_JOB_TOKEN \
+        -e CI_COMMIT_TAG \
         -e KEEP_LAST_N \
         alpine:latest sh -c "apk add --no-cache --quiet curl jq >/dev/null && sh scripts/cleanup-old-releases.sh"
   rules:
