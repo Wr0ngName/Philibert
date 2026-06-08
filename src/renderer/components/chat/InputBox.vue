@@ -49,9 +49,11 @@ const placeholder = computed(() => {
   return 'Ask Claude anything... (try /compact, /help, /cost)';
 });
 
-// Disable input when not authenticated or loading
+// Disable input only when not authenticated. While a query is running we
+// keep the textarea editable so the user can draft their next message
+// (the Send button is replaced by Stop, so Enter still no-ops via canSend).
 const isDisabled = computed(() => {
-  return !hasAuth.value || isLoading.value;
+  return !hasAuth.value;
 });
 
 // Check if current input looks like a CLI command
@@ -59,9 +61,11 @@ const isTypingCommand = computed(() => {
   return message.value.trim().startsWith('/');
 });
 
-// Show autocomplete when typing a command and commands are available
+// Show autocomplete when typing a command and commands are available.
+// Stays available while a query is loading so the user can draft slash
+// commands for their next turn.
 const showAutocomplete = computed(() => {
-  return isTypingCommand.value && slashCommands.value.length > 0 && !isLoading.value;
+  return isTypingCommand.value && slashCommands.value.length > 0;
 });
 
 function handleSubmit(): void {
