@@ -34,9 +34,44 @@ RELEASES_JSON=$(curl -fsS --header "$HDR" "${API}/releases?per_page=100")
 RELEASES_COUNT=$(echo "$RELEASES_JSON" | jq 'length')
 echo "Found ${RELEASES_COUNT} release(s) total."
 
+# Phase 1: superseded-RC cleanup.
+# An RC tag has the form `vX.Y.Z-rc.N`. Once the matching stable `vX.Y.Z`
+# ships, the RCs are obsolete previews of the same release — delete them
+# regardless of date so the release list and Package Registry stay clean.
+ALL_TAGS=$(echo "$RELEASES_JSON" | jq -r '.[].tag_name')
+STABLE_BASES=$(echo "$ALL_TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+
+SUPERSEDED_RCS=''
+if [ -n "$STABLE_BASES" ]; then
+  for BASE in $STABLE_BASES; do
+    MATCHING_RCS=$(echo "$ALL_TAGS" | grep -E "^${BASE}-rc\." || true)
+    if [ -n "$MATCHING_RCS" ]; then
+      SUPERSEDED_RCS="${SUPERSEDED_RCS}${MATCHING_RCS}
+"
+    fi
+  done
+fi
+
+if [ -n "$SUPERSEDED_RCS" ]; then
+  echo "Found superseded RC(s) — stable equivalent already shipped:"
+  echo "$SUPERSEDED_RCS" | sed 's/^/  /'
+  echo "$SUPERSEDED_RCS" | while IFS= read -r TAG; do
+    [ -z "$TAG" ] && continue
+    echo "Deleting superseded RC ${TAG}..."
+    curl -fsS --request DELETE --header "$HDR" "${API}/releases/${TAG}" \
+      && echo "  ok" \
+      || echo "  FAILED for ${TAG}"
+  done
+else
+  echo "No superseded RCs to clean up."
+fi
+
+# Phase 2: keep-last-N on whatever remains.
+# Re-fetch so the slice indices reflect the post-Phase-1 state.
+RELEASES_JSON=$(curl -fsS --header "$HDR" "${API}/releases?per_page=100")
 OLD_TAGS=$(echo "$RELEASES_JSON" | jq -r --argjson n "$KEEP_LAST_N" '.[$n:] | .[].tag_name')
 if [ -z "$OLD_TAGS" ]; then
-  echo "Nothing to delete (under retention threshold)."
+  echo "Nothing else to delete (under retention threshold)."
 else
   echo "$OLD_TAGS" | while IFS= read -r TAG; do
     [ -z "$TAG" ] && continue
@@ -56,13 +91,47 @@ PACKAGES_JSON=$(curl -fsS --header "$HDR" \
 PACKAGES_COUNT=$(echo "$PACKAGES_JSON" | jq 'length')
 echo "Found ${PACKAGES_COUNT} package version(s) total."
 
-# Keep the N most-recent package ids. order_by=created_at&sort=desc already
-# put newest first; we just slice.
+# Phase 1: superseded-RC cleanup. Package versions match release tags
+# without the leading `v` (e.g. release `v0.17.35-rc.1` → package `0.17.35-rc.1`).
+STABLE_PKG_VERSIONS=$(echo "$PACKAGES_JSON" | jq -r '.[].version' \
+  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)
+
+SUPERSEDED_PKG_IDS=''
+if [ -n "$STABLE_PKG_VERSIONS" ]; then
+  for STABLE in $STABLE_PKG_VERSIONS; do
+    IDS=$(echo "$PACKAGES_JSON" | jq -r --arg s "$STABLE" \
+      '.[] | select(.version | startswith($s + "-rc.")) | "\(.id) \(.version)"')
+    if [ -n "$IDS" ]; then
+      SUPERSEDED_PKG_IDS="${SUPERSEDED_PKG_IDS}${IDS}
+"
+    fi
+  done
+fi
+
+if [ -n "$SUPERSEDED_PKG_IDS" ]; then
+  echo "Found superseded RC package(s) — stable equivalent already shipped:"
+  echo "$SUPERSEDED_PKG_IDS" | sed 's/^/  /'
+  echo "$SUPERSEDED_PKG_IDS" | while IFS= read -r LINE; do
+    [ -z "$LINE" ] && continue
+    ID=$(echo "$LINE" | cut -d' ' -f1)
+    VERSION=$(echo "$LINE" | cut -d' ' -f2-)
+    echo "Deleting superseded RC package id=${ID} (version ${VERSION})..."
+    curl -fsS --request DELETE --header "$HDR" "${API}/packages/${ID}" \
+      && echo "  ok" \
+      || echo "  FAILED for id=${ID}"
+  done
+else
+  echo "No superseded RC packages to clean up."
+fi
+
+# Phase 2: keep-last-N on whatever remains.
+PACKAGES_JSON=$(curl -fsS --header "$HDR" \
+  "${API}/packages?package_type=generic&per_page=100&order_by=created_at&sort=desc")
 DELETE_PKGS=$(echo "$PACKAGES_JSON" | jq -r --argjson n "$KEEP_LAST_N" \
   '.[$n:] | .[] | "\(.id) \(.version)"')
 
 if [ -z "$DELETE_PKGS" ]; then
-  echo "Nothing to delete (under retention threshold)."
+  echo "Nothing else to delete (under retention threshold)."
 else
   echo "$DELETE_PKGS" | while IFS= read -r LINE; do
     [ -z "$LINE" ] && continue
