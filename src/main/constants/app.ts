@@ -71,6 +71,15 @@ export const MAIN_CONSTANTS = {
     /** Threshold for batch file changes before full tree reload (from shared constants) */
     BATCH_CHANGE_THRESHOLD: FILE_CONSTANTS.BATCH_CHANGE_THRESHOLD,
   },
+  GIT: {
+    /**
+     * How often to run a background `git fetch --quiet` on the currently
+     * watched directory to keep ahead/behind counts fresh against a remote
+     * that other people are pushing to. Only runs while a watcher is
+     * active — switching away from a git-repo directory tears it down.
+     */
+    REMOTE_FETCH_INTERVAL_MS: 60_000,
+  },
   CONFIG: {
     /** Maximum number of recent projects to keep */
     MAX_RECENT_PROJECTS: 10,

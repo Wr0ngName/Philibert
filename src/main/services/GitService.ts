@@ -40,6 +40,7 @@ export class GitService {
   private watchedDir: string | null = null;
   private isFullyWatching = false;
   private debounceTimer: NodeJS.Timeout | null = null;
+  private remoteFetchInterval: NodeJS.Timeout | null = null;
   private statusCallbacks: Set<(status: GitStatus) => void> = new Set();
   private resolvedGitBinary: string | null = null;
 
@@ -482,6 +483,19 @@ export class GitService {
     this.fetch(directory).then(() => {
       this.scheduleStatusRefresh();
     });
+
+    // Periodic background fetch so collaborative repos pick up remote pushes
+    // without the user having to switch dirs or hit Pull. The fetch is scoped
+    // to whichever directory is currently watched, so switching conversations
+    // automatically retargets and there's never more than one running.
+    // The .git/FETCH_HEAD watcher above turns each fetch into a status refresh
+    // automatically when ahead/behind actually changed.
+    this.remoteFetchInterval = setInterval(() => {
+      if (!this.watchedDir) return;
+      this.fetch(this.watchedDir).catch(() => {
+        // Non-critical: offline, no remote, auth missing, etc.
+      });
+    }, MAIN_CONSTANTS.GIT.REMOTE_FETCH_INTERVAL_MS);
   }
 
   /**
@@ -609,6 +623,11 @@ export class GitService {
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
+    }
+
+    if (this.remoteFetchInterval) {
+      clearInterval(this.remoteFetchInterval);
+      this.remoteFetchInterval = null;
     }
 
     logger.debug('Stopped watching git directory');
