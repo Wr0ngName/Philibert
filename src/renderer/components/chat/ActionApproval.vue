@@ -212,6 +212,38 @@ const hasPermissionContext = computed(() => {
   return permissionContext.value?.blockedPath || permissionContext.value?.decisionReason;
 });
 
+/**
+ * Friendlier rewrite of common SDK decisionReason text.
+ *
+ * The SDK's auto-classifier reports `Command contains malformed syntax that
+ * cannot be parsed: Command too long for parsing (X bytes). Maximum supported
+ * length is Y bytes.` when a Bash/PowerShell command exceeds the parser's
+ * size cap. That phrasing reads as "Claude is asking to run malformed code"
+ * — but the command itself is fine; the *classifier* just bailed out. Reword
+ * to make the actual situation clear.
+ */
+const displayedDecisionReason = computed((): string => {
+  const raw = permissionContext.value?.decisionReason ?? '';
+  const tooLongMatch = raw.match(/Command too long for parsing \((\d+)\s*bytes?\)\.\s*Maximum supported length is (\d+)\s*bytes?/i);
+  if (tooLongMatch) {
+    const [, actual, limit] = tooLongMatch;
+    return `Auto-approval skipped: command is ${actual} bytes (SDK classifier limit ${limit}). Review and approve manually.`;
+  }
+  return raw;
+});
+
+/**
+ * The inputDescription is already woven into the card title (e.g.
+ * `PowerShell: Re-run parse...`), so we don't show it a second time as a
+ * subtitle. We only render it separately if it's somehow missing from the
+ * title (e.g. very long descriptions that got truncated with `…`).
+ */
+const showInputDescription = computed((): boolean => {
+  const details = genericToolDetails.value;
+  if (!details?.inputDescription) return false;
+  return !props.action.description.includes(details.inputDescription.slice(0, 40));
+});
+
 /** Per-scope descriptions for showing detailed permission info */
 const scopeDescriptions = computed((): string[] => {
   return scopeOptions.value
@@ -277,10 +309,10 @@ const shortcutHint = computed(() => {
       class="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-2.5 mb-2 text-xs"
     >
       <div
-        v-if="permissionContext?.decisionReason"
+        v-if="displayedDecisionReason"
         class="text-amber-800 dark:text-amber-300"
       >
-        {{ permissionContext.decisionReason }}
+        {{ displayedDecisionReason }}
       </div>
       <div
         v-if="permissionContext?.blockedPath"
@@ -332,7 +364,7 @@ const shortcutHint = computed(() => {
         </div>
 
         <div
-          v-if="genericToolDetails.inputDescription"
+          v-if="showInputDescription"
           class="text-sm text-surface-700 dark:text-surface-200 mb-2 italic"
         >
           {{ genericToolDetails.inputDescription }}
