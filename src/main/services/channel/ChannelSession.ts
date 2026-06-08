@@ -233,6 +233,13 @@ export class ChannelSession {
       this.model,
       '--allowedTools',
       'mcp__philibert__reply',
+      // AskUserQuestion in channel mode renders an Ink picker directly in the
+      // PTY with no MCP notification, leaving Philibert unable to surface or
+      // answer the question. Disable it so the model falls back to plain-text
+      // questions in its reply — the user can answer in chat. SDK mode keeps
+      // the structured picker because the SDK exposes canUseTool as a hook.
+      '--disallowedTools',
+      'AskUserQuestion',
       '--mcp-config',
       mcpJsonPath,
       '--verbose',
