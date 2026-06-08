@@ -11,6 +11,7 @@ import type { SlashCommandInfo } from '@shared/types';
 import { CONSTANTS } from '../../constants/app';
 import { useClaudeChat } from '../../composables/useClaudeChat';
 import { useChatStore } from '../../stores/chat';
+import { useConversationsStore } from '../../stores/conversations';
 import { useFilesStore } from '../../stores/files';
 import { useSettingsStore } from '../../stores/settings';
 import Button from '../shared/Button.vue';
@@ -25,18 +26,24 @@ const emit = defineEmits<{
 const chatStore = useChatStore();
 const filesStore = useFilesStore();
 const settingsStore = useSettingsStore();
+const conversationsStore = useConversationsStore();
 const { slashCommands } = useClaudeChat();
 
 const { isLoading, hasMessages } = storeToRefs(chatStore);
 const { hasAuth, executionMode } = storeToRefs(settingsStore);
 const { hasWorkingDirectory } = storeToRefs(filesStore);
+const { currentModeMismatch } = storeToRefs(conversationsStore);
 
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const autocompleteRef = ref<InstanceType<typeof CommandAutocomplete> | null>(null);
 const message = ref('');
 
 const canSend = computed(() => {
-  return message.value.trim().length > 0 && hasAuth.value && hasWorkingDirectory.value && !isLoading.value;
+  return message.value.trim().length > 0
+    && hasAuth.value
+    && hasWorkingDirectory.value
+    && !isLoading.value
+    && !currentModeMismatch.value;
 });
 
 const placeholder = computed(() => {
@@ -46,14 +53,17 @@ const placeholder = computed(() => {
   if (!hasWorkingDirectory.value) {
     return 'Please select a working directory first...';
   }
+  if (currentModeMismatch.value) {
+    return `This conversation was started in ${currentModeMismatch.value.conversationMode} mode — switch back or continue in ${currentModeMismatch.value.currentMode} mode to send.`;
+  }
   return 'Ask Claude anything... (try /compact, /help, /cost)';
 });
 
-// Disable input only when not authenticated. While a query is running we
-// keep the textarea editable so the user can draft their next message
-// (the Send button is replaced by Stop, so Enter still no-ops via canSend).
+// Disable input when not authenticated OR when the conversation belongs to
+// a different execution mode (the SDK/CLI can't resume across modes, so a
+// send would fail; the user must acknowledge via the banner first).
 const isDisabled = computed(() => {
-  return !hasAuth.value;
+  return !hasAuth.value || !!currentModeMismatch.value;
 });
 
 // Check if current input looks like a CLI command

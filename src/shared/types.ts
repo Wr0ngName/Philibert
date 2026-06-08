@@ -653,6 +653,16 @@ export interface Conversation {
   updatedAt: number;
   /** SDK session ID for resuming conversation context */
   sdkSessionId?: string;
+  /**
+   * Execution mode this conversation was started in. The SDK and channel CLI
+   * keep separate session stores, so a conversation started in one mode can't
+   * resume in the other. The UI uses this to block sends and prompt the user
+   * before silently failing on a mode switch.
+   *
+   * Optional for backwards compatibility — conversations saved before this
+   * field existed get the current mode populated on load (graceful migration).
+   */
+  executionMode?: ExecutionMode;
 }
 
 // Git types

@@ -72,6 +72,22 @@ export const useConversationsStore = defineStore('conversations', () => {
     return [...conversations.value].sort((a, b) => b.updatedAt - a.updatedAt);
   });
 
+  /**
+   * True when the active conversation was started in a different execution
+   * mode than the user is currently using. The SDK and channel CLI keep
+   * separate session stores, so resume across modes always fails — block
+   * sends and surface a clear banner instead of letting the SDK error path
+   * trip silently.
+   */
+  const currentModeMismatch = computed(() => {
+    const conv = currentConversation.value;
+    if (!conv) return null;
+    const settingsStore = useSettingsStore();
+    const convMode = conv.executionMode;
+    if (!convMode || convMode === settingsStore.executionMode) return null;
+    return { conversationMode: convMode, currentMode: settingsStore.executionMode };
+  });
+
   // Actions
 
   /**
@@ -82,7 +98,17 @@ export const useConversationsStore = defineStore('conversations', () => {
     error.value = null;
     try {
       const list = await window.electron.conversation.list();
-      conversations.value = list;
+      // Migration: stamp the current execution mode onto any conversation that
+      // doesn't already have one. We do this in memory only; the file gets
+      // updated on the next save. This preserves the user's expectation that
+      // pre-existing conversations "belong to" whatever mode they're currently
+      // in, while keeping any newly created conversation anchored to its
+      // creation mode for future mode-switch detection.
+      const settingsStore = useSettingsStore();
+      const currentMode = settingsStore.executionMode;
+      conversations.value = list.map((c: Conversation) =>
+        c.executionMode ? c : { ...c, executionMode: currentMode },
+      );
       logger.debug('Loaded conversation list', { count: list.length });
     } catch (err) {
       logger.error('Failed to load conversations', err);
@@ -104,6 +130,13 @@ export const useConversationsStore = defineStore('conversations', () => {
       if (!conversation) {
         error.value = 'Conversation not found';
         return false;
+      }
+
+      // Same migration as loadConversationList: stamp current mode onto
+      // pre-existing conversations missing the field.
+      const settingsStoreForMigration = useSettingsStore();
+      if (!conversation.executionMode) {
+        conversation.executionMode = settingsStoreForMigration.executionMode;
       }
 
       // Update in list with full data
@@ -239,6 +272,12 @@ export const useConversationsStore = defineStore('conversations', () => {
       ? rawMessages[rawMessages.length - 1].timestamp
       : Date.now();
 
+    // Stamp the execution mode the first time this conversation is saved so
+    // future loads can detect mode switches. Once set we never overwrite —
+    // conversations stay anchored to the mode that created them.
+    const settingsStore = useSettingsStore();
+    const executionMode = existingConv?.executionMode ?? settingsStore.executionMode;
+
     return {
       id: conversationId,
       title,
@@ -248,6 +287,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       createdAt: existingConv?.createdAt || Date.now(),
       updatedAt: lastMessageAt,
       sdkSessionId,
+      executionMode,
     };
   }
 
@@ -549,6 +589,35 @@ export const useConversationsStore = defineStore('conversations', () => {
   }
 
   /**
+   * Acknowledge a mode mismatch on the current conversation: re-stamp the
+   * conversation with the user's current execution mode and drop the stored
+   * SDK session ID so the next send starts fresh in the new mode.
+   */
+  async function adoptCurrentExecutionMode(): Promise<void> {
+    if (!currentConversationId.value) return;
+    const settingsStore = useSettingsStore();
+    const conv = conversations.value.find(
+      (c: Conversation) => c.id === currentConversationId.value,
+    );
+    if (!conv) return;
+
+    conv.executionMode = settingsStore.executionMode;
+    clearCurrentSdkSessionId();
+
+    logger.info('Adopted current execution mode for conversation', {
+      conversationId: currentConversationId.value,
+      newMode: settingsStore.executionMode,
+    });
+
+    // Persist the mode change so future loads reflect it
+    if (chatStore.messages.length > 0) {
+      await saveCurrentConversation().catch((err) => {
+        logger.warn('Failed to persist adopted execution mode', { error: err });
+      });
+    }
+  }
+
+  /**
    * Clear ALL stored SDK session IDs.
    * Used when authentication changes (re-login, migration) to prevent
    * stale session resume attempts with a different auth context.
@@ -639,6 +708,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     currentConversation,
     hasConversations,
     sortedConversations,
+    currentModeMismatch,
 
     // Actions
     loadConversationList,
@@ -662,5 +732,8 @@ export const useConversationsStore = defineStore('conversations', () => {
     clearCurrentSdkSessionId,
     clearAllSdkSessionIds,
     currentConversationHasSession,
+
+    // Execution mode tracking
+    adoptCurrentExecutionMode,
   };
 });

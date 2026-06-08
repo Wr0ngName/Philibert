@@ -8,6 +8,8 @@ import { storeToRefs } from 'pinia';
 
 import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, PendingAction, PermissionScope, ToolUseInfo } from '@shared/types';
 import { useChatStore } from '../../stores/chat';
+import { useConversationsStore } from '../../stores/conversations';
+import { useSettingsStore } from '../../stores/settings';
 import { useClaudeChat } from '../../composables/useClaudeChat';
 import ActionApproval from './ActionApproval.vue';
 import AskUserQuestionMessage from './AskUserQuestionMessage.vue';
@@ -22,9 +24,21 @@ import Toast from '../shared/Toast.vue';
 import TransitionFade from '../shared/TransitionFade.vue';
 
 const chatStore = useChatStore();
+const conversationsStore = useConversationsStore();
+const settingsStore = useSettingsStore();
 const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, sessionUsage, hasSessionUsage, activeQueryCount, maxConcurrentQueries, processingQueryCount } = storeToRefs(chatStore);
+const { currentModeMismatch } = storeToRefs(conversationsStore);
 
 const { sendMessage, approveAction, rejectAction, abort, sendQuestionAnswer } = useClaudeChat();
+
+async function continueInCurrentMode() {
+  await conversationsStore.adoptCurrentExecutionMode();
+}
+
+async function switchExecutionMode() {
+  if (!currentModeMismatch.value) return;
+  await settingsStore.setExecutionMode(currentModeMismatch.value.conversationMode);
+}
 
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 
@@ -125,6 +139,41 @@ function closeToolDetail() {
           :max-count="maxConcurrentQueries"
           :processing-count="processingQueryCount"
         />
+      </div>
+    </TransitionFade>
+
+    <!-- Execution mode mismatch banner -->
+    <TransitionFade type="slideDown">
+      <div
+        v-if="currentModeMismatch"
+        class="px-4 pt-2"
+      >
+        <div class="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3 text-sm">
+          <p class="text-amber-900 dark:text-amber-100">
+            <strong>Mode mismatch.</strong>
+            This conversation was started in
+            <span class="font-mono">{{ currentModeMismatch.conversationMode }}</span>
+            mode but you're using
+            <span class="font-mono">{{ currentModeMismatch.currentMode }}</span>
+            now. The previous session can't be resumed — pick one:
+          </p>
+          <div class="flex gap-2 mt-2">
+            <button
+              type="button"
+              class="px-3 py-1 text-xs rounded bg-amber-600 text-white hover:bg-amber-700"
+              @click="switchExecutionMode"
+            >
+              Switch back to {{ currentModeMismatch.conversationMode }} mode
+            </button>
+            <button
+              type="button"
+              class="px-3 py-1 text-xs rounded border border-amber-400 text-amber-900 dark:text-amber-100 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+              @click="continueInCurrentMode"
+            >
+              Continue in {{ currentModeMismatch.currentMode }} (starts fresh, loses prior context)
+            </button>
+          </div>
+        </div>
       </div>
     </TransitionFade>
 
