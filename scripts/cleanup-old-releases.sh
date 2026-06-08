@@ -1,12 +1,25 @@
 #!/usr/bin/env sh
-# Delete older releases and Package Registry versions, keeping the last N
-# most recent (by released_at / created_at). Runs from the `cleanup:old` CI
-# job after a successful release pipeline, so there is always at least one
-# release left for users to update to.
+# Branching cleanup policy driven by the pipeline's CI_COMMIT_TAG.
+#
+# RC pipeline (tag matches `vX.Y.Z-rc.N`):
+#   - Releases: keep only the just-shipped RC; delete every other RC.
+#               Stable releases are not touched.
+#   - Packages: same shape — keep only the just-shipped RC package version;
+#               delete every other RC package. Stable packages untouched.
+#
+# Stable pipeline (tag matches `vX.Y.Z`):
+#   - Releases: delete every RC, then keep the most recent KEEP_LAST_N
+#               stable releases (default 3).
+#   - Packages: mirror.
+#
+# Anything else (manual run, weird tag): no-op with a log message — we
+# don't want to wipe production registry data because of an unexpected
+# CI invocation.
 #
 # Reads from the environment:
 #   CI_API_V4_URL, CI_PROJECT_ID, CI_JOB_TOKEN — provided by GitLab CI
-#   KEEP_LAST_N                                — retention count (default 3)
+#   CI_COMMIT_TAG                              — release tag that triggered the pipeline
+#   KEEP_LAST_N                                — stable retention count (default 3)
 #
 # Requires: curl, jq (the CI job runs this inside `alpine` with both installed).
 #
@@ -20,8 +33,28 @@ set -eu
 KEEP_LAST_N="${KEEP_LAST_N:-3}"
 API="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}"
 HDR="JOB-TOKEN: ${CI_JOB_TOKEN}"
+TAG="${CI_COMMIT_TAG:-}"
 
-echo "=== Cleanup: keeping the last ${KEEP_LAST_N} releases + package versions ==="
+# Classify the current pipeline's tag.
+if [ -z "$TAG" ]; then
+  MODE="unknown"
+elif echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+  MODE="stable"
+elif echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$'; then
+  MODE="rc"
+else
+  MODE="unknown"
+fi
+
+# Package versions are the tag without the leading `v`.
+CURRENT_PKG_VERSION=$(echo "$TAG" | sed 's/^v//')
+
+echo "=== Cleanup mode: ${MODE} (tag: ${TAG:-<none>}) ==="
+
+if [ "$MODE" = "unknown" ]; then
+  echo "No supported tag on this pipeline — skipping all cleanup."
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Releases
@@ -34,52 +67,59 @@ RELEASES_JSON=$(curl -fsS --header "$HDR" "${API}/releases?per_page=100")
 RELEASES_COUNT=$(echo "$RELEASES_JSON" | jq 'length')
 echo "Found ${RELEASES_COUNT} release(s) total."
 
-# Phase 1: superseded-RC cleanup.
-# An RC tag has the form `vX.Y.Z-rc.N`. Once the matching stable `vX.Y.Z`
-# ships, the RCs are obsolete previews of the same release — delete them
-# regardless of date so the release list and Package Registry stay clean.
-ALL_TAGS=$(echo "$RELEASES_JSON" | jq -r '.[].tag_name')
-STABLE_BASES=$(echo "$ALL_TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+if [ "$MODE" = "rc" ]; then
+  # Delete every RC tag except the just-shipped one. Stables untouched.
+  TARGETS=$(echo "$RELEASES_JSON" | jq -r --arg cur "$TAG" \
+    '.[] | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$")) | select(.tag_name != $cur) | .tag_name')
 
-SUPERSEDED_RCS=''
-if [ -n "$STABLE_BASES" ]; then
-  for BASE in $STABLE_BASES; do
-    MATCHING_RCS=$(echo "$ALL_TAGS" | grep -E "^${BASE}-rc\." || true)
-    if [ -n "$MATCHING_RCS" ]; then
-      SUPERSEDED_RCS="${SUPERSEDED_RCS}${MATCHING_RCS}
-"
-    fi
-  done
-fi
-
-if [ -n "$SUPERSEDED_RCS" ]; then
-  echo "Found superseded RC(s) — stable equivalent already shipped:"
-  echo "$SUPERSEDED_RCS" | sed 's/^/  /'
-  echo "$SUPERSEDED_RCS" | while IFS= read -r TAG; do
-    [ -z "$TAG" ] && continue
-    echo "Deleting superseded RC ${TAG}..."
-    curl -fsS --request DELETE --header "$HDR" "${API}/releases/${TAG}" \
-      && echo "  ok" \
-      || echo "  FAILED for ${TAG}"
-  done
+  if [ -z "$TARGETS" ]; then
+    echo "No older RC releases to clean up."
+  else
+    echo "Deleting older RC release(s):"
+    echo "$TARGETS" | sed 's/^/  /'
+    echo "$TARGETS" | while IFS= read -r T; do
+      [ -z "$T" ] && continue
+      curl -fsS --request DELETE --header "$HDR" "${API}/releases/${T}" \
+        && echo "  ok: ${T}" \
+        || echo "  FAILED: ${T}"
+    done
+  fi
 else
-  echo "No superseded RCs to clean up."
-fi
+  # Stable pipeline: delete EVERY RC first, then keep last N stable releases.
+  RC_TARGETS=$(echo "$RELEASES_JSON" | jq -r \
+    '.[] | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$")) | .tag_name')
 
-# Phase 2: keep-last-N on whatever remains.
-# Re-fetch so the slice indices reflect the post-Phase-1 state.
-RELEASES_JSON=$(curl -fsS --header "$HDR" "${API}/releases?per_page=100")
-OLD_TAGS=$(echo "$RELEASES_JSON" | jq -r --argjson n "$KEEP_LAST_N" '.[$n:] | .[].tag_name')
-if [ -z "$OLD_TAGS" ]; then
-  echo "Nothing else to delete (under retention threshold)."
-else
-  echo "$OLD_TAGS" | while IFS= read -r TAG; do
-    [ -z "$TAG" ] && continue
-    echo "Deleting release ${TAG}..."
-    curl -fsS --request DELETE --header "$HDR" "${API}/releases/${TAG}" \
-      && echo "  ok" \
-      || echo "  FAILED for ${TAG}"
-  done
+  if [ -z "$RC_TARGETS" ]; then
+    echo "No RC releases to sweep."
+  else
+    echo "Sweeping all RC release(s) (stable now shipping):"
+    echo "$RC_TARGETS" | sed 's/^/  /'
+    echo "$RC_TARGETS" | while IFS= read -r T; do
+      [ -z "$T" ] && continue
+      curl -fsS --request DELETE --header "$HDR" "${API}/releases/${T}" \
+        && echo "  ok: ${T}" \
+        || echo "  FAILED: ${T}"
+    done
+  fi
+
+  # Re-fetch and prune stable releases past keep-last-N. /releases is sorted
+  # by released_at desc by default, and the filter keeps that order.
+  RELEASES_JSON=$(curl -fsS --header "$HDR" "${API}/releases?per_page=100")
+  STABLE_OLD=$(echo "$RELEASES_JSON" | jq -r --argjson n "$KEEP_LAST_N" \
+    '[.[] | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | .[$n:] | .[].tag_name')
+
+  if [ -z "$STABLE_OLD" ]; then
+    echo "Under stable retention threshold (${KEEP_LAST_N}); nothing else to delete."
+  else
+    echo "Deleting stable release(s) past keep-last-${KEEP_LAST_N}:"
+    echo "$STABLE_OLD" | sed 's/^/  /'
+    echo "$STABLE_OLD" | while IFS= read -r T; do
+      [ -z "$T" ] && continue
+      curl -fsS --request DELETE --header "$HDR" "${API}/releases/${T}" \
+        && echo "  ok: ${T}" \
+        || echo "  FAILED: ${T}"
+    done
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -91,57 +131,61 @@ PACKAGES_JSON=$(curl -fsS --header "$HDR" \
 PACKAGES_COUNT=$(echo "$PACKAGES_JSON" | jq 'length')
 echo "Found ${PACKAGES_COUNT} package version(s) total."
 
-# Phase 1: superseded-RC cleanup. Package versions match release tags
-# without the leading `v` (e.g. release `v0.17.35-rc.1` → package `0.17.35-rc.1`).
-STABLE_PKG_VERSIONS=$(echo "$PACKAGES_JSON" | jq -r '.[].version' \
-  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)
+if [ "$MODE" = "rc" ]; then
+  # Keep only the just-shipped RC package; delete every other RC package.
+  TARGETS=$(echo "$PACKAGES_JSON" | jq -r --arg cur "$CURRENT_PKG_VERSION" \
+    '.[] | select(.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$")) | select(.version != $cur) | "\(.id) \(.version)"')
 
-SUPERSEDED_PKG_IDS=''
-if [ -n "$STABLE_PKG_VERSIONS" ]; then
-  for STABLE in $STABLE_PKG_VERSIONS; do
-    IDS=$(echo "$PACKAGES_JSON" | jq -r --arg s "$STABLE" \
-      '.[] | select(.version | startswith($s + "-rc.")) | "\(.id) \(.version)"')
-    if [ -n "$IDS" ]; then
-      SUPERSEDED_PKG_IDS="${SUPERSEDED_PKG_IDS}${IDS}
-"
-    fi
-  done
-fi
-
-if [ -n "$SUPERSEDED_PKG_IDS" ]; then
-  echo "Found superseded RC package(s) — stable equivalent already shipped:"
-  echo "$SUPERSEDED_PKG_IDS" | sed 's/^/  /'
-  echo "$SUPERSEDED_PKG_IDS" | while IFS= read -r LINE; do
-    [ -z "$LINE" ] && continue
-    ID=$(echo "$LINE" | cut -d' ' -f1)
-    VERSION=$(echo "$LINE" | cut -d' ' -f2-)
-    echo "Deleting superseded RC package id=${ID} (version ${VERSION})..."
-    curl -fsS --request DELETE --header "$HDR" "${API}/packages/${ID}" \
-      && echo "  ok" \
-      || echo "  FAILED for id=${ID}"
-  done
+  if [ -z "$TARGETS" ]; then
+    echo "No older RC packages to clean up."
+  else
+    echo "Deleting older RC package(s):"
+    echo "$TARGETS" | sed 's/^/  /'
+    echo "$TARGETS" | while IFS= read -r L; do
+      [ -z "$L" ] && continue
+      ID=$(echo "$L" | cut -d' ' -f1)
+      curl -fsS --request DELETE --header "$HDR" "${API}/packages/${ID}" \
+        && echo "  ok: id=${ID}" \
+        || echo "  FAILED: id=${ID}"
+    done
+  fi
 else
-  echo "No superseded RC packages to clean up."
-fi
+  # Stable pipeline: nuke every RC package, then keep last N stable packages.
+  RC_PKG_TARGETS=$(echo "$PACKAGES_JSON" | jq -r \
+    '.[] | select(.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$")) | "\(.id) \(.version)"')
 
-# Phase 2: keep-last-N on whatever remains.
-PACKAGES_JSON=$(curl -fsS --header "$HDR" \
-  "${API}/packages?package_type=generic&per_page=100&order_by=created_at&sort=desc")
-DELETE_PKGS=$(echo "$PACKAGES_JSON" | jq -r --argjson n "$KEEP_LAST_N" \
-  '.[$n:] | .[] | "\(.id) \(.version)"')
+  if [ -z "$RC_PKG_TARGETS" ]; then
+    echo "No RC packages to sweep."
+  else
+    echo "Sweeping all RC package(s) (stable now shipping):"
+    echo "$RC_PKG_TARGETS" | sed 's/^/  /'
+    echo "$RC_PKG_TARGETS" | while IFS= read -r L; do
+      [ -z "$L" ] && continue
+      ID=$(echo "$L" | cut -d' ' -f1)
+      curl -fsS --request DELETE --header "$HDR" "${API}/packages/${ID}" \
+        && echo "  ok: id=${ID}" \
+        || echo "  FAILED: id=${ID}"
+    done
+  fi
 
-if [ -z "$DELETE_PKGS" ]; then
-  echo "Nothing else to delete (under retention threshold)."
-else
-  echo "$DELETE_PKGS" | while IFS= read -r LINE; do
-    [ -z "$LINE" ] && continue
-    ID=$(echo "$LINE" | cut -d' ' -f1)
-    VERSION=$(echo "$LINE" | cut -d' ' -f2-)
-    echo "Deleting package id=${ID} (version ${VERSION})..."
-    curl -fsS --request DELETE --header "$HDR" "${API}/packages/${ID}" \
-      && echo "  ok" \
-      || echo "  FAILED for id=${ID}"
-  done
+  PACKAGES_JSON=$(curl -fsS --header "$HDR" \
+    "${API}/packages?package_type=generic&per_page=100&order_by=created_at&sort=desc")
+  STABLE_PKG_OLD=$(echo "$PACKAGES_JSON" | jq -r --argjson n "$KEEP_LAST_N" \
+    '[.[] | select(.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | .[$n:] | .[] | "\(.id) \(.version)"')
+
+  if [ -z "$STABLE_PKG_OLD" ]; then
+    echo "Under stable package retention threshold (${KEEP_LAST_N}); nothing else to delete."
+  else
+    echo "Deleting stable package(s) past keep-last-${KEEP_LAST_N}:"
+    echo "$STABLE_PKG_OLD" | sed 's/^/  /'
+    echo "$STABLE_PKG_OLD" | while IFS= read -r L; do
+      [ -z "$L" ] && continue
+      ID=$(echo "$L" | cut -d' ' -f1)
+      curl -fsS --request DELETE --header "$HDR" "${API}/packages/${ID}" \
+        && echo "  ok: id=${ID}" \
+        || echo "  FAILED: id=${ID}"
+    done
+  fi
 fi
 
 echo "=== Cleanup complete ==="

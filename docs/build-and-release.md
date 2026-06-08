@@ -77,17 +77,19 @@ pipeline (`.gitlab-ci.yml`):
 
 ### Cleanup Stage
 - `cleanup:old` — runs `scripts/cleanup-old-releases.sh` inside an alpine
-  container with `curl` + `jq`. Two phases per resource (Releases + Package
-  Registry), both phases atomic per delete:
-  1. **Superseded-RC sweep.** For every stable tag `vX.Y.Z` present,
-     deletes all matching `vX.Y.Z-rc.*` releases / packages, regardless of
-     age. RCs become obsolete previews the moment the stable equivalent
-     ships, so they shouldn't linger.
-  2. **Keep-last-N retention.** On what remains, keeps the `KEEP_LAST_N`
-     (default 3) most recent and deletes the rest.
+  container with `curl` + `jq`. Policy depends on which tag triggered the
+  pipeline (`CI_COMMIT_TAG`):
+  - **RC pipeline** (`vX.Y.Z-rc.N`): keeps **only the just-shipped RC**
+    and deletes every other RC. Stable releases and stable packages are
+    not touched.
+  - **Stable pipeline** (`vX.Y.Z`): deletes **every RC** (across all
+    versions), then keeps the **last `KEEP_LAST_N` stable releases**
+    (default 3).
+  - Anything else (manual run, unexpected tag): no-op.
 
-  Marked `allow_failure: true` so a transient API issue won't fail the
-  release pipeline.
+  Both branches apply the same shape to the Releases API and the Package
+  Registry. Marked `allow_failure: true` so a transient API issue won't
+  fail the release pipeline.
 
 ### Auto-Updates
 - `src/main/services/UpdateService.ts` queries the **Releases API**
