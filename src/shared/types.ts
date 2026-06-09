@@ -663,6 +663,13 @@ export interface Conversation {
    * field existed get the current mode populated on load (graceful migration).
    */
   executionMode?: ExecutionMode;
+  /**
+   * Last known session usage snapshot (context tokens, cost, per-model usage).
+   * Persisted so the context-usage bar can render the previous turn's value
+   * immediately when the user opens a pre-existing conversation, instead of
+   * waiting for a new query to populate it. Overwritten on every save.
+   */
+  lastSessionUsage?: SessionUsage;
 }
 
 // Git types

@@ -161,6 +161,16 @@ export const useConversationsStore = defineStore('conversations', () => {
       chatStore.setCurrentConversation(id);
       persistLastConversationId(id);
 
+      // Restore the persisted session usage so the context-usage bar can
+      // render straight away — without this it stays blank until the next
+      // query updates it, which is bad UX when reopening an old conversation.
+      // Don't clobber an in-memory value that's already fresher (e.g. when
+      // the conversation was running in the background).
+      const stateForUsage = chatStore.getConversationState(id);
+      if (!stateForUsage.sessionUsage && conversation.lastSessionUsage) {
+        chatStore.updateSessionUsage(id, conversation.lastSessionUsage);
+      }
+
       // Check if this conversation has in-memory messages (was running in background)
       // These are more up-to-date than the saved file
       const inMemoryMessages = getInMemoryMessages(id);
@@ -278,6 +288,17 @@ export const useConversationsStore = defineStore('conversations', () => {
     const settingsStore = useSettingsStore();
     const executionMode = existingConv?.executionMode ?? settingsStore.executionMode;
 
+    // Snapshot the latest session usage (context tokens, cost, per-model
+    // breakdown) so the usage bar can render immediately when this conversation
+    // is reopened after an app restart, instead of staying blank until a new
+    // query repopulates it. Falls back to whatever was previously persisted
+    // if the chat store has no in-memory usage for this conversation yet
+    // (e.g. saving a conversation switched away from).
+    const inMemoryUsage = chatStore.getConversationState(conversationId).sessionUsage;
+    const lastSessionUsage = inMemoryUsage
+      ? (JSON.parse(JSON.stringify(inMemoryUsage)) as typeof inMemoryUsage)
+      : existingConv?.lastSessionUsage;
+
     return {
       id: conversationId,
       title,
@@ -288,6 +309,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       updatedAt: lastMessageAt,
       sdkSessionId,
       executionMode,
+      ...(lastSessionUsage ? { lastSessionUsage } : {}),
     };
   }
 
