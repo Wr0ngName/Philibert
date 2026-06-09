@@ -86,6 +86,14 @@ export const useChatStore = defineStore('chat', () => {
   /** IDs of conversations with active queries */
   const activeConversationIds = ref<string[]>([]);
 
+  /**
+   * Pending scroll-to-message request set by the search modal. ChatWindow
+   * watches this, calls scrollToMessage on the MessageList ref, then clears
+   * it. Stored at chat-store level (not per-conversation) because the target
+   * conversation may not be loaded yet when the request is set.
+   */
+  const pendingScrollMessageId = ref<string | null>(null);
+
   // ============================================
   // Helper Functions
   // ============================================
@@ -917,6 +925,9 @@ export const useChatStore = defineStore('chat', () => {
     maxConcurrentQueries,
     processingQueryCount,
     activeConversationIds,
+
+    // Search → scroll plumbing
+    pendingScrollMessageId,
 
     // Computed (based on current conversation)
     hasMessages,

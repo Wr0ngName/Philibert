@@ -13,6 +13,7 @@ import { storeToRefs } from 'pinia';
 
 import type { ConversationSearchResult, ConversationSearchScope } from '@shared/types';
 
+import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { logger } from '../../utils/logger';
 import Icon from '../shared/Icon.vue';
@@ -27,6 +28,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 const conversationsStore = useConversationsStore();
+const chatStore = useChatStore();
 const { currentConversationId } = storeToRefs(conversationsStore);
 
 const query = ref('');
@@ -100,13 +102,17 @@ onMounted(() => {
 
 async function openResult(result: ConversationSearchResult): Promise<void> {
   close();
-  if (result.conversationId === currentConversationId.value) return;
-  try {
-    await conversationsStore.switchConversation(result.conversationId);
-  } catch (err) {
-    logger.warn('Failed to switch to result conversation', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+  // Set the scroll target FIRST so the ChatWindow watcher can pick it up
+  // regardless of whether we need to switch conversations or not.
+  chatStore.pendingScrollMessageId = result.messageId;
+  if (result.conversationId !== currentConversationId.value) {
+    try {
+      await conversationsStore.switchConversation(result.conversationId);
+    } catch (err) {
+      logger.warn('Failed to switch to result conversation', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 

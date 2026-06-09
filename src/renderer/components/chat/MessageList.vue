@@ -229,6 +229,39 @@ function scrollToBottom(): void {
   }
 }
 
+const HIGHLIGHT_DURATION_MS = 1800;
+
+/**
+ * Scroll the named message into view and briefly highlight it. Used by the
+ * search modal after switching conversations so the user lands directly on
+ * the match instead of having to hunt for it manually.
+ *
+ * Retries for up to ~1s after mount because the conversation switch and
+ * the message-list re-render race the call from the search modal.
+ */
+async function scrollToMessage(messageId: string): Promise<void> {
+  if (!listRef.value || !messageId) return;
+  const root = listRef.value;
+  const escapedId = (window.CSS && CSS.escape) ? CSS.escape(messageId) : messageId.replace(/"/g, '\\"');
+  const selector = `[data-message-id="${escapedId}"]`;
+
+  let target: HTMLElement | null = null;
+  for (let attempt = 0; attempt < 10 && !target; attempt++) {
+    await nextTick();
+    target = root.querySelector<HTMLElement>(selector);
+    if (!target) await new Promise((r) => setTimeout(r, 80));
+  }
+  if (!target) return;
+
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  target.classList.add('search-hit-flash');
+  setTimeout(() => target?.classList.remove('search-hit-flash'), HIGHLIGHT_DURATION_MS);
+
+  // Once the user has explicitly jumped to an older message, stop the
+  // auto-scroll-to-bottom watchers from yanking them back on the next event.
+  isUserAtBottom.value = false;
+}
+
 /**
  * Handle scroll events to track user position
  */
@@ -288,7 +321,7 @@ watch(
   }
 );
 
-defineExpose({ scrollToBottom });
+defineExpose({ scrollToBottom, scrollToMessage });
 
 // Set up scroll listener
 onMounted(() => {
@@ -340,12 +373,16 @@ onUnmounted(() => {
           :key="group.id"
         >
           <!-- Standalone (user/system) message -->
-          <MessageItem
+          <div
             v-if="group.type === 'standalone'"
-            :message="group.messages[0]"
-            @open-task-detail="emit('open-task-detail', $event)"
-            @open-tool-detail="emit('open-tool-detail', $event)"
-          />
+            :data-message-id="group.messages[0].id"
+          >
+            <MessageItem
+              :message="group.messages[0]"
+              @open-task-detail="emit('open-task-detail', $event)"
+              @open-tool-detail="emit('open-tool-detail', $event)"
+            />
+          </div>
 
           <!-- Assistant turn: single bubble with header + interleaved content -->
           <div
@@ -375,6 +412,7 @@ onUnmounted(() => {
               <div
                 v-for="item in getVisibleTurnItems(group)"
                 :key="item.msg.id"
+                :data-message-id="item.msg.id"
                 :class="item.depth > 0 ? 'nested-agent-item' : ''"
                 :style="item.depth > 0 ? { paddingLeft: (item.depth * 0.75) + 'rem' } : undefined"
               >
@@ -478,5 +516,17 @@ onUnmounted(() => {
 .scroll-badge-leave-to {
   opacity: 0;
   transform: translate(-50%, 10px);
+}
+
+/* Brief amber flash applied when a search result is scrolled into view, so
+   the user lands directly on the matched message instead of having to scan. */
+.search-hit-flash {
+  animation: search-hit-flash 1.6s ease-out;
+  border-radius: 0.5rem;
+}
+
+@keyframes search-hit-flash {
+  0% { background-color: rgba(245, 158, 11, 0.35); box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.5); }
+  100% { background-color: transparent; box-shadow: 0 0 0 2px transparent; }
 }
 </style>

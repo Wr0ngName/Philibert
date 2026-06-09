@@ -3,7 +3,7 @@
  * Main chat window component
  */
 
-import { ref, nextTick } from 'vue';
+import { ref, nextTick, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, PendingAction, PermissionScope, ToolUseInfo } from '@shared/types';
@@ -26,7 +26,7 @@ import TransitionFade from '../shared/TransitionFade.vue';
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
 const settingsStore = useSettingsStore();
-const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, sessionUsage, hasSessionUsage, activeQueryCount, maxConcurrentQueries, processingQueryCount } = storeToRefs(chatStore);
+const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, sessionUsage, hasSessionUsage, activeQueryCount, maxConcurrentQueries, processingQueryCount, pendingScrollMessageId } = storeToRefs(chatStore);
 const { currentModeMismatch } = storeToRefs(conversationsStore);
 
 const { sendMessage, approveAction, rejectAction, abort, sendQuestionAnswer } = useClaudeChat();
@@ -54,6 +54,22 @@ function handleSend(message: string) {
   sendMessage(message);
   nextTick(() => messageListRef.value?.scrollToBottom());
 }
+
+// Search modal sets pendingScrollMessageId; forward it to the MessageList ref
+// once it's resolved (the ref may not exist on the very first frame after a
+// conversation switch). Clear the request after dispatch so the same target
+// doesn't re-fire on later store mutations.
+watch(pendingScrollMessageId, async (id) => {
+  if (!id) return;
+  await nextTick();
+  for (let i = 0; i < 10 && !messageListRef.value; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  if (messageListRef.value) {
+    await messageListRef.value.scrollToMessage(id);
+  }
+  pendingScrollMessageId.value = null;
+});
 
 function handleAbort() {
   abort();
