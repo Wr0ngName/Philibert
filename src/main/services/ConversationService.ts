@@ -129,6 +129,98 @@ export class ConversationService {
   }
 
   /**
+   * Search for a substring across conversation messages.
+   *
+   * When `scope` is `'current'`, only the named conversation is searched.
+   * When `'all'`, every conversation file is read once. The match is
+   * case-insensitive, returns at most `limit` results, and each result
+   * carries a short snippet trimmed around the first hit so the UI can
+   * render a meaningful preview without sending whole messages over IPC.
+   */
+  async search(
+    query: string,
+    scope: 'current' | 'all',
+    currentConversationId: string | null,
+    limit = 100,
+  ): Promise<Array<{
+    conversationId: string;
+    conversationTitle: string;
+    messageId: string;
+    role: string;
+    snippet: string;
+    timestamp: number;
+  }>> {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return [];
+
+    const results: Array<{
+      conversationId: string;
+      conversationTitle: string;
+      messageId: string;
+      role: string;
+      snippet: string;
+      timestamp: number;
+    }> = [];
+
+    const targets: string[] = [];
+    if (scope === 'current') {
+      if (!currentConversationId) return [];
+      targets.push(`${currentConversationId}.json`);
+    } else {
+      try {
+        const files = await fs.promises.readdir(this.conversationsDir);
+        for (const file of files) {
+          if (file.endsWith('.json')) targets.push(file);
+        }
+      } catch (error) {
+        logger.error('Failed to list conversations for search', error);
+        return [];
+      }
+    }
+
+    for (const file of targets) {
+      if (results.length >= limit) break;
+      try {
+        const content = await fs.promises.readFile(
+          path.join(this.conversationsDir, file),
+          'utf-8',
+        );
+        const conv = JSON.parse(content) as Conversation;
+        const title = conv.title || conv.id;
+        for (const msg of conv.messages || []) {
+          if (results.length >= limit) break;
+          const text = msg.content || '';
+          const lower = text.toLowerCase();
+          const idx = lower.indexOf(needle);
+          if (idx === -1) continue;
+
+          // Snippet: ~80 chars around the first hit
+          const start = Math.max(0, idx - 40);
+          const end = Math.min(text.length, idx + needle.length + 40);
+          const prefix = start > 0 ? '…' : '';
+          const suffix = end < text.length ? '…' : '';
+          const snippet = `${prefix}${text.slice(start, end)}${suffix}`;
+
+          results.push({
+            conversationId: conv.id,
+            conversationTitle: title,
+            messageId: msg.id,
+            role: msg.role,
+            snippet,
+            timestamp: msg.timestamp,
+          });
+        }
+      } catch (error) {
+        logger.debug('Skipped unreadable conversation file during search', { file, error });
+      }
+    }
+
+    // Newest first
+    results.sort((a, b) => b.timestamp - a.timestamp);
+    return results;
+  }
+
+  /**
    * Get a single conversation by ID
    */
   async get(id: string): Promise<Conversation | null> {

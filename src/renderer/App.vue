@@ -10,6 +10,7 @@ import { useSettingsStore } from './stores/settings';
 import { useFilesStore } from './stores/files';
 import { useConversationsStore } from './stores/conversations';
 import ChatWindow from './components/chat/ChatWindow.vue';
+import ConversationSearch from './components/chat/ConversationSearch.vue';
 import WorkingDirectory from './components/files/WorkingDirectory.vue';
 import FileTree from './components/files/FileTree.vue';
 import ConversationHistory from './components/conversations/ConversationHistory.vue';
@@ -28,6 +29,7 @@ const { isLoading, needsSetup, hasCompletedInitialSetup, showHistorySidebar, sho
 
 const showSettings = ref(false);
 const showWizard = ref(false);
+const showSearch = ref(false);
 const sidebarWidth = ref(280);
 const historyWidth = ref(240);
 
@@ -71,6 +73,14 @@ async function onWizardComplete() {
 
 function openSettings() {
   showSettings.value = true;
+}
+
+function openSearch() {
+  showSearch.value = true;
+}
+
+function closeSearch() {
+  showSearch.value = false;
 }
 
 function closeSettings() {
@@ -148,6 +158,25 @@ const isMac = window.electron?.platform === 'darwin';
           <!-- Session Permissions -->
           <SessionPermissionsDropdown />
 
+          <button
+            class="btn-icon"
+            title="Search messages (current or all discussions)"
+            @click="openSearch"
+          >
+            <svg
+              class="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+          </button>
           <button
             class="btn-icon"
             :class="{ 'bg-surface-200 dark:bg-surface-700': showHistorySidebar }"
@@ -332,6 +361,12 @@ const isMac = window.electron?.platform === 'darwin';
       <SettingsPanel
         :open="showSettings"
         @close="closeSettings"
+      />
+
+      <!-- Conversation search -->
+      <ConversationSearch
+        :open="showSearch"
+        @close="closeSearch"
       />
 
       <!-- Initial Setup Wizard -->

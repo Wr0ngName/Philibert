@@ -76,7 +76,8 @@ export type IconName =
   | 'git-branch'
   | 'git-commit'
   | 'git-pull'
-  | 'git-push';
+  | 'git-push'
+  | 'search';
 
 /** SVG path data for each icon */
 const iconPaths: Record<IconName, string> = {
@@ -130,6 +131,7 @@ const iconPaths: Record<IconName, string> = {
   'git-commit': 'M12 16a4 4 0 100-8 4 4 0 000 8z M3 12h5 M16 12h5',
   'git-pull': 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4',
   'git-push': 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12',
+  search: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z',
 };
 </script>
 

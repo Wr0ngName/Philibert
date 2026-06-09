@@ -315,6 +315,9 @@ const electronAPI: ElectronAPI = {
 
     delete: (id: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_DELETE, id),
+
+    search: (query: string, scope: 'current' | 'all', currentConversationId: string | null) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SEARCH, query, scope, currentConversationId),
   },
 
   // Update operations

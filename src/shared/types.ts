@@ -672,6 +672,21 @@ export interface Conversation {
   lastSessionUsage?: SessionUsage;
 }
 
+/**
+ * One hit returned by conversation:search — already truncated server-side
+ * so the renderer doesn't ship entire messages around.
+ */
+export interface ConversationSearchResult {
+  conversationId: string;
+  conversationTitle: string;
+  messageId: string;
+  role: MessageRole;
+  snippet: string;
+  timestamp: number;
+}
+
+export type ConversationSearchScope = 'current' | 'all';
+
 // Git types
 
 /**
@@ -1066,6 +1081,8 @@ export const IPC_CHANNELS = {
   CONVERSATION_RENAME: 'conversation:rename',
   /** Delete a conversation */
   CONVERSATION_DELETE: 'conversation:delete',
+  /** Search messages within one or all conversations */
+  CONVERSATION_SEARCH: 'conversation:search',
 
   // Update operations
   /** Check for application updates */

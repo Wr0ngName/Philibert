@@ -9,13 +9,14 @@
  * Note: v-html usage is safe - content is sanitized with DOMPurify in renderMarkdown
  */
 
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 
 import type { ChatMessage } from '@shared/types';
 
 import { formatTime } from '../../utils/date';
 import { renderMarkdown, renderUserMarkdown } from '../../utils/markdown';
 import BackgroundTaskMessage from './BackgroundTaskMessage.vue';
+import ContextMenu, { type ContextMenuItem } from '../shared/ContextMenu.vue';
 import Spinner from '../shared/Spinner.vue';
 import ToolUseMessage from './ToolUseMessage.vue';
 
@@ -52,6 +53,36 @@ const renderedContent = computed(() =>
     ? renderUserMarkdown(props.message.content)
     : renderMarkdown(props.message.content),
 );
+
+// Right-click context menu state — opens at the click coordinates, closes on
+// outside click / Escape / scroll (handled inside ContextMenu).
+const contextMenuOpen = ref(false);
+const contextMenuX = ref(0);
+const contextMenuY = ref(0);
+
+function openContextMenu(event: MouseEvent): void {
+  // Don't override the browser context menu on tool-use / background-task
+  // indicators — they're already wrapped components with their own affordances
+  // and copying the empty content yields nothing useful.
+  if (props.message.toolUse || props.message.backgroundTask) return;
+  if (!props.message.content.trim()) return;
+  event.preventDefault();
+  contextMenuX.value = event.clientX;
+  contextMenuY.value = event.clientY;
+  contextMenuOpen.value = true;
+}
+
+async function copyContent(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(props.message.content);
+  } catch {
+    // Clipboard access can be denied in some test/secure contexts; silent.
+  }
+}
+
+const contextMenuItems = computed<ContextMenuItem[]>(() => [
+  { label: 'Copy', onSelect: copyContent },
+]);
 </script>
 
 <template>
@@ -59,6 +90,7 @@ const renderedContent = computed(() =>
   <div
     v-if="isSystem"
     class="flex items-center gap-3 py-2 px-4 animate-fade-in"
+    @contextmenu="openContextMenu"
   >
     <div class="flex-1 h-px bg-surface-200 dark:bg-surface-700" />
     <span class="text-xs text-surface-400 dark:text-surface-500 whitespace-nowrap">
@@ -88,6 +120,7 @@ const renderedContent = computed(() =>
   <div
     v-else-if="grouped && message.content.trim()"
     class="prose prose-sm dark:prose-invert max-w-full text-surface-800 dark:text-surface-200 message-content"
+    @contextmenu="openContextMenu"
     v-html="renderedContent"
   />
 
@@ -98,6 +131,7 @@ const renderedContent = computed(() =>
       'rounded-lg animate-fade-in message-bubble',
       isUser ? 'message-user' : 'message-assistant',
     ]"
+    @contextmenu="openContextMenu"
   >
     <!-- Header -->
     <div class="flex items-center gap-2 message-header">
@@ -130,6 +164,14 @@ const renderedContent = computed(() =>
       v-html="renderedContent"
     />
   </div>
+
+  <ContextMenu
+    :open="contextMenuOpen"
+    :x="contextMenuX"
+    :y="contextMenuY"
+    :items="contextMenuItems"
+    @close="contextMenuOpen = false"
+  />
 </template>
 
 <style scoped>

@@ -8,6 +8,8 @@ import type {
   AskUserQuestionResponse,
   AuthStatus,
   Conversation,
+  ConversationSearchResult,
+  ConversationSearchScope,
   FileChange,
   FileNode,
   GitBranch,
@@ -173,6 +175,11 @@ export interface ElectronAPI {
     save: (conversation: Conversation) => Promise<void>;
     rename: (id: string, newTitle: string) => Promise<void>;
     delete: (id: string) => Promise<void>;
+    search: (
+      query: string,
+      scope: ConversationSearchScope,
+      currentConversationId: string | null,
+    ) => Promise<ConversationSearchResult[]>;
   };
 
   // Update operations

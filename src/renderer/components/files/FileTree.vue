@@ -3,6 +3,7 @@
  * File tree component - displays project structure
  */
 
+import { onMounted, onUnmounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import { useFilesStore } from '../../stores/files';
@@ -14,6 +15,8 @@ import { logger } from '../../utils/logger';
 const filesStore = useFilesStore();
 const { fileTree, hasFiles, isLoading, error } = storeToRefs(filesStore);
 
+const rootRef = ref<HTMLElement | null>(null);
+
 function handleFileSelect(path: string) {
   logger.debug('File selected', { path });
   // Could open in editor, show preview, etc.
@@ -22,10 +25,33 @@ function handleFileSelect(path: string) {
 function refresh() {
   filesStore.loadFileTree();
 }
+
+// Deselect when the user clicks anywhere outside the file tree — matches
+// the convention in OS file explorers and signals that the selection only
+// reflects file-tree interaction.
+function handleDocumentClick(event: MouseEvent): void {
+  if (!filesStore.selectedFile) return;
+  const root = rootRef.value;
+  if (!root) return;
+  const target = event.target as Node | null;
+  if (target && root.contains(target)) return;
+  filesStore.selectFile(null);
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', handleDocumentClick);
+});
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', handleDocumentClick);
+});
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div
+    ref="rootRef"
+    class="flex flex-col h-full"
+  >
     <!-- Header -->
     <div class="flex items-center justify-between px-3 py-2 border-b border-surface-200 dark:border-surface-700">
       <span class="text-xs font-medium uppercase text-surface-500 dark:text-surface-400">

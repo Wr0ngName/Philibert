@@ -166,5 +166,31 @@ export function setupConversationIPC(conversationService: ConversationService): 
     }
   });
 
+  ipcMain.handle(
+    IPC_CHANNELS.CONVERSATION_SEARCH,
+    async (
+      _event,
+      query: string,
+      scope: 'current' | 'all',
+      currentConversationId: string | null,
+    ) => {
+      try {
+        ensureService(conversationService, 'ConversationService');
+        validateString(query, 'Query');
+        if (scope !== 'current' && scope !== 'all') {
+          throw new Error('Invalid scope: must be "current" or "all"');
+        }
+        return await conversationService.search(query, scope, currentConversationId ?? null);
+      } catch (error) {
+        logger.error('Failed to search conversations', { error });
+        throw new ConfigurationError(
+          formatErrorMessage('Failed to search conversations', error),
+          ERROR_CODES.CONVERSATION_SAVE_FAILED,
+          error,
+        );
+      }
+    },
+  );
+
   logger.info('Conversation IPC handlers registered');
 }
