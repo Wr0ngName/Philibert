@@ -324,6 +324,29 @@ export function useClaudeChat() {
   }
 
   /**
+   * Stop a running background task in the current conversation.
+   *
+   * The SDK emits a task_notification with status 'stopped' as a side effect,
+   * which our existing handler reflects into the store — no local mutation
+   * needed here.
+   */
+  async function stopBackgroundTask(taskId: string): Promise<void> {
+    const currentConvId = conversationsStore.currentConversationId;
+    if (!currentConvId) {
+      logger.error('Cannot stop background task: no active conversation');
+      return;
+    }
+    try {
+      await window.electron.claude.stopTask(currentConvId, taskId);
+      logger.info('Background task stop requested', { conversationId: currentConvId, taskId });
+    } catch (err) {
+      logger.error('Failed to stop background task', { taskId, err });
+      const errMessage = err instanceof Error ? err.message : 'Failed to stop background task';
+      chatStore.setError(currentConvId, errMessage);
+    }
+  }
+
+  /**
    * Clear the chat
    */
   function clearChat() {
@@ -658,6 +681,7 @@ export function useClaudeChat() {
     sendQuestionAnswer,
     abort,
     abortConversation,
+    stopBackgroundTask,
     clearChat,
     revokeSessionPermission,
 

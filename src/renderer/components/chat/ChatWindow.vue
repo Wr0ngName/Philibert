@@ -29,7 +29,7 @@ const settingsStore = useSettingsStore();
 const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, sessionUsage, hasSessionUsage, activeQueryCount, maxConcurrentQueries, processingQueryCount, pendingScrollMessageId } = storeToRefs(chatStore);
 const { currentModeMismatch } = storeToRefs(conversationsStore);
 
-const { sendMessage, approveAction, rejectAction, abort, sendQuestionAnswer } = useClaudeChat();
+const { sendMessage, approveAction, rejectAction, abort, sendQuestionAnswer, stopBackgroundTask } = useClaudeChat();
 
 async function continueInCurrentMode() {
   await conversationsStore.adoptCurrentExecutionMode();
@@ -209,6 +209,7 @@ function closeToolDetail() {
         <BackgroundTaskPanel
           :tasks="runningBackgroundTasksList"
           @open-detail="openTaskDetail"
+          @stop="stopBackgroundTask"
         />
       </div>
     </TransitionFade>
@@ -218,6 +219,7 @@ function closeToolDetail() {
       :open="taskDetailOpen"
       :task="taskDetailTask"
       @close="closeTaskDetail"
+      @stop="stopBackgroundTask"
     />
 
     <!-- Tool use detail modal -->

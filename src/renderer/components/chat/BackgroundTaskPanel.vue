@@ -9,6 +9,7 @@ import { onBeforeUnmount, ref, watch } from 'vue';
 
 import type { BackgroundTask } from '@shared/types';
 
+import Icon from '../shared/Icon.vue';
 import Spinner from '../shared/Spinner.vue';
 
 interface Props {
@@ -20,7 +21,21 @@ const props = defineProps<Props>();
 
 const emit = defineEmits<{
   (e: 'open-detail', taskId: string): void;
+  (e: 'stop', taskId: string): void;
 }>();
+
+/** Tracks tasks the user has asked to stop, so we can dim/disable the button
+ *  while the SDK's task_notification(status='stopped') is in flight. */
+const stopping = ref<Set<string>>(new Set());
+
+function handleStop(event: Event, taskId: string): void {
+  event.stopPropagation();
+  if (stopping.value.has(taskId)) return;
+  const next = new Set(stopping.value);
+  next.add(taskId);
+  stopping.value = next;
+  emit('stop', taskId);
+}
 
 // Reactive clock that ticks every second for live duration display
 const now = ref(Date.now());
@@ -107,6 +122,19 @@ function formatDuration(task: BackgroundTask): string {
         <span class="text-xs text-surface-400 shrink-0">
           {{ formatDuration(task) }}
         </span>
+        <button
+          type="button"
+          class="p-1 rounded text-surface-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+          :disabled="stopping.has(task.id)"
+          :title="stopping.has(task.id) ? 'Stopping…' : 'Stop this background task'"
+          @click="handleStop($event, task.id)"
+          @keydown.enter.stop="handleStop($event, task.id)"
+        >
+          <Icon
+            name="x-circle"
+            size="xs"
+          />
+        </button>
       </div>
     </div>
   </div>
