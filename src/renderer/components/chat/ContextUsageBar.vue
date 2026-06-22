@@ -5,9 +5,12 @@
  */
 
 import { computed } from 'vue';
+import { storeToRefs } from 'pinia';
 
 import type { SessionUsage } from '@shared/types';
 
+import { useSettingsStore } from '../../stores/settings';
+import { formatModelId } from '../../utils/model';
 import Icon from '../shared/Icon.vue';
 
 interface Props {
@@ -16,6 +19,8 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+
+const { selectedModel } = storeToRefs(useSettingsStore());
 
 /**
  * Current context window occupation (tokens actually in the prompt).
@@ -82,12 +87,17 @@ function formatCost(cost: number): string {
 }
 
 /**
- * Get primary model name from usage
+ * Model chip shown next to the usage bar. We always reflect the user's
+ * currently-selected model (or the last-used one when they haven't picked
+ * anything yet) so the chip matches the model the next turn will actually
+ * run on — not the model that ran the previous turn.
  */
 const primaryModel = computed(() => {
+  if (selectedModel.value) return formatModelId(selectedModel.value);
   if (!props.usage?.modelUsage) return null;
   const models = Object.keys(props.usage.modelUsage);
-  return models.length > 0 ? models[models.length - 1] : null;
+  if (models.length === 0) return null;
+  return formatModelId(models[models.length - 1]);
 });
 </script>
 

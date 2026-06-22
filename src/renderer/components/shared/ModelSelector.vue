@@ -13,6 +13,7 @@ import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
 import { logger } from '../../utils/logger';
+import { formatModelId } from '../../utils/model';
 import Icon from './Icon.vue';
 import Modal from './Modal.vue';
 import Spinner from './Spinner.vue';
@@ -131,18 +132,6 @@ const currentModelDisplay = computed(() => {
   return model?.displayName || formatModelId(selectedModel.value);
 });
 
-// Format model ID for display if no display name available
-function formatModelId(modelId: string): string {
-  // Extract the model family from the ID (e.g., "claude-sonnet-4-5-20250929" -> "Sonnet 4.5")
-  const match = modelId.match(/claude-(\w+)-(\d+)-?(\d+)?/);
-  if (match) {
-    const family = match[1].charAt(0).toUpperCase() + match[1].slice(1);
-    const version = match[3] ? `${match[2]}.${match[3]}` : match[2];
-    return `${family} ${version}`;
-  }
-  return modelId;
-}
-
 // Load available models
 async function loadModels(): Promise<void> {
   await execute(async () => {
@@ -158,14 +147,14 @@ async function applyModelChange(modelValue: string): Promise<void> {
   logger.info('Model changed', { model: modelValue || '(default)' });
 }
 
-// Select a model - may require confirmation if conversation has an active session
+// Select a model. If an active session exists we confirm before switching —
+// not because context is lost (the SDK uses Query.setModel() to swap in-place
+// and preserves the transcript) but because billing/behavior of the next
+// turn changes.
 async function selectModel(modelValue: string): Promise<void> {
   isOpen.value = false;
   if (modelValue === selectedModel.value) return;
 
-  // If the current conversation has an active SDK session, changing the model
-  // requires starting a fresh session (the CLI ignores --model during --resume).
-  // Warn the user that Claude will lose context of previous messages.
   if (conversationsStore.currentConversationHasSession()) {
     pendingModelValue.value = modelValue;
     showConfirmDialog.value = true;
@@ -186,24 +175,18 @@ function getModelDisplayName(modelValue: string): string {
   return model?.displayName || formatModelId(modelValue);
 }
 
-// User confirmed model change - kill active session and apply new model
+// User confirmed model change. The main process applies the new model to the
+// existing session via Query.setModel() on the next message — context is
+// preserved (see ClaudeCodeService.sendMessage). No session kill or
+// --resume dance is needed.
 async function confirmModelChange(): Promise<void> {
   showConfirmDialog.value = false;
   if (pendingModelValue.value === null) return;
 
   try {
     const displayName = getModelDisplayName(pendingModelValue.value);
-    const currentConvId = conversationsStore.currentConversationId;
-
-    // Abort the active SDK session on the main process so the next message
-    // creates a fresh session with the newly selected model
-    if (currentConvId) {
-      await window.electron.claude.abort(currentConvId);
-    }
-
-    conversationsStore.clearCurrentSdkSessionId();
     await applyModelChange(pendingModelValue.value);
-    chatStore.addSystemMessage(`Model changed to ${displayName} — new session started`);
+    chatStore.addSystemMessage(`Model changed to ${displayName}`);
   } catch (err) {
     logger.error('Failed to change model', err);
   } finally {
@@ -466,11 +449,12 @@ onUnmounted(() => {
       :open="showConfirmDialog"
       title="Change model?"
       size="sm"
-      aria-description="Changing the model will start a fresh session. Claude will not have context of previous messages."
+      aria-description="The new model will continue the same conversation with full prior context. Cost and behavior of the next turn will reflect the new model."
       @close="cancelModelChange"
     >
       <p class="text-sm text-surface-600 dark:text-surface-400">
-        Changing the model requires starting a fresh session. Claude will not have context of previous messages in this conversation.
+        The new model will continue this conversation with full prior context — no session restart.
+        Cost and behavior of the next turn will reflect the new model.
       </p>
 
       <template #footer>
