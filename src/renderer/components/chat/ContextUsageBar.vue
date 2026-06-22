@@ -5,11 +5,9 @@
  */
 
 import { computed } from 'vue';
-import { storeToRefs } from 'pinia';
 
 import type { SessionUsage } from '@shared/types';
 
-import { useSettingsStore } from '../../stores/settings';
 import { formatModelId } from '../../utils/model';
 import Icon from '../shared/Icon.vue';
 
@@ -19,8 +17,6 @@ interface Props {
 }
 
 const props = defineProps<Props>();
-
-const { selectedModel } = storeToRefs(useSettingsStore());
 
 /**
  * Current context window occupation (tokens actually in the prompt).
@@ -87,13 +83,12 @@ function formatCost(cost: number): string {
 }
 
 /**
- * Model chip shown next to the usage bar. We always reflect the user's
- * currently-selected model (or the last-used one when they haven't picked
- * anything yet) so the chip matches the model the next turn will actually
- * run on — not the model that ran the previous turn.
+ * Model chip shown next to the usage bar. Reads the model the SDK reported
+ * for the last turn (the authoritative "what actually ran" value) — used to
+ * verify whether mid-session setModel() switches actually took effect.
+ * The user's selected-for-next-turn model is already visible in the dropdown.
  */
 const primaryModel = computed(() => {
-  if (selectedModel.value) return formatModelId(selectedModel.value);
   if (!props.usage?.modelUsage) return null;
   const models = Object.keys(props.usage.modelUsage);
   if (models.length === 0) return null;
