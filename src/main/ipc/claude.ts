@@ -191,22 +191,6 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
     }
   );
 
-  // Stop a single background task without aborting the rest of the turn
-  ipcMain.handle(IPC_CHANNELS.CLAUDE_STOP_TASK, async (_event, conversationId: string, taskId: string) => {
-    try {
-      logger.debug('IPC: claude:stop-task', { conversationId, taskId });
-
-      ensureService(claudeService, 'ClaudeCodeService');
-      validateString(conversationId, 'Conversation ID');
-      validateString(taskId, 'Task ID');
-
-      await claudeService.stopTask(conversationId, taskId);
-    } catch (error) {
-      logger.error('Failed to stop background task', { error, conversationId, taskId });
-      throw new IpcError(formatErrorMessage('Failed to stop background task', error), IPC_CHANNELS.CLAUDE_STOP_TASK, ERROR_CODES.IPC_HANDLER_FAILED, error);
-    }
-  });
-
   // Abort request for a specific conversation
   ipcMain.handle(IPC_CHANNELS.CLAUDE_ABORT, async (_event, conversationId: string) => {
     try {

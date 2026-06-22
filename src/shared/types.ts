@@ -995,8 +995,6 @@ export const IPC_CHANNELS = {
   CLAUDE_MODEL_CHANGED: 'claude:model-changed',
   /** Background task notification */
   CLAUDE_TASK_NOTIFICATION: 'claude:task-notification',
-  /** Stop a running background task (calls SDK Query.stopTask) */
-  CLAUDE_STOP_TASK: 'claude:stop-task',
   /** Session usage update (token counts, cost) */
   CLAUDE_USAGE_UPDATE: 'claude:usage-update',
   /** Active query count changed */

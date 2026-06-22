@@ -1159,32 +1159,6 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Stop a single background task without aborting the surrounding turn.
-   *
-   * Routes to the SDK's Query.stopTask(taskId) control request. The SDK will
-   * emit a task_notification with status 'stopped' which our existing handler
-   * funnels back to the renderer — no extra plumbing needed for state updates.
-   *
-   * Throws if no active session exists. In channel mode (PTY-driven CLI) the
-   * SDK control surface isn't available, so this is a no-op there.
-   */
-  async stopTask(conversationId: string, taskId: string): Promise<void> {
-    if (this.channelService && this.channelService.isConversationActive(conversationId)) {
-      logger.warn('stopTask requested in channel mode — not supported', { conversationId, taskId });
-      throw new Error('Stopping background tasks is only supported in SDK mode.');
-    }
-
-    const instance = this.activeSessions.get(conversationId);
-    if (!instance) {
-      logger.warn('No active session to stop task on', { conversationId, taskId });
-      throw new Error('No active session for this conversation.');
-    }
-
-    logger.info('Stopping background task', { conversationId, taskId });
-    await instance.query.stopTask(taskId);
-  }
-
-  /**
    * Hard-kill a session: abort the subprocess, close the channel, remove from active sessions.
    * Used only for app shutdown (abortAll) or as a fallback when interrupt fails.
    */

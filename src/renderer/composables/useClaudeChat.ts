@@ -324,46 +324,6 @@ export function useClaudeChat() {
   }
 
   /**
-   * Stop a running background task in the current conversation.
-   *
-   * The SDK doc promises a task_notification(status='stopped') as a side effect,
-   * but in practice that notification can be silent or delayed — leaving the UI
-   * showing the task as still running. We therefore optimistically reflect the
-   * stop in the store as soon as the IPC call resolves. Any later SDK
-   * confirmation is a no-op because the task is already 'stopped'.
-   */
-  async function stopBackgroundTask(taskId: string): Promise<void> {
-    const currentConvId = conversationsStore.currentConversationId;
-    if (!currentConvId) {
-      logger.error('Cannot stop background task: no active conversation');
-      return;
-    }
-    try {
-      await window.electron.claude.stopTask(currentConvId, taskId);
-      logger.info('Background task stop requested', { conversationId: currentConvId, taskId });
-      chatStore.handleTaskNotification(currentConvId, {
-        taskId,
-        status: 'stopped',
-      });
-    } catch (err) {
-      // "Task ... is not running" means the SDK already settled it (race with
-      // a natural completion, or a previous stop click). Treat as success and
-      // reconcile the store to 'stopped' rather than surfacing a scary error.
-      const errMessage = err instanceof Error ? err.message : String(err);
-      if (/is not running/i.test(errMessage)) {
-        logger.info('Stop ignored — task already settled', { taskId, errMessage });
-        chatStore.handleTaskNotification(currentConvId, {
-          taskId,
-          status: 'stopped',
-        });
-        return;
-      }
-      logger.error('Failed to stop background task', { taskId, err });
-      chatStore.setError(currentConvId, errMessage);
-    }
-  }
-
-  /**
    * Clear the chat
    */
   function clearChat() {
@@ -698,7 +658,6 @@ export function useClaudeChat() {
     sendQuestionAnswer,
     abort,
     abortConversation,
-    stopBackgroundTask,
     clearChat,
     revokeSessionPermission,
 

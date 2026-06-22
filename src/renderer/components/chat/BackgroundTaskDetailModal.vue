@@ -21,25 +21,7 @@ const props = defineProps<Props>();
 
 const emit = defineEmits<{
   (e: 'close'): void;
-  (e: 'stop', taskId: string): void;
 }>();
-
-const stopping = ref(false);
-
-// Reset the stopping flag whenever a new task is shown or the task transitions
-// out of 'running' (the SDK confirmed our stop request).
-watch(
-  () => ({ id: props.task?.id, status: props.task?.status }),
-  ({ status }) => {
-    if (status !== 'running') stopping.value = false;
-  },
-);
-
-function handleStop(): void {
-  if (!props.task || stopping.value) return;
-  stopping.value = true;
-  emit('stop', props.task.id);
-}
 
 // Output file content (lazy-loaded when modal opens)
 const outputContent = ref<string | null>(null);
@@ -143,20 +125,6 @@ const statusDisplay = computed(() => {
             <span>Duration: {{ duration }}</span>
           </div>
         </div>
-        <button
-          v-if="task.status === 'running'"
-          type="button"
-          class="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-          :disabled="stopping"
-          :title="stopping ? 'Stop request sent — waiting for the SDK to confirm' : 'Stop this background task'"
-          @click="handleStop"
-        >
-          <Icon
-            name="stop"
-            size="xs"
-          />
-          <span>{{ stopping ? 'Stopping…' : 'Stop task' }}</span>
-        </button>
       </div>
 
       <!-- Summary -->

@@ -56,8 +56,6 @@ export interface ElectronAPI {
     respondToAction: (response: ActionResponse) => Promise<void>;
     /** Abort the request for a specific conversation */
     abort: (conversationId: string) => Promise<void>;
-    /** Stop a running background task. Emits a task_notification with status 'stopped'. */
-    stopTask: (conversationId: string, taskId: string) => Promise<void>;
     /** Get available slash commands */
     getCommands: () => Promise<SlashCommandInfo[]>;
     /** Get available models */

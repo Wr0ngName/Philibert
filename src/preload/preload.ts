@@ -34,9 +34,6 @@ const electronAPI: ElectronAPI = {
     abort: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_ABORT, conversationId),
 
-    stopTask: (conversationId: string, taskId: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_STOP_TASK, conversationId, taskId),
-
     getCommands: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_COMMANDS),
 
     getModels: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_MODELS),
