@@ -46,6 +46,17 @@ const emit = defineEmits<{
 const isUser = computed(() => props.message.role === 'user');
 const isSystem = computed(() => props.message.role === 'system');
 
+// Switch system messages to a wrapping block when the text won't fit on one
+// line — short notes like "Model changed to X" keep the centered-with-side-lines
+// look; long blobs (e.g. the SDK's auto-deny tool_result text) wrap inline.
+const LONG_SYSTEM_MESSAGE_THRESHOLD = 80;
+const isLongSystemMessage = computed(
+  () =>
+    isSystem.value &&
+    (props.message.content.length > LONG_SYSTEM_MESSAGE_THRESHOLD ||
+      props.message.content.includes('\n')),
+);
+
 const formattedTime = computed(() => formatTime(props.message.timestamp));
 
 const renderedContent = computed(() =>
@@ -86,17 +97,33 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
 </script>
 
 <template>
-  <!-- System message (e.g. model change notification) -->
+  <!-- System message (e.g. model change notification, SDK denials) -->
+  <!-- Short messages keep the centered-with-side-lines look; long messages -->
+  <!-- (e.g. SDK auto-deny tool_result text) wrap into a dimmed block instead -->
+  <!-- of overflowing horizontally. -->
   <div
     v-if="isSystem"
-    class="flex items-center gap-3 py-2 px-4 animate-fade-in"
+    :class="[
+      'animate-fade-in py-2 px-4',
+      isLongSystemMessage
+        ? 'flex'
+        : 'flex items-center gap-3',
+    ]"
     @contextmenu="openContextMenu"
   >
-    <div class="flex-1 h-px bg-surface-200 dark:bg-surface-700" />
-    <span class="text-xs text-surface-400 dark:text-surface-500 whitespace-nowrap">
+    <template v-if="!isLongSystemMessage">
+      <div class="flex-1 h-px bg-surface-200 dark:bg-surface-700" />
+      <span class="text-xs text-surface-400 dark:text-surface-500 whitespace-nowrap">
+        {{ message.content }}
+      </span>
+      <div class="flex-1 h-px bg-surface-200 dark:bg-surface-700" />
+    </template>
+    <span
+      v-else
+      class="text-xs text-surface-400 dark:text-surface-500 system-message-long"
+    >
       {{ message.content }}
     </span>
-    <div class="flex-1 h-px bg-surface-200 dark:bg-surface-700" />
   </div>
 
   <!-- Inline tool use indicator -->
@@ -209,5 +236,14 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
 
 .message-content :deep(p:last-child) {
   margin-bottom: 0;
+}
+
+.system-message-long {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  line-height: 1.5;
 }
 </style>
