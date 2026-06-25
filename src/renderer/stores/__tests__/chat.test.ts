@@ -789,4 +789,92 @@ describe('useChatStore', () => {
       expect(store.canStartNewQuery).toBe(false);
     });
   });
+
+  describe('background task lifecycle', () => {
+    it('remaps the initial toolUseId-keyed entry when task_started arrives before user-message remap', () => {
+      // Replays the real SDK sequence captured in production logs:
+      //  1. Tool use block detected         → running, taskId = toolu_xxx
+      //  2. task_started (no previousTaskId)→ running, taskId = bash_xxx, toolUseId = toolu_xxx
+      //  3. User-message remap               → running, taskId = bash_xxx, previousTaskId = toolu_xxx
+      //  4. task_updated                     → completed, taskId = bash_xxx
+      //
+      // Without the implicit toolUseId remap in handleTaskNotification, step 2
+      // creates a brand-new entry under bash_xxx while leaving toolu_xxx orphaned;
+      // the UI then shows the orphan as "Running" forever.
+      const TOOL_USE_ID = 'toolu_013SJkDc5wEo2BNGkTZq5MRt';
+      const TASK_ID = 'bbwlue56w';
+
+      store.handleTaskNotification(TEST_CONV_ID, {
+        taskId: TOOL_USE_ID,
+        status: 'running',
+        description: 'Replay 1',
+      });
+      expect(store.runningBackgroundTasksList).toHaveLength(1);
+
+      store.handleTaskNotification(TEST_CONV_ID, {
+        taskId: TASK_ID,
+        status: 'running',
+        description: 'Replay 1',
+        toolUseId: TOOL_USE_ID,
+      });
+      expect(store.runningBackgroundTasksList).toHaveLength(1);
+      expect(store.backgroundTasks.get(TASK_ID)?.status).toBe('running');
+      expect(store.backgroundTasks.get(TOOL_USE_ID)).toBeUndefined();
+
+      store.handleTaskNotification(TEST_CONV_ID, {
+        taskId: TASK_ID,
+        status: 'running',
+        previousTaskId: TOOL_USE_ID,
+      });
+      expect(store.runningBackgroundTasksList).toHaveLength(1);
+
+      store.handleTaskNotification(TEST_CONV_ID, {
+        taskId: TASK_ID,
+        status: 'completed',
+      });
+      expect(store.runningBackgroundTasksList).toHaveLength(0);
+      expect(store.backgroundTasks.get(TASK_ID)?.status).toBe('completed');
+    });
+
+    it('cleans up three parallel background tasks regardless of arrival interleaving', () => {
+      const tasks = [
+        { toolUseId: 'toolu_013SJkDc5wEo2BNGkTZq5MRt', taskId: 'bbwlue56w', description: 'Replay 1' },
+        { toolUseId: 'toolu_01CD7FACuHwXLY3WFXr1nVJd', taskId: 'b4s4ju9vc', description: 'Replay 2' },
+        { toolUseId: 'toolu_01C1QJngKt3YzXsPkSQxKRCS', taskId: 'bz35z78ic', description: 'Replay 3' },
+      ];
+
+      for (const t of tasks) {
+        store.handleTaskNotification(TEST_CONV_ID, {
+          taskId: t.toolUseId,
+          status: 'running',
+          description: t.description,
+        });
+      }
+      expect(store.runningBackgroundTasksList).toHaveLength(3);
+
+      for (const t of tasks) {
+        store.handleTaskNotification(TEST_CONV_ID, {
+          taskId: t.taskId,
+          status: 'running',
+          description: t.description,
+          toolUseId: t.toolUseId,
+        });
+      }
+      expect(store.runningBackgroundTasksList).toHaveLength(3);
+      expect(store.backgroundTasks.size).toBe(3);
+
+      for (const t of tasks) {
+        store.handleTaskNotification(TEST_CONV_ID, {
+          taskId: t.taskId,
+          status: 'completed',
+          summary: `${t.description} done`,
+        });
+      }
+      expect(store.runningBackgroundTasksList).toHaveLength(0);
+      expect(store.backgroundTasks.size).toBe(3);
+      for (const t of tasks) {
+        expect(store.backgroundTasks.get(t.taskId)?.status).toBe('completed');
+      }
+    });
+  });
 });

@@ -637,6 +637,17 @@ export const useChatStore = defineStore('chat', () => {
       }
     }
 
+    // Implicit remap via toolUseId. task_started carries toolUseId but no
+    // previousTaskId, and arrives BEFORE the user-message-based remap. Without
+    // this, the initial entry keyed by the toolUseId would be orphaned in the
+    // Map and stay "running" forever, while updates target the new SDK task_id.
+    if (!existingTask && notification.toolUseId) {
+      existingTask = state.backgroundTasks.get(notification.toolUseId);
+      if (existingTask) {
+        existingTaskId = notification.toolUseId;
+      }
+    }
+
     // If no direct match, try to match a running task by description.
     // This handles the case where task_started used the tool_use_id but
     // task_notification uses a different SDK-generated task_id.
