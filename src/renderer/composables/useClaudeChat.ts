@@ -275,7 +275,10 @@ export function useClaudeChat() {
 
     try {
       chatStore.updateActionStatus(currentConvId, actionId, cancelled ? 'rejected' : 'approved');
-      chatStore.updateToolUseStatus(currentConvId, actionId, cancelled ? 'rejected' : 'approved');
+      // The user's answer IS the result for AskUserQuestion — canUseTool is resolved
+      // with deny+synthetic and no separate execution step follows. Move the inline
+      // tool_use indicator directly to a terminal state so its spinner stops.
+      chatStore.updateToolUseStatus(currentConvId, actionId, cancelled ? 'rejected' : 'executed');
 
       const response: AskUserQuestionResponse = {
         conversationId: currentConvId,
