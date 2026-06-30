@@ -790,6 +790,78 @@ describe('useChatStore', () => {
     });
   });
 
+  describe('tool use enrichment from permission', () => {
+    it('enriches an auto-captured AskUserQuestion entry without creating a duplicate when input JSON differs after IPC', () => {
+      // Repro: AskUserQuestion's questions[].options[] payload can serialize
+      // differently after structuredClone, so the previous match condition
+      // (strict input JSON equality) failed and the fallback added a second
+      // inline indicator. The single indicator should survive enrichment.
+      const TOOL_USE_ID = 'toolu_AskUserQ_xxxxxxxxxxxxxxxxxxxxxxxx';
+      const ACTION_ID = 'action_aboard_question';
+
+      store.addAutoToolUseMessage(TEST_CONV_ID, {
+        toolUseBlockId: TOOL_USE_ID,
+        toolName: 'AskUserQuestion',
+        // generic description from generateToolDescription default case
+        description: 'Tool: AskUserQuestion',
+        // Original input order (as emitted by the SDK assistant message)
+        input: { questions: [{ header: 'A', question: 'q?', multiSelect: false, options: [{ label: 'X', description: 'd' }] }] },
+      });
+
+      store.enrichToolUseFromPermission(TEST_CONV_ID, {
+        id: ACTION_ID,
+        type: 'ask-user-question',
+        toolName: 'AskUserQuestion',
+        description: 'q?',
+        // Different key order — this is the IPC-after-clone scenario
+        input: { questions: [{ question: 'q?', header: 'A', options: [{ description: 'd', label: 'X' }], multiSelect: false }] },
+        status: 'pending',
+        timestamp: Date.now(),
+        details: {
+          questions: [{ question: 'q?', header: 'A', multiSelect: false, options: [{ label: 'X', description: 'd' }] }],
+          truncated: false,
+        },
+      });
+
+      const toolUseMessages = store.messages.filter(m => m.toolUse?.toolName === 'AskUserQuestion');
+      expect(toolUseMessages).toHaveLength(1);
+      expect(toolUseMessages[0].toolUse?.actionId).toBe(ACTION_ID);
+      expect(toolUseMessages[0].toolUse?.toolUseBlockId).toBe(TOOL_USE_ID);
+      expect(toolUseMessages[0].toolUse?.description).toBe('q?');
+      expect(toolUseMessages[0].toolUse?.status).toBe('pending');
+    });
+
+    it('pairs canUseTool calls with their corresponding tool_use blocks in FIFO order for parallel Bash', () => {
+      const captures = [
+        { toolUseBlockId: 'toolu_b1', description: 'Run cmd 1', input: { command: 'echo 1' } },
+        { toolUseBlockId: 'toolu_b2', description: 'Run cmd 2', input: { command: 'echo 2' } },
+        { toolUseBlockId: 'toolu_b3', description: 'Run cmd 3', input: { command: 'echo 3' } },
+      ];
+      for (const c of captures) {
+        store.addAutoToolUseMessage(TEST_CONV_ID, { ...c, toolName: 'Bash' });
+      }
+
+      const actionIds = ['action_b1', 'action_b2', 'action_b3'];
+      for (let i = 0; i < captures.length; i++) {
+        store.enrichToolUseFromPermission(TEST_CONV_ID, createBashAction({
+          id: actionIds[i],
+          input: captures[i].input,
+          description: captures[i].description,
+        }));
+      }
+
+      const toolUseMessages = store.messages.filter(m => m.toolUse?.toolName === 'Bash');
+      expect(toolUseMessages).toHaveLength(3);
+      // FIFO pairing: capture[i] ↔ action[i]
+      expect(toolUseMessages[0].toolUse?.toolUseBlockId).toBe('toolu_b1');
+      expect(toolUseMessages[0].toolUse?.actionId).toBe('action_b1');
+      expect(toolUseMessages[1].toolUse?.toolUseBlockId).toBe('toolu_b2');
+      expect(toolUseMessages[1].toolUse?.actionId).toBe('action_b2');
+      expect(toolUseMessages[2].toolUse?.toolUseBlockId).toBe('toolu_b3');
+      expect(toolUseMessages[2].toolUse?.actionId).toBe('action_b3');
+    });
+  });
+
   describe('background task lifecycle', () => {
     it('remaps the initial toolUseId-keyed entry when task_started arrives before user-message remap', () => {
       // Replays the real SDK sequence captured in production logs:

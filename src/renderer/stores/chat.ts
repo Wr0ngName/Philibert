@@ -535,23 +535,32 @@ export const useChatStore = defineStore('chat', () => {
   /**
    * Enrich an existing capture-created ToolUseMessage with the real actionId
    * from a permission prompt. Falls back to creating a new message if no capture match.
+   *
+   * Matching strategy: oldest capture-created entry of the same toolName that
+   * has not yet been enriched (actionId still equals toolUseBlockId). We do NOT
+   * compare input JSON — equivalent objects can serialize differently after
+   * IPC because key order isn't preserved across structuredClone for deeply
+   * nested payloads (real-world repro: AskUserQuestion's questions[].options[]
+   * would mismatch, the fallback fired, and a duplicate inline indicator was
+   * created — one from auto-capture, one from permission). The SDK pairs each
+   * tool_use block with one canUseTool call in FIFO order, so the oldest
+   * unenriched capture of this toolName is this call.
    */
   function enrichToolUseFromPermission(conversationId: string, action: PendingAction): void {
     if (conversationId !== currentConversationId.value) return;
 
-    const inputJson = JSON.stringify(action.input);
-    for (let i = messages.value.length - 1; i >= 0; i--) {
+    for (let i = 0; i < messages.value.length; i++) {
       const msg = messages.value[i];
       if (
         msg.toolUse &&
         msg.toolUse.toolUseBlockId &&
         msg.toolUse.actionId === msg.toolUse.toolUseBlockId &&
-        msg.toolUse.toolName === action.toolName &&
-        JSON.stringify(msg.toolUse.input) === inputJson
+        msg.toolUse.toolName === action.toolName
       ) {
         msg.toolUse = {
           ...msg.toolUse,
           actionId: action.id,
+          description: action.description || msg.toolUse.description,
           status: 'pending',
         };
         return;
