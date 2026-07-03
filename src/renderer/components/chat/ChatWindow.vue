@@ -204,7 +204,7 @@ function closeToolDetail() {
     <TransitionFade type="slideUp">
       <div
         v-if="hasRunningBackgroundTasks"
-        class="px-4 pt-2"
+        class="px-4 py-2"
       >
         <BackgroundTaskPanel
           :tasks="runningBackgroundTasksList"
