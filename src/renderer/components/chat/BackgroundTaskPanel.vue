@@ -118,6 +118,17 @@ function formatDuration(task: BackgroundTask): string {
         @keydown.enter="emit('open-detail', task.id)"
       >
         <div class="flex items-center gap-2 flex-1 min-w-0">
+          <Icon
+            :name="task.taskType === 'agent' ? 'cpu' : 'terminal'"
+            size="xs"
+            :class="[
+              'shrink-0',
+              task.taskType === 'agent'
+                ? 'text-purple-500 dark:text-purple-400'
+                : 'text-surface-500 dark:text-surface-400',
+            ]"
+            :title="task.taskType === 'agent' ? 'Sub-agent' : 'Background command'"
+          />
           <Spinner
             size="xs"
             class="text-blue-500 shrink-0"

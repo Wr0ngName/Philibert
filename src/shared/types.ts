@@ -756,6 +756,10 @@ export interface BackgroundTask {
    *  tool). When set, the inline tool_use indicator already represents this
    *  task in the chat — no separate inline backgroundTask entry is created. */
   toolUseId?: string;
+  /** Kind of background task: 'agent' for Task/Agent tool spawns, 'command'
+   *  for backgrounded Bash commands and other tools. Derived at creation from
+   *  the parent tool_use name and used by the panel to render a distinctive icon. */
+  taskType?: 'agent' | 'command';
 }
 
 /**

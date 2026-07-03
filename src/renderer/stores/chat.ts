@@ -633,6 +633,22 @@ export const useChatStore = defineStore('chat', () => {
   // Background Task Actions
   // ============================================
 
+  /**
+   * Classify a background task as 'agent' or 'command' by looking up the parent
+   * tool_use it was spawned from. Task/Agent tool → agent; anything else (Bash
+   * with run_in_background, absence of a match) → command.
+   */
+  function resolveTaskType(conversationId: string, toolUseId?: string): 'agent' | 'command' {
+    if (!toolUseId || conversationId !== currentConversationId.value) return 'command';
+    for (const m of messages.value) {
+      if (m.toolUse?.toolUseBlockId === toolUseId) {
+        const name = m.toolUse.toolName;
+        return name === 'Task' || name === 'Agent' ? 'agent' : 'command';
+      }
+    }
+    return 'command';
+  }
+
   function handleTaskNotification(conversationId: string, notification: TaskNotification): void {
     const state = getConversationState(conversationId);
     let existingTask = state.backgroundTasks.get(notification.taskId);
@@ -729,6 +745,7 @@ export const useChatStore = defineStore('chat', () => {
         sessionId: notification.sessionId,
         error: notification.error,
         ...(notification.toolUseId && { toolUseId: notification.toolUseId }),
+        taskType: resolveTaskType(conversationId, notification.toolUseId),
       };
       if (notification.status !== 'running') {
         task.completedAt = Date.now();
