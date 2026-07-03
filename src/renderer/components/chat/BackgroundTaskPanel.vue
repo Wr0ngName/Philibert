@@ -9,6 +9,7 @@ import { onBeforeUnmount, ref, watch } from 'vue';
 
 import type { BackgroundTask } from '@shared/types';
 
+import Icon from '../shared/Icon.vue';
 import Spinner from '../shared/Spinner.vue';
 
 interface Props {
@@ -54,6 +55,12 @@ watch(
 
 onBeforeUnmount(() => stopTick());
 
+const collapsed = ref(false);
+
+function toggleCollapsed(): void {
+  collapsed.value = !collapsed.value;
+}
+
 function formatDuration(task: BackgroundTask): string {
   const endTime = task.completedAt || now.value;
   const durationMs = endTime - task.startedAt;
@@ -74,17 +81,32 @@ function formatDuration(task: BackgroundTask): string {
     class="background-task-panel"
   >
     <!-- Header -->
-    <div class="flex items-center px-3 py-2 border-b border-surface-200 dark:border-surface-700">
+    <button
+      type="button"
+      class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-100 dark:hover:bg-surface-700/50 transition-colors"
+      :class="collapsed ? '' : 'border-b border-surface-200 dark:border-surface-700'"
+      :title="collapsed ? 'Expand background tasks' : 'Collapse background tasks'"
+      :aria-expanded="!collapsed"
+      @click="toggleCollapsed"
+    >
+      <Icon
+        :name="collapsed ? 'chevron-right' : 'chevron-down'"
+        size="xs"
+        class="text-surface-500 dark:text-surface-400 shrink-0"
+      />
       <span class="text-xs font-medium text-surface-600 dark:text-surface-400">
         Background Tasks
         <span class="ml-1 text-blue-500">
           ({{ tasks.length }} running)
         </span>
       </span>
-    </div>
+    </button>
 
     <!-- Running task list -->
-    <div class="max-h-40 overflow-y-auto">
+    <div
+      v-show="!collapsed"
+      class="max-h-40 overflow-y-auto"
+    >
       <div
         v-for="task in tasks"
         :key="task.id"
