@@ -62,6 +62,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions: undefined,
       });
 
@@ -87,6 +88,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions: [],
       });
 
@@ -119,6 +121,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -149,6 +152,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -179,6 +183,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -212,6 +217,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -245,6 +251,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -281,6 +288,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -313,6 +321,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -338,6 +347,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -378,6 +388,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -410,6 +421,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -441,6 +453,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -469,6 +482,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -499,6 +513,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'git status' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -531,6 +546,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -558,6 +574,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -588,6 +605,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -608,6 +626,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'cat /etc/passwd' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions: undefined,
         blockedPath: '/etc/passwd',
       });
@@ -628,6 +647,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'cat /etc/passwd' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions: undefined,
         decisionReason: 'Bash command tries to access a path outside allowed directories',
       });
@@ -648,6 +668,7 @@ describe('PermissionManager', () => {
       canUseTool('Write', { file_path: '/etc/config', content: 'data' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions: [
           {
             type: 'addDirectories',
@@ -675,6 +696,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions: undefined,
       });
 
@@ -702,6 +724,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls -la' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -737,6 +760,7 @@ describe('PermissionManager', () => {
       canUseTool('Write', { file_path: '/test.txt', content: 'hello' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -776,6 +800,7 @@ describe('PermissionManager', () => {
       }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -813,11 +838,12 @@ describe('PermissionManager', () => {
       const result = await canUseTool('Read', { file_path: '/test.txt' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
       // Should auto-approve without emitting action
-      expect(result.behavior).toBe('allow');
+      expect(result!.behavior).toBe('allow');
       expect(capturedAction).toBeNull(); // No action emitted
     });
   });
@@ -839,6 +865,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -864,6 +891,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -896,6 +924,7 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -938,11 +967,12 @@ describe('PermissionManager', () => {
       const result = await canUseTool('Bash', { command: 'ls' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions: undefined,
       });
 
       // Should allow immediately without emitting action
-      expect(result.behavior).toBe('allow');
+      expect(result!.behavior).toBe('allow');
       expect(capturedAction).toBeNull(); // No action emitted
     });
 
@@ -974,6 +1004,7 @@ describe('PermissionManager', () => {
       canUseTool('Write', { file_path: '/test.txt', content: 'hello' }, {
         signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions: undefined,
       });
 
@@ -1011,6 +1042,7 @@ describe('PermissionManager', () => {
       const promise = canUseTool('Bash', { command: 'ls' }, {
         signal: abortController.signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -1031,7 +1063,7 @@ describe('PermissionManager', () => {
       // Wait for promise to resolve
       const result = await promise;
 
-      expect(result.behavior).toBe('allow');
+      expect(result!.behavior).toBe('allow');
 
       // Verify cache now has the permission
       expect(cache.isAllowed(conversationId, 'Bash', {})).toBe(true);
@@ -1063,6 +1095,7 @@ describe('PermissionManager', () => {
       const promise = canUseTool('Bash', { command: 'ls' }, {
         signal: abortController.signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -1111,6 +1144,7 @@ describe('PermissionManager', () => {
       const promise = canUseTool('Bash', { command: 'ls' }, {
         signal: abortController.signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -1158,6 +1192,7 @@ describe('PermissionManager', () => {
       const promise = canUseTool('Bash', { command: 'ls' }, {
         signal: abortController.signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -1177,7 +1212,7 @@ describe('PermissionManager', () => {
       const result = await promise;
 
       // Permission should be approved for this request
-      expect(result.behavior).toBe('allow');
+      expect(result!.behavior).toBe('allow');
 
       // But cache should NOT have permission (SessionPermissionCache filters project/global)
       expect(cache.isAllowed(conversationId, 'Bash', {})).toBe(false);
@@ -1213,16 +1248,19 @@ describe('PermissionManager', () => {
       const promise1 = canUseTool('Bash', { command: 'ls' }, {
         signal: abortController.signal,
         toolUseID: 'id-1',
+        requestId: 'test-request-id',
         suggestions,
       });
       const promise2 = canUseTool('Bash', { command: 'pwd' }, {
         signal: abortController.signal,
         toolUseID: 'id-2',
+        requestId: 'test-request-id',
         suggestions,
       });
       const promise3 = canUseTool('Bash', { command: 'date' }, {
         signal: abortController.signal,
         toolUseID: 'id-3',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -1242,9 +1280,9 @@ describe('PermissionManager', () => {
       // All three should resolve
       const [result1, result2, result3] = await Promise.all([promise1, promise2, promise3]);
 
-      expect(result1.behavior).toBe('allow');
-      expect(result2.behavior).toBe('allow');
-      expect(result3.behavior).toBe('allow');
+      expect(result1!.behavior).toBe('allow');
+      expect(result2!.behavior).toBe('allow');
+      expect(result3!.behavior).toBe('allow');
       expect(pm.getPendingCount()).toBe(0);
 
       // Auto-resolved actions should emit toolExecuted for UI update
@@ -1280,11 +1318,13 @@ describe('PermissionManager', () => {
       canUseTool('Bash', { command: 'ls' }, {
         signal: abortController.signal,
         toolUseID: 'id-1',
+        requestId: 'test-request-id',
         suggestions: bashSuggestions,
       });
       canUseTool('Write', { file_path: '/test.txt', content: 'hi' }, {
         signal: abortController.signal,
         toolUseID: 'id-2',
+        requestId: 'test-request-id',
         suggestions: undefined,
       });
 
@@ -1335,6 +1375,7 @@ describe('PermissionManager', () => {
       const promise = canUseTool('AskUserQuestion', input, {
         signal: abortController.signal,
         toolUseID: 'tu-1',
+        requestId: 'test-request-id',
         suggestions: undefined,
       });
 
@@ -1354,7 +1395,7 @@ describe('PermissionManager', () => {
       });
 
       const result = await promise;
-      expect(result.behavior).toBe('deny');
+      expect(result!.behavior).toBe('deny');
       const parsed = JSON.parse((result as { message: string }).message);
       expect(parsed.answers['Which library should we use?']).toBe('axios');
       expect((result as { interrupt?: boolean }).interrupt).toBe(false);
@@ -1392,6 +1433,7 @@ describe('PermissionManager', () => {
       }, {
         signal: abortController.signal,
         toolUseID: 'tu-2',
+        requestId: 'test-request-id',
         suggestions: undefined,
       });
 
@@ -1406,7 +1448,7 @@ describe('PermissionManager', () => {
       });
 
       const result = await promise;
-      expect(result.behavior).toBe('deny');
+      expect(result!.behavior).toBe('deny');
       expect((result as { message: string }).message).toContain('cancelled');
       expect(followUps).toHaveLength(0);
     });
@@ -1419,10 +1461,11 @@ describe('PermissionManager', () => {
       const result = await canUseTool('AskUserQuestion', { questions: [] }, {
         signal: abortController.signal,
         toolUseID: 'tu-3',
+        requestId: 'test-request-id',
         suggestions: undefined,
       });
 
-      expect(result.behavior).toBe('deny');
+      expect(result!.behavior).toBe('deny');
       expect((result as { message: string }).message).toMatch(/empty|invalid/i);
       // No action should have been emitted for an invalid payload
       expect(capturedAction).toBeNull();
@@ -1460,6 +1503,7 @@ describe('PermissionManager', () => {
       const promise = canUseTool('AskUserQuestion', input, {
         signal: abortController.signal,
         toolUseID: 'tu-4',
+        requestId: 'test-request-id',
         suggestions: undefined,
       });
 
@@ -1508,6 +1552,7 @@ describe('PermissionManager', () => {
       const promise = canUseTool('Bash', { command: 'ls' }, {
         signal: abortController.signal,
         toolUseID: 'test-id',
+        requestId: 'test-request-id',
         suggestions,
       });
 
@@ -1527,7 +1572,7 @@ describe('PermissionManager', () => {
       const result = await promise;
 
       // Should approve normally
-      expect(result.behavior).toBe('allow');
+      expect(result!.behavior).toBe('allow');
       // No errors - everything works without cache
     });
   });
