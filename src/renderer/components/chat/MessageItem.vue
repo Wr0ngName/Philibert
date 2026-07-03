@@ -178,11 +178,6 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
       <span class="text-xs text-surface-400 dark:text-surface-500">
         {{ formattedTime }}
       </span>
-      <Spinner
-        v-if="message.isStreaming"
-        size="sm"
-        class="ml-2 text-primary-500"
-      />
     </div>
 
     <!-- Content -->
@@ -190,6 +185,15 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
       class="prose prose-sm dark:prose-invert max-w-full text-surface-800 dark:text-surface-200 message-content"
       v-html="renderedContent"
     />
+
+    <!-- Trailing spinner: sits under the content so it stays visible on long
+         streaming answers when the header has scrolled out of view -->
+    <div
+      v-if="message.isStreaming"
+      class="flex items-center gap-2 mt-2"
+    >
+      <Spinner size="sm" class="text-primary-500" />
+    </div>
   </div>
 
   <ContextMenu

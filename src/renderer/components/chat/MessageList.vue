@@ -400,11 +400,6 @@ onUnmounted(() => {
               <span class="text-xs text-surface-400 dark:text-surface-500">
                 {{ formatTime(group.messages[0].timestamp) }}
               </span>
-              <Spinner
-                v-if="showTurnSpinner(group)"
-                size="sm"
-                class="ml-2 text-primary-500"
-              />
             </div>
 
             <!-- Turn content -->
@@ -425,6 +420,14 @@ onUnmounted(() => {
                   @open-tool-detail="emit('open-tool-detail', $event)"
                   @toggle-agent-expand="toggleAgentExpand"
                 />
+              </div>
+              <!-- Trailing spinner: sits under the last rendered content so the
+                   user can see the turn is still running on long answers -->
+              <div
+                v-if="showTurnSpinner(group)"
+                class="flex items-center gap-2 assistant-turn-trailing-spinner"
+              >
+                <Spinner size="sm" class="text-primary-500" />
               </div>
             </div>
           </div>
