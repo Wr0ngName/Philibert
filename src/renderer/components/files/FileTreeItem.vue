@@ -26,7 +26,15 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   (e: 'select', path: string): void;
+  (e: 'view-markdown', path: string): void;
 }>();
+
+const MARKDOWN_EXTS = new Set(['md', 'markdown', 'mdx']);
+
+function isMarkdownFile(name: string): boolean {
+  const ext = name.split('.').pop()?.toLowerCase();
+  return ext !== undefined && MARKDOWN_EXTS.has(ext);
+}
 
 const filesStore = useFilesStore();
 const chatStore = useChatStore();
@@ -64,7 +72,12 @@ function handleClick() {
     filesStore.toggleDirectory(props.node.path);
   } else {
     filesStore.selectFile(props.node.path);
-    filesStore.openFile(props.node.path);
+    if (isMarkdownFile(props.node.name)) {
+      // Render inline instead of shelling out to the OS default handler.
+      emit('view-markdown', props.node.path);
+    } else {
+      filesStore.openFile(props.node.path);
+    }
     emit('select', props.node.path);
   }
 }
@@ -128,6 +141,7 @@ function handleClick() {
           :node="child"
           :depth="depth + 1"
           @select="emit('select', $event)"
+          @view-markdown="emit('view-markdown', $event)"
         />
       </div>
     </TransitionFade>

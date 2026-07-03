@@ -8,6 +8,7 @@ import { storeToRefs } from 'pinia';
 
 import { useFilesStore } from '../../stores/files';
 import FileTreeItem from './FileTreeItem.vue';
+import MarkdownViewerModal from './MarkdownViewerModal.vue';
 import Spinner from '../shared/Spinner.vue';
 import Icon from '../shared/Icon.vue';
 import { logger } from '../../utils/logger';
@@ -16,10 +17,21 @@ const filesStore = useFilesStore();
 const { fileTree, hasFiles, isLoading, error } = storeToRefs(filesStore);
 
 const rootRef = ref<HTMLElement | null>(null);
+const viewerOpen = ref(false);
+const viewerPath = ref<string | null>(null);
 
 function handleFileSelect(path: string) {
   logger.debug('File selected', { path });
   // Could open in editor, show preview, etc.
+}
+
+function handleViewMarkdown(path: string) {
+  viewerPath.value = path;
+  viewerOpen.value = true;
+}
+
+function closeMarkdownViewer() {
+  viewerOpen.value = false;
 }
 
 function refresh() {
@@ -118,8 +130,16 @@ onUnmounted(() => {
           :key="node.path"
           :node="node"
           @select="handleFileSelect"
+          @view-markdown="handleViewMarkdown"
         />
       </div>
     </div>
+
+    <!-- Markdown viewer modal for .md/.markdown/.mdx files -->
+    <MarkdownViewerModal
+      :open="viewerOpen"
+      :file-path="viewerPath"
+      @close="closeMarkdownViewer"
+    />
   </div>
 </template>
