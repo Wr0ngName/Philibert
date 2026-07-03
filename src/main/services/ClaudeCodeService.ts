@@ -1489,6 +1489,21 @@ export class ClaudeCodeService {
   private static readonly FAMILY_ORDER = ['opus', 'sonnet', 'haiku'];
 
   /**
+   * Family-level context-window default, used as fallback when a specific
+   * catalog entry doesn't exist for a model (e.g. a brand-new SKU that ships
+   * before the catalog is updated). Only Haiku currently sits at 200K; every
+   * other current family ships at 1M, and new families are assumed to follow
+   * the same trend unless they announce otherwise.
+   */
+  private static readonly FAMILY_DEFAULT_CONTEXT: Record<string, string> = {
+    haiku: '200K',
+  };
+
+  private static contextForFamily(family: string): string {
+    return ClaudeCodeService.FAMILY_DEFAULT_CONTEXT[family] ?? '1M';
+  }
+
+  /**
    * Extract the alias form (claude-{family}-{major}-{minor}) from any model ID,
    * stripping dated suffixes like -20250929.
    */
@@ -1500,7 +1515,9 @@ export class ClaudeCodeService {
    * Merge SDK-returned models with the known catalog.
    * Deduplicates by alias (so dated SDK IDs like claude-sonnet-4-5-20250929
    * match catalog entry claude-sonnet-4-5). Result is grouped by family
-   * (Opus, Sonnet, Haiku) and sorted by version descending within each family.
+   * (known families first, unknowns after) and sorted by version descending
+   * within each family. Context annotation falls back to a family-level
+   * default when a specific catalog entry isn't present.
    */
   static mergeWithKnownModels(sdkModels: ModelInfo[]): ModelInfo[] {
     const seen = new Set<string>();
@@ -1525,7 +1542,16 @@ export class ClaudeCodeService {
           description: `${catalogEntry.context} context`,
         });
       } else {
-        merged.push(sdk);
+        // No specific catalog match — pass through the SDK's own displayName,
+        // but backfill the context annotation from the family default so a
+        // freshly-released SKU (Fable, future families, …) still shows a
+        // sensible context hint instead of nothing.
+        const familyMatch = alias.match(/^claude-([a-z]+)-\d+-\d+/);
+        const family = familyMatch?.[1];
+        const description = family && !sdk.description
+          ? `${ClaudeCodeService.contextForFamily(family)} context`
+          : sdk.description;
+        merged.push({ ...sdk, ...(description && { description }) });
       }
     }
 
