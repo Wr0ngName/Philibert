@@ -1546,8 +1546,11 @@ export class ClaudeCodeService {
       const alias = ClaudeCodeService.toAlias(m.value);
       const match = alias.match(/claude-(\w+)-(\d+)-(\d+)/);
       if (!match) return { familyIdx: 99, version: 0 };
+      const idx = familyOrder.indexOf(match[1]);
       return {
-        familyIdx: familyOrder.indexOf(match[1]),
+        // Unknown families (anything the SDK grows into) sort after known ones
+        // rather than jumping to the top of the list.
+        familyIdx: idx === -1 ? familyOrder.length : idx,
         version: Number(match[2]) * 100 + Number(match[3]),
       };
     };

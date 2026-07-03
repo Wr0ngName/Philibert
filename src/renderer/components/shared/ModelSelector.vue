@@ -37,51 +37,72 @@ const pendingModelValue = ref<string | null>(null);
 let cleanupModelsListener: (() => void) | null = null;
 
 interface FamilyEntry {
-  family: string;        // 'Opus', 'Sonnet', 'Haiku'
-  familyKey: string;     // 'opus', 'sonnet', 'haiku'
+  family: string;        // Human label, e.g. 'Opus'
+  familyKey: string;     // Lower-case SDK key, e.g. 'opus'
   alias: ModelInfo | null;  // SDK family alias (e.g. value === 'opus'), if available
   versions: ModelInfo[]; // specific versioned models, sorted descending
 }
 
-const FAMILY_ORDER = ['opus', 'sonnet', 'haiku'] as const;
-const FAMILY_LABELS: Record<string, string> = {
-  opus: 'Opus',
-  sonnet: 'Sonnet',
-  haiku: 'Haiku',
-};
+// Known families get a fixed display order at the top of the menu; any new
+// family the SDK reports lands after them in the order it first appears.
+const PREFERRED_FAMILY_ORDER: readonly string[] = ['opus', 'sonnet', 'haiku'];
+
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 /**
- * The SDK returns family aliases (`default`, `opus`, `sonnet`, `haiku`) that
- * resolve to the recommended model for each family server-side, along with
- * specific versioned models (`claude-opus-4-7`, `claude-sonnet-4-5-20250929`).
+ * The SDK returns family aliases (`default`, `opus`, `sonnet`, `haiku`, …)
+ * along with specific versioned models (`claude-opus-4-7`, `claude-fable-1-0`,
+ * `claude-sonnet-4-5-20250929`, …).
  *
+ * Families are discovered from the model list itself — either an alias whose
+ * value is a bare family name, or the first token of a `claude-<family>-…` ID.
  * We expose ONE top-level entry per family:
  *   - Click: selects the family alias (or latest version if alias unavailable)
  *   - Hover: reveals a submenu of specific versions
  */
 const familyEntries = computed<FamilyEntry[]>(() => {
   const byFamily: Record<string, FamilyEntry> = {};
-  for (const key of FAMILY_ORDER) {
-    byFamily[key] = {
-      family: FAMILY_LABELS[key],
-      familyKey: key,
-      alias: null,
-      versions: [],
-    };
+  // Track first-seen order for families not in PREFERRED_FAMILY_ORDER so the
+  // menu is deterministic across renders.
+  const encounterOrder: string[] = [];
+
+  function ensureFamily(key: string): FamilyEntry {
+    if (!byFamily[key]) {
+      byFamily[key] = {
+        family: capitalize(key),
+        familyKey: key,
+        alias: null,
+        versions: [],
+      };
+      encounterOrder.push(key);
+    }
+    return byFamily[key];
   }
 
   for (const model of models.value) {
-    if (FAMILY_ORDER.includes(model.value as typeof FAMILY_ORDER[number])) {
-      byFamily[model.value].alias = model;
+    // `default` is neither a family alias nor a versioned model; skip.
+    if (model.value === 'default' || !model.value) continue;
+    // Bare family alias (SDK returns `opus`, `sonnet`, `haiku`, potentially more).
+    // Heuristic: no hyphens and not the special 'default' entry.
+    if (!model.value.includes('-')) {
+      ensureFamily(model.value).alias = model;
       continue;
     }
-    const match = model.value.match(/^claude-(opus|sonnet|haiku)-\d+-\d+/);
+    const match = model.value.match(/^claude-([a-z]+)-\d+-\d+/);
     if (match) {
-      byFamily[match[1]].versions.push(model);
+      ensureFamily(match[1]).versions.push(model);
     }
   }
 
-  return FAMILY_ORDER
+  const preferred = new Set(PREFERRED_FAMILY_ORDER);
+  const ordered = [
+    ...PREFERRED_FAMILY_ORDER.filter(k => byFamily[k]),
+    ...encounterOrder.filter(k => !preferred.has(k)),
+  ];
+
+  return ordered
     .map(k => byFamily[k])
     .filter(f => f.alias || f.versions.length > 0);
 });
