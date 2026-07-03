@@ -32,6 +32,11 @@ const content = ref<string | null>(null);
 const isLoading = ref(false);
 const loadError = ref<string | null>(null);
 
+// Monotonic counter guarding against stale reads when the user
+// rapidly closes+reopens or switches files while a read is in flight —
+// only the most recent load's result is applied.
+let loadGeneration = 0;
+
 const displayName = computed(() => {
   if (!props.filePath) return '';
   return props.filePath.split(/[/\\]/).pop() ?? props.filePath;
@@ -43,17 +48,20 @@ const renderedHtml = computed(() => {
 });
 
 async function loadContent(path: string): Promise<void> {
+  const myGen = ++loadGeneration;
   isLoading.value = true;
   loadError.value = null;
   content.value = null;
   try {
     const text = await window.electron.files.read(path);
+    if (myGen !== loadGeneration) return;
     content.value = text ?? '';
   } catch (err) {
+    if (myGen !== loadGeneration) return;
     logger.error('Failed to read markdown file for viewer', { path, err });
     loadError.value = err instanceof Error ? err.message : 'Failed to read file';
   } finally {
-    isLoading.value = false;
+    if (myGen === loadGeneration) isLoading.value = false;
   }
 }
 
@@ -63,8 +71,12 @@ watch(
     if (open && path) {
       loadContent(path);
     } else if (!open) {
+      // Invalidate any in-flight read so it can't clobber the cleared state
+      // if it resolves after close.
+      loadGeneration++;
       content.value = null;
       loadError.value = null;
+      isLoading.value = false;
     }
   },
   { immediate: true },
