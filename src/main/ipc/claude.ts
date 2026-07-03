@@ -13,7 +13,7 @@
 
 import { ipcMain } from 'electron';
 
-import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionScope } from '../../shared/types';
+import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionScope, SessionPermissionEntry } from '../../shared/types';
 import { IpcError, ValidationError, AppError, ERROR_CODES } from '../errors';
 import ClaudeCodeService from '../services/ClaudeCodeService';
 import { validateString, validateObject, validateBoolean, formatErrorMessage, ensureService } from '../utils/ipc-helpers';
@@ -298,6 +298,33 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
       throw new IpcError(formatErrorMessage('Failed to clear session permissions', error), IPC_CHANNELS.CLAUDE_CLEAR_SESSION_PERMISSIONS, ERROR_CODES.CLAUDE_PERMISSION_FAILED, error);
     }
   });
+
+  // Seed the main-process cache from persisted per-conversation permissions
+  ipcMain.handle(
+    IPC_CHANNELS.CLAUDE_SEED_SESSION_PERMISSIONS,
+    async (_event, conversationId: string, entries: SessionPermissionEntry[]) => {
+      try {
+        logger.debug('IPC: claude:seed-session-permissions', {
+          conversationId,
+          count: entries?.length ?? 0,
+        });
+        ensureService(claudeService, 'ClaudeCodeService');
+        validateString(conversationId, 'Conversation ID');
+        if (!Array.isArray(entries)) {
+          throw new Error('Entries must be an array');
+        }
+        claudeService.seedSessionPermissions(conversationId, entries);
+      } catch (error) {
+        logger.error('Failed to seed session permissions', { error, conversationId });
+        throw new IpcError(
+          formatErrorMessage('Failed to seed session permissions', error),
+          IPC_CHANNELS.CLAUDE_SEED_SESSION_PERMISSIONS,
+          ERROR_CODES.CLAUDE_PERMISSION_FAILED,
+          error,
+        );
+      }
+    },
+  );
 
   logger.info('Claude IPC handlers registered');
 }

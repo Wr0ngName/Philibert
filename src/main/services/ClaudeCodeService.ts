@@ -234,6 +234,15 @@ export class ClaudeCodeService {
   }
 
   /**
+   * Seed the cache for a conversation from persisted state (called by the
+   * renderer after loading a saved conversation from disk). No-op if the
+   * cache already has entries for this conversation.
+   */
+  seedSessionPermissions(conversationId: string, entries: SessionPermissionEntry[]): void {
+    this.sessionPermissionCache.seed(conversationId, entries);
+  }
+
+  /**
    * Emit active query count to renderer
    */
   private emitActiveQueryCount(): void {

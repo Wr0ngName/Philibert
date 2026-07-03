@@ -171,6 +171,20 @@ export const useConversationsStore = defineStore('conversations', () => {
         chatStore.updateSessionUsage(id, conversation.lastSessionUsage);
       }
 
+      // Restore persisted session permissions ("Always allow for this session")
+      // so grants survive across app restarts. Seed both the renderer store
+      // and the main-process cache — the latter is what actually short-circuits
+      // permission prompts on the next tool use. Skip if the in-memory store
+      // already has entries (a background-running conversation stays authoritative).
+      if (stateForUsage.sessionPermissions.length === 0 && conversation.sessionPermissions?.length) {
+        chatStore.updateSessionPermissions(id, conversation.sessionPermissions);
+        try {
+          await window.electron.claude.seedSessionPermissions(id, conversation.sessionPermissions);
+        } catch (err) {
+          logger.warn('Failed to seed main-process session permissions', { id, err });
+        }
+      }
+
       // Check if this conversation has in-memory messages (was running in background)
       // These are more up-to-date than the saved file
       const inMemoryMessages = getInMemoryMessages(id);
@@ -299,6 +313,14 @@ export const useConversationsStore = defineStore('conversations', () => {
       ? (JSON.parse(JSON.stringify(inMemoryUsage)) as typeof inMemoryUsage)
       : existingConv?.lastSessionUsage;
 
+    // Persist session-scoped permissions per-conversation so grants survive
+    // app restarts. Fall back to whatever was previously persisted for a
+    // conversation the user hasn't opened yet in this session.
+    const inMemoryPermissions = chatStore.getConversationState(conversationId).sessionPermissions;
+    const sessionPermissions = inMemoryPermissions.length > 0
+      ? (JSON.parse(JSON.stringify(inMemoryPermissions)) as typeof inMemoryPermissions)
+      : existingConv?.sessionPermissions;
+
     return {
       id: conversationId,
       title,
@@ -310,6 +332,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       sdkSessionId,
       executionMode,
       ...(lastSessionUsage ? { lastSessionUsage } : {}),
+      ...(sessionPermissions && sessionPermissions.length > 0 ? { sessionPermissions } : {}),
     };
   }
 

@@ -161,6 +161,9 @@ const electronAPI: ElectronAPI = {
     clearSessionPermissions: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_CLEAR_SESSION_PERMISSIONS, conversationId),
 
+    seedSessionPermissions: (conversationId: string, entries: SessionPermissionEntry[]) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEED_SESSION_PERMISSIONS, conversationId, entries),
+
     onSessionPermissionsChanged: (callback: (conversationId: string, permissions: SessionPermissionEntry[]) => void) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

@@ -92,6 +92,8 @@ export interface ElectronAPI {
     revokeSessionPermission: (conversationId: string, permissionId: string) => Promise<boolean>;
     /** Clear all session permissions for a conversation */
     clearSessionPermissions: (conversationId: string) => Promise<void>;
+    /** Seed the main-process cache from persisted per-conversation permissions on load */
+    seedSessionPermissions: (conversationId: string, entries: SessionPermissionEntry[]) => Promise<void>;
     /** Listen for session permission changes */
     onSessionPermissionsChanged: (callback: (conversationId: string, permissions: SessionPermissionEntry[]) => void) => () => void;
     /** Tool execution completed (approved and SDK proceeded) */

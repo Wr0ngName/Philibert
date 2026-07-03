@@ -678,6 +678,13 @@ export interface Conversation {
    * waiting for a new query to populate it. Overwritten on every save.
    */
   lastSessionUsage?: SessionUsage;
+  /**
+   * Session-scoped permissions granted in this discussion ("Always allow for
+   * this session"). Persisted per-conversation so grants survive app restarts
+   * — otherwise the user has to re-approve everything after every relaunch.
+   * Seeded back into the main-process SessionPermissionCache on load.
+   */
+  sessionPermissions?: SessionPermissionEntry[];
 }
 
 /**
@@ -1041,6 +1048,8 @@ export const IPC_CHANNELS = {
   CLAUDE_REVOKE_SESSION_PERMISSION: 'claude:revoke-session-permission',
   /** Clear all session permissions for a conversation */
   CLAUDE_CLEAR_SESSION_PERMISSIONS: 'claude:clear-session-permissions',
+  /** Seed the main-process cache from persisted per-conversation permissions on load */
+  CLAUDE_SEED_SESSION_PERMISSIONS: 'claude:seed-session-permissions',
   /** Session permissions changed event */
   CLAUDE_SESSION_PERMISSIONS_CHANGED: 'claude:session-permissions-changed',
   /** System status note (compaction, model change, etc.) — rendered as a separator, not inline text */

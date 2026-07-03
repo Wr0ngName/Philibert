@@ -280,6 +280,26 @@ export class SessionPermissionCache {
 	}
 
 	/**
+	 * Seed the cache for a conversation from persisted state (e.g. reloading
+	 * a saved conversation after app restart). No-op if entries already exist
+	 * for this conversation — we don't clobber in-flight grants made in the
+	 * current session with a stale on-disk snapshot.
+	 */
+	seed(conversationId: string, entries: SessionPermissionEntry[]): void {
+		if (!entries.length) return;
+		const existing = this.cache.get(conversationId);
+		if (existing && existing.length > 0) {
+			return;
+		}
+		this.cache.set(conversationId, entries.map((e) => ({ ...e })));
+		logger.info('Session permissions seeded from persisted state', {
+			conversationId,
+			count: entries.length,
+		});
+		this.notifyChange(conversationId);
+	}
+
+	/**
 	 * Clear all permissions for a conversation.
 	 */
 	clearConversation(conversationId: string): void {
