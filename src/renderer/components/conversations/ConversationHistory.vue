@@ -5,7 +5,7 @@
  */
 
 import { storeToRefs } from 'pinia';
-import { ref, nextTick } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 
 import { useConversationsStore } from '../../stores/conversations';
 import { useChatStore } from '../../stores/chat';
@@ -22,6 +22,30 @@ const {
 } = storeToRefs(conversationsStore);
 
 const chatStore = useChatStore();
+const {
+  activeQueryCount,
+  maxConcurrentQueries,
+  processingQueryCount,
+} = storeToRefs(chatStore);
+
+// Compact activity / resource-limit indicator shown right under the header,
+// replacing the standalone banner that used to eat vertical space above chat.
+const activityLevel = computed<'none' | 'info' | 'warn' | 'error'>(() => {
+  if (activeQueryCount.value >= maxConcurrentQueries.value) return 'error';
+  if (activeQueryCount.value >= maxConcurrentQueries.value - 1) return 'warn';
+  if (processingQueryCount.value > 0) return 'info';
+  return 'none';
+});
+
+const activityText = computed(() => {
+  if (activityLevel.value === 'error') return 'Limit reached — cannot start new';
+  if (activityLevel.value === 'warn') return 'Near limit';
+  if (activityLevel.value === 'info') {
+    const n = processingQueryCount.value;
+    return `${n} active`;
+  }
+  return '';
+});
 
 function needsAttention(conversationId: string): boolean {
   return chatStore.conversationHasPendingActions(conversationId);
@@ -121,9 +145,31 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
     <!-- Header -->
     <div class="flex items-center justify-between p-3 border-b border-surface-200 dark:border-surface-700">
       <h2 class="text-sm font-semibold text-surface-700 dark:text-surface-300">
-        History
+        Discussions
       </h2>
       <div class="flex items-center gap-2">
+        <!-- Compact activity / resource-limit indicator (replaces the top-of-chat banner) -->
+        <span
+          v-if="activityLevel !== 'none'"
+          class="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded"
+          :class="{
+            'text-blue-600 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/30': activityLevel === 'info',
+            'text-yellow-700 dark:text-yellow-300 bg-yellow-50 dark:bg-yellow-900/30': activityLevel === 'warn',
+            'text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/30': activityLevel === 'error',
+          }"
+          :title="`${activeQueryCount}/${maxConcurrentQueries} sessions`"
+        >
+          <Spinner
+            v-if="activityLevel === 'info'"
+            size="xs"
+          />
+          <Icon
+            v-else
+            name="warning"
+            size="xs"
+          />
+          {{ activityText }}
+        </span>
         <Spinner
           v-if="isSaving"
           size="sm"

@@ -18,7 +18,6 @@ import BackgroundTaskPanel from './BackgroundTaskPanel.vue';
 import ContextUsageBar from './ContextUsageBar.vue';
 import InputBox from './InputBox.vue';
 import MessageList from './MessageList.vue';
-import ResourceLimitWarning from './ResourceLimitWarning.vue';
 import TaskListPanel from './TaskListPanel.vue';
 import ToolDetailModal from './ToolDetailModal.vue';
 import Toast from '../shared/Toast.vue';
@@ -27,7 +26,7 @@ import TransitionFade from '../shared/TransitionFade.vue';
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
 const settingsStore = useSettingsStore();
-const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, hasTaskListItems, taskListItems, sessionUsage, hasSessionUsage, activeQueryCount, maxConcurrentQueries, processingQueryCount, pendingScrollMessageId } = storeToRefs(chatStore);
+const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, hasTaskListItems, taskListItems, sessionUsage, hasSessionUsage, pendingScrollMessageId } = storeToRefs(chatStore);
 const { currentModeMismatch } = storeToRefs(conversationsStore);
 
 const { sendMessage, approveAction, rejectAction, abort, sendQuestionAnswer } = useClaudeChat();
@@ -141,20 +140,6 @@ function closeToolDetail() {
           type="error"
           :message="error"
           @dismiss="clearError"
-        />
-      </div>
-    </TransitionFade>
-
-    <!-- Resource limit warning -->
-    <TransitionFade type="slideDown">
-      <div
-        v-if="processingQueryCount > 0 || activeQueryCount >= maxConcurrentQueries - 1"
-        class="px-4 pt-2"
-      >
-        <ResourceLimitWarning
-          :active-count="activeQueryCount"
-          :max-count="maxConcurrentQueries"
-          :processing-count="processingQueryCount"
         />
       </div>
     </TransitionFade>
