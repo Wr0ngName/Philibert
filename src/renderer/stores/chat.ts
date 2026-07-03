@@ -516,9 +516,38 @@ export const useChatStore = defineStore('chat', () => {
     } else if (capture.toolName === 'TaskUpdate') {
       const taskId = typeof input.taskId === 'string' ? input.taskId : '';
       if (!taskId) return;
-      const existing = state.taskListItems.get(taskId);
-      if (!existing) return;
-      const next: TaskListItem = { ...existing, updatedAt: Date.now() };
+
+      // Try direct lookup first. If missing, TaskCreate's result never
+      // successfully re-keyed the entry — fall back to promoting the sole
+      // pending entry (one still keyed by its tool_use block ID). If that's
+      // ambiguous or there is no pending entry, create a placeholder from
+      // the update's own fields so the panel still reflects the change.
+      let base: TaskListItem | null = state.taskListItems.get(taskId) ?? null;
+      if (!base) {
+        let pendingKey: string | null = null;
+        let ambiguous = false;
+        for (const k of state.taskListItems.keys()) {
+          if (k.startsWith('toolu_')) {
+            if (pendingKey) { ambiguous = true; break; }
+            pendingKey = k;
+          }
+        }
+        if (pendingKey && !ambiguous) {
+          base = state.taskListItems.get(pendingKey) ?? null;
+          state.taskListItems.delete(pendingKey);
+        }
+      }
+
+      const next: TaskListItem = base
+        ? { ...base, id: taskId, updatedAt: Date.now() }
+        : {
+            id: taskId,
+            subject: typeof input.subject === 'string' ? input.subject : 'Task',
+            description: typeof input.description === 'string' ? input.description : undefined,
+            activeForm: typeof input.activeForm === 'string' ? input.activeForm : undefined,
+            status: 'pending',
+            updatedAt: Date.now(),
+          };
       if (typeof input.subject === 'string') next.subject = input.subject;
       if (typeof input.description === 'string') next.description = input.description;
       if (typeof input.activeForm === 'string') next.activeForm = input.activeForm;
@@ -537,11 +566,16 @@ export const useChatStore = defineStore('chat', () => {
    */
   function handleTaskListResult(conversationId: string, toolUseBlockId: string, content: string): void {
     const state = getConversationState(conversationId);
-    let parsed: unknown;
+    let parsed: unknown = null;
     try {
       parsed = JSON.parse(content);
     } catch {
-      return;
+      // Fall back to extracting the first JSON object substring — handles
+      // results wrapped in prose like "Task created: {...}".
+      const match = content.match(/\{[\s\S]*\}/);
+      if (match) {
+        try { parsed = JSON.parse(match[0]); } catch { /* ignore */ }
+      }
     }
     if (!parsed || typeof parsed !== 'object') return;
 
