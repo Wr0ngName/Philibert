@@ -19,6 +19,7 @@ import ContextUsageBar from './ContextUsageBar.vue';
 import InputBox from './InputBox.vue';
 import MessageList from './MessageList.vue';
 import ResourceLimitWarning from './ResourceLimitWarning.vue';
+import TaskListPanel from './TaskListPanel.vue';
 import ToolDetailModal from './ToolDetailModal.vue';
 import Toast from '../shared/Toast.vue';
 import TransitionFade from '../shared/TransitionFade.vue';
@@ -26,7 +27,7 @@ import TransitionFade from '../shared/TransitionFade.vue';
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
 const settingsStore = useSettingsStore();
-const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, sessionUsage, hasSessionUsage, activeQueryCount, maxConcurrentQueries, processingQueryCount, pendingScrollMessageId } = storeToRefs(chatStore);
+const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, hasTaskListItems, taskListItems, sessionUsage, hasSessionUsage, activeQueryCount, maxConcurrentQueries, processingQueryCount, pendingScrollMessageId } = storeToRefs(chatStore);
 const { currentModeMismatch } = storeToRefs(conversationsStore);
 
 const { sendMessage, approveAction, rejectAction, abort, sendQuestionAnswer } = useClaudeChat();
@@ -190,6 +191,16 @@ function closeToolDetail() {
             </button>
           </div>
         </div>
+      </div>
+    </TransitionFade>
+
+    <!-- Task list panel (model's SDK todo list) -->
+    <TransitionFade type="slideUp">
+      <div
+        v-if="hasTaskListItems"
+        class="px-4 pt-2"
+      >
+        <TaskListPanel :items="taskListItems" />
       </div>
     </TransitionFade>
 

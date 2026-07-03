@@ -534,7 +534,7 @@ export function useClaudeChat() {
     // Handle tool result (output file written to disk)
     cleanupToolResult = window.electron.claude.onToolResult((conversationId, result) => {
       logger.debug('Tool result received', { conversationId, blockId: result.toolUseBlockId });
-      chatStore.updateToolUseResult(conversationId, result.toolUseBlockId, result.outputFile);
+      chatStore.updateToolUseResult(conversationId, result);
     });
 
     // Handle auth invalidation (401 from API) - refresh config so UI reacts

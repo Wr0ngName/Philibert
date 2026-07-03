@@ -6,7 +6,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 
-import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, TaskNotification, SessionPermissionEntry, SessionUsage, ModelUsageInfo, ToolCaptureData, ToolUseInfo } from '@shared/types';
+import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, TaskNotification, SessionPermissionEntry, SessionUsage, ModelUsageInfo, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData } from '@shared/types';
 
 import { CONSTANTS } from '../constants/app';
 import { generateId, ID_PREFIXES } from '../utils/id';
@@ -25,6 +25,10 @@ export interface ConversationState {
   pendingActions: PendingAction[];
   /** Background tasks for this conversation */
   backgroundTasks: Map<string, BackgroundTask>;
+  /** Model's todo list — reconstructed from TaskCreate/TaskUpdate/TaskList tool
+   *  calls. Keyed by SDK task ID once known; keyed by tool_use block ID for the
+   *  brief window between TaskCreate call and its result carrying the real ID. */
+  taskListItems: Map<string, TaskListItem>;
   /** Session usage (token counts, cost) */
   sessionUsage: SessionUsage | null;
   /** Error message if any */
@@ -45,6 +49,7 @@ function createConversationState(): ConversationState {
     streamingMessageId: null,
     pendingActions: [],
     backgroundTasks: new Map(),
+    taskListItems: new Map(),
     sessionUsage: null,
     error: null,
     sessionPermissions: [],
@@ -173,6 +178,15 @@ export const useChatStore = defineStore('chat', () => {
   );
 
   const hasRunningBackgroundTasks = computed(() => runningBackgroundTasksList.value.length > 0);
+
+  // Current conversation's model todo list (from SDK Task* tools)
+  const taskListItems = computed((): TaskListItem[] => {
+    const state = getCurrentState();
+    if (!state) return [];
+    return Array.from(state.taskListItems.values()).filter(t => t.status !== 'deleted');
+  });
+
+  const hasTaskListItems = computed(() => taskListItems.value.length > 0);
 
   // Current conversation's session usage
   const sessionUsage = computed(() => {
@@ -477,10 +491,103 @@ export const useChatStore = defineStore('chat', () => {
    * These are emitted for ALL tools (including auto-approved ones).
    * Sets toolUseBlockId and input so the detail modal can show them.
    */
+  /**
+   * Intercept SDK Task* tool captures to reconstruct the model's todo list
+   * client-side. TaskCreate inputs carry subject/description/activeForm but
+   * no task ID yet — we key the entry by the tool_use block ID until the
+   * result arrives with the real SDK-assigned ID.
+   */
+  function handleTaskListCapture(conversationId: string, capture: ToolCaptureData): void {
+    const state = getConversationState(conversationId);
+    const input = (capture.input || {}) as Record<string, unknown>;
+
+    if (capture.toolName === 'TaskCreate') {
+      const subject = typeof input.subject === 'string' ? input.subject : '';
+      if (!subject) return;
+      const item: TaskListItem = {
+        id: capture.toolUseBlockId,
+        subject,
+        description: typeof input.description === 'string' ? input.description : undefined,
+        activeForm: typeof input.activeForm === 'string' ? input.activeForm : undefined,
+        status: 'pending',
+        updatedAt: Date.now(),
+      };
+      state.taskListItems.set(capture.toolUseBlockId, item);
+    } else if (capture.toolName === 'TaskUpdate') {
+      const taskId = typeof input.taskId === 'string' ? input.taskId : '';
+      if (!taskId) return;
+      const existing = state.taskListItems.get(taskId);
+      if (!existing) return;
+      const next: TaskListItem = { ...existing, updatedAt: Date.now() };
+      if (typeof input.subject === 'string') next.subject = input.subject;
+      if (typeof input.description === 'string') next.description = input.description;
+      if (typeof input.activeForm === 'string') next.activeForm = input.activeForm;
+      if (typeof input.status === 'string' &&
+          (input.status === 'pending' || input.status === 'in_progress' ||
+           input.status === 'completed' || input.status === 'deleted')) {
+        next.status = input.status;
+      }
+      state.taskListItems.set(taskId, next);
+    }
+  }
+
+  /**
+   * Consume TaskCreate results (to remap pending-ID → SDK task ID) and
+   * TaskList results (authoritative snapshot that overwrites local state).
+   */
+  function handleTaskListResult(conversationId: string, toolUseBlockId: string, content: string): void {
+    const state = getConversationState(conversationId);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object') return;
+
+    const asRecord = parsed as Record<string, unknown>;
+    const taskField = asRecord.task as { id?: string } | undefined;
+    if (taskField && typeof taskField.id === 'string') {
+      // TaskCreate result — re-key the pending entry by the real task ID
+      const pending = state.taskListItems.get(toolUseBlockId);
+      if (pending) {
+        state.taskListItems.delete(toolUseBlockId);
+        state.taskListItems.set(taskField.id, { ...pending, id: taskField.id });
+      }
+      return;
+    }
+
+    const tasksField = asRecord.tasks as Array<{ id?: string; subject?: string; status?: string }> | undefined;
+    if (Array.isArray(tasksField)) {
+      // TaskList result — authoritative snapshot. Preserve local subject/desc
+      // enrichment where possible; overwrite status from the snapshot.
+      const next = new Map<string, TaskListItem>();
+      for (const t of tasksField) {
+        if (typeof t.id !== 'string') continue;
+        const prev = state.taskListItems.get(t.id);
+        const status = (t.status === 'pending' || t.status === 'in_progress' ||
+                        t.status === 'completed' || t.status === 'deleted')
+          ? t.status
+          : 'pending';
+        next.set(t.id, {
+          id: t.id,
+          subject: typeof t.subject === 'string' ? t.subject : (prev?.subject ?? ''),
+          description: prev?.description,
+          activeForm: prev?.activeForm,
+          status,
+          updatedAt: Date.now(),
+        });
+      }
+      state.taskListItems = next;
+    }
+  }
+
   function addAutoToolUseMessage(conversationId: string, capture: ToolCaptureData): void {
     if (conversationId !== currentConversationId.value) return;
 
     splitStreamingForTool(conversationId);
+
+    handleTaskListCapture(conversationId, capture);
 
     const message: ChatMessage = {
       id: generateId(ID_PREFIXES.MESSAGE),
@@ -573,19 +680,24 @@ export const useChatStore = defineStore('chat', () => {
 
   /**
    * Set the outputFile on a ToolUseMessage matched by toolUseBlockId.
-   * Also marks auto-approved tools as executed.
+   * Also marks auto-approved tools as executed, and forwards small inline
+   * content to the task-list handler when relevant.
    */
-  function updateToolUseResult(conversationId: string, toolUseBlockId: string, outputFile: string): void {
+  function updateToolUseResult(conversationId: string, result: ToolResultData): void {
     if (conversationId !== currentConversationId.value) return;
+
+    if (result.content !== undefined) {
+      handleTaskListResult(conversationId, result.toolUseBlockId, result.content);
+    }
 
     for (let i = messages.value.length - 1; i >= 0; i--) {
       const msg = messages.value[i];
-      if (msg.toolUse?.toolUseBlockId === toolUseBlockId) {
+      if (msg.toolUse?.toolUseBlockId === result.toolUseBlockId) {
         const newStatus: ToolUseInfo['status'] =
           msg.toolUse.status === 'approved' ? 'executed' : msg.toolUse.status;
         msg.toolUse = {
           ...msg.toolUse,
-          outputFile,
+          outputFile: result.outputFile,
           status: newStatus,
         };
         return;
@@ -975,6 +1087,8 @@ export const useChatStore = defineStore('chat', () => {
     backgroundTasksList,
     runningBackgroundTasksList,
     hasRunningBackgroundTasks,
+    taskListItems,
+    hasTaskListItems,
     hasSessionUsage,
     totalTokensUsed,
     contextWindowSize,

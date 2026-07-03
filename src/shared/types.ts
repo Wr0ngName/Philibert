@@ -736,6 +736,26 @@ export interface GitBranch {
 export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'stopped';
 
 /**
+ * One entry in the model's SDK-managed todo list, reconstructed on the
+ * renderer from TaskCreate / TaskUpdate / TaskList tool calls.
+ */
+export interface TaskListItem {
+  /** SDK-assigned task ID (from TaskCreate's response). Falls back to the
+   *  tool_use block ID during the brief window before the result arrives. */
+  id: string;
+  /** Short title */
+  subject: string;
+  /** Detail body */
+  description?: string;
+  /** Present-continuous form shown while in_progress (e.g. "Running tests") */
+  activeForm?: string;
+  /** Current status */
+  status: 'pending' | 'in_progress' | 'completed' | 'deleted';
+  /** Local timestamp of the last mutation */
+  updatedAt: number;
+}
+
+/**
  * Represents a background task (subagent or background command)
  */
 export interface BackgroundTask {
