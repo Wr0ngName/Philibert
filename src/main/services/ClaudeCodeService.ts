@@ -54,7 +54,6 @@ import logger from '../utils/logger';
 import { ClaudeCliPaths, WindowsPaths, getClaudeConfigDir } from '../utils/resourcePaths';
 
 import ConfigService from './ConfigService';
-import { ConversationService } from './ConversationService';
 import NotificationService from './NotificationService';
 import { ChannelService } from './channel';
 import {
@@ -119,16 +118,14 @@ export class ClaudeCodeService {
   // Cached slash commands (shared across all sessions)
   private cachedSlashCommands: SlashCommandInfo[] = [];
   private configService: ConfigService;
-  private conversationService: ConversationService;
   private notificationService: NotificationService;
   private sessionPermissionCache: SessionPermissionCache;
 
-  constructor(configService: ConfigService, getMainWindow: () => BrowserWindow | null, notificationService: NotificationService, conversationService: ConversationService) {
+  constructor(configService: ConfigService, getMainWindow: () => BrowserWindow | null, notificationService: NotificationService) {
     // Create bound sender using the provided window getter
     this.send = createSender(getMainWindow);
 
     this.configService = configService;
-    this.conversationService = conversationService;
     this.notificationService = notificationService;
 
     // Initialize session permission cache (persists across queries per conversation)
@@ -1240,9 +1237,12 @@ export class ClaudeCodeService {
         // Non-critical cleanup
       }
 
-      // Clear stale session IDs from persisted conversation files so they
-      // don't reload on restart and trigger 401s with the new auth context
-      await this.conversationService.clearAllSessionIds();
+      // Note: we intentionally do NOT bulk-clear persisted sdkSessionIds here.
+      // Same-account re-login usually leaves session IDs valid on Anthropic's
+      // side, and any actually-stale ID gets caught + cleared by the per-session
+      // resume-error handlers (onAuthError in createSessionCallbacks and the
+      // isResumeAttempt branch in handleQueryError). Wiping every conversation's
+      // resume pointer preemptively destroyed context users cared about.
 
       // Notify renderer via config change (triggers reactive hasAuth → false)
       this.send(IPC_CHANNELS.CONFIG_CHANGED, { oauthToken: '', authMethod: 'none' });
