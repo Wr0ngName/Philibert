@@ -476,9 +476,16 @@ export class ClaudeCodeService {
         // Forward small results inline so renderer features (task list panel)
         // don't need to read the file. Large results stay on disk only.
         const INLINE_CONTENT_MAX_BYTES = 4096;
-        const inlineContent = Buffer.byteLength(result.content, 'utf-8') <= INLINE_CONTENT_MAX_BYTES
+        const contentBytes = Buffer.byteLength(result.content, 'utf-8');
+        const inlineContent = contentBytes <= INLINE_CONTENT_MAX_BYTES
           ? result.content
           : undefined;
+        logger.info('Tool result delivered', {
+          toolUseBlockId: result.toolUseBlockId,
+          contentBytes,
+          inline: inlineContent !== undefined,
+          contentPreview: result.content.slice(0, 200),
+        });
         this.send(IPC_CHANNELS.CLAUDE_TOOL_RESULT, conversationId, {
           toolUseBlockId: result.toolUseBlockId,
           outputFile,

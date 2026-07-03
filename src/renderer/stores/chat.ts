@@ -10,6 +10,7 @@ import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, 
 
 import { CONSTANTS } from '../constants/app';
 import { generateId, ID_PREFIXES } from '../utils/id';
+import { logger } from '../utils/logger';
 
 /**
  * Per-conversation state tracked for multi-instance support
@@ -513,6 +514,7 @@ export const useChatStore = defineStore('chat', () => {
         updatedAt: Date.now(),
       };
       state.taskListItems.set(capture.toolUseBlockId, item);
+      logger.info('TaskList: create captured', { toolUseBlockId: capture.toolUseBlockId, subject });
     } else if (capture.toolName === 'TaskUpdate') {
       const taskId = typeof input.taskId === 'string' ? input.taskId : '';
       if (!taskId) return;
@@ -557,6 +559,11 @@ export const useChatStore = defineStore('chat', () => {
         next.status = input.status;
       }
       state.taskListItems.set(taskId, next);
+      logger.info('TaskList: update applied', {
+        taskId,
+        status: next.status,
+        keyStrategy: base ? (state.taskListItems.has(taskId) ? 'direct-or-promoted' : 'placeholder') : 'placeholder',
+      });
     }
   }
 
@@ -566,6 +573,10 @@ export const useChatStore = defineStore('chat', () => {
    */
   function handleTaskListResult(conversationId: string, toolUseBlockId: string, content: string): void {
     const state = getConversationState(conversationId);
+    logger.debug('TaskList: result seen', {
+      toolUseBlockId,
+      contentPreview: content.slice(0, 200),
+    });
     let parsed: unknown = null;
     try {
       parsed = JSON.parse(content);
@@ -587,6 +598,15 @@ export const useChatStore = defineStore('chat', () => {
       if (pending) {
         state.taskListItems.delete(toolUseBlockId);
         state.taskListItems.set(taskField.id, { ...pending, id: taskField.id });
+        logger.info('TaskList: create result — rekeyed pending entry', {
+          toolUseBlockId,
+          taskId: taskField.id,
+        });
+      } else {
+        logger.warn('TaskList: create result — no pending entry to rekey', {
+          toolUseBlockId,
+          taskId: taskField.id,
+        });
       }
       return;
     }
