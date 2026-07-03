@@ -323,10 +323,26 @@ watch(
 
 defineExpose({ scrollToBottom, scrollToMessage });
 
-// Set up scroll listener
+// MutationObserver catches DOM additions inside the scroll container that the
+// reactive length watcher misses — specifically new sub-agent child tool_use
+// items rendered inside an expanded parent, and late text streaming reflows.
+// The length watcher's nextTick can run before the child layout is committed,
+// leaving scrollHeight stale.
+let contentObserver: MutationObserver | null = null;
+
+// Set up scroll listener + content-mutation observer
 onMounted(() => {
   if (listRef.value) {
     listRef.value.addEventListener('scroll', handleScroll, { passive: true });
+
+    contentObserver = new MutationObserver(() => {
+      if (isUserAtBottom.value) scrollToBottom();
+    });
+    contentObserver.observe(listRef.value, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
   }
 });
 
@@ -334,6 +350,8 @@ onUnmounted(() => {
   if (listRef.value) {
     listRef.value.removeEventListener('scroll', handleScroll);
   }
+  contentObserver?.disconnect();
+  contentObserver = null;
 });
 </script>
 
@@ -427,7 +445,10 @@ onUnmounted(() => {
                 v-if="showTurnSpinner(group)"
                 class="flex items-center gap-2 assistant-turn-trailing-spinner"
               >
-                <Spinner size="sm" class="text-primary-500" />
+                <Spinner
+                  size="sm"
+                  class="text-primary-500"
+                />
               </div>
             </div>
           </div>

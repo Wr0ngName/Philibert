@@ -192,7 +192,10 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
       v-if="message.isStreaming"
       class="flex items-center gap-2 mt-2"
     >
-      <Spinner size="sm" class="text-primary-500" />
+      <Spinner
+        size="sm"
+        class="text-primary-500"
+      />
     </div>
   </div>
 
