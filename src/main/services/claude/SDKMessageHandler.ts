@@ -43,7 +43,7 @@ export interface MessageHandlerCallbacks {
   onUsageUpdate: (usage: SessionUsage) => void;
   onSystemNote: (note: string) => void;
   onToolUseCapture?: (capture: ToolCaptureData) => void;
-  onToolResult?: (result: { toolUseBlockId: string; content: string }) => void;
+  onToolResult?: (result: { toolUseBlockId: string; content: string; taskListId?: string }) => void;
   onSessionId?: (sessionId: string) => void;
   onAuthError?: () => void;
 }
@@ -72,6 +72,9 @@ export class SDKMessageHandler {
   private hasStreamedContent = false;
   /** Maps tool_use IDs to background task IDs (from SDK user messages with tool results) */
   private toolUseToTaskId = new Map<string, string>();
+  /** Maps tool_use IDs to their tool name so tool_result handlers know which
+   *  parser to apply (e.g. TaskCreate → extract task list ID from response). */
+  private toolUseIdToName = new Map<string, string>();
 
   constructor(callbacks: MessageHandlerCallbacks) {
     this.callbacks = callbacks;
@@ -239,6 +242,8 @@ export class SDKMessageHandler {
           inputPreview: JSON.stringify(input).slice(0, 200),
         });
 
+        this.toolUseIdToName.set(toolBlock.id, toolBlock.name);
+
         this.callbacks.onToolUseCapture?.({
           toolUseBlockId: toolBlock.id,
           toolName: toolBlock.name,
@@ -302,9 +307,18 @@ export class SDKMessageHandler {
             : Array.isArray(resultBlock.content)
               ? (resultBlock.content as Array<{ text?: string }>).map(b => b.text || '').join('')
               : JSON.stringify(resultBlock.content);
+          // For TaskCreate results, extract the SDK-assigned task ID directly
+          // from the raw structured content (before flattening). Delivering it
+          // as a typed field lets the renderer key its task-list state
+          // deterministically instead of parsing JSON out of a joined string.
+          const toolName = this.toolUseIdToName.get(block.tool_use_id);
+          const taskListId = toolName === 'TaskCreate'
+            ? extractTaskCreateId(resultBlock.content)
+            : undefined;
           this.callbacks.onToolResult?.({
             toolUseBlockId: block.tool_use_id,
             content,
+            ...(taskListId && { taskListId }),
           });
         }
       }
@@ -695,6 +709,38 @@ export class SDKMessageHandler {
       default: return `Tool: ${toolName}`;
     }
   }
+}
+
+/**
+ * Extract the SDK-assigned task ID from a TaskCreate tool_result content field.
+ * Handles the three shapes tool_result content can take: a plain object (from
+ * `JSON.stringify(...)` fallback in the SDK), an array of text blocks whose
+ * concatenated text is JSON, or a plain JSON string. Returns the `task.id`
+ * field if found, else undefined.
+ */
+function extractTaskCreateId(raw: unknown): string | undefined {
+  const candidates: unknown[] = [];
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    candidates.push(raw);
+  }
+  if (Array.isArray(raw)) {
+    const joined = (raw as Array<{ text?: string }>).map(b => b.text || '').join('');
+    if (joined) {
+      try { candidates.push(JSON.parse(joined)); } catch { /* ignore */ }
+    }
+    for (const block of raw as Array<Record<string, unknown>>) {
+      if (block && typeof block === 'object') candidates.push(block);
+    }
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    try { candidates.push(JSON.parse(raw)); } catch { /* ignore */ }
+  }
+  for (const c of candidates) {
+    if (!c || typeof c !== 'object') continue;
+    const task = (c as { task?: { id?: string } }).task;
+    if (task && typeof task.id === 'string') return task.id;
+  }
+  return undefined;
 }
 
 export default SDKMessageHandler;

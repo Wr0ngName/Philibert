@@ -467,7 +467,7 @@ export class ClaudeCodeService {
       onToolUseCapture: (capture: ToolCaptureData) => {
         this.send(IPC_CHANNELS.CLAUDE_TOOL_CAPTURE, conversationId, capture);
       },
-      onToolResult: (result: { toolUseBlockId: string; content: string }) => {
+      onToolResult: (result: { toolUseBlockId: string; content: string; taskListId?: string }) => {
         const outputDir = path.join(os.tmpdir(), 'claude', 'tool-results');
         fs.mkdirSync(outputDir, { recursive: true });
         const safeId = result.toolUseBlockId.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -484,12 +484,14 @@ export class ClaudeCodeService {
           toolUseBlockId: result.toolUseBlockId,
           contentBytes,
           inline: inlineContent !== undefined,
+          taskListId: result.taskListId,
           contentPreview: result.content.slice(0, 200),
         });
         this.send(IPC_CHANNELS.CLAUDE_TOOL_RESULT, conversationId, {
           toolUseBlockId: result.toolUseBlockId,
           outputFile,
           ...(inlineContent !== undefined && { content: inlineContent }),
+          ...(result.taskListId && { taskListId: result.taskListId }),
         });
       },
       onSessionId: (sessionId: string) => {

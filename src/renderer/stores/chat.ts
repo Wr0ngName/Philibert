@@ -518,38 +518,12 @@ export const useChatStore = defineStore('chat', () => {
     } else if (capture.toolName === 'TaskUpdate') {
       const taskId = typeof input.taskId === 'string' ? input.taskId : '';
       if (!taskId) return;
-
-      // Try direct lookup first. If missing, TaskCreate's result never
-      // successfully re-keyed the entry — fall back to promoting the sole
-      // pending entry (one still keyed by its tool_use block ID). If that's
-      // ambiguous or there is no pending entry, create a placeholder from
-      // the update's own fields so the panel still reflects the change.
-      let base: TaskListItem | null = state.taskListItems.get(taskId) ?? null;
-      if (!base) {
-        let pendingKey: string | null = null;
-        let ambiguous = false;
-        for (const k of state.taskListItems.keys()) {
-          if (k.startsWith('toolu_')) {
-            if (pendingKey) { ambiguous = true; break; }
-            pendingKey = k;
-          }
-        }
-        if (pendingKey && !ambiguous) {
-          base = state.taskListItems.get(pendingKey) ?? null;
-          state.taskListItems.delete(pendingKey);
-        }
+      const existing = state.taskListItems.get(taskId);
+      if (!existing) {
+        logger.warn('TaskList: update for unknown taskId', { taskId });
+        return;
       }
-
-      const next: TaskListItem = base
-        ? { ...base, id: taskId, updatedAt: Date.now() }
-        : {
-            id: taskId,
-            subject: typeof input.subject === 'string' ? input.subject : 'Task',
-            description: typeof input.description === 'string' ? input.description : undefined,
-            activeForm: typeof input.activeForm === 'string' ? input.activeForm : undefined,
-            status: 'pending',
-            updatedAt: Date.now(),
-          };
+      const next: TaskListItem = { ...existing, updatedAt: Date.now() };
       if (typeof input.subject === 'string') next.subject = input.subject;
       if (typeof input.description === 'string') next.description = input.description;
       if (typeof input.activeForm === 'string') next.activeForm = input.activeForm;
@@ -559,17 +533,30 @@ export const useChatStore = defineStore('chat', () => {
         next.status = input.status;
       }
       state.taskListItems.set(taskId, next);
-      logger.info('TaskList: update applied', {
-        taskId,
-        status: next.status,
-        keyStrategy: base ? (state.taskListItems.has(taskId) ? 'direct-or-promoted' : 'placeholder') : 'placeholder',
-      });
+      logger.info('TaskList: update applied', { taskId, status: next.status });
     }
   }
 
   /**
-   * Consume TaskCreate results (to remap pending-ID → SDK task ID) and
-   * TaskList results (authoritative snapshot that overwrites local state).
+   * Remap the pending TaskCreate entry (keyed by tool_use block ID) to the
+   * SDK-assigned task ID, once the main process has extracted it from the
+   * tool_result. Deterministic — no JSON scraping on this side.
+   */
+  function rekeyPendingTask(conversationId: string, toolUseBlockId: string, taskId: string): void {
+    const state = getConversationState(conversationId);
+    const pending = state.taskListItems.get(toolUseBlockId);
+    if (!pending) {
+      logger.warn('TaskList: rekey requested but no pending entry', { toolUseBlockId, taskId });
+      return;
+    }
+    state.taskListItems.delete(toolUseBlockId);
+    state.taskListItems.set(taskId, { ...pending, id: taskId });
+    logger.info('TaskList: pending entry rekeyed', { toolUseBlockId, taskId });
+  }
+
+  /**
+   * Consume TaskList results — authoritative snapshot that overwrites local
+   * state. TaskCreate remapping is handled deterministically via rekeyPendingTask.
    */
   function handleTaskListResult(conversationId: string, toolUseBlockId: string, content: string): void {
     const state = getConversationState(conversationId);
@@ -581,8 +568,6 @@ export const useChatStore = defineStore('chat', () => {
     try {
       parsed = JSON.parse(content);
     } catch {
-      // Fall back to extracting the first JSON object substring — handles
-      // results wrapped in prose like "Task created: {...}".
       const match = content.match(/\{[\s\S]*\}/);
       if (match) {
         try { parsed = JSON.parse(match[0]); } catch { /* ignore */ }
@@ -591,26 +576,6 @@ export const useChatStore = defineStore('chat', () => {
     if (!parsed || typeof parsed !== 'object') return;
 
     const asRecord = parsed as Record<string, unknown>;
-    const taskField = asRecord.task as { id?: string } | undefined;
-    if (taskField && typeof taskField.id === 'string') {
-      // TaskCreate result — re-key the pending entry by the real task ID
-      const pending = state.taskListItems.get(toolUseBlockId);
-      if (pending) {
-        state.taskListItems.delete(toolUseBlockId);
-        state.taskListItems.set(taskField.id, { ...pending, id: taskField.id });
-        logger.info('TaskList: create result — rekeyed pending entry', {
-          toolUseBlockId,
-          taskId: taskField.id,
-        });
-      } else {
-        logger.warn('TaskList: create result — no pending entry to rekey', {
-          toolUseBlockId,
-          taskId: taskField.id,
-        });
-      }
-      return;
-    }
-
     const tasksField = asRecord.tasks as Array<{ id?: string; subject?: string; status?: string }> | undefined;
     if (Array.isArray(tasksField)) {
       // TaskList result — authoritative snapshot. Preserve local subject/desc
@@ -740,6 +705,9 @@ export const useChatStore = defineStore('chat', () => {
   function updateToolUseResult(conversationId: string, result: ToolResultData): void {
     if (conversationId !== currentConversationId.value) return;
 
+    if (result.taskListId) {
+      rekeyPendingTask(conversationId, result.toolUseBlockId, result.taskListId);
+    }
     if (result.content !== undefined) {
       handleTaskListResult(conversationId, result.toolUseBlockId, result.content);
     }
