@@ -73,6 +73,11 @@ export interface ToolCaptureData {
 export interface ToolResultData {
   toolUseBlockId: string;
   outputFile: string;
+  /** Raw tool result content, forwarded inline only when small enough (≤ INLINE_CONTENT_MAX_BYTES).
+   *  Renderer features that need to parse the result (e.g. the task list panel
+   *  extracting the task ID from TaskCreate's response) can consume this
+   *  directly without reading the outputFile from disk. */
+  content?: string;
 }
 
 /**

@@ -473,9 +473,16 @@ export class ClaudeCodeService {
         const safeId = result.toolUseBlockId.replace(/[^a-zA-Z0-9_-]/g, '_');
         const outputFile = path.join(outputDir, `${conversationId}_${safeId}.txt`);
         fs.writeFileSync(outputFile, result.content, 'utf-8');
+        // Forward small results inline so renderer features (task list panel)
+        // don't need to read the file. Large results stay on disk only.
+        const INLINE_CONTENT_MAX_BYTES = 4096;
+        const inlineContent = Buffer.byteLength(result.content, 'utf-8') <= INLINE_CONTENT_MAX_BYTES
+          ? result.content
+          : undefined;
         this.send(IPC_CHANNELS.CLAUDE_TOOL_RESULT, conversationId, {
           toolUseBlockId: result.toolUseBlockId,
           outputFile,
+          ...(inlineContent !== undefined && { content: inlineContent }),
         });
       },
       onSessionId: (sessionId: string) => {
