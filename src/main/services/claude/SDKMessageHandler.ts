@@ -225,19 +225,6 @@ export class SDKMessageHandler {
     }
 
     for (const block of content) {
-      if (block.type === 'text') {
-        const lowerText = block.text.toLowerCase();
-        const textPreview = block.text.slice(0, 200);
-        const isAuthError = lowerText.includes('401') ||
-          lowerText.includes('unauthorized') ||
-          lowerText.includes('invalid bearer') ||
-          lowerText.includes('invalid token');
-        if (isAuthError) {
-          logger.warn('Assistant message contains auth error keywords', { textPreview });
-          this.callbacks.onAuthError?.();
-        }
-      }
-
       // Detect background tool launches to emit "running" notifications.
       // Any tool (Bash, Task, etc.) can have run_in_background: true.
       if (block.type === 'tool_use') {

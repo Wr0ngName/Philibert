@@ -506,40 +506,26 @@ describe('SDKMessageHandler', () => {
       handlerWithAuth = new SDKMessageHandler(authCallbacks);
     });
 
-    it('should fire onAuthError when assistant message contains 401', async () => {
-      await handlerWithAuth.handleMessage({
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: 'Failed to authenticate. API Error: 401 Invalid bearer token' }] },
-      } as never);
+    // Assistant text is model output, not an API signal — the model can legitimately
+    // discuss 401s, tokens, auth failures (security audits, code review, docs). Scanning
+    // it for keywords produced catastrophic false positives that killed live sessions.
+    // Only SDK-emitted result errors are trusted as auth signals.
+    it('should NOT fire onAuthError when assistant text mentions auth keywords', async () => {
+      const authy = [
+        'Failed to authenticate. API Error: 401 Invalid bearer token',
+        'Request failed: Unauthorized access',
+        'Error: invalid bearer token provided',
+        'Authentication failed: invalid token',
+        "script emits KEY_NOT_FOUND and would return Unauthorized on the API",
+      ];
+      for (const text of authy) {
+        await handlerWithAuth.handleMessage({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text }] },
+        } as never);
+      }
 
-      expect(authCallbacks.onAuthError).toHaveBeenCalledTimes(1);
-    });
-
-    it('should fire onAuthError when assistant message contains "unauthorized"', async () => {
-      await handlerWithAuth.handleMessage({
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: 'Request failed: Unauthorized access' }] },
-      } as never);
-
-      expect(authCallbacks.onAuthError).toHaveBeenCalledTimes(1);
-    });
-
-    it('should fire onAuthError when assistant message contains "invalid bearer"', async () => {
-      await handlerWithAuth.handleMessage({
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: 'Error: invalid bearer token provided' }] },
-      } as never);
-
-      expect(authCallbacks.onAuthError).toHaveBeenCalledTimes(1);
-    });
-
-    it('should fire onAuthError when assistant message contains "invalid token"', async () => {
-      await handlerWithAuth.handleMessage({
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: 'Authentication failed: invalid token' }] },
-      } as never);
-
-      expect(authCallbacks.onAuthError).toHaveBeenCalledTimes(1);
+      expect(authCallbacks.onAuthError).not.toHaveBeenCalled();
     });
 
     it('should NOT fire onAuthError for normal messages', async () => {
@@ -588,10 +574,13 @@ describe('SDKMessageHandler', () => {
     });
 
     it('should not crash when onAuthError is not provided', async () => {
-      // handler (without onAuthError) should not throw
+      // handler (without onAuthError) should not throw on an auth-flagged result
       await expect(handler.handleMessage({
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: 'API Error: 401 Unauthorized' }] },
+        type: 'result',
+        subtype: 'error',
+        error: 'API returned 401 unauthorized',
+        num_turns: 0,
+        duration_ms: 0,
       } as never)).resolves.not.toThrow();
     });
   });
