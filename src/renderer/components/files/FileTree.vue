@@ -62,7 +62,7 @@ onUnmounted(() => {
 <template>
   <div
     ref="rootRef"
-    class="flex flex-col h-full"
+    class="flex flex-col h-full min-h-0"
   >
     <!-- Header -->
     <div class="flex items-center justify-between px-3 py-2 border-b border-surface-200 dark:border-surface-700">
@@ -84,7 +84,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Content -->
-    <div class="flex-1 overflow-y-auto py-1">
+    <div class="flex-1 min-h-0 overflow-y-auto py-1">
       <!-- Loading state -->
       <div
         v-if="isLoading && !hasFiles"

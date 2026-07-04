@@ -343,7 +343,7 @@ const isMac = window.electron?.platform === 'darwin';
         >
           <aside
             v-if="showFilesSidebar"
-            class="sidebar flex flex-col"
+            class="sidebar flex flex-col min-h-0"
             :style="{ width: `${sidebarWidth}px` }"
           >
             <WorkingDirectory />
