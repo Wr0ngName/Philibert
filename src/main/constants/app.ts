@@ -66,8 +66,10 @@ export const MAIN_CONSTANTS = {
   FILES: {
     /** Debounce interval for file watcher events (from shared constants) */
     WATCHER_DEBOUNCE_MS: FILE_CONSTANTS.WATCHER_DEBOUNCE_MS,
-    /** Maximum depth for file tree scanning */
-    MAX_TREE_DEPTH: 5,
+    /** Maximum depth for file tree scanning. 10 covers typical Vue/React
+     *  project structures without exploding memory — node_modules, dist,
+     *  .git, etc. are filtered upstream by IGNORED_DIRS. */
+    MAX_TREE_DEPTH: 10,
     /** Threshold for batch file changes before full tree reload (from shared constants) */
     BATCH_CHANGE_THRESHOLD: FILE_CONSTANTS.BATCH_CHANGE_THRESHOLD,
   },
