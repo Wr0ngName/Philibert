@@ -14,7 +14,7 @@ vi.mock('../../../utils/logger', () => ({
     debug: vi.fn(),
   },
 }));
-import { SDKMessageHandler, MessageHandlerCallbacks, resolveResultError } from '../SDKMessageHandler';
+import { SDKMessageHandler, MessageHandlerCallbacks, resolveResultError, extractTaskCreateId } from '../SDKMessageHandler';
 
 describe('SDKMessageHandler', () => {
   let callbacks: MessageHandlerCallbacks;
@@ -732,6 +732,42 @@ describe('SDKMessageHandler', () => {
 
     it('returns empty string for empty errors[] array', () => {
       expect(resolveResultError({ errors: [] })).toBe('');
+    });
+  });
+
+  describe('extractTaskCreateId', () => {
+    it('extracts task.id from a structured object', () => {
+      expect(extractTaskCreateId({ task: { id: 'task-abc', subject: 'x' } })).toBe('task-abc');
+    });
+
+    it('extracts task.id from a JSON string', () => {
+      expect(extractTaskCreateId('{"task":{"id":"7","subject":"x"}}')).toBe('7');
+    });
+
+    it('extracts task.id from an array of text blocks whose joined text is JSON', () => {
+      expect(extractTaskCreateId([{ type: 'text', text: '{"task":{"id":"9"}}' }])).toBe('9');
+    });
+
+    it('extracts the ID from the CLI human-readable text form', () => {
+      // This is the shape the CLI actually delivers today — the JSON extraction
+      // above never matches, so this fallback is what keeps TaskUpdate wiring intact.
+      expect(extractTaskCreateId('Task #3 created successfully: Audit Entra script'))
+        .toBe('3');
+    });
+
+    it('extracts the ID from human-readable text wrapped in a text block', () => {
+      expect(extractTaskCreateId([{ type: 'text', text: 'Task #42 created successfully: something' }]))
+        .toBe('42');
+    });
+
+    it('returns undefined when neither JSON nor the text pattern is present', () => {
+      expect(extractTaskCreateId('Some unrelated tool output')).toBeUndefined();
+    });
+
+    it('returns undefined for empty content', () => {
+      expect(extractTaskCreateId('')).toBeUndefined();
+      expect(extractTaskCreateId(null)).toBeUndefined();
+      expect(extractTaskCreateId(undefined)).toBeUndefined();
     });
   });
 });

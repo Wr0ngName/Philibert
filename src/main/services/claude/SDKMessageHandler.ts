@@ -285,15 +285,7 @@ export class SDKMessageHandler {
     const userMsg = message as {
       type: 'user';
       message?: { role: string; content?: Array<{ tool_use_id?: string; type?: string; content?: string }> };
-      tool_use_result?: {
-        stdout?: string;
-        stderr?: string;
-        interrupted?: boolean;
-        /** Background task ID assigned by the CLI when a command runs in background */
-        backgroundTaskId?: string;
-        /** True if the user manually backgrounded the command (Ctrl+B) */
-        backgroundedByUser?: boolean;
-      };
+      tool_use_result?: unknown;
     };
 
     // Extract tool result content for the detail view
@@ -307,14 +299,31 @@ export class SDKMessageHandler {
             : Array.isArray(resultBlock.content)
               ? (resultBlock.content as Array<{ text?: string }>).map(b => b.text || '').join('')
               : JSON.stringify(resultBlock.content);
-          // For TaskCreate results, extract the SDK-assigned task ID directly
-          // from the raw structured content (before flattening). Delivering it
-          // as a typed field lets the renderer key its task-list state
-          // deterministically instead of parsing JSON out of a joined string.
+          // For TaskCreate we need the SDK-assigned task ID so the renderer can
+          // re-key its pending taskListItem entry (kept transiently under the
+          // tool_use block ID) to the real ID before any TaskUpdate arrives.
+          // Preferred source is SDKUserMessage.tool_use_result — the SDK's
+          // structured companion to the Anthropic-API tool_result.content
+          // (the latter is human-facing prose). Fall back to structured shapes
+          // inside content, then to the CLI's prose form as a last resort.
           const toolName = this.toolUseIdToName.get(block.tool_use_id);
-          const taskListId = toolName === 'TaskCreate'
-            ? extractTaskCreateId(resultBlock.content)
-            : undefined;
+          let taskListId: string | undefined;
+          if (toolName === 'TaskCreate') {
+            taskListId = extractTaskCreateId(userMsg.tool_use_result)
+              ?? extractTaskCreateId(resultBlock.content);
+            logger.info('TaskCreate result extraction', {
+              toolUseBlockId: block.tool_use_id,
+              taskListId,
+              fromToolUseResult: extractTaskCreateId(userMsg.tool_use_result) !== undefined,
+              toolUseResultPreview: JSON.stringify(userMsg.tool_use_result ?? null).slice(0, 300),
+              contentPreview: content.slice(0, 200),
+            });
+            if (!taskListId) {
+              logger.warn('TaskCreate result: could not extract task.id from either tool_use_result or content', {
+                toolUseBlockId: block.tool_use_id,
+              });
+            }
+          }
           this.callbacks.onToolResult?.({
             toolUseBlockId: block.tool_use_id,
             content,
@@ -328,7 +337,10 @@ export class SDKMessageHandler {
     // When a tool runs in background, the CLI sets backgroundTaskId on the tool_use_result.
     // We use this to map tool_use IDs (toolu_*) → background task IDs (b*) for
     // proper matching when task_notification messages arrive later.
-    const toolResult = userMsg.tool_use_result;
+    const toolResult = userMsg.tool_use_result as {
+      backgroundTaskId?: string;
+      backgroundedByUser?: boolean;
+    } | undefined;
     if (toolResult?.backgroundTaskId) {
       const toolUseId = userMsg.message?.content?.[0]?.tool_use_id;
       const backgroundTaskId = toolResult.backgroundTaskId;
@@ -713,19 +725,29 @@ export class SDKMessageHandler {
 
 /**
  * Extract the SDK-assigned task ID from a TaskCreate tool_result content field.
- * Handles the three shapes tool_result content can take: a plain object (from
- * `JSON.stringify(...)` fallback in the SDK), an array of text blocks whose
- * concatenated text is JSON, or a plain JSON string. Returns the `task.id`
- * field if found, else undefined.
+ *
+ * Handles the shapes tool_result content can take:
+ *  - a plain object (from `JSON.stringify(...)` fallback in the SDK)
+ *  - an array of text blocks whose concatenated text is JSON
+ *  - a plain JSON string
+ *  - a plain human-readable string like `"Task #3 created successfully: <subject>"`
+ *
+ * The CLI currently delivers the human-readable form (matches the SDK's
+ * TaskCreateOutput type at the API level but is flattened to text in the
+ * tool_result wire), so the text-pattern fallback is the load-bearing path in
+ * practice — without it every TaskUpdate misses its target (item stays keyed
+ * by tool_use_id, TaskUpdate looks up by "3", panel is stuck at 0/N done).
  */
-function extractTaskCreateId(raw: unknown): string | undefined {
+export function extractTaskCreateId(raw: unknown): string | undefined {
   const candidates: unknown[] = [];
+  const texts: string[] = [];
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
     candidates.push(raw);
   }
   if (Array.isArray(raw)) {
     const joined = (raw as Array<{ text?: string }>).map(b => b.text || '').join('');
     if (joined) {
+      texts.push(joined);
       try { candidates.push(JSON.parse(joined)); } catch { /* ignore */ }
     }
     for (const block of raw as Array<Record<string, unknown>>) {
@@ -733,12 +755,17 @@ function extractTaskCreateId(raw: unknown): string | undefined {
     }
   }
   if (typeof raw === 'string' && raw.trim()) {
+    texts.push(raw);
     try { candidates.push(JSON.parse(raw)); } catch { /* ignore */ }
   }
   for (const c of candidates) {
     if (!c || typeof c !== 'object') continue;
     const task = (c as { task?: { id?: string } }).task;
     if (task && typeof task.id === 'string') return task.id;
+  }
+  for (const t of texts) {
+    const m = t.match(/Task #(\S+) created/i);
+    if (m) return m[1];
   }
   return undefined;
 }
