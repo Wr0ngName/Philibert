@@ -648,8 +648,8 @@ describe('useClaudeChat core logic', () => {
     it('should detect resource limit', () => {
       const chatStore = useChatStore();
 
-      // At resource limit
-      chatStore.updateActiveQueries(5, 5, 1);
+      // At resource limit (5 concurrent running turns — cap is on runs, not sessions)
+      chatStore.updateActiveQueries(5, 5, 5);
 
       expect(chatStore.isAtResourceLimit).toBe(true);
       expect(chatStore.canStartNewQuery).toBe(false);
@@ -742,7 +742,8 @@ describe('useClaudeChat core logic', () => {
 
     it('should block new query when at limit', () => {
       const chatStore = useChatStore();
-      chatStore.updateActiveQueries(5, 5, 1);
+      // Cap is on concurrent runs (processing), not sessions
+      chatStore.updateActiveQueries(5, 5, 5);
 
       expect(chatStore.canStartNewQuery).toBe(false);
     });
@@ -751,7 +752,7 @@ describe('useClaudeChat core logic', () => {
       const chatStore = useChatStore();
       chatStore.setCurrentConversation(TEST_CONV_ID);
       chatStore.setLoading(TEST_CONV_ID, true);
-      chatStore.updateActiveQueries(5, 5, 1);
+      chatStore.updateActiveQueries(5, 5, 5);
 
       // Even at limit, can continue in already-active conversation
       // (The composable handles this check)

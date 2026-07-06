@@ -282,12 +282,16 @@ export class ClaudeCodeService {
       return;
     }
 
-    // Check resource limits
-    if (this.activeSessions.size >= this.maxConcurrentQueries && !this.activeSessions.has(conversationId)) {
-      const errorMsg = `Maximum concurrent conversations (${this.maxConcurrentQueries}) reached. ` +
-        `Please wait for another conversation to complete or cancel it.`;
+    // Resource limit caps *concurrently running* turns, not open sessions.
+    // Idle persistent sessions don't block new work — otherwise the counter
+    // would leak forever since sessions only close on subprocess exit / hard
+    // shutdown (cleanupSession is not called on turn completion by design).
+    if (this.processingSessions.size >= this.maxConcurrentQueries && !this.processingSessions.has(conversationId)) {
+      const errorMsg = `Maximum concurrent runs (${this.maxConcurrentQueries}) reached. ` +
+        `Please wait for another conversation's current turn to finish or cancel it.`;
       logger.warn('Resource limit reached', {
-        currentCount: this.activeSessions.size,
+        processingCount: this.processingSessions.size,
+        activeSessions: this.activeSessions.size,
         maxCount: this.maxConcurrentQueries,
         conversationId,
       });

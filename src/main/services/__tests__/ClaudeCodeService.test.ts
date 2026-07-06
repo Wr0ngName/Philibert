@@ -1215,7 +1215,7 @@ describe('ClaudeCodeService', () => {
       expect(mockSend).toHaveBeenCalledWith(
         IPC_CHANNELS.CLAUDE_ERROR,
         'conv-6',
-        expect.stringContaining('Maximum concurrent conversations')
+        expect.stringContaining('Maximum concurrent runs')
       );
 
       // Clean up

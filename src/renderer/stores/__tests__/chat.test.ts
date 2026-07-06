@@ -777,6 +777,7 @@ describe('useChatStore', () => {
     });
 
     it('should track resource limits', () => {
+      // Limit caps concurrent RUNS (processing count), not open sessions.
       store.updateActiveQueries(3, 5, 1);
       expect(store.activeQueryCount).toBe(3);
       expect(store.maxConcurrentQueries).toBe(5);
@@ -784,7 +785,13 @@ describe('useChatStore', () => {
       expect(store.isAtResourceLimit).toBe(false);
       expect(store.canStartNewQuery).toBe(true);
 
+      // 5 open sessions but only 2 running turns — should NOT be at limit
       store.updateActiveQueries(5, 5, 2);
+      expect(store.isAtResourceLimit).toBe(false);
+      expect(store.canStartNewQuery).toBe(true);
+
+      // 5 concurrent running turns — at limit
+      store.updateActiveQueries(5, 5, 5);
       expect(store.isAtResourceLimit).toBe(true);
       expect(store.canStartNewQuery).toBe(false);
     });

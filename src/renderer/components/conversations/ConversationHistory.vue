@@ -31,21 +31,17 @@ const {
 // Compact activity / resource-limit indicator shown right under the header,
 // replacing the standalone banner that used to eat vertical space above chat.
 const activityLevel = computed<'none' | 'info' | 'warn' | 'error'>(() => {
-  if (activeQueryCount.value >= maxConcurrentQueries.value) return 'error';
-  if (activeQueryCount.value >= maxConcurrentQueries.value - 1) return 'warn';
+  if (processingQueryCount.value >= maxConcurrentQueries.value) return 'error';
+  if (processingQueryCount.value >= maxConcurrentQueries.value - 1) return 'warn';
   if (processingQueryCount.value > 0) return 'info';
   return 'none';
 });
 
-const activityText = computed(() => {
-  if (activityLevel.value === 'error') return 'Limit reached — cannot start new';
-  if (activityLevel.value === 'warn') return 'Near limit';
-  if (activityLevel.value === 'info') {
-    const n = processingQueryCount.value;
-    return `${n} active`;
-  }
-  return '';
-});
+// Compact count only ("N/M"). State is conveyed by chip color; verbose
+// labels overflow the sidebar header.
+const activityText = computed(() =>
+  `${processingQueryCount.value}/${maxConcurrentQueries.value}`
+);
 
 function needsAttention(conversationId: string): boolean {
   return chatStore.conversationHasPendingActions(conversationId);
@@ -157,7 +153,7 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
             'text-yellow-700 dark:text-yellow-300 bg-yellow-50 dark:bg-yellow-900/30': activityLevel === 'warn',
             'text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/30': activityLevel === 'error',
           }"
-          :title="`${activeQueryCount}/${maxConcurrentQueries} sessions`"
+          :title="`${processingQueryCount}/${maxConcurrentQueries} runs (${activeQueryCount} sessions open)`"
         >
           <Spinner
             v-if="activityLevel === 'info'"

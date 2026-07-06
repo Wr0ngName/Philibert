@@ -146,8 +146,8 @@ export function useClaudeChat() {
     if (chatStore.isAtResourceLimit && !chatStore.isConversationLoading(currentConvId)) {
       chatStore.setError(
         currentConvId,
-        `Maximum concurrent conversations (${chatStore.maxConcurrentQueries}) reached. ` +
-        `Please wait for another conversation to complete or cancel it.`
+        `Maximum concurrent runs (${chatStore.maxConcurrentQueries}) reached. ` +
+        `Please wait for another conversation's current turn to finish or cancel it.`
       );
       return;
     }

@@ -215,13 +215,15 @@ export const useChatStore = defineStore('chat', () => {
     return Math.min(100, (totalTokensUsed.value / contextWindowSize.value) * 100);
   });
 
-  // Resource limit computed
+  // Resource limit caps concurrently *running* turns, not open persistent
+  // sessions. Idle sessions don't count — they only get torn down when the
+  // SDK subprocess exits, so counting them here would leak the counter.
   const isAtResourceLimit = computed(() =>
-    activeQueryCount.value >= maxConcurrentQueries.value
+    processingQueryCount.value >= maxConcurrentQueries.value
   );
 
   const canStartNewQuery = computed(() =>
-    activeQueryCount.value < maxConcurrentQueries.value
+    processingQueryCount.value < maxConcurrentQueries.value
   );
 
   // Current conversation's session permissions
