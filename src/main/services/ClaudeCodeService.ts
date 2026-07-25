@@ -37,6 +37,15 @@ import type {
 import { BrowserWindow } from 'electron';
 
 import {
+  formatModelDisplayName,
+  formatModelId,
+  isSameModel,
+  modelFamily,
+  modelVersionRank,
+  parseModelId,
+  stripDateSuffix,
+} from '../../shared/model-id';
+import {
   IPC_CHANNELS,
   PendingAction,
   ActionResponse,
@@ -64,7 +73,19 @@ import {
   BuiltinCommandHandler,
   SessionPermissionCache,
 } from './claude';
-import { resolveResultError } from './claude/SDKMessageHandler';
+import { isHumanOriginatedResult, resolveResultError } from './claude/SDKMessageHandler';
+import type { ModelReportSource, ModelSubstitutionEvent } from './claude/SDKMessageHandler';
+
+/**
+ * An entry in the known-model catalog. `minor` is absent for the Claude 5
+ * generation, whose IDs carry a single version segment (`claude-opus-5`).
+ */
+interface CatalogEntry {
+  family: string;
+  major: number;
+  minor?: number;
+  context: string;
+}
 
 /**
  * Represents a persistent SDK session for a specific conversation.
@@ -95,6 +116,14 @@ interface SessionInstance {
   sessionModel: string;
   /** Whether this session was started with --resume (for error recovery) */
   isResumeAttempt: boolean;
+  /** The model the user selected when this session was started ('' = CLI default). */
+  requestedModel: string;
+  /**
+   * `${source}:${modelAlias}` pairs already announced to the user, so a model
+   * that differs from the selection is reported once per session instead of
+   * once per assistant frame.
+   */
+  announcedModels: Set<string>;
 }
 
 export class ClaudeCodeService {
@@ -345,12 +374,18 @@ export class ClaudeCodeService {
       // If the model changed, use SDK's setModel() to switch mid-session
       // (no need to kill the session — context is preserved)
       if (selectedModel && existingSession.sessionModel !== selectedModel) {
+        // Capture before the assignment below, otherwise the log reports the
+        // new model as both the old and the new value.
+        const previousModel = existingSession.sessionModel || '(default)';
         try {
           await existingSession.query.setModel(selectedModel);
           existingSession.sessionModel = selectedModel;
+          existingSession.requestedModel = selectedModel;
+          // Let the reconciler speak again if the new model doesn't stick.
+          existingSession.announcedModels.clear();
           logger.info('Model changed on existing session via setModel()', {
             conversationId,
-            oldModel: existingSession.sessionModel || '(default)',
+            oldModel: previousModel,
             newModel: selectedModel,
           });
         } catch (error) {
@@ -507,6 +542,12 @@ export class ClaudeCodeService {
           ...(result.taskListId && { taskListId: result.taskListId }),
         });
       },
+      onModelReported: (model: string, source: ModelReportSource) => {
+        this.reconcileReportedModel(conversationId, model, source);
+      },
+      onModelSubstituted: (event: ModelSubstitutionEvent) => {
+        this.reportModelSubstitution(conversationId, event);
+      },
       onSessionId: (sessionId: string) => {
         // Capture session ID for constructing SDKUserMessage
         const session = this.activeSessions.get(conversationId);
@@ -554,9 +595,10 @@ export class ClaudeCodeService {
       const thinkingConfig: ThinkingConfig = thinkingMode === 'disabled'
         ? { type: 'disabled' }
         : { type: 'adaptive' };
-      // When resuming, don't pass --model (the CLI ignores it during --resume).
-      // Instead, resume first to restore context, then call setModel() after init.
+      // When resuming we also call setModel() after init, because a resumed
+      // session restores the model it was created with.
       const shouldResume = !!resumeSessionId;
+      const managedSettings = await this.buildManagedSettings(selectedModel);
 
       logger.info('Starting new persistent session', {
         conversationId,
@@ -595,7 +637,13 @@ export class ClaudeCodeService {
           includePartialMessages: true,
           agentProgressSummaries: true,
           thinking: thinkingConfig,
-          ...(!shouldResume && selectedModel ? { model: selectedModel } : {}),
+          // Always pass the selection, including on resume. `--model` is
+          // documented as "Model for the current session" with no resume
+          // carve-out; if a given CLI build does ignore it while resuming, the
+          // setModel() call below and the init-message reconciliation still
+          // converge the session onto the selected model and tell the user.
+          ...(selectedModel ? { model: selectedModel } : {}),
+          ...(managedSettings ? { managedSettings } : {}),
           ...(shouldResume ? { resume: resumeSessionId } : {}),
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {
             return this.spawnSDKProcess(options, conversationId);
@@ -620,6 +668,8 @@ export class ClaudeCodeService {
         resolveSessionReady,
         sessionModel: shouldResume ? '' : selectedModel,
         isResumeAttempt: shouldResume,
+        requestedModel: selectedModel,
+        announcedModels: new Set<string>(),
       };
       this.activeSessions.set(conversationId, session);
       this.emitActiveQueryCount();
@@ -641,6 +691,13 @@ export class ClaudeCodeService {
               model: selectedModel,
               error: err instanceof Error ? err.message : String(err),
             });
+            // Silently continuing here is what lets a resumed conversation keep
+            // running on the model it was created with. Say so.
+            this.emitSystemNote(
+              conversationId,
+              `Could not apply your model selection (${formatModelId(selectedModel)}) to this ` +
+              'resumed conversation. It is still running the model it was started with.',
+            );
           }
         });
       }
@@ -703,12 +760,18 @@ export class ClaudeCodeService {
 
         await messageHandler.handleMessage(sdkMessage);
 
-        // After each result message, emit done to signal turn completion
+        // After each result message, emit done to signal turn completion.
+        // Only for turns the user actually started — a background agent's
+        // completion is delivered as its own `result` and must not end the
+        // main turn (see isHumanOriginatedResult).
         if (sdkMessage.type === 'result') {
           const resultSubtype = (sdkMessage as { subtype?: string }).subtype;
+          const endsUserTurn = isHumanOriginatedResult(
+            sdkMessage as { origin?: { kind?: string } },
+          );
 
           // Detect resume failure from result message (before the thrown error path)
-          if (session?.isResumeAttempt && resultSubtype?.startsWith('error')) {
+          if (endsUserTurn && session?.isResumeAttempt && resultSubtype?.startsWith('error')) {
             const resultError = resolveResultError(
               sdkMessage as { error?: string; errors?: string[] },
             );
@@ -727,7 +790,7 @@ export class ClaudeCodeService {
           }
 
           // Resume succeeded — subsequent auth errors are real, not stale-session artifacts
-          if (session?.isResumeAttempt) {
+          if (endsUserTurn && session?.isResumeAttempt) {
             session.isResumeAttempt = false;
           }
 
@@ -748,6 +811,19 @@ export class ClaudeCodeService {
               error: resultError,
             });
             this.emitError(conversationId, friendly);
+          }
+
+          if (!endsUserTurn) {
+            // Background-agent activity completing. The main conversation may
+            // still be mid-turn: leave the spinner, the processing count and
+            // the "Query Complete" notification alone. Progress for these is
+            // already surfaced through task notifications.
+            logger.info('Background-origin result received — not ending the user turn', {
+              conversationId,
+              subtype: resultSubtype,
+              origin: (sdkMessage as { origin?: { kind?: string } }).origin?.kind,
+            });
+            continue;
           }
 
           logger.info('Turn completed (result message received), emitting done', {
@@ -1378,6 +1454,191 @@ export class ClaudeCodeService {
   }
 
   /**
+   * Build the managed-settings block applied to the spawned CLI process.
+   *
+   * The SDK documents `managedSettings` as being "intended for embedding
+   * applications (e.g. desktop apps) that derive lockdown settings from their
+   * own enterprise configuration and need to enforce them on the spawned
+   * subprocess without writing root-owned files" — exactly this case. Managed
+   * settings outrank user and project settings, so `.claude/settings.json`
+   * cannot quietly redirect the session to another model.
+   *
+   * Returns undefined when there is nothing to enforce, so the CLI keeps its
+   * stock behaviour.
+   */
+  private async buildManagedSettings(
+    selectedModel: string,
+  ): Promise<Record<string, unknown> | undefined> {
+    const switchModelsOnFlag = await this.configService.getSwitchModelsOnFlag();
+    const strict = await this.configService.getStrictModelEnforcement();
+
+    const settings: Record<string, unknown> = {};
+
+    // Only pin when the user actually picked something; an empty selection
+    // means "let Claude Code decide", which we report rather than override.
+    if (selectedModel) {
+      settings.model = selectedModel;
+
+      if (strict) {
+        // The CLI checks every model change against this allowlist, including
+        // server-proposed refusal-fallback targets — it logs "Server
+        // refusal-fallback target … is not in the availableModels allowlist;
+        // declining the swap" and keeps the current model. enforceAvailableModels
+        // additionally constrains the Default selection to the allowlist.
+        settings.availableModels = [selectedModel];
+        settings.enforceAvailableModels = true;
+      }
+    }
+
+    // Claude Code defaults this to true. When false the CLI pauses the session
+    // on a flagged message instead of swapping models behind the user's back.
+    if (!switchModelsOnFlag) {
+      settings.switchModelsOnFlag = false;
+    }
+
+    if (Object.keys(settings).length === 0) return undefined;
+
+    logger.info('Applying managed settings to CLI subprocess', {
+      model: settings.model ?? '(not pinned)',
+      strictModelEnforcement: strict,
+      switchModelsOnFlag,
+    });
+
+    return settings;
+  }
+
+  /**
+   * Reconcile the model the CLI says it is running against the model the user
+   * selected, and tell the user whenever they differ.
+   *
+   * A mismatch is not necessarily a fault — Claude Code legitimately changes
+   * models on a safety-classifier refusal, on a rate-limit fallback, via
+   * `fallbackModel` when the primary is overloaded, and per-sub-agent when an
+   * agent definition names its own model. What is NOT acceptable is any of
+   * that happening invisibly, which is what an embedded SDK host gets by
+   * default: interactive Claude Code prompts the user with a dialog, but with
+   * no dialog host the CLI swaps silently.
+   *
+   * Reported once per (source, model) pair per session so a long run doesn't
+   * spam the transcript.
+   */
+  private reconcileReportedModel(
+    conversationId: string,
+    reportedModel: string,
+    source: ModelReportSource,
+  ): void {
+    const session = this.activeSessions.get(conversationId);
+    if (!session || !reportedModel) return;
+
+    // Track what the main thread is actually on, so a later setModel() diff
+    // is computed against reality rather than against what we asked for, and
+    // tell the renderer so the picker can show the resolved model.
+    if (source !== 'subagent') {
+      if (session.sessionModel !== reportedModel) {
+        this.send(IPC_CHANNELS.CLAUDE_ACTIVE_MODEL, conversationId, reportedModel);
+      }
+      session.sessionModel = reportedModel;
+    }
+
+    const requested = session.requestedModel;
+    // No explicit selection means the user asked for the CLI default; there is
+    // nothing to contradict, but surface what that resolved to so "Default"
+    // is never an unanswered question.
+    if (!requested) {
+      const key = `default:${stripDateSuffix(reportedModel)}`;
+      if (source === 'init' && !session.announcedModels.has(key)) {
+        session.announcedModels.add(key);
+        this.emitSystemNote(
+          conversationId,
+          `Model: ${formatModelId(reportedModel)} (chosen by Claude Code — no model pinned)`,
+        );
+      }
+      return;
+    }
+
+    // A family alias ('opus') legitimately resolves to a concrete ID
+    // ('claude-opus-5'), and a pinned snapshot ('claude-sonnet-4-5-20250929')
+    // is the same model as its alias. Neither is a substitution.
+    if (isSameModel(requested, reportedModel)) return;
+    if (modelFamily(reportedModel) === requested) return;
+
+    const key = `${source}:${stripDateSuffix(reportedModel)}`;
+    if (session.announcedModels.has(key)) return;
+    session.announcedModels.add(key);
+
+    const requestedLabel = formatModelId(requested);
+    const reportedLabel = formatModelId(reportedModel);
+
+    logger.warn('Reported model differs from the selected model', {
+      conversationId,
+      source,
+      requested,
+      reported: reportedModel,
+    });
+
+    if (source === 'subagent') {
+      // Expected when an agent definition names a model — Claude Code's
+      // documented behaviour is that sub-agents inherit the main model unless
+      // their own definition overrides it. Still worth saying out loud.
+      this.emitSystemNote(
+        conversationId,
+        `Background agent is running ${reportedLabel}, not ${requestedLabel}. ` +
+        'A sub-agent uses its own model when its definition sets one ' +
+        '(the `model:` field in .claude/agents/*.md); otherwise it inherits your selection.',
+      );
+      return;
+    }
+
+    this.emitSystemNote(
+      conversationId,
+      `Model mismatch: you selected ${requestedLabel}, but Claude Code is running ${reportedLabel}.`,
+    );
+  }
+
+  /**
+   * Surface a model swap the CLI performed after a safety-classifier refusal.
+   *
+   * Interactive Claude Code asks first ("Switch to <model>?"); an embedded
+   * consumer with no dialog host gets the swap done for it, and the swap is
+   * persistent for the rest of the session. Setting `switchModelsOnFlag` to
+   * false in managed settings makes the session pause instead.
+   */
+  private reportModelSubstitution(conversationId: string, event: ModelSubstitutionEvent): void {
+    const session = this.activeSessions.get(conversationId);
+    const reason = event.category ? ` (flagged: ${event.category})` : '';
+
+    if (!event.fallbackModel) {
+      this.emitSystemNote(
+        conversationId,
+        `${formatModelId(event.originalModel)} declined this message${reason} and no fallback ran. ` +
+        (event.explanation ? `${event.explanation} ` : '') +
+        'The model is unchanged.',
+      );
+      return;
+    }
+
+    if (session) {
+      session.sessionModel = event.fallbackModel;
+      // Let reconcileReportedModel speak again if the model moves again later.
+      session.announcedModels.clear();
+    }
+
+    logger.warn('CLI substituted the model after a refusal', {
+      conversationId,
+      originalModel: event.originalModel,
+      fallbackModel: event.fallbackModel,
+      category: event.category,
+    });
+
+    this.emitSystemNote(
+      conversationId,
+      `Claude Code switched from ${formatModelId(event.originalModel)} to ` +
+      `${formatModelId(event.fallbackModel)}${reason} and will stay on it for this session. ` +
+      'Turn off "Allow model switch when a message is flagged" in Settings to pause instead of switching.',
+    );
+  }
+
+  /**
    * Get available models from the SDK
    * Returns cached models if available
    */
@@ -1489,7 +1750,12 @@ export class ClaudeCodeService {
    * Model ID format: claude-{family}-{major}-{minor}
    * Display name:    Claude {Family} {major}.{minor}
    */
-  private static readonly MODEL_CATALOG = [
+  private static readonly MODEL_CATALOG: readonly CatalogEntry[] = [
+    // Claude 5 generation — single-segment version IDs (no minor).
+    { family: 'opus',   major: 5,           context: '1M' },
+    { family: 'fable',  major: 5,           context: '1M' },
+    { family: 'sonnet', major: 5,           context: '1M' },
+    // Claude 4 generation — {major}-{minor} version IDs.
     { family: 'opus',   major: 4, minor: 8, context: '1M' },
     { family: 'opus',   major: 4, minor: 7, context: '1M' },
     { family: 'opus',   major: 4, minor: 6, context: '1M' },
@@ -1497,9 +1763,20 @@ export class ClaudeCodeService {
     { family: 'sonnet', major: 4, minor: 6, context: '1M' },
     { family: 'sonnet', major: 4, minor: 5, context: '200K' },
     { family: 'haiku',  major: 4, minor: 5, context: '200K' },
-  ] as const;
+  ];
 
-  private static readonly FAMILY_ORDER = ['opus', 'sonnet', 'haiku'];
+  /**
+   * Display order for known families. Fable sits next to Opus because it is
+   * the tier above it; anything the SDK grows into lands after these.
+   */
+  private static readonly FAMILY_ORDER = ['opus', 'fable', 'sonnet', 'haiku'];
+
+  /** Canonical alias for a catalog entry, e.g. `claude-opus-5`, `claude-opus-4-8`. */
+  private static catalogAlias(entry: CatalogEntry): string {
+    return entry.minor === undefined
+      ? `claude-${entry.family}-${entry.major}`
+      : `claude-${entry.family}-${entry.major}-${entry.minor}`;
+  }
 
   /**
    * Family-level context-window default, used as fallback when a specific
@@ -1517,11 +1794,12 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Extract the alias form (claude-{family}-{major}-{minor}) from any model ID,
-   * stripping dated suffixes like -20250929.
+   * Extract the alias form from any model ID, stripping dated suffixes like
+   * -20250929. Handles both `claude-{family}-{major}-{minor}` (Claude 4) and
+   * `claude-{family}-{major}` (Claude 5) shapes — see @shared/model-id.
    */
   private static toAlias(modelId: string): string {
-    return modelId.replace(/-\d{8}(-v\d+)?$/, '');
+    return stripDateSuffix(modelId);
   }
 
   /**
@@ -1536,9 +1814,9 @@ export class ClaudeCodeService {
     const seen = new Set<string>();
     const merged: ModelInfo[] = [];
 
-    const catalogByAlias = new Map<string, (typeof ClaudeCodeService.MODEL_CATALOG)[number]>();
+    const catalogByAlias = new Map<string, CatalogEntry>();
     for (const entry of ClaudeCodeService.MODEL_CATALOG) {
-      catalogByAlias.set(`claude-${entry.family}-${entry.major}-${entry.minor}`, entry);
+      catalogByAlias.set(ClaudeCodeService.catalogAlias(entry), entry);
     }
 
     for (const sdk of sdkModels) {
@@ -1548,19 +1826,21 @@ export class ClaudeCodeService {
 
       const catalogEntry = catalogByAlias.get(alias);
       if (catalogEntry) {
-        const familyCapitalized = catalogEntry.family.charAt(0).toUpperCase() + catalogEntry.family.slice(1);
         merged.push({
           value: sdk.value,
-          displayName: `Claude ${familyCapitalized} ${catalogEntry.major}.${catalogEntry.minor}`,
+          displayName: formatModelDisplayName({
+            family: catalogEntry.family,
+            major: catalogEntry.major,
+            minor: catalogEntry.minor ?? null,
+          }),
           description: `${catalogEntry.context} context`,
         });
       } else {
         // No specific catalog match — pass through the SDK's own displayName,
         // but backfill the context annotation from the family default so a
-        // freshly-released SKU (Fable, future families, …) still shows a
+        // freshly-released SKU (Mythos, future families, …) still shows a
         // sensible context hint instead of nothing.
-        const familyMatch = alias.match(/^claude-([a-z]+)-\d+-\d+/);
-        const family = familyMatch?.[1];
+        const family = parseModelId(alias)?.family;
         const description = family && !sdk.description
           ? `${ClaudeCodeService.contextForFamily(family)} context`
           : sdk.description;
@@ -1569,28 +1849,30 @@ export class ClaudeCodeService {
     }
 
     for (const entry of ClaudeCodeService.MODEL_CATALOG) {
-      const alias = `claude-${entry.family}-${entry.major}-${entry.minor}`;
+      const alias = ClaudeCodeService.catalogAlias(entry);
       if (seen.has(alias)) continue;
       seen.add(alias);
-      const familyCapitalized = entry.family.charAt(0).toUpperCase() + entry.family.slice(1);
       merged.push({
         value: alias,
-        displayName: `Claude ${familyCapitalized} ${entry.major}.${entry.minor}`,
+        displayName: formatModelDisplayName({
+          family: entry.family,
+          major: entry.major,
+          minor: entry.minor ?? null,
+        }),
         description: `${entry.context} context`,
       });
     }
 
     const familyOrder = ClaudeCodeService.FAMILY_ORDER;
     const parseModel = (m: ModelInfo) => {
-      const alias = ClaudeCodeService.toAlias(m.value);
-      const match = alias.match(/claude-(\w+)-(\d+)-(\d+)/);
-      if (!match) return { familyIdx: 99, version: 0 };
-      const idx = familyOrder.indexOf(match[1]);
+      const parsed = parseModelId(m.value);
+      if (!parsed) return { familyIdx: familyOrder.length + 1, version: 0 };
+      const idx = familyOrder.indexOf(parsed.family);
       return {
         // Unknown families (anything the SDK grows into) sort after known ones
         // rather than jumping to the top of the list.
         familyIdx: idx === -1 ? familyOrder.length : idx,
-        version: Number(match[2]) * 100 + Number(match[3]),
+        version: modelVersionRank(m.value),
       };
     };
 

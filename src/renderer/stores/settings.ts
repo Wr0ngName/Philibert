@@ -36,6 +36,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const updateChannel = computed(() => config.value.updateChannel);
   const executionMode = computed(() => config.value.executionMode);
   const thinkingMode = computed(() => config.value.thinkingMode);
+  const switchModelsOnFlag = computed(() => config.value.switchModelsOnFlag);
+  const strictModelEnforcement = computed(() => config.value.strictModelEnforcement);
   const needsSetup = computed(() => !workingDirectory.value || !hasAuth.value);
   const isDarkMode = computed(() => {
     if (config.value.theme === 'system') {
@@ -134,6 +136,14 @@ export const useSettingsStore = defineStore('settings', () => {
     await saveConfig({ thinkingMode: mode });
   }
 
+  async function setSwitchModelsOnFlag(enabled: boolean): Promise<void> {
+    await saveConfig({ switchModelsOnFlag: enabled });
+  }
+
+  async function setStrictModelEnforcement(enabled: boolean): Promise<void> {
+    await saveConfig({ strictModelEnforcement: enabled });
+  }
+
   function applyFontSize(size: number): void {
     if (typeof document !== 'undefined' && document.documentElement?.style) {
       document.documentElement.style.setProperty('--chat-font-size', `${size}px`);
@@ -222,6 +232,8 @@ export const useSettingsStore = defineStore('settings', () => {
     updateChannel,
     executionMode,
     thinkingMode,
+    switchModelsOnFlag,
+    strictModelEnforcement,
     isDarkMode,
     needsSetup,
 
@@ -242,6 +254,8 @@ export const useSettingsStore = defineStore('settings', () => {
     setUpdateChannel,
     setExecutionMode,
     setThinkingMode,
+    setSwitchModelsOnFlag,
+    setStrictModelEnforcement,
     applyTheme,
     applyFontSize,
     applyLineHeight,

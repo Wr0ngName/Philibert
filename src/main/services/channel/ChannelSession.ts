@@ -229,8 +229,6 @@ export class ChannelSession {
     const args = [
       '--dangerously-load-development-channels',
       'server:philibert',
-      '--model',
-      this.model,
       '--allowedTools',
       'mcp__philibert__reply',
       // AskUserQuestion in channel mode renders an Ink picker directly in the
@@ -245,6 +243,13 @@ export class ChannelSession {
       '--verbose',
       '--debug',
     ];
+
+    // Only pin a model when the user actually selected one. Previously this
+    // defaulted to a hardcoded 'sonnet', so a user on "Default" silently got
+    // Sonnet in channel mode and the CLI's own default in SDK mode.
+    if (this.model) {
+      args.push('--model', this.model);
+    }
 
     if (this.resumeSessionId) {
       args.push('--resume', this.resumeSessionId);

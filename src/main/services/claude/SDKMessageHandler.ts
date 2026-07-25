@@ -34,6 +34,37 @@ export function resolveResultError(
 }
 
 /**
+ * Origin kinds that represent work the user personally asked for in the main
+ * conversation. Everything else on this list is harness-driven activity —
+ * a finished background task being delivered back into the session, an
+ * auto-continuation, an observer digest, a peer/channel message.
+ *
+ * `SDKMessageOrigin.kind` (sdk.d.ts) is one of: 'human' | 'channel' | 'peer' |
+ * 'task-notification' | 'coordinator' | 'observer' | 'auto-continuation' |
+ * 'observer-activity'.
+ */
+const HUMAN_ORIGIN_KINDS = new Set(['human']);
+
+/**
+ * Whether a `result` message ends the turn the user is waiting on.
+ *
+ * Background agents produce their own `result` messages when the harness
+ * delivers their completion back into the session. Treating those as the end
+ * of the main turn drops the spinner while the main conversation is still
+ * working and fires a "Query Complete" notification for work the user never
+ * started — which is both misleading and, with several agents running, noisy.
+ *
+ * `origin` is optional in the SDK types and absent on older CLIs; treat a
+ * missing origin as human so behaviour degrades to the previous semantics
+ * rather than silently never completing a turn.
+ */
+export function isHumanOriginatedResult(message: { origin?: { kind?: string } }): boolean {
+  const kind = message.origin?.kind;
+  if (!kind) return true;
+  return HUMAN_ORIGIN_KINDS.has(kind);
+}
+
+/**
  * Callbacks for emitting events to the renderer
  */
 export interface MessageHandlerCallbacks {
@@ -46,6 +77,44 @@ export interface MessageHandlerCallbacks {
   onToolResult?: (result: { toolUseBlockId: string; content: string; taskListId?: string }) => void;
   onSessionId?: (sessionId: string) => void;
   onAuthError?: () => void;
+  /**
+   * The model the CLI reports it is actually running, as seen on the `init`
+   * system message and on each assistant frame. The caller compares this
+   * against the user's selection so a substitution can never pass unnoticed.
+   *
+   * `source` distinguishes the main conversation from a sub-agent: assistant
+   * frames emitted by a sub-agent carry `parent_tool_use_id`. A sub-agent may
+   * legitimately run a different model (an explicit `model:` in its
+   * `.claude/agents/*.md` frontmatter wins over the main model — that is
+   * Claude Code's documented behaviour), but the user still gets told.
+   */
+  onModelReported?: (model: string, source: ModelReportSource) => void;
+  /**
+   * The CLI swapped models mid-session. Emitted for the `model_refusal_fallback`
+   * notice (safety classifier flagged the turn and it was retried on another
+   * model — the swap is persistent for the session) and for
+   * `model_refusal_no_fallback` (refused with no retry, so `fallbackModel` is
+   * null). In an embedded host like this one the CLI performs the swap without
+   * a dialog, so this notice is the only signal the user gets.
+   */
+  onModelSubstituted?: (event: ModelSubstitutionEvent) => void;
+}
+
+/** Where an observed model reading came from. */
+export type ModelReportSource = 'init' | 'main' | 'subagent';
+
+/**
+ * A mid-session model change reported by the CLI.
+ */
+export interface ModelSubstitutionEvent {
+  /** The model that was asked for and refused. */
+  originalModel: string;
+  /** The model the turn was retried on, or null when no retry ran. */
+  fallbackModel: string | null;
+  /** Refusal category from the API, e.g. 'cyber', 'bio'. Open string. */
+  category?: string | null;
+  /** Human-readable explanation from the API. Display only — never parse. */
+  explanation?: string | null;
 }
 
 /**
@@ -202,6 +271,14 @@ export class SDKMessageHandler {
     // Forward it on tool captures so the renderer can group sub-agent activity
     // under the Agent/Task tool that spawned them.
     const parentToolUseId = message.parent_tool_use_id ?? undefined;
+
+    // Report the model that actually produced this frame. Sub-agent frames
+    // carry parent_tool_use_id, so the caller can tell a background agent
+    // running a different model apart from the main conversation drifting.
+    const frameModel = message.message.model;
+    if (frameModel) {
+      this.callbacks.onModelReported?.(frameModel, parentToolUseId ? 'subagent' : 'main');
+    }
 
     // Log message content for debugging
     logger.debug('Assistant message content', {
@@ -492,7 +569,18 @@ export class SDKMessageHandler {
    * Process streaming events for real-time text updates
    */
   private processStreamEvent(message: SDKMessage): void {
-    const event = (message as { event?: { type?: string; index?: number; content_block?: { type?: string }; delta?: { type?: string; text?: string } } }).event;
+    const partial = message as {
+      parent_tool_use_id?: string | null;
+      event?: { type?: string; index?: number; content_block?: { type?: string }; delta?: { type?: string; text?: string } };
+    };
+
+    // Deltas from a sub-agent carry parent_tool_use_id. Streaming them into
+    // onChunk would splice background-agent tokens into the main assistant
+    // response. Sub-agent activity is surfaced through tool captures and task
+    // notifications instead.
+    if (partial.parent_tool_use_id) return;
+
+    const event = partial.event;
 
     // Emit line break between content blocks for clarity
     // When a new text content_block_start arrives and we already have streamed content,
@@ -541,6 +629,12 @@ export class SDKMessageHandler {
       };
       // task_progress fields
       last_tool_name?: string;
+      // model_refusal_fallback / model_refusal_no_fallback fields
+      // (SDKModelRefusalFallbackMessage / SDKModelRefusalNoFallbackMessage)
+      original_model?: string;
+      fallback_model?: string;
+      api_refusal_category?: string | null;
+      api_refusal_explanation?: string | null;
       // task_started fields
       task_type?: string;
       skip_transcript?: boolean;
@@ -571,6 +665,13 @@ export class SDKMessageHandler {
       if (systemMsg.session_id && this.callbacks.onSessionId) {
         logger.info('SDK session ID received', { session_id: systemMsg.session_id });
         this.callbacks.onSessionId(systemMsg.session_id);
+      }
+
+      // Report the model the CLI actually resolved for this session. This is
+      // the authoritative answer to "what am I really running" — the caller
+      // reconciles it against the user's selection.
+      if (systemMsg.model) {
+        this.callbacks.onModelReported?.(systemMsg.model, 'init');
       }
 
       // Process slash commands if present
@@ -606,6 +707,44 @@ export class SDKMessageHandler {
     // superseded by streaming content.
     if (systemMsg.subtype === 'status' && systemMsg.status && systemMsg.status !== 'requesting') {
       this.callbacks.onSystemNote(systemMsg.status);
+    }
+
+    // The CLI swapped models because a safety classifier flagged the turn.
+    // Interactive Claude Code shows a "Switch to <model>?" dialog here; an
+    // embedded SDK consumer has no dialog host, so the CLI swaps silently and
+    // this notice is the ONLY signal. The swap is persistent for the session.
+    if (systemMsg.subtype === 'model_refusal_fallback') {
+      const originalModel = systemMsg.original_model || '(unknown)';
+      const fallbackModel = systemMsg.fallback_model || '(unknown)';
+      logger.warn('Model substituted by CLI after refusal', {
+        originalModel,
+        fallbackModel,
+        category: systemMsg.api_refusal_category,
+        explanation: systemMsg.api_refusal_explanation,
+      });
+      this.callbacks.onModelSubstituted?.({
+        originalModel,
+        fallbackModel,
+        category: systemMsg.api_refusal_category,
+        explanation: systemMsg.api_refusal_explanation,
+      });
+    }
+
+    // Refused with no retry — no fallback model configured, or per-category
+    // routing declined it. The turn produced nothing; the model is unchanged.
+    if (systemMsg.subtype === 'model_refusal_no_fallback') {
+      const originalModel = systemMsg.original_model || '(unknown)';
+      logger.warn('Model refused the turn with no fallback', {
+        originalModel,
+        category: systemMsg.api_refusal_category,
+        explanation: systemMsg.api_refusal_explanation,
+      });
+      this.callbacks.onModelSubstituted?.({
+        originalModel,
+        fallbackModel: null,
+        category: systemMsg.api_refusal_category,
+        explanation: systemMsg.api_refusal_explanation,
+      });
     }
 
     // Handle task notifications (background tasks/agents)

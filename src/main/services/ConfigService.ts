@@ -32,6 +32,8 @@ interface StoredConfig {
   updateChannel: UpdateChannel;
   executionMode: ExecutionMode;
   thinkingMode: ThinkingMode;
+  switchModelsOnFlag: boolean;
+  strictModelEnforcement: boolean;
 }
 
 /**
@@ -103,6 +105,8 @@ export class ConfigService {
           updateChannel: 'stable',
           executionMode: 'sdk',
           thinkingMode: 'auto',
+          switchModelsOnFlag: true,
+          strictModelEnforcement: false,
         },
       }) as unknown as TypedStore;
       this.isInitialized = true;
@@ -516,6 +520,53 @@ export class ConfigService {
 
     this.store.set('selectedModel', model);
     logger.info('Selected model updated', { model: model || '(SDK default)' });
+  }
+
+  /**
+   * Whether Claude Code may switch models on its own when a safety classifier
+   * flags a message. Mirrors the CLI's own `switchModelsOnFlag` setting:
+   * "When safeguards flag a message, automatically switch to a different model
+   * to keep chatting. When off, your session will pause instead."
+   *
+   * Defaults to true to match Claude Code. Turning it off is the way to
+   * guarantee the selected model is the only model that ever runs.
+   */
+  async getSwitchModelsOnFlag(): Promise<boolean> {
+    await this.ensureInitialized();
+    if (!this.store) return true;
+    return this.store.get('switchModelsOnFlag', true);
+  }
+
+  async setSwitchModelsOnFlag(enabled: boolean): Promise<void> {
+    await this.ensureInitialized();
+    if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
+
+    this.store.set('switchModelsOnFlag', enabled);
+    logger.info('Model auto-switch on flag changed', { enabled });
+  }
+
+  /**
+   * Whether to restrict the whole session — sub-agents included — to the
+   * selected model via the CLI's `availableModels` allowlist.
+   *
+   * Off by default because it is stricter than Claude Code: Claude Code lets a
+   * sub-agent run its own model when its definition names one. Turning it on
+   * makes the CLI refuse any other model, including a server-proposed
+   * refusal-fallback target ("Server refusal-fallback target … is not in the
+   * availableModels allowlist; declining the swap").
+   */
+  async getStrictModelEnforcement(): Promise<boolean> {
+    await this.ensureInitialized();
+    if (!this.store) return false;
+    return this.store.get('strictModelEnforcement', false);
+  }
+
+  async setStrictModelEnforcement(enabled: boolean): Promise<void> {
+    await this.ensureInitialized();
+    if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
+
+    this.store.set('strictModelEnforcement', enabled);
+    logger.info('Strict model enforcement changed', { enabled });
   }
 
   /**

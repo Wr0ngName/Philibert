@@ -117,6 +117,7 @@ vi.mock('../../utils/ipc-helpers', () => ({
 }));
 
 // Import after mocks
+import { modelVersionRank } from '../../../shared/model-id';
 import { IPC_CHANNELS } from '../../../shared/types';
 import { createMockBrowserWindow } from '../../__tests__/setup';
 import ClaudeCodeService from '../ClaudeCodeService';
@@ -1255,7 +1256,7 @@ describe('ClaudeCodeService', () => {
       expect(queryOptions.model).toBeUndefined();
     });
 
-    it('should resume session and defer model via setModel when model is explicitly selected', async () => {
+    it('should pass the selected model AND call setModel when resuming', async () => {
       await configService.setSelectedModel('claude-opus-4-7');
 
       // Create an iterator that yields init with session_id so sessionReady resolves
@@ -1279,12 +1280,16 @@ describe('ClaudeCodeService', () => {
       // Let the message loop process the init message and setModel to be called
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      // Should have passed resume, NOT model
+      // The selection is passed even when resuming. `--model` is documented as
+      // "Model for the current session" with no resume carve-out; withholding
+      // it meant the whole first turn of every resumed conversation ran on
+      // whatever model the old session used.
       const queryOptions = mockQuery.mock.calls[0][0].options;
       expect(queryOptions.resume).toBe('old-session-id');
-      expect(queryOptions.model).toBeUndefined();
+      expect(queryOptions.model).toBe('claude-opus-4-7');
 
-      // setModel should have been called after session init
+      // setModel still runs after init, so the session converges on the
+      // selection even if a CLI build ignores --model while resuming.
       expect(mockIterator.setModel).toHaveBeenCalledWith('claude-opus-4-7');
 
       // Clean up
@@ -1656,10 +1661,9 @@ describe('ClaudeCodeService', () => {
       const result = ClaudeCodeService.mergeWithKnownModels([]);
 
       const opusModels = result.filter(m => m.value.includes('opus'));
-      const opusVersions = opusModels.map(m => {
-        const match = m.value.match(/claude-opus-(\d+)-(\d+)/);
-        return match ? Number(match[1]) * 100 + Number(match[2]) : 0;
-      });
+      // Use the shared rank helper rather than a local regex: a two-segment
+      // pattern scores every Claude 5 ID as 0 and would fail on claude-opus-5.
+      const opusVersions = opusModels.map(m => modelVersionRank(m.value));
       for (let i = 1; i < opusVersions.length; i++) {
         expect(opusVersions[i - 1]).toBeGreaterThan(opusVersions[i]);
       }

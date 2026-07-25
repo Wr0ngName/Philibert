@@ -7,6 +7,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { storeToRefs } from 'pinia';
 
+import { capitalizeFamily, isSameModel, parseModelId } from '@shared/model-id';
 import type { ModelInfo } from '@shared/types';
 import { useAsyncOperation } from '../../composables/useAsyncOperation';
 import { useChatStore } from '../../stores/chat';
@@ -22,12 +23,23 @@ import TransitionFade from './TransitionFade.vue';
 const settingsStore = useSettingsStore();
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
-const { selectedModel, thinkingMode } = storeToRefs(settingsStore);
+const {
+  selectedModel,
+  thinkingMode,
+  switchModelsOnFlag,
+  strictModelEnforcement,
+} = storeToRefs(settingsStore);
 
 const models = ref<ModelInfo[]>([]);
 const { isLoading, execute } = useAsyncOperation();
 const isOpen = ref(false);
 const dropdownRef = ref<HTMLDivElement | null>(null);
+
+// The model Claude Code reports it is actually running. With no explicit
+// selection the CLI picks for itself, so this is the only way to know what
+// "Default" resolved to — and it also reveals a mid-session substitution.
+const activeModel = ref<string>('');
+let cleanupActiveModelListener: (() => void) | null = null;
 
 // Confirmation dialog state
 const showConfirmDialog = ref(false);
@@ -45,16 +57,13 @@ interface FamilyEntry {
 
 // Known families get a fixed display order at the top of the menu; any new
 // family the SDK reports lands after them in the order it first appears.
-const PREFERRED_FAMILY_ORDER: readonly string[] = ['opus', 'sonnet', 'haiku'];
-
-function capitalize(s: string): string {
-  return s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1);
-}
+// Fable sits next to Opus because it is the tier above it.
+const PREFERRED_FAMILY_ORDER: readonly string[] = ['opus', 'fable', 'sonnet', 'haiku'];
 
 /**
  * The SDK returns family aliases (`default`, `opus`, `sonnet`, `haiku`, …)
- * along with specific versioned models (`claude-opus-4-7`, `claude-fable-1-0`,
- * `claude-sonnet-4-5-20250929`, …).
+ * along with specific versioned models (`claude-opus-5`, `claude-fable-5`,
+ * `claude-opus-4-7`, `claude-sonnet-4-5-20250929`, …).
  *
  * Families are discovered from the model list itself — either an alias whose
  * value is a bare family name, or the first token of a `claude-<family>-…` ID.
@@ -71,7 +80,7 @@ const familyEntries = computed<FamilyEntry[]>(() => {
   function ensureFamily(key: string): FamilyEntry {
     if (!byFamily[key]) {
       byFamily[key] = {
-        family: capitalize(key),
+        family: capitalizeFamily(key),
         familyKey: key,
         alias: null,
         versions: [],
@@ -90,9 +99,11 @@ const familyEntries = computed<FamilyEntry[]>(() => {
       ensureFamily(model.value).alias = model;
       continue;
     }
-    const match = model.value.match(/^claude-([a-z]+)-\d+-\d+/);
-    if (match) {
-      ensureFamily(match[1]).versions.push(model);
+    // Versioned model ID. Handles both `claude-opus-4-8` and the Claude 5
+    // single-segment shape `claude-opus-5` — see @shared/model-id.
+    const parsed = parseModelId(model.value);
+    if (parsed) {
+      ensureFamily(parsed.family).versions.push(model);
     }
   }
 
@@ -144,13 +155,44 @@ function selectFamily(family: FamilyEntry): void {
   if (target) selectModel(target);
 }
 
-// Current model display name
+// Human label for whatever the CLI resolved, e.g. "Opus 5". Empty until an
+// init message has been seen for this session.
+const activeModelLabel = computed(() =>
+  activeModel.value ? formatModelId(activeModel.value) : '',
+);
+
+// True when the running model is not the one that was selected. Covers a
+// mid-session substitution (safety-classifier fallback, rate-limit fallback)
+// as well as a resumed session that kept its original model.
+const isModelMismatched = computed(() => {
+  if (!selectedModel.value || !activeModel.value) return false;
+  if (isSameModel(selectedModel.value, activeModel.value)) return false;
+  // A family alias ('opus') legitimately resolves to a concrete ID.
+  return parseModelId(activeModel.value)?.family !== selectedModel.value;
+});
+
+// Current model display name. With no explicit selection, show what the CLI
+// actually resolved rather than the word "Default", which tells the user
+// nothing about which model is spending their tokens.
 const currentModelDisplay = computed(() => {
   if (!selectedModel.value) {
-    return 'Default';
+    return activeModelLabel.value || 'Auto';
   }
   const model = models.value.find(m => m.value === selectedModel.value);
   return model?.displayName || formatModelId(selectedModel.value);
+});
+
+// Tooltip on the selector button — always states both sides when they differ.
+const selectorTitle = computed(() => {
+  if (!selectedModel.value) {
+    return activeModelLabel.value
+      ? `No model pinned — Claude Code chose ${activeModelLabel.value}`
+      : 'No model pinned — Claude Code chooses';
+  }
+  if (isModelMismatched.value) {
+    return `Selected ${formatModelId(selectedModel.value)}, but running ${activeModelLabel.value}`;
+  }
+  return 'Select AI model';
 });
 
 // Load available models
@@ -227,6 +269,28 @@ async function toggleThinking(): Promise<void> {
   logger.info('Thinking mode changed', { mode: newMode });
 }
 
+async function toggleSwitchModelsOnFlag(): Promise<void> {
+  const enabled = !switchModelsOnFlag.value;
+  await settingsStore.setSwitchModelsOnFlag(enabled);
+  logger.info('Auto-switch on flag changed', { enabled });
+  chatStore.addSystemMessage(
+    enabled
+      ? 'Claude Code may switch models when a message is flagged.'
+      : 'Model switching disabled — a flagged message will pause the session instead. Applies to new sessions.',
+  );
+}
+
+async function toggleStrictModelEnforcement(): Promise<void> {
+  const enabled = !strictModelEnforcement.value;
+  await settingsStore.setStrictModelEnforcement(enabled);
+  logger.info('Strict model enforcement changed', { enabled });
+  chatStore.addSystemMessage(
+    enabled
+      ? `Locked to ${currentModelDisplay.value}. Background agents cannot use another model. Applies to new sessions.`
+      : 'Model lock removed — background agents may run the model named in their own definition.',
+  );
+}
+
 // Toggle dropdown
 function toggleDropdown(): void {
   isOpen.value = !isOpen.value;
@@ -253,6 +317,13 @@ onMounted(() => {
     logger.debug('Models updated from SDK', { count: newModels.length });
   });
 
+  // Track the model the CLI reports it is actually running.
+  cleanupActiveModelListener = window.electron.claude.onActiveModel((conversationId, model) => {
+    if (conversationId !== conversationsStore.currentConversationId) return;
+    activeModel.value = model;
+    logger.info('Active model reported by CLI', { conversationId, model });
+  });
+
   // Add click outside listener
   document.addEventListener('click', handleClickOutside);
 });
@@ -260,6 +331,9 @@ onMounted(() => {
 onUnmounted(() => {
   if (cleanupModelsListener) {
     cleanupModelsListener();
+  }
+  if (cleanupActiveModelListener) {
+    cleanupActiveModelListener();
   }
   document.removeEventListener('click', handleClickOutside);
 });
@@ -274,15 +348,18 @@ onUnmounted(() => {
     <button
       class="flex items-center gap-1.5 px-2 py-1 text-sm rounded-md hover:bg-surface-100 dark:hover:bg-surface-700 text-surface-600 dark:text-surface-400 transition-colors"
       :class="{ 'bg-surface-100 dark:bg-surface-700': isOpen }"
-      title="Select AI model"
+      :title="selectorTitle"
       @click.stop="toggleDropdown"
     >
       <Icon
         name="cpu"
         size="sm"
-        class="shrink-0"
+        :class="isModelMismatched ? 'shrink-0 text-amber-500' : 'shrink-0'"
       />
-      <span class="max-w-[100px] truncate">{{ currentModelDisplay }}</span>
+      <span
+        class="max-w-[100px] truncate"
+        :class="{ 'text-amber-600 dark:text-amber-400': isModelMismatched }"
+      >{{ currentModelDisplay }}</span>
       <Icon
         :name="isOpen ? 'chevron-up' : 'chevron-down'"
         size="xs"
@@ -336,10 +413,14 @@ onUnmounted(() => {
               </span>
               <div class="flex-1 min-w-0">
                 <div class="font-medium text-surface-800 dark:text-surface-200">
-                  Default
+                  No model pinned
                 </div>
                 <div class="text-xs text-surface-500 dark:text-surface-400 truncate">
-                  Let the SDK pick the best model
+                  {{
+                    activeModelLabel
+                      ? `Claude Code chose ${activeModelLabel}`
+                      : 'Claude Code chooses — and may change it mid-session'
+                  }}
                 </div>
               </div>
             </div>
@@ -435,6 +516,18 @@ onUnmounted(() => {
           </div>
         </template>
 
+        <!-- Running model differs from the selection -->
+        <div
+          v-if="isModelMismatched"
+          class="mx-2 my-1 px-2 py-1.5 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800"
+        >
+          <div class="text-xs text-amber-700 dark:text-amber-300">
+            Running <strong>{{ activeModelLabel }}</strong>, not
+            <strong>{{ currentModelDisplay }}</strong>. Claude Code switches models
+            on its own when a message is flagged or the model is unavailable.
+          </div>
+        </div>
+
         <!-- Model options separator -->
         <div class="h-px bg-surface-200 dark:bg-surface-700 my-1" />
 
@@ -458,6 +551,67 @@ onUnmounted(() => {
               </div>
               <div class="text-xs text-surface-500 dark:text-surface-400">
                 {{ thinkingMode === 'auto' ? 'Auto — Claude decides when to think' : 'Disabled — saves tokens' }}
+              </div>
+            </div>
+          </div>
+        </button>
+
+        <!-- Allow Claude Code to swap models when a message is flagged.
+             Mirrors the CLI's own switchModelsOnFlag setting. -->
+        <button
+          class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors"
+          @click.stop="toggleSwitchModelsOnFlag"
+        >
+          <div class="flex items-center gap-2">
+            <span class="shrink-0 w-4 h-4 flex items-center justify-center">
+              <Icon
+                v-if="switchModelsOnFlag"
+                name="check"
+                size="sm"
+                class="text-primary-500"
+              />
+            </span>
+            <div class="flex-1 min-w-0">
+              <div class="font-medium text-surface-800 dark:text-surface-200">
+                Auto-switch when flagged
+              </div>
+              <div class="text-xs text-surface-500 dark:text-surface-400">
+                {{
+                  switchModelsOnFlag
+                    ? 'On — switches model to keep going'
+                    : 'Off — pauses instead of switching'
+                }}
+              </div>
+            </div>
+          </div>
+        </button>
+
+        <!-- Restrict the whole session, sub-agents included, to the selection. -->
+        <button
+          class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors disabled:opacity-50"
+          :disabled="!selectedModel"
+          :title="!selectedModel ? 'Pin a model first' : ''"
+          @click.stop="toggleStrictModelEnforcement"
+        >
+          <div class="flex items-center gap-2">
+            <span class="shrink-0 w-4 h-4 flex items-center justify-center">
+              <Icon
+                v-if="strictModelEnforcement"
+                name="check"
+                size="sm"
+                class="text-primary-500"
+              />
+            </span>
+            <div class="flex-1 min-w-0">
+              <div class="font-medium text-surface-800 dark:text-surface-200">
+                Lock to this model
+              </div>
+              <div class="text-xs text-surface-500 dark:text-surface-400">
+                {{
+                  strictModelEnforcement
+                    ? 'On — background agents forced onto it too'
+                    : 'Off — agents may use their own model'
+                }}
               </div>
             </div>
           </div>

@@ -290,7 +290,7 @@ export class ChannelService {
       bridgeUrl: bridge.getBridgeUrl(),
       bridgeToken: bridge.token,
       channelServerScript,
-      model: selectedModel || 'sonnet',
+      model: selectedModel,
       authEnv,
       thinkingMode,
       resumeSessionId,
@@ -334,7 +334,7 @@ export class ChannelService {
     logger.info('Channel session created', {
       conversationId,
       pid: session.pid,
-      model: selectedModel || 'sonnet',
+      model: selectedModel || '(CLI default)',
     });
 
     return active;

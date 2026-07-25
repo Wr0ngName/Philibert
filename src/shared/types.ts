@@ -612,6 +612,18 @@ export interface AppConfig {
   executionMode: ExecutionMode;
   /** Extended thinking mode: 'auto' lets Claude decide, 'disabled' saves tokens */
   thinkingMode: ThinkingMode;
+  /**
+   * Whether Claude Code may switch models by itself when a safety classifier
+   * flags a message. Mirrors the CLI's own `switchModelsOnFlag` setting; when
+   * false the session pauses instead of silently moving to another model.
+   */
+  switchModelsOnFlag: boolean;
+  /**
+   * Restrict the entire session — sub-agents included — to the selected model
+   * via the CLI's `availableModels` allowlist. Stricter than stock Claude Code,
+   * which lets a sub-agent run the model named in its own definition.
+   */
+  strictModelEnforcement: boolean;
 }
 
 /**
@@ -637,6 +649,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   updateChannel: 'stable',
   executionMode: 'sdk',
   thinkingMode: 'auto',
+  switchModelsOnFlag: true,
+  strictModelEnforcement: false,
 };
 
 // Conversation types
@@ -1032,6 +1046,8 @@ export const IPC_CHANNELS = {
   CLAUDE_GET_MODELS: 'claude:get-models',
   /** Model changed event */
   CLAUDE_MODEL_CHANGED: 'claude:model-changed',
+  /** The model the CLI reports it is actually running for a conversation */
+  CLAUDE_ACTIVE_MODEL: 'claude:active-model',
   /** Background task notification */
   CLAUDE_TASK_NOTIFICATION: 'claude:task-notification',
   /** Session usage update (token counts, cost) */
