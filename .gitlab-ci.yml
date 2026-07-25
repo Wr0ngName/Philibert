@@ -39,6 +39,14 @@ variables:
 
 lint:
   stage: test
+  # Serialized for two reasons, both observed in pipeline 5969:
+  #  - The runner handed `lint` and `test` the SAME concurrent slot while they
+  #    overlapped, so both ran `git clean -ffdx` and `npm ci` inside one build
+  #    directory, wiping each other's node_modules.
+  #  - Three simultaneous `npm ci` runs on a 5.7Gi swapless runner OOM-killed
+  #    one of them ("Killed" during install, all three jobs failing together
+  #    while passing locally).
+  resource_group: test-suite
   tags:
     - shell
   extends: .docker_cleanup
@@ -56,6 +64,14 @@ lint:
 
 test:
   stage: test
+  # Serialized for two reasons, both observed in pipeline 5969:
+  #  - The runner handed `lint` and `test` the SAME concurrent slot while they
+  #    overlapped, so both ran `git clean -ffdx` and `npm ci` inside one build
+  #    directory, wiping each other's node_modules.
+  #  - Three simultaneous `npm ci` runs on a 5.7Gi swapless runner OOM-killed
+  #    one of them ("Killed" during install, all three jobs failing together
+  #    while passing locally).
+  resource_group: test-suite
   tags:
     - shell
   extends: .docker_cleanup
@@ -73,6 +89,14 @@ test:
 
 typecheck:
   stage: test
+  # Serialized for two reasons, both observed in pipeline 5969:
+  #  - The runner handed `lint` and `test` the SAME concurrent slot while they
+  #    overlapped, so both ran `git clean -ffdx` and `npm ci` inside one build
+  #    directory, wiping each other's node_modules.
+  #  - Three simultaneous `npm ci` runs on a 5.7Gi swapless runner OOM-killed
+  #    one of them ("Killed" during install, all three jobs failing together
+  #    while passing locally).
+  resource_group: test-suite
   tags:
     - shell
   extends: .docker_cleanup
@@ -96,6 +120,13 @@ typecheck:
 # Linux build template
 .build_linux:
   stage: build
+  # All packaging jobs share one resource group so they never run concurrently.
+  # The runner has 5.7Gi and no swap; two simultaneous Electron packages, each
+  # extracting the ~265MB bundled Claude Code binary, get OOM-killed (SIGKILL,
+  # surfaced by Forge as "npm install exited with code: 137"). The Windows jobs
+  # were already serialized against each other, but build:linux was not in the
+  # group, so it overlapped both of them.
+  resource_group: package-build
   tags:
     - shell
   extends: .docker_cleanup
@@ -144,6 +175,13 @@ build:linux:manual:
 # Windows OFFLINE build template (bundles Node.js + Git)
 .build_windows_offline:
   stage: build
+  # All packaging jobs share one resource group so they never run concurrently.
+  # The runner has 5.7Gi and no swap; two simultaneous Electron packages, each
+  # extracting the ~265MB bundled Claude Code binary, get OOM-killed (SIGKILL,
+  # surfaced by Forge as "npm install exited with code: 137"). The Windows jobs
+  # were already serialized against each other, but build:linux was not in the
+  # group, so it overlapped both of them.
+  resource_group: package-build
   tags:
     - shell
   extends: .docker_cleanup
@@ -162,6 +200,13 @@ build:linux:manual:
 # Windows ONLINE build template (smaller, downloads deps during install)
 .build_windows_online:
   stage: build
+  # All packaging jobs share one resource group so they never run concurrently.
+  # The runner has 5.7Gi and no swap; two simultaneous Electron packages, each
+  # extracting the ~265MB bundled Claude Code binary, get OOM-killed (SIGKILL,
+  # surfaced by Forge as "npm install exited with code: 137"). The Windows jobs
+  # were already serialized against each other, but build:linux was not in the
+  # group, so it overlapped both of them.
+  resource_group: package-build
   tags:
     - shell
   extends: .docker_cleanup
@@ -177,7 +222,6 @@ build:linux:manual:
 # Windows OFFLINE build for tags (main installer for auto-updates)
 build:windows:
   extends: .build_windows_offline
-  resource_group: windows-build
   artifacts:
     name: "philibert-windows-offline-${CI_COMMIT_REF_SLUG}"
     paths:
@@ -189,7 +233,6 @@ build:windows:
 # Windows ONLINE build for tags (smaller download option)
 build:windows:online:
   extends: .build_windows_online
-  resource_group: windows-build
   artifacts:
     name: "philibert-windows-online-${CI_COMMIT_REF_SLUG}"
     paths:
@@ -201,7 +244,6 @@ build:windows:online:
 # Windows OFFLINE build for manual testing
 build:windows:manual:
   extends: .build_windows_offline
-  resource_group: windows-build
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
@@ -210,7 +252,6 @@ build:windows:manual:
 # Windows ONLINE build for manual testing
 build:windows:online:manual:
   extends: .build_windows_online
-  resource_group: windows-build
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
