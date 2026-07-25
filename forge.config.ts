@@ -111,11 +111,29 @@ const config: ForgeConfig = {
           stdio: 'inherit',
           shell: true,
         });
-        npm.on('close', (code) => code === 0 ? resolve() : reject(new Error(`npm install exited with code: ${code}`)));
+        npm.on('close', (code) => {
+          if (code === 0) return resolve();
+          // 137 is SIGKILL, which on this build host means the OOM killer.
+          // Say so explicitly — the bare exit code sent us looking for a
+          // dependency fault when the machine had simply run out of memory.
+          const hint = code === 137
+            ? ' (SIGKILL — almost certainly the OOM killer; this host has no swap)'
+            : '';
+          reject(new Error(`npm install exited with code: ${code}${hint}`));
+        });
         npm.on('error', reject);
       });
 
-      await runNpm(['install', '--no-package-lock', '--no-save', ...pinnedModules]);
+      // Install one module at a time rather than in a single npm call. Two of
+      // these pull a large platform binary (the bundled Claude Code CLI alone
+      // is ~265MB), and installing them together means npm extracts several
+      // at once — a peak this build host cannot afford. Sequential installs
+      // are slightly slower but hold a much lower high-water mark.
+      const npmFlags = ['--no-package-lock', '--no-save', '--no-audit', '--no-fund'];
+      for (const mod of pinnedModules) {
+        console.log(`Installing external module: ${mod}`);
+        await runNpm(['install', ...npmFlags, mod]);
+      }
 
       // Platform-specific binary packages have os/cpu restrictions that npm rejects
       // during cross-compilation (e.g. installing win32 package on Linux).
@@ -123,7 +141,7 @@ const config: ForgeConfig = {
       if (claudeCodeVersion) {
         const crossPlatformPkg = `${platformPkg}@${claudeCodeVersion}`;
         console.log(`Installing cross-platform binary: ${crossPlatformPkg}`);
-        await runNpm(['install', '--no-package-lock', '--no-save', '--force', crossPlatformPkg]);
+        await runNpm(['install', ...npmFlags, '--force', crossPlatformPkg]);
       }
 
       // After install, the postinstall may have placed the HOST platform's binary
