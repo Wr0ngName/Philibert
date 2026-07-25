@@ -24,6 +24,9 @@ variables:
     - docker run --rm -v "$CI_PROJECT_DIR:/app" alpine chown -R $(id -u):$(id -g) /app || true
     # Now clean up old files (git clean was disabled via GIT_CLEAN_FLAGS)
     - git clean -ffdx || true
+    # Reclaim containers left behind by previous (possibly OOM-killed) jobs.
+    # Containers only — images are kept so they don't get re-pulled.
+    - docker container prune -f || true
     # Show available disk space and memory for diagnostics
     - df -h "$CI_PROJECT_DIR" || true
     - free -h || true
@@ -136,7 +139,7 @@ typecheck:
         -v "$CI_PROJECT_DIR:/app" \
         -w /app \
         node:${NODE_VERSION} \
-        bash -c "apt-get update && apt-get install -y build-essential python3 dpkg fakeroot rpm && npm ci && npm run make -- --platform=linux"
+        bash -c "apt-get update && apt-get install -y build-essential python3 dpkg fakeroot rpm && npm ci --maxsockets 1 --no-audit --no-fund && npm run make -- --platform=linux"
 
 # Linux build for tags (with artifacts for release)
 build:linux:
@@ -192,7 +195,7 @@ build:linux:manual:
         -w /app \
         -e PHILIBERT_ONLINE_BUILD=false \
         electronuserland/builder:wine-mono \
-        bash -c "curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs bzip2 && npm ci && ./scripts/download-node-windows.sh && ./scripts/download-git-bash-windows.sh && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never"
+        bash -c "curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs bzip2 && npm ci --maxsockets 1 --no-audit --no-fund && ./scripts/download-node-windows.sh && ./scripts/download-git-bash-windows.sh && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never"
     - echo "=== Artifact sizes ==="
     - du -sh out/make/nsis/*.exe 2>/dev/null || true
     - df -h "$CI_PROJECT_DIR" || true
@@ -217,7 +220,7 @@ build:linux:manual:
         -w /app \
         -e PHILIBERT_ONLINE_BUILD=true \
         electronuserland/builder:wine-mono \
-        bash -c "curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs bzip2 && npm ci && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never && mkdir -p out-online/nsis && cp out/make/nsis/*.exe out-online/nsis/"
+        bash -c "curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs bzip2 && npm ci --maxsockets 1 --no-audit --no-fund && npm run package -- --platform=win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never && mkdir -p out-online/nsis && cp out/make/nsis/*.exe out-online/nsis/"
 
 # Windows OFFLINE build for tags (main installer for auto-updates)
 build:windows:
