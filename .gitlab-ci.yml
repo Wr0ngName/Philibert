@@ -30,6 +30,15 @@ variables:
     # Show available disk space and memory for diagnostics
     - df -h "$CI_PROJECT_DIR" || true
     - free -h || true
+    # Jobs are being OOM-killed with 0.5-1.6Gi available while the runner
+    # already reports 3.5-4.6Gi used before any job starts, and container
+    # prune reclaims 0B — so the memory belongs to something other than this
+    # pipeline. Name it rather than keep guessing at mitigations.
+    - echo "=== top RSS consumers on runner ==="
+    - ps -eo rss,pid,etimes,comm --sort=-rss 2>/dev/null | head -15 | awk 'NR==1{print} NR>1{printf "%8.0f MB  pid=%-8s age=%-8ss  %s\n", $1/1024, $2, $3, $4}' || true
+    - echo "=== docker resource usage ==="
+    - docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null || true
+    - docker system df 2>/dev/null || true
   after_script:
     # Always fix permissions after job (even on failure)
     # NOTE: Do NOT remove out/out-online here - after_script runs BEFORE artifact upload
