@@ -1,3 +1,33 @@
+# Lockfile sync guard.
+#
+# CI installs with `npm ci`, which refuses to run when package.json and
+# package-lock.json disagree. A local `npm install` on one platform prunes
+# transitive deps of other platforms' optional packages — the wasm32-wasi
+# subtree pulls @emnapi/core and @emnapi/runtime, node-fetch pulls encoding.
+# The pruned lockfile still installs fine locally and fails every CI job.
+# This has broken the pipeline more than once, so catch it before the push.
+#
+# Only runs when the manifest or lockfile is staged. Note the checks below
+# skip entirely when no .ts/.vue/.js file is staged, so a lockfile-only
+# commit would otherwise be committed with no verification at all.
+STAGED_MANIFEST=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^(package\.json|package-lock\.json)$' || true)
+
+if [ -n "$STAGED_MANIFEST" ]; then
+  echo "Verifying package-lock.json is in sync (npm ci --dry-run)..."
+  if ! npm ci --ignore-scripts --dry-run >/dev/null 2>&1; then
+    echo ""
+    echo "ERROR: package.json and package-lock.json are out of sync."
+    echo "       CI runs 'npm ci' and will fail on every job."
+    echo ""
+    npm ci --ignore-scripts --dry-run 2>&1 | grep -E "Missing|Invalid" | head -20
+    echo ""
+    echo "  Do NOT just re-run 'npm install' — that is what prunes entries."
+    echo "  Restore the last known-good lockfile, re-apply only the intended"
+    echo "  version changes, then confirm with 'npm ci --dry-run'."
+    exit 1
+  fi
+fi
+
 # Get list of staged .ts, .vue, .js files
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|vue|js)$' || true)
 
