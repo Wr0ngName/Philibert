@@ -73,6 +73,7 @@ vi.mock('../../utils/logger', () => ({
 }));
 
 // Import after mocks
+import { MAIN_CONSTANTS } from '../../constants/app';
 import AuthService from '../AuthService';
 
 describe('AuthService', () => {
@@ -942,8 +943,7 @@ describe('AuthService', () => {
       expect(service.hasPendingFlow()).toBe(false);
     });
 
-    // Note: rmSync timing with fake timers is unreliable
-    it.skip('should schedule temp directory cleanup', async () => {
+    it('should schedule temp directory cleanup', async () => {
       const flowPromise = service.startOAuthFlow();
       await vi.advanceTimersByTimeAsync(50);
       mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test\n');
@@ -951,12 +951,30 @@ describe('AuthService', () => {
       await vi.advanceTimersByTimeAsync(100);
       await flowPromise;
 
+      // cleanupOAuthFlow guards the rmSync behind existsSync. The suite's
+      // default mock reports false for everything except the bundled CLI, so
+      // the temp OAuth dir has to be reported as present for the removal to
+      // be reachable at all.
+      mockFsExistsSync.mockImplementation((path: string) => {
+        if (path.includes('cli.js')) return true;
+        if (path.includes('node.exe')) return true;
+        if (path.includes('claude-oauth-')) return true;
+        return false;
+      });
+      mockFsRmSync.mockClear();
+
       service.cleanupOAuthFlow();
 
-      // Advance past cleanup delay (1 second in implementation)
-      await vi.advanceTimersByTimeAsync(2000);
+      // Nothing should be removed before the delay elapses — the PTY needs to
+      // release its file handles first.
+      await vi.advanceTimersByTimeAsync(MAIN_CONSTANTS.AUTH.PTY_CLEANUP_DELAY_MS - 1);
+      expect(mockFsRmSync).not.toHaveBeenCalled();
 
-      expect(mockFsRmSync).toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mockFsRmSync).toHaveBeenCalledWith(
+        expect.stringContaining('claude-oauth-'),
+        { recursive: true, force: true },
+      );
     });
 
     it('should be safe to call multiple times', () => {
@@ -984,35 +1002,9 @@ describe('AuthService', () => {
     });
   });
 
-  // ===========================================================================
-  // ANSI Stripping
-  // ===========================================================================
-  describe('ANSI code handling', () => {
-    // Note: These tests timeout with fake timers - URL detection requires different output pattern
-    it.skip('should strip CSI sequences', async () => {
-      const flowPromise = service.startOAuthFlow();
-      await vi.advanceTimersByTimeAsync(50);
-
-      mockPty.emitData('\x1b[2Khttps://claude.com/cai/oauth/authorize?test=1\x1b[0m\n');
-      mockPty.emitData('Code:\n');
-
-      await vi.advanceTimersByTimeAsync(100);
-
-      const result = await flowPromise;
-      expect(result.authUrl).toContain('oauth/authorize');
-    });
-
-    it.skip('should strip OSC sequences', async () => {
-      const flowPromise = service.startOAuthFlow();
-      await vi.advanceTimersByTimeAsync(50);
-
-      mockPty.emitData('\x1b]0;Title\x07https://claude.com/cai/oauth/authorize?x=1\n');
-      mockPty.emitData('Code:\n');
-
-      await vi.advanceTimersByTimeAsync(100);
-
-      const result = await flowPromise;
-      expect(result.authUrl).toContain('oauth/authorize');
-    });
-  });
+  // ANSI stripping (CSI, OSC, DCS/SOS/PM/APC, lone ESC, backspace overwrite)
+  // is covered directly and deterministically against stripAnsi() in
+  // src/main/utils/__tests__/ansi.test.ts and ansi.realworld.test.ts. Driving
+  // the same logic through the fake-timer PTY OAuth flow duplicated that
+  // coverage at a less reliable level, so those cases live there instead.
 });
