@@ -14,7 +14,7 @@ import Icon from '../shared/Icon.vue';
 import { logger } from '../../utils/logger';
 
 const filesStore = useFilesStore();
-const { fileTree, hasFiles, isLoading, error } = storeToRefs(filesStore);
+const { fileTree, hasFiles, hasWorkingDirectory, isLoading, error } = storeToRefs(filesStore);
 
 const rootRef = ref<HTMLElement | null>(null);
 const viewerOpen = ref(false);
@@ -108,7 +108,10 @@ onUnmounted(() => {
         </p>
       </div>
 
-      <!-- Empty state -->
+      <!-- Empty state. An empty tree means one of two different things:
+           no directory has been chosen yet, or a directory is chosen and
+           genuinely contains nothing. Reporting "no directory selected" for
+           the second case is simply untrue. -->
       <div
         v-else-if="!hasFiles"
         class="flex flex-col items-center justify-center h-full px-4 text-center"
@@ -119,7 +122,13 @@ onUnmounted(() => {
           class="text-surface-300 dark:text-surface-600 mb-2"
         />
         <p class="text-sm text-surface-500 dark:text-surface-400">
-          No working directory selected
+          {{ hasWorkingDirectory ? 'This folder is empty' : 'No working directory selected' }}
+        </p>
+        <p
+          v-if="hasWorkingDirectory"
+          class="text-xs text-surface-400 dark:text-surface-500 mt-1"
+        >
+          Claude can still create files here.
         </p>
       </div>
 
