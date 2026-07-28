@@ -34,16 +34,27 @@ export function resolveResultError(
 }
 
 /**
- * Origin kinds that represent work the user personally asked for in the main
- * conversation. Everything else on this list is harness-driven activity —
- * a finished background task being delivered back into the session, an
- * auto-continuation, an observer digest, a peer/channel message.
+ * Origin kinds that represent harness-driven activity rather than a turn the
+ * user is waiting on: a finished background task delivered back into the
+ * session, an auto-continuation, an observer digest.
  *
  * `SDKMessageOrigin.kind` (sdk.d.ts) is one of: 'human' | 'channel' | 'peer' |
  * 'task-notification' | 'coordinator' | 'observer' | 'auto-continuation' |
  * 'observer-activity'.
+ *
+ * This is deliberately a denylist, not an allowlist of 'human'. An allowlist
+ * makes every unrecognised or absent origin suppress turn completion, which
+ * strands the spinner with no turn running — the SDK notes that origin is
+ * absent on older CLIs and that an unstamped message is "unattributed", so
+ * unknown values are common. Failing towards "the turn ended" is recoverable;
+ * failing towards "still running" is not.
  */
-const HUMAN_ORIGIN_KINDS = new Set(['human']);
+const BACKGROUND_ORIGIN_KINDS = new Set([
+  'task-notification',
+  'auto-continuation',
+  'observer',
+  'observer-activity',
+]);
 
 /**
  * Whether a `result` message ends the turn the user is waiting on.
@@ -52,16 +63,12 @@ const HUMAN_ORIGIN_KINDS = new Set(['human']);
  * delivers their completion back into the session. Treating those as the end
  * of the main turn drops the spinner while the main conversation is still
  * working and fires a "Query Complete" notification for work the user never
- * started — which is both misleading and, with several agents running, noisy.
- *
- * `origin` is optional in the SDK types and absent on older CLIs; treat a
- * missing origin as human so behaviour degrades to the previous semantics
- * rather than silently never completing a turn.
+ * started — misleading, and noisy with several agents running.
  */
 export function isHumanOriginatedResult(message: { origin?: { kind?: string } }): boolean {
   const kind = message.origin?.kind;
   if (!kind) return true;
-  return HUMAN_ORIGIN_KINDS.has(kind);
+  return !BACKGROUND_ORIGIN_KINDS.has(kind);
 }
 
 /**
@@ -98,6 +105,12 @@ export interface MessageHandlerCallbacks {
    * a dialog, so this notice is the only signal the user gets.
    */
   onModelSubstituted?: (event: ModelSubstitutionEvent) => void;
+  /**
+   * The CLI reports the session is idle and awaiting input. Used as a backstop
+   * to clear the busy indicator when no turn-ending `result` arrives, so the
+   * spinner can never outlive the work it represents.
+   */
+  onSessionIdle?: () => void;
 }
 
 /** Where an observed model reading came from. */
@@ -837,9 +850,21 @@ export class SDKMessageHandler {
       }
     }
 
-    // Handle session_state_changed — authoritative turn-over signal
+    // Handle session_state_changed — authoritative turn-over signal.
+    //
+    // Backstop for the spinner. Turn completion is normally driven by `result`
+    // messages, but any result we decline to treat as turn-ending (background
+    // origin) or that never arrives (interrupt, error, a harness path that
+    // closes the turn without one) would otherwise leave the UI spinning with
+    // nothing running. 'idle' means the CLI considers the session finished and
+    // is waiting on input, so it is safe to clear the busy state — quietly,
+    // without the "Query Complete" notification, which stays tied to a real
+    // user-originated result.
     if (systemMsg.subtype === 'session_state_changed') {
       logger.info('Session state changed', { state: systemMsg.state });
+      if (systemMsg.state === 'idle') {
+        this.callbacks.onSessionIdle?.();
+      }
     }
 
     // Emit other system messages as system notes

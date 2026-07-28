@@ -1627,21 +1627,39 @@ describe('ClaudeCodeService', () => {
       expect(opus!.description).toBe('1M context');
     });
 
-    it('should add catalog models not present in SDK output', () => {
+    // The catalog enriches SDK rows; it must never invent rows of its own.
+    // supportedModels() reflects what the account is entitled to run, so
+    // appending every known model listed models the user does not have —
+    // selecting one made the CLI silently fall back to a different model.
+    it('should NOT add catalog models the SDK did not report', () => {
       const sdkModels = [
         { value: 'claude-sonnet-4-6-20260201', displayName: 'Sonnet', description: '' },
       ];
       const result = ClaudeCodeService.mergeWithKnownModels(sdkModels);
 
-      const haiku = result.find(m => m.value === 'claude-haiku-4-5');
-      expect(haiku).toBeDefined();
-      expect(haiku!.displayName).toBe('Claude Haiku 4.5');
-      expect(haiku!.description).toBe('200K context');
+      expect(result.find(m => m.value === 'claude-haiku-4-5')).toBeUndefined();
+      expect(result.find(m => m.value === 'claude-opus-5')).toBeUndefined();
+      expect(result).toHaveLength(1);
+      expect(result[0].value).toBe('claude-sonnet-4-6-20260201');
+    });
+
+    it('should return nothing when the SDK reports nothing', () => {
+      expect(ClaudeCodeService.mergeWithKnownModels([])).toEqual([]);
+    });
+
+    it('should preserve resolvedModel so alias rows can be matched', () => {
+      const result = ClaudeCodeService.mergeWithKnownModels([
+        { value: 'opus', resolvedModel: 'claude-opus-4-8', displayName: 'Opus', description: '' },
+        { value: 'claude-opus-4-8', resolvedModel: 'claude-opus-4-8', displayName: 'x', description: '' },
+      ]);
+      expect(result.find(m => m.value === 'opus')?.resolvedModel).toBe('claude-opus-4-8');
+      expect(result.find(m => m.value === 'claude-opus-4-8')?.resolvedModel).toBe('claude-opus-4-8');
     });
 
     it('should sort by family (Opus, Sonnet, Haiku) then version descending', () => {
       const sdkModels = [
         { value: 'claude-haiku-4-5', displayName: 'Haiku', description: '' },
+        { value: 'claude-sonnet-4-6', displayName: 'Sonnet 4.6', description: '' },
         { value: 'claude-opus-4-6', displayName: 'Opus 4.6', description: '' },
       ];
       const result = ClaudeCodeService.mergeWithKnownModels(sdkModels);
@@ -1658,7 +1676,11 @@ describe('ClaudeCodeService', () => {
     });
 
     it('should sort versions descending within the same family', () => {
-      const result = ClaudeCodeService.mergeWithKnownModels([]);
+      const result = ClaudeCodeService.mergeWithKnownModels([
+        { value: 'claude-opus-4-6', displayName: '', description: '' },
+        { value: 'claude-opus-5', displayName: '', description: '' },
+        { value: 'claude-opus-4-8', displayName: '', description: '' },
+      ]);
 
       const opusModels = result.filter(m => m.value.includes('opus'));
       // Use the shared rank helper rather than a local regex: a two-segment

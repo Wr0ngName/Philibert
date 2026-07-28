@@ -109,6 +109,27 @@ export function formatModelDisplayName(parsed: ParsedModelId): string {
 }
 
 /**
+ * Sentinels the CLI puts in a message's `model` field when the message did not
+ * come from a model at all. `<synthetic>` is stamped on assistant messages the
+ * CLI fabricates locally — quota and rate-limit notices, "No response
+ * requested", "(no content)". Treating one as a real model reading produces a
+ * nonsense report like "you selected Opus 4.8, but Claude Code is running
+ * <synthetic>" in place of the actual quota error.
+ */
+const NON_MODEL_SENTINELS = new Set(['<synthetic>', 'default', '(no content)']);
+
+/**
+ * Whether a reported `model` value names an actual model, as opposed to a CLI
+ * sentinel or an empty field. Anything bracketed is a sentinel by construction.
+ */
+export function isRealModelId(modelId: string | undefined | null): boolean {
+  if (!modelId) return false;
+  if (NON_MODEL_SENTINELS.has(modelId)) return false;
+  if (modelId.startsWith('<')) return false;
+  return true;
+}
+
+/**
  * True when two model identifiers refer to the same model, ignoring dated
  * snapshot suffixes. Used to tell a real model substitution apart from the
  * API reporting a pinned snapshot of the model that was actually requested

@@ -28,6 +28,12 @@ export interface SlashCommandInfo {
 export interface ModelInfo {
   /** Model identifier to use in API calls */
   value: string;
+  /**
+   * Canonical wire model ID this row resolves to (e.g. `opus` → `claude-opus-4-8`).
+   * Supplied by the SDK so a host can match a persisted alias against the
+   * concrete model the CLI actually reports running.
+   */
+  resolvedModel?: string;
   /** Human-readable display name */
   displayName: string;
   /** Description of the model's capabilities */

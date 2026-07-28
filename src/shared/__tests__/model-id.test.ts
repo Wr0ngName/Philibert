@@ -5,6 +5,7 @@ import {
   formatModelDisplayName,
   formatModelId,
   formatVersion,
+  isRealModelId,
   isSameModel,
   modelFamily,
   modelVersionRank,
@@ -152,5 +153,33 @@ describe('isSameModel', () => {
   it('is false when either side is missing', () => {
     expect(isSameModel('', 'claude-opus-5')).toBe(false);
     expect(isSameModel('claude-opus-5', '')).toBe(false);
+  });
+});
+
+describe('isRealModelId', () => {
+  // The CLI stamps `<synthetic>` on assistant messages it fabricates itself —
+  // quota and rate-limit notices above all. Reading one as a model produced
+  // "you selected Opus 4.8, but Claude Code is running <synthetic>" in place
+  // of the actual quota error.
+  it('rejects the synthetic sentinel', () => {
+    expect(isRealModelId('<synthetic>')).toBe(false);
+  });
+
+  it('rejects other CLI sentinels and bracketed placeholders', () => {
+    expect(isRealModelId('default')).toBe(false);
+    expect(isRealModelId('(no content)')).toBe(false);
+    expect(isRealModelId('<anything>')).toBe(false);
+  });
+
+  it('rejects empty and nullish values', () => {
+    expect(isRealModelId('')).toBe(false);
+    expect(isRealModelId(undefined)).toBe(false);
+    expect(isRealModelId(null)).toBe(false);
+  });
+
+  it('accepts real model IDs and family aliases', () => {
+    expect(isRealModelId('claude-opus-4-8')).toBe(true);
+    expect(isRealModelId('claude-opus-5')).toBe(true);
+    expect(isRealModelId('opus')).toBe(true);
   });
 });

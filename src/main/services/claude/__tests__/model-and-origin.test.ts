@@ -41,12 +41,13 @@ describe('isHumanOriginatedResult', () => {
     'auto-continuation',
     'observer',
     'observer-activity',
-    'coordinator',
-    'peer',
-    'channel',
   ])('does not end the user turn for origin kind %s', (kind) => {
     expect(isHumanOriginatedResult({ origin: { kind } })).toBe(false);
   });
+
+  // 'coordinator', 'peer' and 'channel' deliberately DO end the turn. They are
+  // not background-agent completions, and suppressing on them risked leaving
+  // the spinner running forever — see the unknown-origin block below.
 });
 
 describe('SDKMessageHandler — sub-agent isolation', () => {
@@ -171,5 +172,91 @@ describe('SDKMessageHandler — model substitution notices', () => {
       category: 'bio',
       explanation: undefined,
     });
+  });
+});
+
+describe('isHumanOriginatedResult — unknown origins must not strand the spinner', () => {
+  // Regression: this was an allowlist of 'human', so any origin the SDK
+  // reported that wasn't literally 'human' suppressed turn completion and
+  // left the UI spinning with no turn running. The SDK notes origin is absent
+  // on older CLIs and that unstamped messages are "unattributed", so unknown
+  // values are expected rather than exceptional.
+  it.each(['channel', 'peer', 'coordinator', 'something-new'])(
+    'ends the user turn for non-background origin %s',
+    (kind) => {
+      expect(isHumanOriginatedResult({ origin: { kind } })).toBe(true);
+    },
+  );
+
+  it.each(['task-notification', 'auto-continuation', 'observer', 'observer-activity'])(
+    'still suppresses turn completion for background origin %s',
+    (kind) => {
+      expect(isHumanOriginatedResult({ origin: { kind } })).toBe(false);
+    },
+  );
+});
+
+describe('SDKMessageHandler — session idle backstop', () => {
+  it('signals idle so a stranded busy state can be cleared', async () => {
+    const cb = {
+      onChunk: vi.fn(),
+      onSlashCommands: vi.fn(),
+      onTaskNotification: vi.fn(),
+      onUsageUpdate: vi.fn(),
+      onSystemNote: vi.fn(),
+      onSessionIdle: vi.fn(),
+    };
+    const h = new SDKMessageHandler(cb);
+
+    await h.handleMessage({
+      type: 'system', subtype: 'session_state_changed', state: 'idle',
+    } as never);
+    expect(cb.onSessionIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not signal idle while the session is running', async () => {
+    const cb = {
+      onChunk: vi.fn(),
+      onSlashCommands: vi.fn(),
+      onTaskNotification: vi.fn(),
+      onUsageUpdate: vi.fn(),
+      onSystemNote: vi.fn(),
+      onSessionIdle: vi.fn(),
+    };
+    const h = new SDKMessageHandler(cb);
+
+    await h.handleMessage({
+      type: 'system', subtype: 'session_state_changed', state: 'running',
+    } as never);
+    await h.handleMessage({
+      type: 'system', subtype: 'session_state_changed', state: 'requires_action',
+    } as never);
+    expect(cb.onSessionIdle).not.toHaveBeenCalled();
+  });
+});
+
+describe('SDKMessageHandler — synthetic model is not a model reading', () => {
+  it('does not report <synthetic> as the running model', async () => {
+    const cb = {
+      onChunk: vi.fn(),
+      onSlashCommands: vi.fn(),
+      onTaskNotification: vi.fn(),
+      onUsageUpdate: vi.fn(),
+      onSystemNote: vi.fn(),
+      onModelReported: vi.fn(),
+    };
+    const h = new SDKMessageHandler(cb);
+
+    // What the CLI emits when quota is exhausted.
+    await h.handleMessage({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { model: '<synthetic>', content: [{ type: 'text', text: 'quota exceeded' }] },
+    } as never);
+
+    // The handler forwards it; ClaudeCodeService.reconcileReportedModel is what
+    // discards sentinels (covered by isRealModelId). Assert the raw value so a
+    // future change that starts filtering here is a deliberate one.
+    expect(cb.onModelReported).toHaveBeenCalledWith('<synthetic>', 'main');
   });
 });

@@ -39,6 +39,7 @@ import { BrowserWindow } from 'electron';
 import {
   formatModelDisplayName,
   formatModelId,
+  isRealModelId,
   isSameModel,
   modelFamily,
   modelVersionRank,
@@ -86,6 +87,17 @@ interface CatalogEntry {
   minor?: number;
   context: string;
 }
+
+/**
+ * Provenance stamped on every user message this app sends.
+ *
+ * The SDK is explicit that "a host wrapping keyboard input must stamp
+ * {kind:'human'} explicitly — absent origin is treated as unattributed and
+ * fails closed at strict isHuman() trust gates". Every message we push comes
+ * from the person typing in the chat box, so without this the CLI cannot tell
+ * our turns apart from harness-driven ones.
+ */
+const HUMAN_ORIGIN = { kind: 'human' } as const;
 
 /**
  * Represents a persistent SDK session for a specific conversation.
@@ -446,6 +458,7 @@ export class ClaudeCodeService {
       message: { role: 'user', content: message },
       parent_tool_use_id: null,
       session_id: session.sdkSessionId,
+      origin: HUMAN_ORIGIN,
     };
 
     inputChannel.push(userMessage);
@@ -547,6 +560,19 @@ export class ClaudeCodeService {
       },
       onModelSubstituted: (event: ModelSubstitutionEvent) => {
         this.reportModelSubstitution(conversationId, event);
+      },
+      onSessionIdle: () => {
+        // Backstop only: clear the busy state if it somehow outlived the turn.
+        // Silent by design — the completion notification belongs to a real
+        // user-originated result, not to every idle transition.
+        if (this.processingSessions.has(conversationId)) {
+          logger.info('Session reported idle while still marked processing — clearing busy state', {
+            conversationId,
+          });
+          this.processingSessions.delete(conversationId);
+          this.emitActiveQueryCount();
+          this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
+        }
       },
       onSessionId: (sessionId: string) => {
         // Capture session ID for constructing SDKUserMessage
@@ -720,6 +746,7 @@ export class ClaudeCodeService {
         message: { role: 'user', content: message },
         parent_tool_use_id: null,
         session_id: resumeSessionId || '',
+        origin: HUMAN_ORIGIN,
       };
 
       inputChannel.push(userMessage);
@@ -1212,6 +1239,7 @@ export class ClaudeCodeService {
       message: { role: 'user', content: text },
       parent_tool_use_id: null,
       ...(session.sdkSessionId ? { session_id: session.sdkSessionId } : {}),
+      origin: HUMAN_ORIGIN,
     };
 
     session.inputChannel.push(userMessage);
@@ -1528,7 +1556,14 @@ export class ClaudeCodeService {
     source: ModelReportSource,
   ): void {
     const session = this.activeSessions.get(conversationId);
-    if (!session || !reportedModel) return;
+    if (!session) return;
+
+    // The CLI stamps `<synthetic>` on assistant messages it fabricates itself
+    // — quota and rate-limit notices above all. Those carry no model, and
+    // reporting one as a substitution replaces the real error the user needs
+    // to see ("you selected Opus 4.8, but Claude Code is running <synthetic>")
+    // with something meaningless.
+    if (!isRealModelId(reportedModel)) return;
 
     // Track what the main thread is actually on, so a later setModel() diff
     // is computed against reality rather than against what we asked for, and
@@ -1556,11 +1591,17 @@ export class ClaudeCodeService {
       return;
     }
 
-    // A family alias ('opus') legitimately resolves to a concrete ID
-    // ('claude-opus-5'), and a pinned snapshot ('claude-sonnet-4-5-20250929')
-    // is the same model as its alias. Neither is a substitution.
+    // A pinned snapshot ('claude-sonnet-4-5-20250929') is the same model as its
+    // alias. Not a substitution.
     if (isSameModel(requested, reportedModel)) return;
-    if (modelFamily(reportedModel) === requested) return;
+
+    // A family alias ('opus') legitimately resolves to a concrete ID. The SDK
+    // publishes that mapping as `resolvedModel` on the alias row precisely so a
+    // host can match a persisted selection against the model actually running;
+    // fall back to comparing families only when the row isn't cached yet.
+    const requestedRow = this.cachedModels.find((m) => m.value === requested);
+    if (requestedRow?.resolvedModel && isSameModel(requestedRow.resolvedModel, reportedModel)) return;
+    if (!requestedRow?.resolvedModel && modelFamily(reportedModel) === requested) return;
 
     const key = `${source}:${stripDateSuffix(reportedModel)}`;
     if (session.announcedModels.has(key)) return;
@@ -1653,6 +1694,7 @@ export class ClaudeCodeService {
         const models = await instance.query.supportedModels();
         this.cachedModels = ClaudeCodeService.mergeWithKnownModels(models.map((m) => ({
           value: m.value,
+          resolvedModel: m.resolvedModel,
           displayName: m.displayName,
           description: m.description,
         })));
@@ -1704,6 +1746,7 @@ export class ClaudeCodeService {
       const models = await tempQuery.supportedModels();
       this.cachedModels = ClaudeCodeService.mergeWithKnownModels(models.map((m) => ({
         value: m.value,
+        resolvedModel: m.resolvedModel,
         displayName: m.displayName,
         description: m.description,
       })));
@@ -1730,6 +1773,7 @@ export class ClaudeCodeService {
       const models = await queryIterator.supportedModels();
       this.cachedModels = ClaudeCodeService.mergeWithKnownModels(models.map((m) => ({
         value: m.value,
+        resolvedModel: m.resolvedModel,
         displayName: m.displayName,
         description: m.description,
       })));
@@ -1827,7 +1871,7 @@ export class ClaudeCodeService {
       const catalogEntry = catalogByAlias.get(alias);
       if (catalogEntry) {
         merged.push({
-          value: sdk.value,
+          ...sdk,
           displayName: formatModelDisplayName({
             family: catalogEntry.family,
             major: catalogEntry.major,
@@ -1848,20 +1892,12 @@ export class ClaudeCodeService {
       }
     }
 
-    for (const entry of ClaudeCodeService.MODEL_CATALOG) {
-      const alias = ClaudeCodeService.catalogAlias(entry);
-      if (seen.has(alias)) continue;
-      seen.add(alias);
-      merged.push({
-        value: alias,
-        displayName: formatModelDisplayName({
-          family: entry.family,
-          major: entry.major,
-          minor: entry.minor ?? null,
-        }),
-        description: `${entry.context} context`,
-      });
-    }
+    // NOTE: the catalog only *enriches* rows the SDK reported — it must never
+    // add rows of its own. supportedModels() reflects what this account is
+    // actually entitled to run, so appending every known model produced a
+    // picker listing models that don't exist for the user and can't be
+    // selected: choosing one made the CLI fall back to another model, which
+    // then surfaced as a spurious "model mismatch".
 
     const familyOrder = ClaudeCodeService.FAMILY_ORDER;
     const parseModel = (m: ModelInfo) => {
