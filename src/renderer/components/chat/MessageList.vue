@@ -187,8 +187,20 @@ function isTurnStreaming(group: MessageGroup): boolean {
  * conversation is still loading (tools running before any text arrives).
  */
 function showTurnSpinner(group: MessageGroup): boolean {
-  if (isTurnStreaming(group)) return true;
+  // The spinner is bounded by the turn, never by message flags alone.
+  //
+  // isStreaming used to be checked first and unconditionally, so a single
+  // message left with the flag kept the spinner up forever regardless of
+  // whether anything was running. Messages get stranded easily: appendChunk
+  // auto-starts a streaming assistant message whenever chunks arrive without
+  // one, which includes text produced after the turn already ended (a
+  // background agent reporting back), and nothing then finishes it.
+  //
+  // Gating on isLoading removes that entire class of bug: no turn in flight
+  // means no spinner, whatever the message flags say. Streaming only ever
+  // happens inside a turn, so nothing legitimate is lost.
   if (!isLoading.value) return false;
+  if (isTurnStreaming(group)) return true;
   const groups = messageGroups.value;
   return groups.length > 0 && groups[groups.length - 1].id === group.id;
 }

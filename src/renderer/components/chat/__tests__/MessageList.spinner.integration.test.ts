@@ -214,6 +214,32 @@ describe('turn spinner — real render path', () => {
     expect(wrapper.find(SPINNER).exists()).toBe(false);
   });
 
+  /**
+   * The real SDK-mode failure. A background agent reporting back after the
+   * turn ended produces chunks; appendChunk auto-starts a fresh streaming
+   * assistant message for them, and nothing ever finishes it. The spinner
+   * must not come back to life for text that belongs to no turn.
+   */
+  it('does not resurrect the spinner for chunks arriving after the turn ended', async () => {
+    const wrapper = mountHost();
+
+    chat.addMessage({ id: 'u1', role: 'user', content: 'spawn an agent', timestamp: Date.now() });
+    chat.startAssistantMessage(CONV);
+    chat.setLoading(CONV, true);
+    chat.appendChunk(CONV, 'on it');
+    await settle();
+
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+    await settle();
+    expect(wrapper.find(SPINNER).exists()).toBe(false);
+
+    // The background agent finishes and its text arrives with no turn running.
+    emitIpc(IPC_CHANNELS.CLAUDE_CHUNK, CONV, 'agent finished: blue');
+    await settle();
+
+    expect(wrapper.find(SPINNER).exists()).toBe(false);
+  });
+
   /** Aborting must clear it as well. */
   it('clears the spinner after an abort', async () => {
     const wrapper = mountHost();
