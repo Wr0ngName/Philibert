@@ -78,6 +78,8 @@ export interface ElectronAPI {
     onModelsChanged: (callback: (models: ModelInfo[]) => void) => () => void;
     /** The model the CLI reports it is actually running for a conversation */
     onActiveModel: (callback: (conversationId: string, model: string) => void) => () => void;
+    /** Model and token spend attributed to a background agent */
+    onSubagentActivity: (callback: (conversationId: string, activity: { parentToolUseId: string; model?: string; inputTokens: number; outputTokens: number }) => void) => () => void;
     /** Background task notification for a conversation */
     onTaskNotification: (callback: (conversationId: string, notification: TaskNotification) => void) => () => void;
     /** Session usage updated for a conversation */

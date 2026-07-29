@@ -111,6 +111,23 @@ export interface MessageHandlerCallbacks {
    * spinner can never outlive the work it represents.
    */
   onSessionIdle?: () => void;
+  /**
+   * Model and token spend for one frame produced by a sub-agent, attributed to
+   * the tool_use that spawned it. Emitted per frame; the consumer accumulates.
+   */
+  onSubagentActivity?: (activity: SubagentActivity) => void;
+}
+
+/** One sub-agent frame's model and token cost. */
+export interface SubagentActivity {
+  /** tool_use ID of the Task/Agent call that spawned the sub-agent. */
+  parentToolUseId: string;
+  /** Model that produced this frame, when the frame reported one. */
+  model?: string;
+  /** Input tokens for this frame, including cache reads. */
+  inputTokens: number;
+  /** Output tokens for this frame. */
+  outputTokens: number;
 }
 
 /** Where an observed model reading came from. */
@@ -291,6 +308,24 @@ export class SDKMessageHandler {
     const frameModel = message.message.model;
     if (frameModel) {
       this.callbacks.onModelReported?.(frameModel, parentToolUseId ? 'subagent' : 'main');
+    }
+
+    // Attribute the frame's model and token spend to the sub-agent that
+    // produced it, so an agent's own detail view can show what it ran on and
+    // what it cost rather than folding both into the conversation totals.
+    if (parentToolUseId) {
+      const frameUsage = (message.message as { usage?: {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      } }).usage;
+      this.callbacks.onSubagentActivity?.({
+        parentToolUseId,
+        ...(frameModel ? { model: frameModel } : {}),
+        inputTokens: (frameUsage?.input_tokens ?? 0) + (frameUsage?.cache_read_input_tokens ?? 0),
+        outputTokens: frameUsage?.output_tokens ?? 0,
+      });
     }
 
     // Log message content for debugging

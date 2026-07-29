@@ -8,6 +8,7 @@ import { ref, watch, computed } from 'vue';
 
 import type { BackgroundTask } from '@shared/types';
 
+import { formatModelId } from '../../utils/model';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
@@ -63,6 +64,34 @@ const duration = computed(() => {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   return `${hours}h ${remainingMinutes}m`;
+});
+
+/** The model this agent ran on, when the SDK attributed one to it. */
+const agentModel = computed(() =>
+  props.task?.model ? formatModelId(props.task.model) : null,
+);
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+/**
+ * Tokens this agent consumed, accumulated across its own frames — attributable
+ * to the agent rather than folded into the conversation totals.
+ */
+const tokenSummary = computed(() => {
+  const input = props.task?.inputTokens ?? 0;
+  const output = props.task?.outputTokens ?? 0;
+  if (input === 0 && output === 0) return null;
+  return `${formatTokens(input + output)} tokens`;
+});
+
+const tokenTitle = computed(() => {
+  const input = props.task?.inputTokens ?? 0;
+  const output = props.task?.outputTokens ?? 0;
+  return `${input.toLocaleString()} in (including cache reads) / ${output.toLocaleString()} out`;
 });
 
 const statusDisplay = computed(() => {
@@ -123,6 +152,18 @@ const statusDisplay = computed(() => {
           <div class="flex items-center gap-3 mt-1 text-xs text-surface-500 dark:text-surface-400">
             <span :class="statusDisplay.colorClass">{{ statusDisplay.label }}</span>
             <span>Duration: {{ duration }}</span>
+            <!-- This agent's own model. A sub-agent runs the model named in
+                 its definition when it has one and otherwise inherits the
+                 main model, so it can legitimately differ from the
+                 conversation's — which is shown on the usage bar instead. -->
+            <span
+              v-if="agentModel"
+              :title="`This agent ran on ${agentModel}`"
+            >Model: {{ agentModel }}</span>
+            <span
+              v-if="tokenSummary"
+              :title="tokenTitle"
+            >{{ tokenSummary }}</span>
           </div>
         </div>
       </div>

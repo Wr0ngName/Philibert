@@ -5,10 +5,13 @@
  */
 
 import { computed } from 'vue';
+import { storeToRefs } from 'pinia';
 
+import { isSameModel } from '@shared/model-id';
 import { primaryModelId, secondaryModelIds } from '@shared/model-usage';
 import type { SessionUsage } from '@shared/types';
 
+import { useChatStore } from '../../stores/chat';
 import { formatModelId } from '../../utils/model';
 import Icon from '../shared/Icon.vue';
 
@@ -18,6 +21,8 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+
+const { activeModel } = storeToRefs(useChatStore());
 
 /**
  * Current context window occupation (tokens actually in the prompt).
@@ -89,8 +94,19 @@ function formatCost(cost: number): string {
  * verify whether mid-session setModel() switches actually took effect.
  * The user's selected-for-next-turn model is already visible in the dropdown.
  */
+/**
+ * The discussion indicator shows the MAIN-LOOP model, which is what Claude
+ * Code itself displays (getMainLoopModel -> getPublicModelDisplayName). It is
+ * deliberately not derived from modelUsage: a turn's usage legitimately
+ * includes the CLI's small-fast model doing titles and summaries, and a
+ * background/utility turn can report Haiku usage alone — either way, reading
+ * the model out of usage named Haiku on a conversation pinned to Opus.
+ *
+ * Falls back to the usage-derived model only when the CLI has not reported a
+ * main-loop model yet (e.g. a restored conversation with no live session).
+ */
 const primaryModel = computed(() => {
-  const id = primaryModelId(props.usage?.modelUsage);
+  const id = activeModel.value || primaryModelId(props.usage?.modelUsage);
   return id ? formatModelId(id) : null;
 });
 
@@ -100,15 +116,22 @@ const primaryModel = computed(() => {
  * answered the user. Shown in the tooltip so utility usage stays visible
  * without it being mistaken for the conversation's model.
  */
-const secondaryModels = computed(() =>
-  secondaryModelIds(props.usage?.modelUsage).map(formatModelId),
-);
+const secondaryModels = computed(() => {
+  const ids = activeModel.value
+    // Everything that ran besides the main-loop model — the small-fast model
+    // doing internal work, and any sub-agent on a different model.
+    ? Object.keys(props.usage?.modelUsage ?? {}).filter(
+      (id) => !isSameModel(id, activeModel.value as string),
+    )
+    : secondaryModelIds(props.usage?.modelUsage);
+  return ids.map(formatModelId);
+});
 
 const modelChipTitle = computed(() => {
   if (!primaryModel.value) return '';
   return secondaryModels.value.length > 0
-    ? `Answered by ${primaryModel.value}; also used for internal tasks: ${secondaryModels.value.join(', ')}`
-    : `Answered by ${primaryModel.value}`;
+    ? `Conversation model: ${primaryModel.value}. Also billed this session: ${secondaryModels.value.join(', ')} (internal tasks and sub-agents).`
+    : `Conversation model: ${primaryModel.value}`;
 });
 </script>
 

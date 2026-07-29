@@ -18,19 +18,21 @@ import { storeToRefs } from 'pinia';
 
 import { familyKeyOf, isSameModel } from '@shared/model-id';
 import type { ModelInfo } from '@shared/types';
+import { useChatStore } from '../../stores/chat';
 import { useSettingsStore } from '../../stores/settings';
 import { formatModelId } from '../../utils/model';
 import Icon from './Icon.vue';
 
 const settingsStore = useSettingsStore();
 const { selectedModel } = storeToRefs(settingsStore);
+// Single source of truth for the main-loop model — registered once in
+// useClaudeChat rather than each component opening its own IPC listener.
+const { activeModel } = storeToRefs(useChatStore());
 
-const activeModel = ref<string>('');
 const models = ref<ModelInfo[]>([]);
 /** Dismissal is keyed to the model pair, so a *different* swap re-announces. */
 const dismissedFor = ref<string>('');
 
-let cleanupActiveModel: (() => void) | null = null;
 let cleanupModels: (() => void) | null = null;
 
 const isMismatched = computed(() => {
@@ -50,7 +52,7 @@ const selectedLabel = computed(() => {
   const row = models.value.find(m => m.value === selectedModel.value);
   return row?.displayName || formatModelId(selectedModel.value);
 });
-const runningLabel = computed(() => formatModelId(activeModel.value));
+const runningLabel = computed(() => (activeModel.value ? formatModelId(activeModel.value) : ''));
 
 function dismiss(): void {
   dismissedFor.value = pairKey.value;
@@ -65,10 +67,6 @@ async function reapply(): Promise<void> {
 }
 
 onMounted(() => {
-  cleanupActiveModel = window.electron?.claude.onActiveModel((_conversationId, model) => {
-    activeModel.value = model;
-  }) ?? null;
-
   cleanupModels = window.electron?.claude.onModelsChanged((newModels) => {
     models.value = newModels;
   }) ?? null;
@@ -79,7 +77,6 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  cleanupActiveModel?.();
   cleanupModels?.();
 });
 </script>

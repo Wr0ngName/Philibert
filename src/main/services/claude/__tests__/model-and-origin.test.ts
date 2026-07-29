@@ -260,3 +260,65 @@ describe('SDKMessageHandler — synthetic model is not a model reading', () => {
     expect(cb.onModelReported).toHaveBeenCalledWith('<synthetic>', 'main');
   });
 });
+
+describe('SDKMessageHandler — per-agent model and token attribution', () => {
+  let cb: MessageHandlerCallbacks & { onSubagentActivity: ReturnType<typeof vi.fn> };
+  let handler: SDKMessageHandler;
+
+  beforeEach(() => {
+    cb = {
+      onChunk: vi.fn(),
+      onSlashCommands: vi.fn(),
+      onTaskNotification: vi.fn(),
+      onUsageUpdate: vi.fn(),
+      onSystemNote: vi.fn(),
+      onSubagentActivity: vi.fn(),
+    } as never;
+    handler = new SDKMessageHandler(cb);
+  });
+
+  it('attributes a sub-agent frame to the tool_use that spawned it', async () => {
+    await handler.handleMessage({
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_agent1',
+      message: {
+        model: 'claude-sonnet-4-5',
+        content: [],
+        usage: { input_tokens: 100, output_tokens: 25, cache_read_input_tokens: 900 },
+      },
+    } as never);
+
+    expect(cb.onSubagentActivity).toHaveBeenCalledWith({
+      parentToolUseId: 'toolu_agent1',
+      model: 'claude-sonnet-4-5',
+      // Cache reads count as input — they are billed and they are context.
+      inputTokens: 1000,
+      outputTokens: 25,
+    });
+  });
+
+  it('does not attribute main-thread frames to any agent', async () => {
+    await handler.handleMessage({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { model: 'claude-opus-4-8', content: [], usage: { input_tokens: 10, output_tokens: 5 } },
+    } as never);
+
+    expect(cb.onSubagentActivity).not.toHaveBeenCalled();
+  });
+
+  it('tolerates a sub-agent frame with no usage block', async () => {
+    await handler.handleMessage({
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_agent1',
+      message: { model: 'claude-sonnet-4-5', content: [] },
+    } as never);
+
+    expect(cb.onSubagentActivity).toHaveBeenCalledWith({
+      parentToolUseId: 'toolu_agent1',
+      model: 'claude-sonnet-4-5',
+      inputTokens: 0,
+      outputTokens: 0,
+    });
+  });
+});

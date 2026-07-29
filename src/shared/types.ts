@@ -815,6 +815,14 @@ export interface BackgroundTask {
    *  for backgrounded Bash commands and other tools. Derived at creation from
    *  the parent tool_use name and used by the panel to render a distinctive icon. */
   taskType?: 'agent' | 'command';
+  /** Model this agent actually ran on. A sub-agent uses the model named in its
+   *  own definition when it has one, and otherwise inherits the main model, so
+   *  it can legitimately differ from the conversation's. */
+  model?: string;
+  /** Tokens this agent consumed, accumulated across its frames. Kept separate
+   *  from the conversation totals so an agent's cost is attributable to it. */
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 /**
@@ -1054,6 +1062,8 @@ export const IPC_CHANNELS = {
   CLAUDE_MODEL_CHANGED: 'claude:model-changed',
   /** The model the CLI reports it is actually running for a conversation */
   CLAUDE_ACTIVE_MODEL: 'claude:active-model',
+  /** Model + token spend attributed to a background agent */
+  CLAUDE_SUBAGENT_ACTIVITY: 'claude:subagent-activity',
   /** Background task notification */
   CLAUDE_TASK_NOTIFICATION: 'claude:task-notification',
   /** Session usage update (token counts, cost) */

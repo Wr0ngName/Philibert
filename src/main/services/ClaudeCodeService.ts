@@ -75,7 +75,7 @@ import {
   SessionPermissionCache,
 } from './claude';
 import { isHumanOriginatedResult, resolveResultError } from './claude/SDKMessageHandler';
-import type { ModelReportSource, ModelSubstitutionEvent } from './claude/SDKMessageHandler';
+import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
 
 /**
  * An entry in the known-model catalog. `minor` is absent for the Claude 5
@@ -560,6 +560,9 @@ export class ClaudeCodeService {
       },
       onModelSubstituted: (event: ModelSubstitutionEvent) => {
         this.reportModelSubstitution(conversationId, event);
+      },
+      onSubagentActivity: (activity: SubagentActivity) => {
+        this.send(IPC_CHANNELS.CLAUDE_SUBAGENT_ACTIVITY, conversationId, activity);
       },
       onSessionIdle: () => {
         // Backstop only: clear the busy state if it somehow outlived the turn.

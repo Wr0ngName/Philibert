@@ -11,23 +11,29 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import type { ModelInfo } from '@shared/types';
 
+import { useChatStore } from '../../../stores/chat';
 import { useSettingsStore } from '../../../stores/settings';
 import ModelMismatchBanner from '../ModelMismatchBanner.vue';
 
-let activeModelCb: ((conversationId: string, model: string) => void) | null = null;
+const CONV = 'conv-1';
 
 function setupElectron(models: ModelInfo[]) {
-  activeModelCb = null;
   (globalThis as unknown as { window: Record<string, unknown> }).window.electron = {
     claude: {
-      onActiveModel: (cb: (c: string, m: string) => void) => {
-        activeModelCb = cb;
-        return () => {};
-      },
       onModelsChanged: () => () => {},
       getModels: vi.fn().mockResolvedValue(models),
     },
   } as never;
+}
+
+/**
+ * The main-loop model now lives in the chat store, registered once in
+ * useClaudeChat, rather than each component opening its own IPC listener.
+ */
+function setActiveModel(model: string) {
+  const chat = useChatStore();
+  chat.currentConversationId = CONV;
+  chat.setActiveModel(CONV, model);
 }
 
 async function mountWith(selected: string, running: string, models: ModelInfo[] = []) {
@@ -35,11 +41,10 @@ async function mountWith(selected: string, running: string, models: ModelInfo[] 
   const settings = useSettingsStore();
   settings.config.selectedModel = selected;
 
+  setActiveModel(running);
   const wrapper = mount(ModelMismatchBanner, {
     global: { stubs: { Icon: true } },
   });
-  await flushPromises();
-  activeModelCb?.('conv-1', running);
   await flushPromises();
   return wrapper;
 }
@@ -94,7 +99,7 @@ describe('ModelMismatchBanner', () => {
     expect(wrapper.text()).toBe('');
 
     // A different substitution is new information, not the one just dismissed.
-    activeModelCb?.('conv-1', 'claude-sonnet-5');
+    setActiveModel('claude-sonnet-5');
     await flushPromises();
     expect(wrapper.text()).toContain('Sonnet 5');
   });

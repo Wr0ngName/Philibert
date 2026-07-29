@@ -111,6 +111,16 @@ const electronAPI: ElectronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_ACTIVE_MODEL, handler);
     },
 
+    onSubagentActivity: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        conversationId: string,
+        activity: Parameters<typeof callback>[1]
+      ) => callback(conversationId, activity);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_SUBAGENT_ACTIVITY, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_SUBAGENT_ACTIVITY, handler);
+    },
+
     onTaskNotification: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

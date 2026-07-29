@@ -33,6 +33,14 @@ export interface ConversationState {
   taskListItems: Map<string, TaskListItem>;
   /** Session usage (token counts, cost) */
   sessionUsage: SessionUsage | null;
+  /**
+   * The main-loop model the CLI reports for this conversation. This is the
+   * model of record for the discussion — Claude Code itself displays
+   * getMainLoopModel(), never a model inferred from token accounting, because
+   * a turn's usage legitimately includes the small-fast model doing titles and
+   * summaries.
+   */
+  activeModel: string | null;
   /** Error message if any */
   error: string | null;
   /** Active session permissions for this conversation */
@@ -53,6 +61,7 @@ function createConversationState(): ConversationState {
     backgroundTasks: new Map(),
     taskListItems: new Map(),
     sessionUsage: null,
+    activeModel: null,
     error: null,
     sessionPermissions: [],
     modifiedFilesInLastQuery: new Set(),
@@ -145,6 +154,13 @@ export const useChatStore = defineStore('chat', () => {
   const error = computed(() => {
     const state = getCurrentState();
     return state?.error ?? null;
+  });
+
+  // The main-loop model for the current conversation — the model of record
+  // for the discussion indicator.
+  const activeModel = computed(() => {
+    const state = getCurrentState();
+    return state?.activeModel ?? null;
   });
 
   // Current conversation's streaming content
@@ -1004,6 +1020,37 @@ export const useChatStore = defineStore('chat', () => {
   // Session Usage Actions
   // ============================================
 
+  /**
+   * Record the main-loop model the CLI reports for a conversation. Kept
+   * separate from usage accounting: a turn's modelUsage legitimately includes
+   * the small-fast model, so deriving "the model" from it named Haiku on
+   * conversations pinned to Opus.
+   */
+  function setActiveModel(conversationId: string, model: string): void {
+    const state = getConversationState(conversationId);
+    state.activeModel = model || null;
+  }
+
+  /**
+   * Accumulate a sub-agent frame's model and token spend onto the background
+   * task that spawned it, matched by the spawning tool_use ID. Kept per-agent
+   * rather than folded into the conversation totals so an agent's detail view
+   * can answer "what did this run on, and what did it cost".
+   */
+  function recordSubagentActivity(
+    conversationId: string,
+    activity: { parentToolUseId: string; model?: string; inputTokens: number; outputTokens: number },
+  ): void {
+    const state = getConversationState(conversationId);
+    for (const task of state.backgroundTasks.values()) {
+      if (task.toolUseId !== activity.parentToolUseId) continue;
+      if (activity.model) task.model = activity.model;
+      task.inputTokens = (task.inputTokens ?? 0) + activity.inputTokens;
+      task.outputTokens = (task.outputTokens ?? 0) + activity.outputTokens;
+      return;
+    }
+  }
+
   function updateSessionUsage(conversationId: string, usage: SessionUsage): void {
     const state = getConversationState(conversationId);
     state.sessionUsage = usage;
@@ -1117,6 +1164,7 @@ export const useChatStore = defineStore('chat', () => {
     taskListItems,
     hasTaskListItems,
     hasSessionUsage,
+    activeModel,
     totalTokensUsed,
     contextWindowSize,
     contextUsagePercent,
@@ -1176,6 +1224,8 @@ export const useChatStore = defineStore('chat', () => {
     completeToolUseMessages,
 
     // Session usage actions
+    setActiveModel,
+    recordSubagentActivity,
     updateSessionUsage,
     clearSessionUsage,
 

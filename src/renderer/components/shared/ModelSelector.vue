@@ -38,8 +38,9 @@ const dropdownRef = ref<HTMLDivElement | null>(null);
 // The model Claude Code reports it is actually running. With no explicit
 // selection the CLI picks for itself, so this is the only way to know what
 // "Default" resolved to — and it also reveals a mid-session substitution.
-const activeModel = ref<string>('');
-let cleanupActiveModelListener: (() => void) | null = null;
+// Main-loop model, held in the chat store and registered once in
+// useClaudeChat rather than each component opening its own IPC listener.
+const { activeModel } = storeToRefs(chatStore);
 
 // Confirmation dialog state
 const showConfirmDialog = ref(false);
@@ -326,13 +327,6 @@ onMounted(() => {
     logger.debug('Models updated from SDK', { count: newModels.length });
   });
 
-  // Track the model the CLI reports it is actually running.
-  cleanupActiveModelListener = window.electron.claude.onActiveModel((conversationId, model) => {
-    if (conversationId !== conversationsStore.currentConversationId) return;
-    activeModel.value = model;
-    logger.info('Active model reported by CLI', { conversationId, model });
-  });
-
   // Add click outside listener
   document.addEventListener('click', handleClickOutside);
 });
@@ -340,9 +334,6 @@ onMounted(() => {
 onUnmounted(() => {
   if (cleanupModelsListener) {
     cleanupModelsListener();
-  }
-  if (cleanupActiveModelListener) {
-    cleanupActiveModelListener();
   }
   document.removeEventListener('click', handleClickOutside);
 });

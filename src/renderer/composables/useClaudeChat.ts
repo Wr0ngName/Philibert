@@ -27,6 +27,8 @@ let cleanupToolUse: (() => void) | null = null;
 let cleanupError: (() => void) | null = null;
 let cleanupDone: (() => void) | null = null;
 let cleanupSlashCommands: (() => void) | null = null;
+let cleanupActiveModel: (() => void) | null = null;
+let cleanupSubagentActivity: (() => void) | null = null;
 let cleanupCommandAction: (() => void) | null = null;
 let cleanupTaskNotification: (() => void) | null = null;
 let cleanupUsageUpdate: (() => void) | null = null;
@@ -439,6 +441,19 @@ export function useClaudeChat() {
       }
     });
 
+    // The main-loop model the CLI reports. Registered once here and held in
+    // the chat store so the usage bar, the picker and the mismatch banner all
+    // read one value instead of each opening its own listener.
+    cleanupActiveModel = window.electron.claude.onActiveModel((conversationId, model) => {
+      chatStore.setActiveModel(conversationId, model);
+      logger.debug('Active model reported', { conversationId, model });
+    });
+
+    // Per-agent model and token spend, attributed to the spawning tool_use.
+    cleanupSubagentActivity = window.electron.claude.onSubagentActivity((conversationId, activity) => {
+      chatStore.recordSubagentActivity(conversationId, activity);
+    });
+
     // Handle slash commands updates from SDK
     cleanupSlashCommands = window.electron.claude.onSlashCommands((conversationId, commands) => {
       sharedSlashCommands.value = commands;
@@ -583,6 +598,14 @@ export function useClaudeChat() {
     if (cleanupSlashCommands) {
       cleanupSlashCommands();
       cleanupSlashCommands = null;
+    }
+    if (cleanupActiveModel) {
+      cleanupActiveModel();
+      cleanupActiveModel = null;
+    }
+    if (cleanupSubagentActivity) {
+      cleanupSubagentActivity();
+      cleanupSubagentActivity = null;
     }
     if (cleanupCommandAction) {
       cleanupCommandAction();
