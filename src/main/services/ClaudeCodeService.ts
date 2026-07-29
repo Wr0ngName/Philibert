@@ -37,11 +37,11 @@ import type {
 import { BrowserWindow } from 'electron';
 
 import {
+  familyKeyOf,
   formatModelDisplayName,
   formatModelId,
   isRealModelId,
   isSameModel,
-  modelFamily,
   modelVersionRank,
   parseModelId,
   stripDateSuffix,
@@ -1601,7 +1601,7 @@ export class ClaudeCodeService {
     // fall back to comparing families only when the row isn't cached yet.
     const requestedRow = this.cachedModels.find((m) => m.value === requested);
     if (requestedRow?.resolvedModel && isSameModel(requestedRow.resolvedModel, reportedModel)) return;
-    if (!requestedRow?.resolvedModel && modelFamily(reportedModel) === requested) return;
+    if (!requestedRow?.resolvedModel && familyKeyOf(reportedModel) === familyKeyOf(requested)) return;
 
     const key = `${source}:${stripDateSuffix(reportedModel)}`;
     if (session.announcedModels.has(key)) return;
@@ -1892,12 +1892,64 @@ export class ClaudeCodeService {
       }
     }
 
-    // NOTE: the catalog only *enriches* rows the SDK reported — it must never
-    // add rows of its own. supportedModels() reflects what this account is
-    // actually entitled to run, so appending every known model produced a
-    // picker listing models that don't exist for the user and can't be
-    // selected: choosing one made the CLI fall back to another model, which
-    // then surfaced as a spurious "model mismatch".
+    // Catalog versions are added ONLY for families the SDK actually offered.
+    //
+    // Two failure modes to stay between. Adding every catalog entry
+    // unconditionally listed whole families the account has no access to —
+    // picking one made the CLI fall back to a different model, which then
+    // surfaced as a spurious "model mismatch". Adding nothing at all is the
+    // opposite error: `supportedModels()` can return only bare family aliases
+    // ('opus', 'sonnet', 'haiku'), which left the picker with families and no
+    // way to pin a specific version.
+    //
+    // Scoping to reported families keeps both closed: no Fable row unless the
+    // SDK offered Fable, but Opus 4.8 / 4.7 / 4.6 are selectable once Opus is
+    // available. Rows the SDK reported directly always win — the catalog only
+    // fills in versions it did not enumerate.
+    const offeredFamilies = new Set<string>();
+    for (const sdk of sdkModels) {
+      // familyKeyOf copes with every shape supportedModels() returns: a bare
+      // alias ('sonnet'), an alias with a context variant ('opus[1m]'), and a
+      // full ID with or without one ('claude-fable-5[1m]').
+      const family = familyKeyOf(sdk.value);
+      if (family) offeredFamilies.add(family);
+      // An alias row names the concrete model it resolves to; that version is
+      // known-good for this account even if the catalog has never heard of it.
+      const resolvedFamily = sdk.resolvedModel ? familyKeyOf(sdk.resolvedModel) : null;
+      if (resolvedFamily) offeredFamilies.add(resolvedFamily);
+    }
+
+    for (const sdk of sdkModels) {
+      if (!sdk.resolvedModel) continue;
+      const alias = ClaudeCodeService.toAlias(sdk.resolvedModel);
+      if (seen.has(alias)) continue;
+      seen.add(alias);
+      const parsed = parseModelId(alias);
+      const entry = catalogByAlias.get(alias);
+      merged.push({
+        value: sdk.resolvedModel,
+        displayName: parsed ? formatModelDisplayName(parsed) : sdk.resolvedModel,
+        description: entry
+          ? `${entry.context} context`
+          : `${ClaudeCodeService.contextForFamily(parsed?.family ?? '')} context`,
+      });
+    }
+
+    for (const entry of ClaudeCodeService.MODEL_CATALOG) {
+      if (!offeredFamilies.has(entry.family)) continue;
+      const alias = ClaudeCodeService.catalogAlias(entry);
+      if (seen.has(alias)) continue;
+      seen.add(alias);
+      merged.push({
+        value: alias,
+        displayName: formatModelDisplayName({
+          family: entry.family,
+          major: entry.major,
+          minor: entry.minor ?? null,
+        }),
+        description: `${entry.context} context`,
+      });
+    }
 
     const familyOrder = ClaudeCodeService.FAMILY_ORDER;
     const parseModel = (m: ModelInfo) => {

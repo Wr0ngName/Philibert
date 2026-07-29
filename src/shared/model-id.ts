@@ -39,6 +39,51 @@ const MODEL_ID_PATTERN = /^claude-([a-z]+)-(\d+)(?:-(\d+))?/;
 const DATE_SUFFIX_PATTERN = /-\d{8}(-v\d+)?$/;
 
 /**
+ * Context-window variant suffix, e.g. the `[1m]` in `opus[1m]` or
+ * `claude-opus-5[1m]`. The CLI uses it to distinguish the 1M-context flavour
+ * of a model from its default one, and `supportedModels()` returns values
+ * carrying it. It is part of the selectable identifier, so it must be kept in
+ * `value` — but it is not part of the family or version and has to come off
+ * before either is parsed.
+ */
+const CONTEXT_VARIANT_PATTERN = /(\[\d+m\])+$/i;
+
+/**
+ * Remove a trailing context-window variant marker. `opus[1m]` → `opus`,
+ * `claude-opus-5[1m]` → `claude-opus-5`. Returns the input unchanged when
+ * there is no marker.
+ */
+export function stripContextVariant(modelId: string): string {
+  return modelId.replace(CONTEXT_VARIANT_PATTERN, '');
+}
+
+/**
+ * The context-window variant marker on a model ID, without brackets — `1m`
+ * for `opus[1m]` — or null when the ID carries none. Used to label the
+ * variant in the picker so two rows of the same family are distinguishable.
+ */
+export function contextVariant(modelId: string): string | null {
+  const match = modelId.match(CONTEXT_VARIANT_PATTERN);
+  return match ? match[0].replace(/[[\]]/g, '') : null;
+}
+
+/**
+ * Family key for any value `supportedModels()` can return, covering all three
+ * shapes it actually uses: a bare alias (`sonnet`), an alias with a context
+ * variant (`opus[1m]`), and a full model ID with or without one
+ * (`claude-fable-5[1m]`). Returns null for `default`, which names no family.
+ */
+export function familyKeyOf(value: string): string | null {
+  if (!value || value === 'default') return null;
+  const bare = stripContextVariant(value);
+  const parsed = parseModelId(bare);
+  if (parsed) return parsed.family;
+  // A bare alias is itself the family name; anything hyphenated that failed
+  // to parse is not a model we can classify.
+  return bare.includes('-') ? null : bare;
+}
+
+/**
  * Reduce any model ID to its alias form by dropping a dated snapshot suffix.
  * `claude-sonnet-4-5-20250929` → `claude-sonnet-4-5`. IDs without a date are
  * returned unchanged.
@@ -53,7 +98,7 @@ export function stripDateSuffix(modelId: string): string {
  * `default` entry both return null — they carry no version).
  */
 export function parseModelId(modelId: string): ParsedModelId | null {
-  const match = stripDateSuffix(modelId).match(MODEL_ID_PATTERN);
+  const match = stripContextVariant(stripDateSuffix(modelId)).match(MODEL_ID_PATTERN);
   if (!match) return null;
   return {
     family: match[1],
@@ -137,5 +182,9 @@ export function isRealModelId(modelId: string | undefined | null): boolean {
  */
 export function isSameModel(a: string, b: string): boolean {
   if (!a || !b) return false;
-  return stripDateSuffix(a) === stripDateSuffix(b);
+  // Context-window variants are the same underlying model: `claude-opus-5` and
+  // `claude-opus-5[1m]` are both Opus 5, so reporting one while the other was
+  // selected is not a substitution.
+  const normalize = (v: string) => stripContextVariant(stripDateSuffix(v));
+  return normalize(a) === normalize(b);
 }

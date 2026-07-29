@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 
 import {
   capitalizeFamily,
+  contextVariant,
+  familyKeyOf,
   formatModelDisplayName,
   formatModelId,
   formatVersion,
@@ -10,6 +12,7 @@ import {
   modelFamily,
   modelVersionRank,
   parseModelId,
+  stripContextVariant,
   stripDateSuffix,
 } from '../model-id';
 
@@ -181,5 +184,54 @@ describe('isRealModelId', () => {
     expect(isRealModelId('claude-opus-4-8')).toBe(true);
     expect(isRealModelId('claude-opus-5')).toBe(true);
     expect(isRealModelId('opus')).toBe(true);
+  });
+});
+
+// Values below are the real output of supportedModels() on CLI 2.1.220,
+// captured directly rather than assumed.
+describe('context-window variants (the [1m] suffix)', () => {
+  it('strips the variant marker', () => {
+    expect(stripContextVariant('opus[1m]')).toBe('opus');
+    expect(stripContextVariant('claude-opus-5[1m]')).toBe('claude-opus-5');
+    expect(stripContextVariant('claude-fable-5[1m]')).toBe('claude-fable-5');
+    expect(stripContextVariant('sonnet')).toBe('sonnet');
+  });
+
+  it('exposes the variant label', () => {
+    expect(contextVariant('opus[1m]')).toBe('1m');
+    expect(contextVariant('claude-opus-5[1m]')).toBe('1m');
+    expect(contextVariant('sonnet')).toBeNull();
+  });
+
+  it('parses a versioned ID that carries a variant', () => {
+    expect(parseModelId('claude-fable-5[1m]')).toEqual({ family: 'fable', major: 5, minor: null });
+    expect(parseModelId('claude-opus-5[1m]')).toEqual({ family: 'opus', major: 5, minor: null });
+  });
+
+  it('treats a variant as the same underlying model', () => {
+    expect(isSameModel('claude-opus-5', 'claude-opus-5[1m]')).toBe(true);
+  });
+});
+
+describe('familyKeyOf — every shape supportedModels() returns', () => {
+  it('handles bare aliases', () => {
+    expect(familyKeyOf('sonnet')).toBe('sonnet');
+    expect(familyKeyOf('haiku')).toBe('haiku');
+  });
+
+  // Regression: `opus[1m]` has no hyphen, so the picker's "contains a hyphen"
+  // heuristic made it a family literally named "opus[1m]".
+  it('handles an alias carrying a context variant', () => {
+    expect(familyKeyOf('opus[1m]')).toBe('opus');
+  });
+
+  it('handles full model IDs with and without a variant', () => {
+    expect(familyKeyOf('claude-fable-5[1m]')).toBe('fable');
+    expect(familyKeyOf('claude-haiku-4-5-20251001')).toBe('haiku');
+  });
+
+  it('returns null for default and empty values', () => {
+    expect(familyKeyOf('default')).toBeNull();
+    expect(familyKeyOf('')).toBeNull();
   });
 });

@@ -7,7 +7,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { storeToRefs } from 'pinia';
 
-import { capitalizeFamily, isSameModel, parseModelId } from '@shared/model-id';
+import { capitalizeFamily, familyKeyOf, isSameModel, parseModelId } from '@shared/model-id';
 import type { ModelInfo } from '@shared/types';
 import { useAsyncOperation } from '../../composables/useAsyncOperation';
 import { useChatStore } from '../../stores/chat';
@@ -93,17 +93,22 @@ const familyEntries = computed<FamilyEntry[]>(() => {
   for (const model of models.value) {
     // `default` is neither a family alias nor a versioned model; skip.
     if (model.value === 'default' || !model.value) continue;
-    // Bare family alias (SDK returns `opus`, `sonnet`, `haiku`, potentially more).
-    // Heuristic: no hyphens and not the special 'default' entry.
-    if (!model.value.includes('-')) {
-      ensureFamily(model.value).alias = model;
-      continue;
-    }
-    // Versioned model ID. Handles both `claude-opus-4-8` and the Claude 5
-    // single-segment shape `claude-opus-5` — see @shared/model-id.
-    const parsed = parseModelId(model.value);
-    if (parsed) {
-      ensureFamily(parsed.family).versions.push(model);
+
+    // supportedModels() returns three shapes and all of them appear in
+    // practice: a bare alias ('sonnet'), an alias carrying a context-window
+    // variant ('opus[1m]'), and a full model ID with or without one
+    // ('claude-fable-5[1m]'). Splitting on "contains a hyphen" put `opus[1m]`
+    // in a family of its own called "opus[1m]", which then sorted as an
+    // unknown family instead of grouping under Opus.
+    const family = familyKeyOf(model.value);
+    if (!family) continue;
+
+    // A row is a version row when it carries an actual version number;
+    // otherwise it is the family's alias row.
+    if (parseModelId(model.value)) {
+      ensureFamily(family).versions.push(model);
+    } else {
+      ensureFamily(family).alias = model;
     }
   }
 
@@ -167,8 +172,12 @@ const activeModelLabel = computed(() =>
 const isModelMismatched = computed(() => {
   if (!selectedModel.value || !activeModel.value) return false;
   if (isSameModel(selectedModel.value, activeModel.value)) return false;
-  // A family alias ('opus') legitimately resolves to a concrete ID.
-  return parseModelId(activeModel.value)?.family !== selectedModel.value;
+  // A family alias ('opus', 'opus[1m]') legitimately resolves to a concrete
+  // ID. The SDK publishes that mapping on the alias row as `resolvedModel`;
+  // fall back to comparing family keys when the row isn't loaded yet.
+  const row = models.value.find(m => m.value === selectedModel.value);
+  if (row?.resolvedModel && isSameModel(row.resolvedModel, activeModel.value)) return false;
+  return familyKeyOf(activeModel.value) !== familyKeyOf(selectedModel.value);
 });
 
 // Current model display name. With no explicit selection, show what the CLI

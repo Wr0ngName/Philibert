@@ -117,7 +117,7 @@ vi.mock('../../utils/ipc-helpers', () => ({
 }));
 
 // Import after mocks
-import { modelVersionRank } from '../../../shared/model-id';
+import { familyKeyOf, modelVersionRank } from '../../../shared/model-id';
 import { IPC_CHANNELS } from '../../../shared/types';
 import { createMockBrowserWindow } from '../../__tests__/setup';
 import ClaudeCodeService from '../ClaudeCodeService';
@@ -1631,7 +1631,9 @@ describe('ClaudeCodeService', () => {
     // supportedModels() reflects what the account is entitled to run, so
     // appending every known model listed models the user does not have —
     // selecting one made the CLI silently fall back to a different model.
-    it('should NOT add catalog models the SDK did not report', () => {
+    // Cross-family phantoms were the original complaint: listing models the
+    // account cannot run, which the CLI then silently swapped away from.
+    it('should NOT add catalog models for families the SDK did not offer', () => {
       const sdkModels = [
         { value: 'claude-sonnet-4-6-20260201', displayName: 'Sonnet', description: '' },
       ];
@@ -1639,8 +1641,73 @@ describe('ClaudeCodeService', () => {
 
       expect(result.find(m => m.value === 'claude-haiku-4-5')).toBeUndefined();
       expect(result.find(m => m.value === 'claude-opus-5')).toBeUndefined();
-      expect(result).toHaveLength(1);
-      expect(result[0].value).toBe('claude-sonnet-4-6-20260201');
+      expect(result.find(m => m.value === 'claude-fable-5')).toBeUndefined();
+    });
+
+    // The opposite error: supportedModels() can return only bare family
+    // aliases, which left the picker offering families and no way to pin a
+    // specific version.
+    it('should offer catalog versions for families the SDK did offer', () => {
+      const result = ClaudeCodeService.mergeWithKnownModels([
+        { value: 'opus', displayName: 'Opus', description: '' },
+      ]);
+
+      expect(result.find(m => m.value === 'opus')).toBeDefined();
+      expect(result.find(m => m.value === 'claude-opus-4-8')).toBeDefined();
+      expect(result.find(m => m.value === 'claude-opus-4-7')).toBeDefined();
+      // ...but still nothing from a family that was never offered.
+      expect(result.find(m => m.value === 'claude-sonnet-4-6')).toBeUndefined();
+      expect(result.find(m => m.value === 'claude-haiku-4-5')).toBeUndefined();
+    });
+
+    it("should surface an alias's resolvedModel as a selectable version", () => {
+      const result = ClaudeCodeService.mergeWithKnownModels([
+        { value: 'opus', resolvedModel: 'claude-opus-4-8', displayName: 'Opus', description: '' },
+      ]);
+
+      const resolved = result.find(m => m.value === 'claude-opus-4-8');
+      expect(resolved).toBeDefined();
+      expect(resolved!.displayName).toBe('Claude Opus 4.8');
+    });
+
+    // The exact payload supportedModels() returns on CLI 2.1.220, captured by
+    // querying it directly. Note it contains NO versioned rows — only family
+    // aliases — which is why the picker offered families and nothing else.
+    const REAL_SDK_PAYLOAD = [
+      { value: 'default', resolvedModel: 'claude-opus-5[1m]', displayName: 'Default (recommended)', description: 'Opus 5 with 1M context' },
+      { value: 'opus[1m]', resolvedModel: 'claude-opus-5[1m]', displayName: 'Opus (1M context)', description: 'Opus 5 with 1M context' },
+      { value: 'claude-fable-5[1m]', resolvedModel: 'claude-fable-5', displayName: 'Fable', description: 'Fable 5' },
+      { value: 'sonnet', resolvedModel: 'claude-sonnet-5', displayName: 'Sonnet', description: 'Sonnet 5' },
+      { value: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', displayName: 'Haiku', description: 'Haiku 4.5' },
+    ];
+
+    it('offers selectable versions for the real supportedModels() payload', () => {
+      const result = ClaudeCodeService.mergeWithKnownModels(REAL_SDK_PAYLOAD);
+      const values = result.map(m => m.value);
+
+      // Every family the SDK offered is still present...
+      expect(values).toContain('opus[1m]');
+      expect(values).toContain('sonnet');
+      expect(values).toContain('haiku');
+
+      // ...and each now has concrete versions to pin, which the payload alone
+      // provides none of.
+      expect(values).toContain('claude-opus-5[1m]');   // from resolvedModel
+      expect(values).toContain('claude-opus-4-8');     // from catalog
+      expect(values).toContain('claude-sonnet-5');
+      // Haiku's alias resolves to the dated snapshot, which IS that model —
+      // the catalog's undated row is correctly deduped against it.
+      expect(values).toContain('claude-haiku-4-5-20251001');
+      expect(values).not.toContain('claude-haiku-4-5');
+      expect(values).toContain('claude-fable-5[1m]');
+    });
+
+    it('keeps every offered family and invents none', () => {
+      const result = ClaudeCodeService.mergeWithKnownModels(REAL_SDK_PAYLOAD);
+      const families = new Set(
+        result.map(m => familyKeyOf(m.value)).filter((f): f is string => !!f),
+      );
+      expect([...families].sort()).toEqual(['fable', 'haiku', 'opus', 'sonnet']);
     });
 
     it('should return nothing when the SDK reports nothing', () => {
