@@ -325,6 +325,17 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function startAssistantMessage(conversationId: string): ChatMessage {
+    // Finalise anything still marked streaming before taking over the slot.
+    // Overwriting state.streamingMessageId without this orphaned the previous
+    // message: nothing could ever clear its isStreaming flag again, and the
+    // turn spinner keys off any streaming message in the group.
+    const previous = conversationStates.value.get(conversationId);
+    if (previous?.streamingMessageId && conversationId === currentConversationId.value) {
+      for (let i = messages.value.length - 1; i >= 0; i--) {
+        if (messages.value[i].isStreaming) messages.value[i].isStreaming = false;
+      }
+    }
+
     const message: ChatMessage = {
       id: generateId(ID_PREFIXES.MESSAGE),
       role: 'assistant',
@@ -394,18 +405,23 @@ export const useChatStore = defineStore('chat', () => {
     const state = conversationStates.value.get(conversationId);
     if (!state) return;
 
-    // If this is the current conversation, find and update the streaming message.
-    // We search by ID rather than checking only the last message because background
-    // task or tool use messages may have been appended after the streaming message.
-    if (conversationId === currentConversationId.value && state.streamingMessageId) {
+    if (conversationId === currentConversationId.value) {
+      // Sync the tracked message's content, then clear isStreaming on EVERY
+      // message in the conversation.
+      //
+      // The turn spinner is driven by `messages.some(m => m.isStreaming)`, but
+      // this only ever cleared the one message in state.streamingMessageId. Any
+      // other message left streaming — a turn that ended without a done event,
+      // a conversation switched away from mid-turn, a startAssistantMessage
+      // that replaced the tracked id — pinned the spinner permanently, no
+      // matter that the turn had finished and isLoading had gone false.
       for (let i = messages.value.length - 1; i >= 0; i--) {
         const msg = messages.value[i];
+        if (!msg.isStreaming) continue;
         if (msg.id === state.streamingMessageId) {
-          msg.isStreaming = false;
-          // Ensure content is synced
           msg.content = state.currentStreamingContent;
-          break;
         }
+        msg.isStreaming = false;
       }
     }
 
@@ -419,7 +435,12 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function loadMessages(loadedMessages: ChatMessage[]): void {
-    messages.value = loadedMessages;
+    // Nothing is streaming at load time. A message persisted mid-turn keeps
+    // isStreaming: true, and restoring it verbatim shows a spinner for a turn
+    // that ended long ago — possibly in a previous run of the app.
+    messages.value = loadedMessages.map((m) =>
+      m.isStreaming ? { ...m, isStreaming: false } : m,
+    );
   }
 
   // ============================================
