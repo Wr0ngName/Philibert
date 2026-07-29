@@ -285,6 +285,70 @@ describe('ClaudeCodeService', () => {
       );
     });
 
+    // The turn MUST end from the renderer's point of view. The spinner is only
+    // cleared by CLAUDE_DONE, so any realistic message sequence that fails to
+    // produce one leaves it spinning forever with no way back.
+    describe('turn completion across realistic message sequences', () => {
+      it('emits done when the result carries an explicit human origin', async () => {
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 },
+        ]));
+
+        await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+        await vi.waitFor(() => {
+          expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_DONE, TEST_CONV_ID);
+        });
+      });
+
+      // A background agent finishing mid-turn emits its own result. That one
+      // must not end the turn — but the user's own result, arriving after it,
+      // still must.
+      it('emits done for the user result even after a background result', async () => {
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          { type: 'result', subtype: 'success', origin: { kind: 'task-notification' }, num_turns: 1, duration_ms: 10 },
+          { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 },
+        ]));
+
+        await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+        await vi.waitFor(() => {
+          expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_DONE, TEST_CONV_ID);
+        });
+      });
+
+      // The failure this whole investigation is about: if the ONLY result the
+      // turn produces is background-origin, nothing ends the turn and the
+      // spinner never stops. The session_state_changed idle backstop has to
+      // catch it.
+      it('emits done when the only result is background-origin and the session goes idle', async () => {
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          { type: 'result', subtype: 'success', origin: { kind: 'task-notification' }, num_turns: 1, duration_ms: 10 },
+          { type: 'system', subtype: 'session_state_changed', state: 'idle' },
+        ]));
+
+        await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+        await vi.waitFor(() => {
+          expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_DONE, TEST_CONV_ID);
+        });
+      });
+
+      // And the worst case: a background-origin result with no idle message at
+      // all. The stream simply ends. Something must still end the turn.
+      it('emits done when the stream ends without any turn-ending result', async () => {
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          { type: 'result', subtype: 'success', origin: { kind: 'task-notification' }, num_turns: 1, duration_ms: 10 },
+        ]));
+
+        await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+        await vi.waitFor(() => {
+          expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_DONE, TEST_CONV_ID);
+        });
+      });
+    });
+
     it('should emit CLAUDE_DONE on successful completion', async () => {
       const mockIterator = createMockQueryIterator([
         { type: 'result', subtype: 'success', num_turns: 1, duration_ms: 1000 },

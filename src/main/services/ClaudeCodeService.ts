@@ -565,17 +565,7 @@ export class ClaudeCodeService {
         this.send(IPC_CHANNELS.CLAUDE_SUBAGENT_ACTIVITY, conversationId, activity);
       },
       onSessionIdle: () => {
-        // Backstop only: clear the busy state if it somehow outlived the turn.
-        // Silent by design — the completion notification belongs to a real
-        // user-originated result, not to every idle transition.
-        if (this.processingSessions.has(conversationId)) {
-          logger.info('Session reported idle while still marked processing — clearing busy state', {
-            conversationId,
-          });
-          this.processingSessions.delete(conversationId);
-          this.emitActiveQueryCount();
-          this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
-        }
+        this.endStrandedTurn(conversationId, 'session reported idle');
       },
       onSessionId: (sessionId: string) => {
         // Capture session ID for constructing SDKUserMessage
@@ -868,8 +858,10 @@ export class ClaudeCodeService {
         }
       }
 
-      // Generator exhausted — session ended (process exited)
+      // Generator exhausted — session ended (process exited). Nothing further
+      // can arrive, so a turn still marked busy here would spin forever.
       logger.info('Persistent session message loop ended', { conversationId });
+      this.endStrandedTurn(conversationId, 'message stream ended');
     } catch (error) {
       this.handleQueryError(conversationId, error as Error, messageHandler);
     } finally {
@@ -1405,6 +1397,26 @@ export class ClaudeCodeService {
   private emitError(conversationId: string, error: string): void {
     this.send(IPC_CHANNELS.CLAUDE_ERROR, conversationId, error);
     this.notificationService.showError(conversationId, error);
+  }
+
+  /**
+   * End a turn that is still marked busy but has nothing left to produce.
+   *
+   * The renderer's spinner is cleared only by CLAUDE_DONE, so any path that
+   * leaves a turn un-ended strands it permanently — there is no timeout and no
+   * other way back. Turn completion normally rides on a user-originated
+   * `result`, but a turn whose only result is background-origin produces none,
+   * and the stream can simply end without one.
+   *
+   * Silent by design: no completion notification, because this is a turn that
+   * did not complete in the ordinary sense.
+   */
+  private endStrandedTurn(conversationId: string, reason: string): void {
+    if (!this.processingSessions.has(conversationId)) return;
+    logger.info('Ending turn that was still marked processing', { conversationId, reason });
+    this.processingSessions.delete(conversationId);
+    this.emitActiveQueryCount();
+    this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
   }
 
   /**
