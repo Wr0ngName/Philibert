@@ -896,7 +896,7 @@ export class SDKMessageHandler {
     // without the "Query Complete" notification, which stays tied to a real
     // user-originated result.
     if (systemMsg.subtype === 'session_state_changed') {
-      logger.info('Session state changed', { state: systemMsg.state });
+      logger.info('[turn] session state', { state: systemMsg.state });
       if (systemMsg.state === 'idle') {
         this.callbacks.onSessionIdle?.();
       }

@@ -837,23 +837,27 @@ export class ClaudeCodeService {
             this.emitError(conversationId, friendly);
           }
 
+          // Turn-lifecycle diagnostics. The spinner is cleared only by
+          // CLAUDE_DONE, so when it sticks the question is always "was a
+          // result seen, what origin did it carry, and what did we decide".
+          // One line answers all three.
+          logger.info('[turn] result', {
+            conversationId,
+            subtype: resultSubtype,
+            origin: (sdkMessage as { origin?: { kind?: string } }).origin?.kind ?? '(absent)',
+            endsUserTurn,
+            stillProcessing: this.processingSessions.has(conversationId),
+            decision: endsUserTurn ? 'emit done' : 'ignore (background)',
+          });
+
           if (!endsUserTurn) {
             // Background-agent activity completing. The main conversation may
             // still be mid-turn: leave the spinner, the processing count and
             // the "Query Complete" notification alone. Progress for these is
             // already surfaced through task notifications.
-            logger.info('Background-origin result received — not ending the user turn', {
-              conversationId,
-              subtype: resultSubtype,
-              origin: (sdkMessage as { origin?: { kind?: string } }).origin?.kind,
-            });
             continue;
           }
 
-          logger.info('Turn completed (result message received), emitting done', {
-            conversationId,
-            subtype: resultSubtype,
-          });
           this.emitDone(conversationId);
         }
       }
@@ -1412,8 +1416,14 @@ export class ClaudeCodeService {
    * did not complete in the ordinary sense.
    */
   private endStrandedTurn(conversationId: string, reason: string): void {
-    if (!this.processingSessions.has(conversationId)) return;
-    logger.info('Ending turn that was still marked processing', { conversationId, reason });
+    if (!this.processingSessions.has(conversationId)) {
+      logger.info('[turn] backstop no-op', { conversationId, reason, stillProcessing: false });
+      return;
+    }
+    logger.warn('[turn] backstop fired — turn was still marked processing', {
+      conversationId,
+      reason,
+    });
     this.processingSessions.delete(conversationId);
     this.emitActiveQueryCount();
     this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
@@ -1423,6 +1433,7 @@ export class ClaudeCodeService {
    * Emit done event to the renderer for a specific conversation
    */
   private emitDone(conversationId: string): void {
+    logger.info('[turn] done', { conversationId });
     this.processingSessions.delete(conversationId);
     this.emitActiveQueryCount();
     this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);

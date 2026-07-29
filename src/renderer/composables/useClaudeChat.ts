@@ -404,11 +404,31 @@ export function useClaudeChat() {
 
     // Handle completion - route to correct conversation
     cleanupDone = window.electron.claude.onDone(async (conversationId) => {
-      logger.info('Claude done event received', { conversationId });
+      // Turn-lifecycle diagnostics: the spinner is driven by isLoading and by
+      // any message still flagged isStreaming, so record both around the only
+      // event that clears them.
+      const before = chatStore.getConversationState(conversationId);
+      logger.info('[turn] done received', {
+        conversationId,
+        wasLoading: before?.isLoading,
+        streamingMessageId: before?.streamingMessageId ?? null,
+      });
 
       chatStore.setLoading(conversationId, false);
       chatStore.finishStreaming(conversationId);
       chatStore.completeToolUseMessages(conversationId);
+
+      // If anything is still flagged streaming after this, the spinner will
+      // stay on screen regardless of isLoading — say so loudly rather than
+      // leaving it to be discovered in the UI.
+      const stillStreaming = chatStore.messages.filter((m) => m.isStreaming).length;
+      if (stillStreaming > 0) {
+        logger.warn('[turn] spinner will persist — messages still marked streaming', {
+          conversationId,
+          stillStreaming,
+        });
+      }
+
       // Note: do NOT call completeRunningTasks here — background tasks may still be
       // running on the server. They will be updated via task_notification on session resume.
 

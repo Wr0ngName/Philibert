@@ -38,6 +38,17 @@ import {
 import { ChannelSession } from './ChannelSession';
 
 const TURN_DONE_DELAY_MS = 2000;
+/**
+ * Hard ceiling on a turn with no channel activity at all.
+ *
+ * The debounce below is armed by replies. A turn that never produces one —
+ * tool-only work, a reply lost on the MCP channel, a silent failure — armed
+ * nothing, so CLAUDE_DONE was never emitted and the renderer's spinner stayed
+ * up forever with no way back. Deliberately far longer than the debounce: it
+ * is a watchdog, not a turn-boundary detector, and must never cut short a turn
+ * that is legitimately working in silence.
+ */
+const TURN_WATCHDOG_MS = 180_000;
 
 interface ActiveChannelSession {
   session: ChannelSession;
@@ -45,6 +56,8 @@ interface ActiveChannelSession {
   healthTimer: ReturnType<typeof setInterval> | null;
   restartCount: number;
   turnDoneTimer: ReturnType<typeof setTimeout> | null;
+  /** No-activity watchdog so a turn can never hang the spinner forever. */
+  turnWatchdogTimer: ReturnType<typeof setTimeout> | null;
 }
 
 interface McpSignal {
@@ -129,6 +142,10 @@ export class ChannelService {
       }
 
       bridge.pushMessage(conversationId, message);
+
+      // Arm the watchdog now. Until this, the only thing that could ever end a
+      // turn was an incoming reply arming the debounce.
+      this.armTurnWatchdog(conversationId);
 
       this.emitChannelStatus(conversationId, true, true);
 
@@ -231,6 +248,10 @@ export class ChannelService {
         clearTimeout(active.turnDoneTimer);
         active.turnDoneTimer = null;
       }
+      if (active.turnWatchdogTimer) {
+        clearTimeout(active.turnWatchdogTimer);
+        active.turnWatchdogTimer = null;
+      }
       this.cleanupActiveSession(conversationId);
     }
     this.sessions.clear();
@@ -319,6 +340,7 @@ export class ChannelService {
       healthTimer: null,
       restartCount: 0,
       turnDoneTimer: null,
+      turnWatchdogTimer: null,
     };
 
     this.sessions.set(conversationId, active);
@@ -346,6 +368,33 @@ export class ChannelService {
    * fires only after TURN_DONE_DELAY_MS of silence, so multi-reply
    * turns don't trigger spurious "done" events.
    */
+  /**
+   * Start (or restart) the no-activity watchdog for a turn. Cleared as soon as
+   * the turn ends by any normal route.
+   */
+  private armTurnWatchdog(conversationId: string): void {
+    const active = this.sessions.get(conversationId);
+    if (!active) return;
+
+    if (active.turnWatchdogTimer) clearTimeout(active.turnWatchdogTimer);
+    active.turnWatchdogTimer = setTimeout(() => {
+      active.turnWatchdogTimer = null;
+      logger.warn('[turn] channel watchdog fired — no activity ended this turn', {
+        conversationId,
+        afterMs: TURN_WATCHDOG_MS,
+      });
+      this.emitDone(conversationId);
+    }, TURN_WATCHDOG_MS);
+  }
+
+  private clearTurnWatchdog(conversationId: string): void {
+    const active = this.sessions.get(conversationId);
+    if (active?.turnWatchdogTimer) {
+      clearTimeout(active.turnWatchdogTimer);
+      active.turnWatchdogTimer = null;
+    }
+  }
+
   private handleReply(conversationId: string, text: string): void {
     this.send(IPC_CHANNELS.CLAUDE_CHUNK, conversationId, text);
 
@@ -355,12 +404,17 @@ export class ChannelService {
       return;
     }
 
+    // Activity: the turn is alive, so push the watchdog out and let the
+    // debounce decide the real boundary.
+    this.armTurnWatchdog(conversationId);
+
     if (active.turnDoneTimer) {
       clearTimeout(active.turnDoneTimer);
     }
 
     active.turnDoneTimer = setTimeout(() => {
       active.turnDoneTimer = null;
+      this.clearTurnWatchdog(conversationId);
       this.emitDone(conversationId);
       this.notificationService.showQueryComplete(conversationId);
       this.pollUsage(conversationId);
@@ -636,6 +690,11 @@ export class ChannelService {
     if (active.turnDoneTimer) {
       clearTimeout(active.turnDoneTimer);
       active.turnDoneTimer = null;
+    }
+
+    if (active.turnWatchdogTimer) {
+      clearTimeout(active.turnWatchdogTimer);
+      active.turnWatchdogTimer = null;
     }
 
     this.mcpSignals.clear();
