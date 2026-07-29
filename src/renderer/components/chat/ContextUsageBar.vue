@@ -6,6 +6,7 @@
 
 import { computed } from 'vue';
 
+import { primaryModelId, secondaryModelIds } from '@shared/model-usage';
 import type { SessionUsage } from '@shared/types';
 
 import { formatModelId } from '../../utils/model';
@@ -89,10 +90,25 @@ function formatCost(cost: number): string {
  * The user's selected-for-next-turn model is already visible in the dropdown.
  */
 const primaryModel = computed(() => {
-  if (!props.usage?.modelUsage) return null;
-  const models = Object.keys(props.usage.modelUsage);
-  if (models.length === 0) return null;
-  return formatModelId(models[models.length - 1]);
+  const id = primaryModelId(props.usage?.modelUsage);
+  return id ? formatModelId(id) : null;
+});
+
+/**
+ * Models that ran alongside the primary one — Claude Code's small-fast model
+ * doing titles/summaries/classifiers, which is billed and reported but never
+ * answered the user. Shown in the tooltip so utility usage stays visible
+ * without it being mistaken for the conversation's model.
+ */
+const secondaryModels = computed(() =>
+  secondaryModelIds(props.usage?.modelUsage).map(formatModelId),
+);
+
+const modelChipTitle = computed(() => {
+  if (!primaryModel.value) return '';
+  return secondaryModels.value.length > 0
+    ? `Answered by ${primaryModel.value}; also used for internal tasks: ${secondaryModels.value.join(', ')}`
+    : `Answered by ${primaryModel.value}`;
 });
 </script>
 
@@ -164,9 +180,13 @@ const primaryModel = computed(() => {
         <div
           v-if="primaryModel"
           class="hidden md:flex items-center gap-1 text-surface-400 dark:text-surface-500"
-          title="Primary model"
+          :title="modelChipTitle"
         >
           <span class="truncate max-w-[120px]">{{ primaryModel }}</span>
+          <span
+            v-if="secondaryModels.length > 0"
+            class="opacity-60"
+          >+{{ secondaryModels.length }}</span>
         </div>
       </div>
     </div>

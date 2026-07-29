@@ -639,8 +639,12 @@ export class ClaudeCodeService {
         willSetModelAfterResume: shouldResume && !!selectedModel,
       });
 
-      // Set up authentication environment
-      const authEnv = await this.authValidator.setupAuthEnv();
+      // Set up authentication environment, plus any model enforcement that
+      // has to travel as an env var rather than a setting.
+      const authEnv = {
+        ...(await this.authValidator.setupAuthEnv()),
+        ...(await this.buildModelEnforcementEnv(selectedModel)),
+      };
 
       // CRITICAL: Set auth env vars in actual process.env BEFORE calling query()
       Object.entries(authEnv).forEach(([key, value]) => {
@@ -1533,6 +1537,33 @@ export class ClaudeCodeService {
     });
 
     return settings;
+  }
+
+  /**
+   * Environment overrides that extend model enforcement to the CLI's *other*
+   * model slot.
+   *
+   * `--model` and `managedSettings.model` govern the main loop only. The CLI
+   * resolves a second, dedicated "small fast model" through a separate path
+   * (`getSmallFastModel` / `hasDedicatedSmallFastModel` in the bundle) and
+   * uses it for internal work — conversation titles, summaries, the
+   * permission classifier. That model is Haiku by default and is completely
+   * untouched by the main-loop selection, so a session pinned to Opus still
+   * legitimately reports Haiku usage.
+   *
+   * Only applied under strict enforcement, because forcing utility work onto
+   * a frontier model is a real cost increase — titles and summaries would run
+   * on Opus. Off by default, the CLI's own behaviour is preserved and the
+   * usage bar surfaces the secondary model instead of hiding it.
+   */
+  private async buildModelEnforcementEnv(selectedModel: string): Promise<Record<string, string>> {
+    if (!selectedModel) return {};
+    if (!(await this.configService.getStrictModelEnforcement())) return {};
+
+    logger.info('Pinning the CLI small-fast model to the selected model', {
+      model: selectedModel,
+    });
+    return { ANTHROPIC_SMALL_FAST_MODEL: selectedModel };
   }
 
   /**

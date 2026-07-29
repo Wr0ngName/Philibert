@@ -295,8 +295,8 @@ async function toggleStrictModelEnforcement(): Promise<void> {
   logger.info('Strict model enforcement changed', { enabled });
   chatStore.addSystemMessage(
     enabled
-      ? `Locked to ${currentModelDisplay.value}. Background agents cannot use another model. Applies to new sessions.`
-      : 'Model lock removed — background agents may run the model named in their own definition.',
+      ? `Locked to ${currentModelDisplay.value}. Background agents and Claude Code's internal tasks (titles, summaries, classifiers) are forced onto it too, which costs more than letting them use Haiku. Applies to new sessions.`
+      : 'Model lock removed — background agents may run the model named in their own definition, and Haiku handles internal tasks.',
   );
 }
 
@@ -610,8 +610,8 @@ onUnmounted(() => {
               <div class="text-xs text-surface-500 dark:text-surface-400">
                 {{
                   strictModelEnforcement
-                    ? 'On — background agents forced onto it too'
-                    : 'Off — agents may use their own model'
+                    ? 'On — agents and internal tasks forced onto it too'
+                    : 'Off — Haiku still runs titles, summaries, classifiers'
                 }}
               </div>
             </div>

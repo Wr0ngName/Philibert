@@ -6,7 +6,8 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 
-import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, TaskNotification, SessionPermissionEntry, SessionUsage, ModelUsageInfo, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData } from '@shared/types';
+import { primaryModelUsage } from '@shared/model-usage';
+import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData } from '@shared/types';
 
 import { CONSTANTS } from '../constants/app';
 import { generateId, ID_PREFIXES } from '../utils/id';
@@ -205,9 +206,11 @@ export const useChatStore = defineStore('chat', () => {
 
   const contextWindowSize = computed(() => {
     if (sessionUsage.value?.contextMaxTokens) return sessionUsage.value.contextMaxTokens;
-    if (!sessionUsage.value?.modelUsage) return 0;
-    const models: ModelUsageInfo[] = Object.values(sessionUsage.value.modelUsage);
-    return models.length > 0 ? models[models.length - 1].contextWindow : 0;
+    // Size against the model that actually served the turn, not whichever
+    // entry landed last in the usage map. Picking the last one could size an
+    // Opus conversation against Haiku's 200K window and overstate context
+    // usage roughly fivefold — see @shared/model-usage.
+    return primaryModelUsage(sessionUsage.value?.modelUsage)?.contextWindow ?? 0;
   });
 
   const contextUsagePercent = computed(() => {
