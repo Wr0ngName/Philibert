@@ -525,17 +525,9 @@ onUnmounted(() => {
           </div>
         </template>
 
-        <!-- Running model differs from the selection -->
-        <div
-          v-if="isModelMismatched"
-          class="mx-2 my-1 px-2 py-1.5 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800"
-        >
-          <div class="text-xs text-amber-700 dark:text-amber-300">
-            Running <strong>{{ activeModelLabel }}</strong>, not
-            <strong>{{ currentModelDisplay }}</strong>. Claude Code switches models
-            on its own when a message is flagged or the model is unavailable.
-          </div>
-        </div>
+        <!-- A model mismatch is explained by ModelMismatchBanner at the top of
+             the window, which has room for a sentence. The picker shows only
+             the compact amber tint on the button plus its tooltip. -->
 
         <!-- Model options separator -->
         <div class="h-px bg-surface-200 dark:bg-surface-700 my-1" />

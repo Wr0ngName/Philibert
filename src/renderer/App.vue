@@ -17,6 +17,7 @@ import ConversationHistory from './components/conversations/ConversationHistory.
 import SettingsPanel from './components/settings/SettingsPanel.vue';
 import InitWizard from './components/wizard/InitWizard.vue';
 import ErrorBoundary from './components/shared/ErrorBoundary.vue';
+import ModelMismatchBanner from './components/shared/ModelMismatchBanner.vue';
 import UpdateBanner from './components/shared/UpdateBanner.vue';
 import GitControls from './components/shared/GitControls.vue';
 import ModelSelector from './components/shared/ModelSelector.vue';
@@ -311,6 +312,9 @@ const isMac = window.electron?.platform === 'darwin';
 
       <!-- Update notification banner -->
       <UpdateBanner />
+
+      <!-- Running model differs from the selected one -->
+      <ModelMismatchBanner />
 
       <!-- Main content -->
       <main class="flex-1 flex overflow-hidden">
