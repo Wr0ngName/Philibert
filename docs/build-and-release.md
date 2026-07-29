@@ -10,6 +10,35 @@
   CLI (`git push origin :refs/tags/...`), only through the GitLab web UI under
   Settings > Repository > Protected Tags. Get it right before tagging.
 
+## Git Hooks (husky)
+
+The pre-commit hook is the first line of defence and it is easy to forget,
+because it is **not** part of a fresh checkout — it is installed by the
+`prepare` script when `npm install` runs. If it isn't installed, every guard
+below is silently skipped and problems surface in CI instead.
+
+Verify before starting a release:
+
+```bash
+git config core.hooksPath        # must print .husky/_
+```
+
+If it prints nothing, run `npm install` (or `npx husky`) to reinstall, and
+confirm again. Never commit with `--no-verify` during a release.
+
+What the hook checks, and why each exists:
+
+- **Lockfile sync** (`npm ci --dry-run`) whenever `package.json` or
+  `package-lock.json` is staged. CI installs with `npm ci`, which refuses an
+  out-of-sync lockfile and fails *every* job — see Lockfile Integrity below.
+  This guard runs on manifest-only commits, which nothing else covers.
+- **eslint** on staged `.ts`/`.vue`/`.js` files.
+- **typecheck** (`npm run typecheck`).
+
+Watch for the hook's output when you commit (`Verifying package-lock.json is
+in sync...`, `Running eslint on staged files...`, `Running typecheck...`). No
+output means it did not run — stop and fix that before tagging.
+
 ## Version Bump
 
 **Never run `npm install --package-lock-only` or any npm command that
@@ -25,30 +54,85 @@ Instead, edit version strings directly:
    first: `git checkout <commit> -- package-lock.json`, then edit the version
    strings.
 
+### Dependency upgrades (as opposed to version bumps)
+
+A real dependency change must re-resolve, so the rule above cannot apply
+as-written. Run the install, then **diff the resulting lockfile's package set
+against the last known-good one** — npm prunes transitive deps of *other*
+platforms' optional packages (on linux-x64 it drops `@emnapi/core`,
+`@emnapi/runtime` and `encoding`). Rebuild by taking the known-good lockfile
+and overlaying only the entries the bump actually changed; do not regenerate
+from scratch, which drifts hundreds of packages. Confirm with
+`npm ci --ignore-scripts --dry-run` before committing.
+
 ## Release Checklist
 
 All changes must be committed and verified before tagging. The order matters.
 
+0. **Confirm the hooks are installed** — `git config core.hooksPath` must
+   print `.husky/_`. See Git Hooks above. Everything below assumes the
+   pre-commit guards actually run.
 1. **Make all code changes** and commit them.
 2. **Bump version** in `package.json` and `package-lock.json` (direct edit,
    see above). Commit.
 3. **Verify the build compiles:**
    ```bash
-   npx vue-tsc -p tsconfig.renderer.json --noEmit
-   npx tsc -p tsconfig.main.json --noEmit
-   npx tsc -p tsconfig.preload.json --noEmit
+   npm run typecheck
    ```
-4. **Verify lockfile integrity** (emnapi packages present):
+4. **Verify the full suite is green** — 0 failed, 0 skipped:
    ```bash
+   npm test
+   npm run lint       # 0 errors
+   ```
+5. **Verify lockfile integrity:**
+   ```bash
+   npm ci --ignore-scripts --dry-run           # must not error
    grep -c '@emnapi/core' package-lock.json    # should be 6
    grep -c '@emnapi/runtime' package-lock.json  # should be 6
    ```
-5. **Tag and push** (tag first, then main):
+6. **Validate the CI config** if `.gitlab-ci.yml` changed:
+   ```bash
+   glab ci lint
+   ```
+7. **Prove the builds before spending a tag.** Tags are protected and cannot
+   be deleted from the CLI, so never discover a build failure on a tag. Push
+   to `main` first and run the manual build jobs, which use the same
+   templates as the tagged ones:
+   ```bash
+   glab ci trigger build:linux:manual --branch main
+   glab ci trigger build:windows:manual --branch main
+   glab ci trigger build:windows:online:manual --branch main
+   ```
+   Skip only when nothing since the last green tag could affect packaging.
+   Note `build:windows` (offline) bundles Node.js and Git Bash and is the
+   heaviest job — it fails first when the runner is short on memory, so a
+   green `build:windows:online` alone does not clear the release.
+8. **Tag and push** (tag first, then main):
    ```bash
    git tag v<version>
    git push origin v<version>
    git push origin main
    ```
+9. **Watch the pipeline to a terminal state** and confirm the release exists:
+   ```bash
+   glab ci status --branch v<version> --live
+   glab release view v<version>
+   ```
+
+### If CI fails
+
+Check whether it failed for a *reason in the code* before changing anything.
+Jobs on this runner are OOM-killed under memory pressure, which looks like a
+mysterious failure but is not one:
+
+- `Killed`, or exit code `137` (SIGKILL), means the OOM killer.
+- Lint, test and typecheck all failing together while passing locally means
+  the `npm ci` install step, not the code.
+- `before_script` prints `free -h` and the top RSS consumers on the runner —
+  read those first. Jobs have been observed failing below ~1Gi available and
+  passing above ~1.5Gi.
+
+Re-running the job alone often passes. That is contention, not a fix.
 
 ## What Happens After Tagging
 
