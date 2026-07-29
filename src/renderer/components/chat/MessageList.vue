@@ -330,7 +330,25 @@ defineExpose({ scrollToBottom, scrollToMessage });
 // leaving scrollHeight stale.
 let contentObserver: MutationObserver | null = null;
 
-// Set up scroll listener + content-mutation observer
+// ResizeObserver catches the scroll VIEWPORT changing size, which neither of
+// the other mechanisms can see.
+//
+// The scroll container is `absolute inset-0` inside a `flex-1` root, and the
+// background-task panel, task list and pending-actions blocks are flex
+// siblings below it. When one of those appears — an agent starting is the
+// common case — the container's clientHeight shrinks. Nothing else notices:
+// scrollTop is unchanged so no scroll event fires, and nothing mutated inside
+// the container so the MutationObserver stays quiet. The tail of the
+// conversation slides out of view behind the newly-appeared panel and stays
+// there.
+//
+// It also breaks auto-scroll permanently rather than just once: shrinking the
+// viewport grows `scrollHeight - scrollTop - clientHeight` past
+// SCROLL_THRESHOLD, so the next scroll event latches isUserAtBottom to false
+// and the watchers stop following the conversation at all.
+let viewportObserver: ResizeObserver | null = null;
+
+// Set up scroll listener + content-mutation observer + viewport-resize observer
 onMounted(() => {
   if (listRef.value) {
     listRef.value.addEventListener('scroll', handleScroll, { passive: true });
@@ -343,6 +361,18 @@ onMounted(() => {
       subtree: true,
       characterData: true,
     });
+
+    // Guarded: happy-dom and older runtimes may not provide ResizeObserver.
+    if (typeof ResizeObserver !== 'undefined') {
+      viewportObserver = new ResizeObserver(() => {
+        // isUserAtBottom still holds the pre-resize state here: a resize emits
+        // no scroll event, and ResizeObserver runs before paint. So it is
+        // exactly the right question — was the user following the tail before
+        // the panel took this space?
+        if (isUserAtBottom.value) scrollToBottom();
+      });
+      viewportObserver.observe(listRef.value);
+    }
   }
 });
 
@@ -352,6 +382,8 @@ onUnmounted(() => {
   }
   contentObserver?.disconnect();
   contentObserver = null;
+  viewportObserver?.disconnect();
+  viewportObserver = null;
 });
 </script>
 
