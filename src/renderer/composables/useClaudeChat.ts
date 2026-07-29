@@ -85,8 +85,11 @@ export function useClaudeChat() {
   async function loadSlashCommands(): Promise<void> {
     try {
       const commands = await window.electron.claude.getCommands();
-      slashCommands.value = commands;
-      logger.debug('Loaded slash commands', { count: commands.length });
+      // Never assign a non-array into the shared ref. It is module-level state
+      // reused by every component instance, so one bad response would make the
+      // next mount throw on `.length` and take the whole chat view down.
+      slashCommands.value = Array.isArray(commands) ? commands : [];
+      logger.debug('Loaded slash commands', { count: slashCommands.value.length });
     } catch (err) {
       logger.warn('Failed to load slash commands', { error: err instanceof Error ? err.message : String(err) });
     }
