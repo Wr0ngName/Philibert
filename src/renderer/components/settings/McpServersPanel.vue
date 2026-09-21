@@ -53,7 +53,12 @@ const pairHint = computed(() =>
 const canSubmit = computed(() => {
   if (!formName.value.trim()) return false;
   if (isRemote.value) return formUrl.value.trim().length > 0;
-  return formCommand.value.trim().length > 0;
+  if (!formCommand.value.trim()) return false;
+  // A failed check means the main process looked and the program is genuinely
+  // not launchable from here, so saving would only produce a server that
+  // silently contributes nothing. A null check is "not answered yet" — allow
+  // it, since the service validates again on save.
+  return commandCheck.value === null || commandCheck.value.ok;
 });
 
 onMounted(() => {
@@ -149,6 +154,11 @@ function collectPairs(): Record<string, string> | undefined {
 }
 
 async function submitForm(): Promise<void> {
+  // The disabled Add button styles the state but does not prevent a submit
+  // event — implicit submission from pressing Enter in a field still fires
+  // here — so the guard lives with the behaviour, not the presentation.
+  if (!canSubmit.value) return;
+
   const args = formArgs.value
     .split('\n')
     .map((line) => line.trim())

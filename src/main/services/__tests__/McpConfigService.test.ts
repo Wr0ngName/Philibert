@@ -21,6 +21,7 @@ vi.mock('../../utils/resourcePaths', () => ({
   WindowsPaths: {
     hasBundledNode: () => false,
     getBundledNodeExe: () => 'C:\\Philibert\\resources\\node.exe',
+    buildEnhancedPath: () => process.env.PATH || '',
   },
 }));
 
@@ -394,11 +395,32 @@ describe('checkCommand', () => {
     expect(service.checkCommand('npx.cmd').problem).toBe('no-package-runner');
   });
 
-  it('rejects any other bare command name', () => {
-    const check = service.checkCommand('my-server');
+  it('rejects a bare command name that is nowhere on PATH', () => {
+    const check = service.checkCommand('philibert-no-such-program');
 
     expect(check.ok).toBe(false);
     expect(check.problem).toBe('not-absolute');
+  });
+
+  it('accepts a bare name that resolves on the PATH the CLI will inherit', () => {
+    // The spawned CLI inherits the main process environment, so a name that
+    // resolves here is genuinely launchable — reporting it as broken would be
+    // a false alarm, notably on Windows where the bundled Git Bash
+    // directories really are on PATH.
+    const onPath = path.basename(process.execPath);
+    const pathDirs = (process.env.PATH ?? '').split(path.delimiter);
+    const isReachable = pathDirs.some(
+      (dir) => dir && fs.existsSync(path.join(dir, onPath))
+    );
+
+    // Only meaningful when the running binary is itself reachable by name.
+    expect(isReachable).toBe(true);
+    expect(service.checkCommand(onPath)).toEqual({ ok: true });
+  });
+
+  it('does not treat a relative path as a PATH lookup', () => {
+    // Resolving it would depend on the app's cwd, which is not the project.
+    expect(service.checkCommand('./bin/server').problem).toBe('not-absolute');
   });
 
   it('rejects an absolute path that does not exist', () => {

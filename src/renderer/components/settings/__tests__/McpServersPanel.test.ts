@@ -259,6 +259,73 @@ describe('adding a server', () => {
     expect(mcpApi.save).not.toHaveBeenCalled();
   });
 
+  it('will not let a server be added with a program that cannot run', async () => {
+    mcpApi.checkCommand.mockResolvedValue({
+      ok: false,
+      problem: 'not-found',
+      message: 'No file at that path.',
+    });
+    const wrapper = await openForm();
+
+    await wrapper.find('#mcp-name').setValue('gsc');
+    await wrapper.find('#mcp-command').setValue('/gone/missing');
+    await flushPromises();
+
+    const add = wrapper.findAll('button').find((b) => b.text() === 'Add')!;
+    expect(add.attributes('disabled')).toBeDefined();
+
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+    expect(mcpApi.save).not.toHaveBeenCalled();
+  });
+
+  it('re-enables Add once the program path is corrected', async () => {
+    mcpApi.checkCommand.mockResolvedValueOnce({
+      ok: false,
+      problem: 'not-found',
+      message: 'No file at that path.',
+    });
+    const wrapper = await openForm();
+
+    await wrapper.find('#mcp-name').setValue('gsc');
+    await wrapper.find('#mcp-command').setValue('/gone/missing');
+    await flushPromises();
+    expect(wrapper.findAll('button').find((b) => b.text() === 'Add')!.attributes('disabled'))
+      .toBeDefined();
+
+    mcpApi.checkCommand.mockResolvedValue({ ok: true });
+    await wrapper.find('#mcp-command').setValue('/opt/gsc-mcp');
+    await flushPromises();
+
+    expect(wrapper.findAll('button').find((b) => b.text() === 'Add')!.attributes('disabled'))
+      .toBeUndefined();
+    expect(wrapper.text()).toContain('Found — this program can be started.');
+  });
+
+  it('does not block a remote server on a stale program check', async () => {
+    mcpApi.checkCommand.mockResolvedValue({
+      ok: false,
+      problem: 'not-found',
+      message: 'No file at that path.',
+    });
+    mcpApi.save.mockResolvedValue([]);
+    const wrapper = await openForm();
+
+    await wrapper.find('#mcp-command').setValue('/gone/missing');
+    await flushPromises();
+
+    await wrapper.findAll('button').find((b) => b.text().includes('A web address'))!
+      .trigger('click');
+    await wrapper.find('#mcp-name').setValue('remote');
+    await wrapper.find('#mcp-url').setValue('https://example.com/mcp');
+    await flushPromises();
+
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(mcpApi.save).toHaveBeenCalled();
+  });
+
   it('fills the program field from the file picker', async () => {
     mcpApi.pickExecutable.mockResolvedValue('/picked/server');
     const wrapper = await openForm();

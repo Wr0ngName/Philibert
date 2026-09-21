@@ -236,11 +236,13 @@ export class McpConfigService {
   /**
    * Whether a stdio command can be launched from the packaged app.
    *
-   * This is deliberately strict about bare command names. Philibert augments
-   * PATH only on Windows and only with the bundled Git Bash directories
-   * (WindowsPaths.buildEnhancedPath), so a command that resolves in the user's
-   * terminal frequently does not resolve in the spawned CLI — the failure is
-   * silent and looks like "Claude ignored my server".
+   * A bare command name is resolved against the main process's own PATH,
+   * because that is literally the environment the CLI subprocess inherits
+   * (ChannelSession and ClaudeCodeService both spawn with `...process.env`).
+   * Checking there rather than assuming makes the answer true for this
+   * machine: a desktop-launched app on macOS or Linux usually has a much
+   * narrower PATH than the user's terminal, while on Windows the bundled Git
+   * Bash directories genuinely are on it.
    */
   checkCommand(command: string): McpCommandCheck {
     const trimmed = command.trim();
@@ -254,27 +256,36 @@ export class McpConfigService {
     }
 
     const base = path.basename(trimmed).replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
-    if (!path.isAbsolute(trimmed) && PACKAGE_RUNNERS.has(base)) {
-      return {
-        ok: false,
-        problem: 'no-package-runner',
-        message:
-          `Philibert does not include ${base}. Choose a server that ships a ready-made ` +
-          'program file, or use a web address instead.',
-      };
-    }
 
+    let resolved = trimmed;
     if (!path.isAbsolute(trimmed)) {
-      return {
-        ok: false,
-        problem: 'not-absolute',
-        message:
-          'Use the full path to the program — Philibert cannot find programs by name alone. ' +
-          'Click Browse to pick the file.',
-      };
+      // Package runners are hopeless regardless of PATH: Philibert bundles a
+      // bare node.exe and no package manager, so say so specifically rather
+      // than leaving the user to read "not found" and go looking for a path.
+      if (PACKAGE_RUNNERS.has(base)) {
+        return {
+          ok: false,
+          problem: 'no-package-runner',
+          message:
+            `Philibert does not include ${base}. Choose a server that ships a ready-made ` +
+            'program file, or use a web address instead.',
+        };
+      }
+
+      const onPath = this.resolveOnPath(trimmed);
+      if (!onPath) {
+        return {
+          ok: false,
+          problem: 'not-absolute',
+          message:
+            'Philibert cannot find a program by that name. Use the full path — ' +
+            'click Browse to pick the file.',
+        };
+      }
+      resolved = onPath;
     }
 
-    if (!fs.existsSync(trimmed)) {
+    if (!fs.existsSync(resolved)) {
       return {
         ok: false,
         problem: 'not-found',
@@ -284,19 +295,55 @@ export class McpConfigService {
 
     if (process.platform !== 'win32') {
       try {
-        fs.accessSync(trimmed, fs.constants.X_OK);
+        fs.accessSync(resolved, fs.constants.X_OK);
       } catch {
         return {
           ok: false,
           problem: 'not-executable',
           message:
             'That file is not marked as runnable. In a terminal run: ' +
-            `chmod +x "${trimmed}"`,
+            `chmod +x "${resolved}"`,
         };
       }
     }
 
     return { ok: true };
+  }
+
+  /**
+   * Find a bare command name on the PATH the spawned CLI will actually have.
+   *
+   * On Windows that is the enhanced PATH the app builds for subprocesses (it
+   * prepends the bundled Git Bash directories), and the name is tried against
+   * PATHEXT so `foo` matches `foo.exe`. Returns the resolved absolute path, or
+   * null when nothing matches.
+   */
+  private resolveOnPath(command: string): string | null {
+    // A relative path like `./bin/server` is not a PATH lookup; resolving it
+    // would depend on the app's cwd, which is not the project folder.
+    if (command.includes('/') || command.includes('\\')) return null;
+
+    const isWindows = process.platform === 'win32';
+    const searchPath = isWindows
+      ? WindowsPaths.buildEnhancedPath()
+      : process.env.PATH ?? '';
+    const extensions = isWindows
+      ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+      : [''];
+
+    for (const dir of searchPath.split(path.delimiter)) {
+      if (!dir) continue;
+      for (const ext of extensions) {
+        const candidate = path.join(dir, command + ext);
+        try {
+          if (fs.statSync(candidate).isFile()) return candidate;
+        } catch {
+          // Unreadable or missing entry — keep looking.
+        }
+      }
+    }
+
+    return null;
   }
 
   // ---------------------------------------------------------------- internals
