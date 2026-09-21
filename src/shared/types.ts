@@ -1030,6 +1030,108 @@ export interface FileChange {
  * IPC channel names used for communication between main and renderer processes
  * Using 'as const' ensures type safety and prevents modification
  */
+// MCP server management types
+
+/**
+ * Transport an MCP server speaks. `stdio` launches a local program and talks to
+ * it over its standard input/output; `http` and `sse` talk to a remote URL.
+ */
+export type McpTransport = 'stdio' | 'http' | 'sse';
+
+/**
+ * Why a configured stdio command cannot be run, as reported by
+ * {@link IPC_CHANNELS.MCP_CHECK_COMMAND}.
+ *
+ * - `not-absolute`: a bare name like `npx` that depends on PATH. Philibert only
+ *   augments PATH on Windows (and only with the Git Bash directories), so a
+ *   bare name usually fails in the packaged app even when it works in a shell.
+ * - `no-package-runner`: specifically `npx`/`npm`/`pnpm`/`yarn`/`uvx`/`pipx`.
+ *   Philibert bundles a bare `node.exe` and no package manager, so these can
+ *   never resolve on a machine that only has Philibert installed.
+ * - `not-found`: absolute path that does not exist.
+ * - `not-executable`: the file exists but is not marked executable.
+ */
+export type McpCommandProblem =
+  | 'not-absolute'
+  | 'no-package-runner'
+  | 'not-found'
+  | 'not-executable';
+
+/**
+ * Result of checking whether a stdio command can actually be launched.
+ */
+export interface McpCommandCheck {
+  /** True when the command looks runnable. */
+  ok: boolean;
+  /** Machine-readable reason when {@link ok} is false. */
+  problem?: McpCommandProblem;
+  /** Sentence shown under the field in the UI. Always set when not ok. */
+  message?: string;
+}
+
+/**
+ * Facts about the host that the MCP settings UI needs in order to give
+ * accurate guidance without the renderer touching the filesystem.
+ */
+export interface McpRuntimeInfo {
+  /** `process.platform` of the main process. */
+  platform: string;
+  /**
+   * Absolute path to the Node binary Philibert bundles, or null when none is
+   * bundled (every platform but Windows). Offered as a one-click fill so users
+   * can run a vendored `.js` server without installing Node themselves.
+   */
+  bundledNodePath: string | null;
+  /** Absolute path of the `.mcp.json` the UI is editing. */
+  configPath: string;
+  /** Absolute path of the `.claude/settings.local.json` holding approvals. */
+  approvalsPath: string;
+}
+
+/**
+ * One MCP server as presented to the settings UI: its definition from
+ * `.mcp.json` plus the approval state derived from
+ * `.claude/settings.local.json`.
+ */
+export interface McpServerEntry {
+  /** Server name — the key in `.mcp.json` and the `mcp__<name>__*` prefix. */
+  name: string;
+  /** Transport this entry declares. */
+  transport: McpTransport;
+  /** stdio: program to launch. */
+  command?: string;
+  /** stdio: arguments passed to the program. */
+  args?: string[];
+  /** stdio: environment variables set for the program. */
+  env?: Record<string, string>;
+  /** http/sse: server URL. */
+  url?: string;
+  /** http/sse: request headers, typically carrying an API token. */
+  headers?: Record<string, string>;
+  /**
+   * Whether Claude Code will actually load this server. False means it sits in
+   * `.mcp.json` but is not approved, so it contributes no tools.
+   */
+  enabled: boolean;
+  /** Result of checking {@link command}; undefined for http/sse entries. */
+  check?: McpCommandCheck;
+}
+
+/**
+ * The subset of {@link McpServerEntry} the renderer sends when creating or
+ * updating a server. Approval state and command checks are derived by the main
+ * process, never supplied by the UI.
+ */
+export interface McpServerInput {
+  name: string;
+  transport: McpTransport;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
 export const IPC_CHANNELS = {
   // Claude operations
   /** Send a message to Claude */
@@ -1134,6 +1236,24 @@ export const IPC_CHANNELS = {
   FILES_CHANGED: 'files:changed',
   /** Open a file in the system's default application */
   FILES_OPEN: 'files:open',
+
+  // MCP server management
+  /** List the MCP servers declared in the project's .mcp.json */
+  MCP_LIST: 'mcp:list',
+  /** Create or update one server entry */
+  MCP_SAVE: 'mcp:save',
+  /** Delete a server entry */
+  MCP_REMOVE: 'mcp:remove',
+  /** Enable or disable a server without deleting it */
+  MCP_SET_ENABLED: 'mcp:set-enabled',
+  /** Check whether a stdio command is runnable on this machine */
+  MCP_CHECK_COMMAND: 'mcp:check-command',
+  /** Runtime facts the UI needs (bundled Node path, platform) */
+  MCP_GET_RUNTIME_INFO: 'mcp:get-runtime-info',
+  /** Open a file picker for choosing a server executable */
+  MCP_PICK_EXECUTABLE: 'mcp:pick-executable',
+  /** Open a file picker for choosing a credentials/JSON file */
+  MCP_PICK_FILE: 'mcp:pick-file',
 
   // Config operations
   /** Get current configuration */

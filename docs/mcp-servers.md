@@ -7,10 +7,33 @@ an **MCP server** (Model Context Protocol) to a project.
 Code with your project folder as its working directory and neither passes
 `--strict-mcp-config`, so both discover the same project-level configuration.
 
-Philibert has no MCP management UI — `/mcp` in the chat box reports that it is
-unsupported and points at the CLI
-(`src/main/services/claude/BuiltinCommandHandler.ts:244`). The process below is
-the native Claude Code mechanism, which Philibert inherits.
+**Use Settings → Tool Servers.** Philibert manages these servers for you:
+adding one there writes both files Claude Code needs, in the right places, and
+checks that the program can actually be launched. The manual file format is
+documented further down for anyone who wants to know what is being written, or
+who is committing a server for a whole team.
+
+---
+
+## The short version (Settings → Tool Servers)
+
+1. Open **Settings**. Under **Tool Servers**, click **Add server**.
+2. Give it a short **Name** — this becomes the `mcp__<name>__…` tool prefix.
+3. Choose **A program on this computer** and **Browse…** to the server's
+   program file, or **A web address** and paste the URL.
+4. Add any **Variables** the server's instructions list (there is a file picker
+   for values that are paths, such as a credentials file).
+5. Click **Add**, then start a **new conversation**.
+
+The panel refuses to leave you with a server that cannot start: a program path
+that does not exist, is not executable, or is a package runner Philibert does
+not bundle (`npx`, `uvx`, …) is flagged under the field as you type.
+
+Use **Turn off** rather than **Remove** to park a server you want to keep.
+
+Everything below explains what that panel writes and why — useful for
+troubleshooting, for committing a server to a repository, or for setting one up
+by hand.
 
 ---
 
@@ -59,7 +82,11 @@ users change the directory. The exact path is logged on every start — open
 
 ---
 
-## The process (3 steps)
+## The process by hand (3 steps)
+
+This is what **Settings → Tool Servers** does for you. Do it yourself when you
+want the server committed to the repository for a team, or when you are
+scripting project setup.
 
 ### Step 1 — Create `.mcp.json` in the project folder
 
@@ -308,7 +335,21 @@ quarantine flag:
 xattr -d com.apple.quarantine ~/bin/gsc-mcp-go-darwin-arm64
 ```
 
-### Step 4 — Write the two files
+### Step 4 — Add it in Philibert
+
+**Settings → Tool Servers → Add server**:
+
+| Field | Value |
+|---|---|
+| Name | `gsc` |
+| Where does it run? | A program on this computer |
+| Program | **Browse…** to the binary you saved in Step 3 |
+| Variables | `GOOGLE_SERVICE_ACCOUNT_FILE` → **Browse…** to the JSON from Step 2 |
+
+Click **Add**. That is the whole configuration step — skip to Step 5.
+
+<details>
+<summary>Or write the files by hand</summary>
 
 `<project>/.mcp.json` — Windows:
 
@@ -350,6 +391,8 @@ the full path.
   "enabledMcpjsonServers": ["gsc"]
 }
 ```
+
+</details>
 
 ### Step 5 — New conversation, then ask
 
@@ -465,16 +508,22 @@ remove the need for Step 2.
 
 **Claude lists no MCP tools.** Work through this order:
 
-1. Is `.mcp.json` in the folder Philibert shows as the working directory?
-   (Settings → Working Directory.) It must be the project root.
-2. Did you create `.claude/settings.local.json` (Step 2)?
-3. Did you open a **new** conversation after editing the files?
-4. Is `command` an absolute path to a file that exists?
+1. Open **Settings → Tool Servers**. Is the server listed, and does it say
+   **On**? A server marked **Off** contributes nothing.
+2. Does it show a warning under its name? That is the command check — the
+   message says what is wrong with the program path.
+3. Did you open a **new** conversation? Servers connect at session start, so an
+   already-running conversation keeps the set it began with.
+4. If you set the files up by hand: is `.mcp.json` in the folder Philibert shows
+   as the working directory (Settings → Working Directory), and did you also
+   write `.claude/settings.local.json`?
 5. Does the server need a runtime Philibert does not bundle? See
    [Before you start](#before-you-start-can-philibert-run-the-server).
 
-**The conversation hangs right after you add a server.** That is the
-unhandled trust dialog in channel mode — do Step 2 and start a new conversation.
+**The conversation hangs right after you add a server by hand.** That is the
+unhandled trust dialog in channel mode — the approval in
+`.claude/settings.local.json` is missing. Adding the server through
+**Settings → Tool Servers** writes it for you.
 
 **Checking the logs.**
 
@@ -493,6 +542,8 @@ from `env`.
 
 | Thing | Where |
 |---|---|
+| Manage servers | Settings → Tool Servers (`McpServersPanel.vue`) |
+| Logic that writes both files | `src/main/services/McpConfigService.ts` |
 | Server definitions | `<project>/.mcp.json` |
 | Server approval | `<project>/.claude/settings.local.json` |
 | Tool naming | `mcp__<server-name>__<tool-name>` |

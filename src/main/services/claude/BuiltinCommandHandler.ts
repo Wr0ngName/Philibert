@@ -244,12 +244,18 @@ export class BuiltinCommandHandler {
   private handleMcp(): BuiltinCommandResult {
     return {
       handled: true,
-      response: '## MCP (Model Context Protocol)\n\n' +
-        '_MCP server management is not yet supported in GUI mode._\n\n' +
-        'You can manage MCP servers using the CLI:\n' +
-        '- `claude mcp list` - View all servers\n' +
-        '- `claude mcp add <name>` - Add a server\n' +
-        '- `claude mcp remove <name>` - Remove a server',
+      // Deliberately does not mention `claude mcp add`: its default and
+      // `user` scopes write to $CLAUDE_CONFIG_DIR/.claude.json, and Philibert
+      // points that variable at its own config directory, so a server added
+      // that way from a terminal is invisible here. See docs/mcp-servers.md.
+      response: '## Tool servers (MCP)\n\n' +
+        'Open **Settings → Tool Servers** to add, edit, turn off or remove a ' +
+        'server for the current project.\n\n' +
+        'Philibert writes the two files Claude Code needs — `.mcp.json` and the ' +
+        'matching approval in `.claude/settings.local.json` — so a server you ' +
+        'add there is ready to use.\n\n' +
+        'Changes take effect in **new conversations**; this one keeps the ' +
+        'servers it started with.',
     };
   }
 

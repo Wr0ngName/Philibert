@@ -56,6 +56,8 @@ async function main(): Promise<void> {
   const { default: FileWatcherService } = await import('./services/FileWatcherService');
   debugLog('Importing GitService...');
   const { default: GitService } = await import('./services/GitService');
+  debugLog('Importing McpConfigService...');
+  const { default: McpConfigService } = await import('./services/McpConfigService');
   debugLog('Importing NotificationService...');
   const { default: NotificationService } = await import('./services/NotificationService');
   debugLog('Importing UpdateService...');
@@ -76,6 +78,7 @@ async function main(): Promise<void> {
   let claudeService: InstanceType<typeof ClaudeCodeService>;
   let fileWatcher: InstanceType<typeof FileWatcherService>;
   let gitService: InstanceType<typeof GitService>;
+  let mcpService: InstanceType<typeof McpConfigService>;
   let conversationService: InstanceType<typeof ConversationService>;
   let updateService: InstanceType<typeof UpdateService>;
 
@@ -98,6 +101,7 @@ async function main(): Promise<void> {
     claudeService = new ClaudeCodeService(configService, getMainWindow, notificationService);
     fileWatcher = new FileWatcherService();
     gitService = new GitService();
+    mcpService = new McpConfigService();
     updateService = new UpdateService(getMainWindow, configService);
 
     logger.info('All services initialized');
@@ -158,6 +162,7 @@ async function main(): Promise<void> {
           claudeService,
           fileWatcher,
           gitService,
+          mcpService,
           conversationService,
           updateService,
         },

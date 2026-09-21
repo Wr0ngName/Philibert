@@ -5,7 +5,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type { ElectronAPI } from '../shared/preload-api';
-import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData } from '../shared/types';
+import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData } from '../shared/types';
 
 // Create the API object that will be exposed to the renderer
 const electronAPI: ElectronAPI = {
@@ -291,6 +291,31 @@ const electronAPI: ElectronAPI = {
   },
 
   // Config operations
+  // MCP server management
+  mcp: {
+    list: (workingDirectory: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.MCP_LIST, workingDirectory),
+
+    save: (workingDirectory: string, previousName: string | null, server: McpServerInput) =>
+      ipcRenderer.invoke(IPC_CHANNELS.MCP_SAVE, workingDirectory, previousName, server),
+
+    remove: (workingDirectory: string, name: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.MCP_REMOVE, workingDirectory, name),
+
+    setEnabled: (workingDirectory: string, name: string, enabled: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.MCP_SET_ENABLED, workingDirectory, name, enabled),
+
+    checkCommand: (command: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.MCP_CHECK_COMMAND, command),
+
+    getRuntimeInfo: (workingDirectory: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_RUNTIME_INFO, workingDirectory),
+
+    pickExecutable: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_PICK_EXECUTABLE),
+
+    pickFile: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_PICK_FILE),
+  },
+
   config: {
     get: () => ipcRenderer.invoke(IPC_CHANNELS.CONFIG_GET),
 

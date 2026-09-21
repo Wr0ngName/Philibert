@@ -11,6 +11,7 @@ import { useSettingsStore } from '../../stores/settings';
 import Button from '../shared/Button.vue';
 import Modal from '../shared/Modal.vue';
 import AuthForm from '../shared/AuthForm.vue';
+import McpServersPanel from './McpServersPanel.vue';
 
 interface Props {
   open: boolean;
@@ -164,6 +165,9 @@ function cancel() {
           Takes effect on the next new conversation.
         </div>
       </div>
+
+      <!-- Tool servers (MCP) for the active project -->
+      <McpServersPanel />
 
       <!-- Theme -->
       <div>

@@ -14,6 +14,10 @@ import type {
   FileNode,
   GitBranch,
   GitStatus,
+  McpCommandCheck,
+  McpRuntimeInfo,
+  McpServerEntry,
+  McpServerInput,
   ModelInfo,
   PendingAction,
   PermissionScope,
@@ -156,6 +160,38 @@ export interface ElectronAPI {
     read: (filePath: string) => Promise<string>;
     open: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     onChange: (callback: (changes: FileChange[]) => void) => () => void;
+  };
+
+  // MCP server management for the active project
+  mcp: {
+    /** Servers declared in `<project>/.mcp.json`, with approval state. */
+    list: (workingDirectory: string) => Promise<McpServerEntry[]>;
+    /**
+     * Create or update a server. Pass `previousName` when editing (null to
+     * create); a differing name renames the entry and moves its approval.
+     * Resolves with the refreshed list.
+     */
+    save: (
+      workingDirectory: string,
+      previousName: string | null,
+      server: McpServerInput
+    ) => Promise<McpServerEntry[]>;
+    /** Delete a server and drop its approval. Resolves with the new list. */
+    remove: (workingDirectory: string, name: string) => Promise<McpServerEntry[]>;
+    /** Turn a server on or off without deleting it. Resolves with the new list. */
+    setEnabled: (
+      workingDirectory: string,
+      name: string,
+      enabled: boolean
+    ) => Promise<McpServerEntry[]>;
+    /** Whether a stdio command can be launched from the packaged app. */
+    checkCommand: (command: string) => Promise<McpCommandCheck>;
+    /** Bundled Node path, platform, and the paths of the two files edited. */
+    getRuntimeInfo: (workingDirectory: string) => Promise<McpRuntimeInfo>;
+    /** Native picker for a server executable. Null when cancelled. */
+    pickExecutable: () => Promise<string | null>;
+    /** Native picker for a credentials or data file. Null when cancelled. */
+    pickFile: () => Promise<string | null>;
   };
 
   // Config operations

@@ -12,6 +12,7 @@
  * - config: Application configuration
  * - conversations: Chat history persistence
  * - files: File system operations and watching
+ * - mcp: Project MCP server definitions and approvals
  * - update: Auto-update functionality
  * - window: Window management (minimize, maximize, close)
  */
@@ -26,6 +27,7 @@ import ConfigService from '../services/ConfigService';
 import ConversationService from '../services/ConversationService';
 import FileWatcherService from '../services/FileWatcherService';
 import GitService from '../services/GitService';
+import McpConfigService from '../services/McpConfigService';
 import UpdateService from '../services/UpdateService';
 import logger from '../utils/logger';
 
@@ -35,6 +37,7 @@ import { setupConfigIPC } from './config';
 import { setupConversationIPC } from './conversations';
 import { setupFilesIPC } from './files';
 import { setupGitIPC } from './git';
+import { setupMcpIPC } from './mcp';
 import { setupUpdateIPC } from './update';
 import { setupWindowIPC } from './window';
 
@@ -60,6 +63,14 @@ const REGISTERED_CHANNELS = {
     IPC_CHANNELS.CLAUDE_CLEAR_SESSION_PERMISSIONS,
     IPC_CHANNELS.CONFIG_GET,
     IPC_CHANNELS.CONFIG_SET,
+    IPC_CHANNELS.MCP_LIST,
+    IPC_CHANNELS.MCP_SAVE,
+    IPC_CHANNELS.MCP_REMOVE,
+    IPC_CHANNELS.MCP_SET_ENABLED,
+    IPC_CHANNELS.MCP_CHECK_COMMAND,
+    IPC_CHANNELS.MCP_GET_RUNTIME_INFO,
+    IPC_CHANNELS.MCP_PICK_EXECUTABLE,
+    IPC_CHANNELS.MCP_PICK_FILE,
     IPC_CHANNELS.CONVERSATION_LIST,
     IPC_CHANNELS.CONVERSATION_GET,
     IPC_CHANNELS.CONVERSATION_SAVE,
@@ -100,6 +111,8 @@ interface Services {
   fileWatcher: FileWatcherService;
   /** Git repository operations */
   gitService: GitService;
+  /** Project MCP server definitions and approvals */
+  mcpService: McpConfigService;
   /** Conversation history storage */
   conversationService: ConversationService;
   /** Auto-update functionality */
@@ -139,6 +152,7 @@ export function setupIPC(
       claudeService,
       fileWatcher,
       gitService,
+      mcpService,
       conversationService,
       updateService,
     } = services;
@@ -158,6 +172,9 @@ export function setupIPC(
     if (!gitService) {
       throw new ValidationError('GitService is required', 'gitService', ERROR_CODES.VALIDATION_REQUIRED);
     }
+    if (!mcpService) {
+      throw new ValidationError('McpConfigService is required', 'mcpService', ERROR_CODES.VALIDATION_REQUIRED);
+    }
     if (!conversationService) {
       throw new ValidationError('ConversationService is required', 'conversationService', ERROR_CODES.VALIDATION_REQUIRED);
     }
@@ -173,6 +190,7 @@ export function setupIPC(
     setupFilesIPC(fileWatcher, configService, getMainWindow);
     setupGitIPC(gitService, configService, fileWatcher, getMainWindow);
     setupConfigIPC(configService, getMainWindow);
+    setupMcpIPC(mcpService, getMainWindow);
     setupConversationIPC(conversationService);
     setupUpdateIPC(updateService);
     setupWindowIPC();
