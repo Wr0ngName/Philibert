@@ -117,7 +117,7 @@ vi.mock('../../utils/ipc-helpers', () => ({
 }));
 
 // Import after mocks
-import { familyKeyOf, modelVersionRank } from '../../../shared/model-id';
+import { familyKeyOf, isSameModel, modelVersionRank } from '../../../shared/model-id';
 import { IPC_CHANNELS } from '../../../shared/types';
 import { createMockBrowserWindow } from '../../__tests__/setup';
 import ClaudeCodeService from '../ClaudeCodeService';
@@ -1748,6 +1748,57 @@ describe('ClaudeCodeService', () => {
       );
     });
 
+    // The payload CLI 2.1.280 returns, captured by calling supportedModels()
+    // against the bundled binary. Still alias-only — the SDK never enumerates
+    // versions — but two shapes changed from 2.1.220: the `opus` alias now
+    // resolves to a context-variant ID (`claude-opus-5-5[1m]`), and the Fable
+    // row is a versioned ID carrying a variant (`claude-fable-5-1[1m]`).
+    const REAL_SDK_PAYLOAD_2_1_280 = [
+      { value: 'default', resolvedModel: 'claude-opus-5-5[1m]', displayName: 'Default (recommended)', description: 'Opus 5.5 with 1M context · Best for everyday, complex tasks' },
+      { value: 'opus[1m]', resolvedModel: 'claude-opus-5-5[1m]', displayName: 'Opus (1M context)', description: 'Opus 5.5 with 1M context · Best for everyday, complex tasks' },
+      { value: 'claude-fable-5-1[1m]', resolvedModel: 'claude-fable-5-1', displayName: 'Fable', description: 'Fable 5.1 · Most capable for your hardest and longest-running tasks' },
+      { value: 'sonnet', resolvedModel: 'claude-sonnet-5', displayName: 'Sonnet', description: 'Sonnet 5 · Efficient for routine tasks' },
+      { value: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', displayName: 'Haiku', description: 'Haiku 4.5 · Fastest for quick answers' },
+    ];
+
+    // A context variant is not part of the model's identity — `claude-opus-5-5`
+    // and `claude-opus-5-5[1m]` are the same model. Leaving `[1m]` on the
+    // dedup key made the catalog's own Opus 5.5 row look like a different
+    // model from the one the alias resolved to, listing it twice.
+    it('does not list a model twice when the alias carries a context variant', () => {
+      const result = ClaudeCodeService.mergeWithKnownModels(REAL_SDK_PAYLOAD_2_1_280);
+
+      const opus55 = result.filter(m => isSameModel(m.value, 'claude-opus-5-5'));
+      expect(opus55).toHaveLength(1);
+      // The variant stays on the selectable value — it is what gets passed to
+      // the CLI — even though it is not part of the identity.
+      expect(opus55[0].value).toBe('claude-opus-5-5[1m]');
+    });
+
+    // The SDK labels its versioned Fable row "Fable", a family name. Every
+    // other version row reads "Claude <Family> <version>", so passing that
+    // through put a family label in the version submenu.
+    it('labels every versioned row with its version, whatever the SDK called it', () => {
+      const result = ClaudeCodeService.mergeWithKnownModels(REAL_SDK_PAYLOAD_2_1_280);
+
+      expect(result.find(m => m.value === 'claude-fable-5-1[1m]')?.displayName)
+        .toBe('Claude Fable 5.1');
+      expect(result.find(m => m.value === 'claude-opus-5-5[1m]')?.displayName)
+        .toBe('Claude Opus 5.5');
+      // Alias rows carry no version, so the SDK's own wording is kept.
+      expect(result.find(m => m.value === 'sonnet')?.displayName).toBe('Sonnet');
+      expect(result.find(m => m.value === 'haiku')?.displayName).toBe('Haiku');
+      expect(result.find(m => m.value === 'default')?.displayName).toBe('Default (recommended)');
+    });
+
+    it('keeps every family the 2.1.280 payload offers', () => {
+      const result = ClaudeCodeService.mergeWithKnownModels(REAL_SDK_PAYLOAD_2_1_280);
+      const families = new Set(
+        result.map(m => familyKeyOf(m.value)).filter((f): f is string => !!f),
+      );
+      expect([...families].sort()).toEqual(['fable', 'haiku', 'opus', 'sonnet']);
+    });
+
     it("should surface an alias's resolvedModel as a selectable version", () => {
       const result = ClaudeCodeService.mergeWithKnownModels([
         { value: 'opus', resolvedModel: 'claude-opus-4-8', displayName: 'Opus', description: '' },
@@ -1865,8 +1916,15 @@ describe('ClaudeCodeService', () => {
 
       const mystery = result.find(m => m.value === 'claude-mystery-9-9');
       expect(mystery).toBeDefined();
-      expect(mystery!.displayName).toBe('Mystery');
+      // The row survives with its own description — an unknown model is never
+      // dropped or reworded into something the SDK did not say about it.
       expect(mystery!.description).toBe('experimental');
+      // Its label is still derived from the version in the ID, the same rule
+      // the catalog path applies (see the Sonnet 4.5 case above, where the
+      // SDK's "raw" is replaced). The SDK names versioned rows after their
+      // family — it returns claude-fable-5-1[1m] as plain "Fable" — so
+      // trusting that label puts a family name in the version submenu.
+      expect(mystery!.displayName).toBe('Claude Mystery 9.9');
     });
   });
 });

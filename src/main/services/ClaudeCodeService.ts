@@ -44,6 +44,7 @@ import {
   isSameModel,
   modelVersionRank,
   parseModelId,
+  stripContextVariant,
   stripDateSuffix,
 } from '../../shared/model-id';
 import {
@@ -1897,12 +1898,18 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Extract the alias form from any model ID, stripping dated suffixes like
-   * -20250929. Handles both `claude-{family}-{major}-{minor}` (Claude 4) and
-   * `claude-{family}-{major}` (Claude 5) shapes — see @shared/model-id.
+   * Reduce any model ID to the identity two rows are deduplicated on.
+   *
+   * Drops a dated snapshot suffix (`-20250929`) and a context-window variant
+   * (`[1m]`), because neither names a different model: `claude-opus-5-5` and
+   * `claude-opus-5-5[1m]` are one model offered at two context widths. Keeping
+   * the variant on the key made the catalog's Opus 5.5 row look distinct from
+   * the `[1m]` ID the `opus` alias resolves to, so the picker listed Opus 5.5
+   * twice. The variant still belongs in the row's `value` — that is what gets
+   * handed to the CLI — just not in its identity. See @shared/model-id.
    */
   private static toAlias(modelId: string): string {
-    return stripDateSuffix(modelId);
+    return stripContextVariant(stripDateSuffix(modelId));
   }
 
   /**
@@ -1939,15 +1946,24 @@ export class ClaudeCodeService {
           description: `${catalogEntry.context} context`,
         });
       } else {
-        // No specific catalog match — pass through the SDK's own displayName,
-        // but backfill the context annotation from the family default so a
-        // freshly-released SKU (Mythos, future families, …) still shows a
-        // sensible context hint instead of nothing.
-        const family = parseModelId(alias)?.family;
-        const description = family && !sdk.description
-          ? `${ClaudeCodeService.contextForFamily(family)} context`
+        // No specific catalog match. Label it from the ID when the ID carries
+        // a version: the SDK names its versioned rows after the family — it
+        // returns `claude-fable-5-1[1m]` as plain "Fable" — which reads as a
+        // family label sitting in the version submenu next to "Claude Opus
+        // 4.8". Rows with no version (bare aliases, `default`) keep the SDK's
+        // own wording, which is all they have.
+        const parsed = parseModelId(alias);
+        const description = parsed && !sdk.description
+          // Backfill the context annotation from the family default so a
+          // freshly-released SKU (Mythos, future families, …) still shows a
+          // sensible context hint instead of nothing.
+          ? `${ClaudeCodeService.contextForFamily(parsed.family)} context`
           : sdk.description;
-        merged.push({ ...sdk, ...(description && { description }) });
+        merged.push({
+          ...sdk,
+          ...(parsed && { displayName: formatModelDisplayName(parsed) }),
+          ...(description && { description }),
+        });
       }
     }
 
