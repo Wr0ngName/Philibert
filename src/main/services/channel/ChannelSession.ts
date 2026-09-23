@@ -17,6 +17,8 @@ import * as path from 'node:path';
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 
+import type { TokenCounts } from '../../../shared/model-pricing';
+import { costUsdForModel, roundUsd, tokenCountsFromApiUsage } from '../../../shared/model-pricing';
 import type { ChannelUsageData, ChannelModelTokens, ThinkingMode } from '../../../shared/types';
 import { MAIN_CONSTANTS } from '../../constants/app';
 import { stripAnsi } from '../../utils/ansi';
@@ -25,22 +27,17 @@ import { getChannelSessionsDir, WindowsPaths } from '../../utils/resourcePaths';
 
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 
-const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  haiku: { input: 0.25, output: 1.25 },
-  sonnet: { input: 3.00, output: 15.00 },
-  opus: { input: 15.00, output: 75.00 },
-};
-
-function modelFamily(modelId: string): string {
-  const name = modelId.toLowerCase();
-  if (name.includes('opus')) return 'opus';
-  if (name.includes('haiku')) return 'haiku';
-  return 'sonnet';
-}
-
-function parseSessionUsage(jsonlPath: string): ChannelUsageData {
+/**
+ * Aggregate the per-model usage recorded in a Claude Code session JSONL.
+ *
+ * Exported for tests: it is a pure function of the file's contents, and the
+ * cost it derives is the only place channel mode has to compute one itself
+ * (see the note on {@link costUsdForModel} for why the SDK cannot supply it
+ * on this path).
+ */
+export function parseSessionUsage(jsonlPath: string): ChannelUsageData {
   const content = fs.readFileSync(jsonlPath, 'utf-8');
-  const models: Record<string, { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }> = {};
+  const models: Record<string, TokenCounts> = {};
 
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
@@ -67,18 +64,21 @@ function parseSessionUsage(jsonlPath: string): ChannelUsageData {
 
     if (!models[modelId]) {
       models[modelId] = {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreation5mInputTokens: 0,
+        cacheCreation1hInputTokens: 0,
       };
     }
 
+    const entryTokens = tokenCountsFromApiUsage(u);
     const acc = models[modelId];
-    acc.input_tokens += Number(u.input_tokens) || 0;
-    acc.output_tokens += Number(u.output_tokens) || 0;
-    acc.cache_read_input_tokens += Number(u.cache_read_input_tokens) || 0;
-    acc.cache_creation_input_tokens += Number(u.cache_creation_input_tokens) || 0;
+    acc.inputTokens += entryTokens.inputTokens;
+    acc.outputTokens += entryTokens.outputTokens;
+    acc.cacheReadInputTokens += entryTokens.cacheReadInputTokens;
+    acc.cacheCreation5mInputTokens += entryTokens.cacheCreation5mInputTokens;
+    acc.cacheCreation1hInputTokens += entryTokens.cacheCreation1hInputTokens;
   }
 
   const perModel: Record<string, ChannelModelTokens> = {};
@@ -91,29 +91,31 @@ function parseSessionUsage(jsonlPath: string): ChannelUsageData {
   };
 
   for (const [modelId, acc] of Object.entries(models)) {
-    const pricing = MODEL_PRICING[modelFamily(modelId)] || MODEL_PRICING.sonnet;
-    const inputCost = (acc.input_tokens / 1_000_000) * pricing.input;
-    const cacheReadCost = (acc.cache_read_input_tokens / 1_000_000) * pricing.input * 0.1;
-    const cacheCreationCost = (acc.cache_creation_input_tokens / 1_000_000) * pricing.input * 1.25;
-    const outputCost = (acc.output_tokens / 1_000_000) * pricing.output;
-    const modelCost = inputCost + cacheReadCost + cacheCreationCost + outputCost;
+    const cacheCreationInputTokens = acc.cacheCreation5mInputTokens + acc.cacheCreation1hInputTokens;
+
+    // Null means the ID names no priceable model — a CLI sentinel such as
+    // `<synthetic>`, which the JSONL carries alongside real turns. Its tokens
+    // are still reported; only its cost is left at zero, because charging it
+    // at some other model's rates is how `<synthetic>` used to be billed as
+    // if it were Sonnet.
+    const modelCost = costUsdForModel(modelId, acc) ?? 0;
 
     perModel[modelId] = {
-      inputTokens: acc.input_tokens,
-      outputTokens: acc.output_tokens,
-      cacheReadInputTokens: acc.cache_read_input_tokens,
-      cacheCreationInputTokens: acc.cache_creation_input_tokens,
-      costUsd: Math.round(modelCost * 1_000_000) / 1_000_000,
+      inputTokens: acc.inputTokens,
+      outputTokens: acc.outputTokens,
+      cacheReadInputTokens: acc.cacheReadInputTokens,
+      cacheCreationInputTokens,
+      costUsd: roundUsd(modelCost),
     };
 
-    totals.inputTokens += acc.input_tokens;
-    totals.outputTokens += acc.output_tokens;
-    totals.cacheReadInputTokens += acc.cache_read_input_tokens;
-    totals.cacheCreationInputTokens += acc.cache_creation_input_tokens;
+    totals.inputTokens += acc.inputTokens;
+    totals.outputTokens += acc.outputTokens;
+    totals.cacheReadInputTokens += acc.cacheReadInputTokens;
+    totals.cacheCreationInputTokens += cacheCreationInputTokens;
     totals.costUsd += modelCost;
   }
 
-  totals.costUsd = Math.round(totals.costUsd * 1_000_000) / 1_000_000;
+  totals.costUsd = roundUsd(totals.costUsd);
 
   return { models: perModel, totals };
 }
