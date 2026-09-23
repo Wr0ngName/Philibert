@@ -1724,6 +1724,30 @@ describe('ClaudeCodeService', () => {
       expect(result.find(m => m.value === 'claude-haiku-4-5')).toBeUndefined();
     });
 
+    // Opus 5.5 reintroduced the minor segment after the Claude 5 generation
+    // dropped it, so `claude-opus-5-5` has to rank above `claude-opus-5`
+    // rather than beside it. It is also the row that only the catalog can
+    // supply: supportedModels() returns bare aliases, so without a catalog
+    // entry the newest Opus is unpinnable whenever the alias resolves
+    // elsewhere.
+    it('should offer Opus 5.5 above Opus 5 once Opus is available', () => {
+      const result = ClaudeCodeService.mergeWithKnownModels([
+        { value: 'opus', resolvedModel: 'claude-opus-5', displayName: 'Opus', description: '' },
+      ]);
+
+      const newest = result.find(m => m.value === 'claude-opus-5-5');
+      expect(newest).toBeDefined();
+      expect(newest!.displayName).toBe('Claude Opus 5.5');
+      expect(newest!.description).toBe('1M context');
+
+      const opusValues = result
+        .filter(m => m.value.startsWith('claude-opus-'))
+        .map(m => m.value);
+      expect(opusValues.indexOf('claude-opus-5-5')).toBeLessThan(
+        opusValues.indexOf('claude-opus-5'),
+      );
+    });
+
     it("should surface an alias's resolvedModel as a selectable version", () => {
       const result = ClaudeCodeService.mergeWithKnownModels([
         { value: 'opus', resolvedModel: 'claude-opus-4-8', displayName: 'Opus', description: '' },

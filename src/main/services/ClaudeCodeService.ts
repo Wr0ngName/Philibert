@@ -1852,7 +1852,9 @@ export class ClaudeCodeService {
    * Display name:    Claude {Family} {major}.{minor}
    */
   private static readonly MODEL_CATALOG: readonly CatalogEntry[] = [
-    // Claude 5 generation — single-segment version IDs (no minor).
+    // Claude 5 generation — single-segment version IDs (no minor), except the
+    // 5.5 refresh, which reintroduced the minor segment (`claude-opus-5-5`).
+    { family: 'opus',   major: 5, minor: 5, context: '1M' },
     { family: 'opus',   major: 5,           context: '1M' },
     { family: 'fable',  major: 5,           context: '1M' },
     { family: 'sonnet', major: 5,           context: '1M' },
