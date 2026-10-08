@@ -331,8 +331,10 @@ vendor:whisper:windows:
           # ggml-threading.cpp fails with a missing std::mutex type.
           # mingw-w64 itself is still needed for binutils (windres, objdump,
           # strip).
+          # `file` is used for the PE32+ assertion below. It ships in the node
+          # image but not in debian:trixie, so it has to be asked for.
           apt-get install -y --no-install-recommends \
-            cmake make git curl ca-certificates \
+            cmake make git curl ca-certificates file \
             mingw-w64 gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
 
           # Fail with the actual reason if the toolchain is still too old,
