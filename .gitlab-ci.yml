@@ -320,7 +320,14 @@ vendor:whisper:windows:
         node:${NODE_VERSION} \
         bash -euxc '
           apt-get update
-          apt-get install -y --no-install-recommends cmake make git ca-certificates mingw-w64
+          # The posix variants matter: Debian defaults mingw-w64 to the win32
+          # threading model, which has no std::mutex, and ggml-threading.cpp
+          # fails with "'mutex' in namespace 'std' does not name a type".
+          # mingw-w64 itself is still needed for binutils (windres, objdump,
+          # strip).
+          apt-get install -y --no-install-recommends \
+            cmake make git ca-certificates \
+            mingw-w64 gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
 
           rm -rf /tmp/whisper-win
           git clone --depth 1 --branch "$WHISPER_VERSION" https://github.com/ggml-org/whisper.cpp.git /tmp/whisper-win
@@ -331,8 +338,8 @@ vendor:whisper:windows:
           # on the user machine.
           cmake -B build \
             -DCMAKE_SYSTEM_NAME=Windows \
-            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
-            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix \
             -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
             -DCMAKE_FIND_ROOT_PATH=/usr/x86_64-w64-mingw32 \
             -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
@@ -352,7 +359,18 @@ vendor:whisper:windows:
           # happened to build, and that nothing dynamic crept back in.
           file build/bin/whisper-cli.exe | tee /tmp/file-out.txt
           grep -q "PE32+" /tmp/file-out.txt
-          x86_64-w64-mingw32-objdump -p build/bin/whisper-cli.exe | grep -i "DLL Name" | sort -u
+
+          # The posix toolchain links against libwinpthread unless the static
+          # flags take effect, so assert on the imports rather than just
+          # printing them. A missing DLL on the user machine would surface as
+          # the app silently failing to transcribe, with nothing in any log
+          # here to explain it.
+          x86_64-w64-mingw32-objdump -p build/bin/whisper-cli.exe \
+            | grep -i "DLL Name" | sort -u | tee /tmp/dlls.txt
+          if grep -qiE "libgcc|libstdc\+\+|libwinpthread" /tmp/dlls.txt; then
+            echo "error: whisper-cli.exe depends on mingw runtime DLLs — static linking did not take" >&2
+            exit 1
+          fi
 
           mkdir -p /app/vendor/whisper/win32-x64
           cp build/bin/whisper-cli.exe /app/vendor/whisper/win32-x64/whisper-cli.exe
