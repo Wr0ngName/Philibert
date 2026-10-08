@@ -69,6 +69,11 @@ from scratch, which drifts hundreds of packages. Confirm with
 
 All changes must be committed and verified before tagging. The order matters.
 
+**The single rule that cannot be bent: push the tag before `main`.** The tag
+push is what creates the pipeline that builds and publishes the release. Push
+`main` first and the tag push silently creates nothing — see step 8, and note
+that step 7 pulls in the opposite direction and must give way.
+
 0. **Confirm the hooks are installed** — `git config core.hooksPath` must
    print `.husky/_`. See Git Hooks above. Everything below assumes the
    pre-commit guards actually run.
@@ -107,12 +112,40 @@ All changes must be committed and verified before tagging. The order matters.
    Note `build:windows` (offline) bundles Node.js and Git Bash and is the
    heaviest job — it fails first when the runner is short on memory, so a
    green `build:windows:online` alone does not clear the release.
-8. **Tag and push** (tag first, then main):
+
+   **This step conflicts with step 8 and step 8 wins.** Proving the builds
+   wants the release commit on `main`; step 8 requires the tag to be pushed
+   before `main`. Both cannot hold for the same commit. Resolve it one of
+   these ways, never by pushing `main` first and tagging afterwards:
+   - Skip this step when the rule above allows it (the common case for a
+     source-only change) and go straight to step 8.
+   - Otherwise prove the builds on the commit *before* the version bump, then
+     bump, tag, and push the tag first. The bump touches only version
+     strings, so the packaging result carries over.
+8. **Tag and push — the tag FIRST, before `main`:**
    ```bash
    git tag v<version>
    git push origin v<version>
    git push origin main
    ```
+   This ordering is not cosmetic and not about CI noise. **Pushing the tag is
+   what creates the tag pipeline, and that pipeline is what builds and
+   publishes the release.** If `main` already carries the commit, the tag push
+   creates no pipeline at all: the tag exists, nothing builds, and no release
+   is produced. There is no error — `git push` reports `[new tag]` and the
+   release is simply absent.
+   This is how v0.19.2-rc.11 was lost. `main` was pushed first (to satisfy
+   step 7), the tag was pushed afterwards, and `glab api
+   "projects/<id>/pipelines?ref=v0.19.2-rc.11"` returned `[]`. Because tags
+   are protected and cannot be deleted from the CLI, the version could not be
+   reused — rc.11 was abandoned and rc.12 cut in its place. Pushing the tag
+   first on rc.12 created its pipeline immediately.
+   After pushing the tag, confirm the pipeline exists before going further:
+   ```bash
+   glab api "projects/${CI_PROJECT_ID}/pipelines?ref=v<version>"
+   ```
+   An empty array means no release is coming. Stop and fix it there rather
+   than discovering it when the release is missing.
 9. **Watch the pipeline to a terminal state** and confirm the release exists:
    ```bash
    glab ci status --branch v<version> --live
