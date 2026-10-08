@@ -187,6 +187,27 @@ describe('tool use while another conversation is viewed', () => {
     expect(store.getBufferedMessages('conv-unknown')).toBeNull();
   });
 
+  it('surfaces buffered tool uses once the conversation is viewed again', () => {
+    // The task detail modal resolves a task's spawning tool out of the
+    // on-screen message list. Tool uses recorded while the conversation ran
+    // off screen therefore have to reach that list when the user comes back,
+    // or the modal has nothing to show for them. Switching back clones the
+    // buffer into the visible messages (see conversations.ts), and this pins
+    // that the buffer holds what that clone needs.
+    const store = useChatStore();
+    startThenSwitchAway(store);
+
+    store.addAutoToolUseMessage(RUNNING, capture({ toolUseBlockId: 'toolu_bg' }));
+
+    const buffered = store.getBufferedMessages(RUNNING) ?? [];
+    store.setCurrentConversation(RUNNING);
+    store.loadMessages(buffered);
+
+    const found = store.messages.find(m => m.toolUse?.toolUseBlockId === 'toolu_bg');
+    expect(found?.toolUse?.toolName).toBe('Bash');
+    expect(found?.toolUse?.input).toEqual({ command: 'ls -la' });
+  });
+
   it('stops buffering once released', () => {
     const store = useChatStore();
     startThenSwitchAway(store);

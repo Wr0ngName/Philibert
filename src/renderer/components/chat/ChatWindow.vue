@@ -87,6 +87,21 @@ function handleSend(message: string) {
 // once it's resolved (the ref may not exist on the very first frame after a
 // conversation switch). Clear the request after dispatch so the same target
 // doesn't re-fire on later store mutations.
+/**
+ * Close the detail modals when the conversation changes.
+ *
+ * Both are keyed to the conversation they were opened from. The task modal
+ * resolves its task out of the current conversation's map, so after a switch
+ * the lookup misses and it renders as an empty shell; the tool modal holds a
+ * snapshot, so it does the opposite and keeps showing a tool from the
+ * conversation that is no longer on screen. Neither is worth trying to
+ * preserve across a switch.
+ */
+watch(() => conversationsStore.currentConversationId, () => {
+  if (taskDetailOpen.value) closeTaskDetail();
+  if (toolDetailOpen.value) closeToolDetail();
+});
+
 watch(pendingScrollMessageId, async (id) => {
   if (!id) return;
   await nextTick();
