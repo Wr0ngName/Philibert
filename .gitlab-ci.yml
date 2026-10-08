@@ -317,17 +317,31 @@ vendor:whisper:windows:
         -v "$CI_PROJECT_DIR:/app" \
         -w /app \
         -e WHISPER_VERSION="$WHISPER_VERSION" \
-        node:${NODE_VERSION} \
+        debian:trixie \
         bash -euxc '
           apt-get update
-          # The posix variants matter: Debian defaults mingw-w64 to the win32
-          # threading model, which has no std::mutex, and ggml-threading.cpp
-          # fails with "'mutex' in namespace 'std' does not name a type".
+          # debian:trixie, not the node image: this is a C++ build that needs
+          # no Node, and bookworm (which node:25 builds on) pins mingw-w64 at
+          # 10.0.0. That version declares no THREAD_POWER_THROTTLING_STATE at
+          # any _WIN32_WINNT level - the thread variants arrived in mingw-w64
+          # 11/12 - so ggml-cpu.c cannot compile against it. trixie ships 12.
+          #
+          # The posix variants matter separately: Debian defaults mingw-w64 to
+          # the win32 threading model, which has no std::mutex, and
+          # ggml-threading.cpp fails with a missing std::mutex type.
           # mingw-w64 itself is still needed for binutils (windres, objdump,
           # strip).
           apt-get install -y --no-install-recommends \
-            cmake make git ca-certificates \
+            cmake make git curl ca-certificates \
             mingw-w64 gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
+
+          # Fail with the actual reason if the toolchain is still too old,
+          # rather than 200 lines later as a confusing missing-type error.
+          x86_64-w64-mingw32-gcc-posix --version | head -1
+          if ! grep -rqs THREAD_POWER_THROTTLING_STATE /usr/share/mingw-w64/include /usr/x86_64-w64-mingw32/include; then
+            echo "error: mingw-w64 headers are too old - no THREAD_POWER_THROTTLING_STATE" >&2
+            exit 1
+          fi
 
           rm -rf /tmp/whisper-win
           git clone --depth 1 --branch "$WHISPER_VERSION" https://github.com/ggml-org/whisper.cpp.git /tmp/whisper-win
