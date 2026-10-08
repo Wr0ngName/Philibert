@@ -15,6 +15,7 @@ import type { ChatMessage } from '@shared/types';
 
 import { formatTime } from '../../utils/date';
 import { renderMarkdown, renderUserMarkdown } from '../../utils/markdown';
+import { selectionWithin } from '../../utils/selection';
 import BackgroundTaskMessage from './BackgroundTaskMessage.vue';
 import ContextMenu, { type ContextMenuItem } from '../shared/ContextMenu.vue';
 import Spinner from '../shared/Spinner.vue';
@@ -71,6 +72,16 @@ const contextMenuOpen = ref(false);
 const contextMenuX = ref(0);
 const contextMenuY = ref(0);
 
+/**
+ * Text selected inside this message when the menu was opened, or null when
+ * nothing within it was selected.
+ *
+ * Captured at open time rather than read in the handler: by the time Copy is
+ * activated the selection may be gone, and reading it later also cannot tell
+ * whether it belonged to this message or another one.
+ */
+const selectionAtOpen = ref<string | null>(null);
+
 function openContextMenu(event: MouseEvent): void {
   // Don't override the browser context menu on tool-use / background-task
   // indicators — they're already wrapped components with their own affordances
@@ -78,21 +89,32 @@ function openContextMenu(event: MouseEvent): void {
   if (props.message.toolUse || props.message.backgroundTask) return;
   if (!props.message.content.trim()) return;
   event.preventDefault();
+
+  const container = event.currentTarget;
+  selectionAtOpen.value = container instanceof Node ? selectionWithin(container) : null;
+
   contextMenuX.value = event.clientX;
   contextMenuY.value = event.clientY;
   contextMenuOpen.value = true;
 }
 
 async function copyContent(): Promise<void> {
+  // Copy what the user actually highlighted. Writing the whole message
+  // regardless of the selection is the long-standing behaviour this replaces:
+  // highlighting one line of a long reply and hitting Copy pasted the entire
+  // reply, with no way to copy a part of it.
+  const text = selectionAtOpen.value ?? props.message.content;
   try {
-    await navigator.clipboard.writeText(props.message.content);
+    await navigator.clipboard.writeText(text);
   } catch {
     // Clipboard access can be denied in some test/secure contexts; silent.
   }
 }
 
 const contextMenuItems = computed<ContextMenuItem[]>(() => [
-  { label: 'Copy', onSelect: copyContent },
+  // Name which of the two it will be, so the difference is visible before
+  // clicking rather than discovered after pasting.
+  { label: selectionAtOpen.value ? 'Copy selection' : 'Copy message', onSelect: copyContent },
 ]);
 </script>
 
