@@ -5,7 +5,7 @@
 import * as fs from 'node:fs';
 import path from 'node:path';
 
-import { BrowserWindow, shell } from 'electron';
+import { BrowserWindow, Menu, shell, type MenuItemConstructorOptions, type WebContents } from 'electron';
 
 import type { LogLevel } from '../shared/types';
 
@@ -108,6 +108,8 @@ export async function createWindow(options: WindowOptions = {}): Promise<Browser
     return { action: 'deny' };
   });
 
+  installEditingContextMenu(mainWindow.webContents);
+
   // Open DevTools in debug mode
   if (isDebugMode) {
     debugLog('Opening DevTools (debug mode)');
@@ -123,6 +125,46 @@ export async function createWindow(options: WindowOptions = {}): Promise<Browser
 
   debugLog('createWindow() returning');
   return mainWindow;
+}
+
+/**
+ * Give editable fields a native cut/copy/paste context menu.
+ *
+ * Electron ships no default context menu. Chromium's belongs to the browser
+ * UI layer, which Electron does not provide, so right-clicking a textarea in
+ * an Electron app does nothing at all unless the app builds the menu itself —
+ * which is why the prompt box had no cut/copy/paste. The keyboard shortcuts
+ * worked throughout; only the menu was missing.
+ *
+ * Restricted to `params.isEditable` on purpose. This event fires even when the
+ * renderer called preventDefault on its own `contextmenu` handler, so showing
+ * a menu for non-editable content would put this native menu on top of the
+ * Vue one MessageItem already renders for messages. Editable fields are the
+ * gap, and they are the whole gap.
+ *
+ * Built from roles so the labels, accelerators and behaviour are the
+ * platform's own rather than reimplemented, and gated on `editFlags` so
+ * entries that cannot apply are greyed out instead of silently doing nothing.
+ */
+export function installEditingContextMenu(webContents: WebContents): void {
+  webContents.on('context-menu', (_event, params) => {
+    if (!params.isEditable) return;
+
+    const flags = params.editFlags;
+    const template: MenuItemConstructorOptions[] = [
+      { role: 'undo', enabled: flags.canUndo },
+      { role: 'redo', enabled: flags.canRedo },
+      { type: 'separator' },
+      { role: 'cut', enabled: flags.canCut },
+      { role: 'copy', enabled: flags.canCopy },
+      { role: 'paste', enabled: flags.canPaste },
+      { role: 'delete', enabled: flags.canDelete },
+      { type: 'separator' },
+      { role: 'selectAll', enabled: flags.canSelectAll },
+    ];
+
+    Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(webContents) ?? undefined });
+  });
 }
 
 /**
