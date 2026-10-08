@@ -372,6 +372,7 @@ vendor:whisper:windows:
             -DCMAKE_C_FLAGS="-D_WIN32_WINNT=0x0A00" \
             -DCMAKE_CXX_FLAGS="-D_WIN32_WINNT=0x0A00" \
             -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+            -DGGML_OPENMP=OFF \
             -DWHISPER_BUILD_TESTS=OFF \
             -DWHISPER_BUILD_SERVER=OFF \
             -DWHISPER_BUILD_EXAMPLES=ON
@@ -391,8 +392,15 @@ vendor:whisper:windows:
           # here to explain it.
           x86_64-w64-mingw32-objdump -p build/bin/whisper-cli.exe \
             | grep -i "DLL Name" | sort -u | tee /tmp/dlls.txt
-          if grep -qiE "libgcc|libstdc\+\+|libwinpthread" /tmp/dlls.txt; then
-            echo "error: whisper-cli.exe depends on mingw runtime DLLs — static linking did not take" >&2
+          # Reject any import whose name begins with "lib". Windows system
+          # DLLs do not (KERNEL32, ADVAPI32, msvcrt); mingw runtime DLLs
+          # conventionally do (libgcc_s, libstdc++, libwinpthread, libgomp).
+          # This started as a list of the three names I happened to think of
+          # and let libgomp-1.dll through — a binary that would simply fail to
+          # start on a machine without the mingw runtime, with nothing in this
+          # log to say why. A rule beats an enumeration here.
+          if grep -qiE "DLL Name:[[:space:]]*lib" /tmp/dlls.txt; then
+            echo "error: whisper-cli.exe imports a mingw runtime DLL - static linking did not take" >&2
             exit 1
           fi
 
