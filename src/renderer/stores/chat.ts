@@ -47,6 +47,21 @@ export interface ConversationState {
   sessionPermissions: SessionPermissionEntry[];
   /** File paths modified in the last query (cleared on new query) */
   modifiedFilesInLastQuery: Set<string>;
+  /**
+   * Messages for this conversation while the user is looking at another one.
+   *
+   * `messages` only ever holds the conversation on screen, so a conversation
+   * running in the background had nowhere to put anything: every tool-use
+   * function returned early and its history came back with no tool uses in it
+   * at all. This is where they go instead until the view comes back.
+   */
+  bufferedMessages: ChatMessage[];
+  /**
+   * Whether {@link bufferedMessages} is live. Distinguishes "running in the
+   * background, buffer is the sink" from "not running, nothing to update" —
+   * an empty buffer alone cannot tell those apart.
+   */
+  bufferingMessages: boolean;
 }
 
 /**
@@ -65,6 +80,8 @@ function createConversationState(): ConversationState {
     error: null,
     sessionPermissions: [],
     modifiedFilesInLastQuery: new Set(),
+    bufferedMessages: [],
+    bufferingMessages: false,
   };
 }
 
@@ -293,13 +310,61 @@ export const useChatStore = defineStore('chat', () => {
   // ============================================
 
   function addMessage(message: ChatMessage): void {
-    messages.value.push(message);
+    addMessageTo(messages.value, message);
+  }
+
+  /** Append to a specific message list, enforcing the same cap. */
+  function addMessageTo(sink: ChatMessage[], message: ChatMessage): void {
+    sink.push(message);
 
     // Enforce message limit
-    if (messages.value.length > CONSTANTS.MESSAGES.MAX_COUNT) {
-      const removeCount = messages.value.length - CONSTANTS.MESSAGES.MAX_COUNT;
-      messages.value.splice(0, removeCount);
+    if (sink.length > CONSTANTS.MESSAGES.MAX_COUNT) {
+      const removeCount = sink.length - CONSTANTS.MESSAGES.MAX_COUNT;
+      sink.splice(0, removeCount);
     }
+  }
+
+  /**
+   * The message list a conversation's updates should be written to: the
+   * on-screen list when it is the active one, otherwise its background
+   * buffer.
+   *
+   * Null means the conversation is neither on screen nor running in the
+   * background, so there is genuinely nothing to update — as opposed to the
+   * old behaviour, where every caller treated "not the active conversation"
+   * as a reason to discard the update.
+   */
+  function messageSink(conversationId: string): ChatMessage[] | null {
+    if (conversationId === currentConversationId.value) return messages.value;
+    const state = conversationStates.value.get(conversationId);
+    if (!state || !state.bufferingMessages) return null;
+    return state.bufferedMessages;
+  }
+
+  /**
+   * Start buffering messages for a conversation, seeded with what is on
+   * screen now. Called when a turn starts, so the buffer is already a
+   * complete history if the user switches away mid-turn.
+   */
+  function beginMessageBuffer(conversationId: string): void {
+    const state = getConversationState(conversationId);
+    state.bufferedMessages = [...messages.value];
+    state.bufferingMessages = true;
+  }
+
+  /** Buffered messages for a conversation, or null when it is not buffering. */
+  function getBufferedMessages(conversationId: string): ChatMessage[] | null {
+    const state = conversationStates.value.get(conversationId);
+    if (!state || !state.bufferingMessages) return null;
+    return state.bufferedMessages;
+  }
+
+  /** Stop buffering and release the buffer. */
+  function endMessageBuffer(conversationId: string): void {
+    const state = conversationStates.value.get(conversationId);
+    if (!state) return;
+    state.bufferedMessages = [];
+    state.bufferingMessages = false;
   }
 
   function addUserMessage(content: string): ChatMessage {
@@ -330,9 +395,10 @@ export const useChatStore = defineStore('chat', () => {
     // message: nothing could ever clear its isStreaming flag again, and the
     // turn spinner keys off any streaming message in the group.
     const previous = conversationStates.value.get(conversationId);
-    if (previous?.streamingMessageId && conversationId === currentConversationId.value) {
-      for (let i = messages.value.length - 1; i >= 0; i--) {
-        if (messages.value[i].isStreaming) messages.value[i].isStreaming = false;
+    const existingSink = messageSink(conversationId);
+    if (previous?.streamingMessageId && existingSink) {
+      for (let i = existingSink.length - 1; i >= 0; i--) {
+        if (existingSink[i].isStreaming) existingSink[i].isStreaming = false;
       }
     }
 
@@ -344,9 +410,12 @@ export const useChatStore = defineStore('chat', () => {
       isStreaming: true,
     };
 
-    // Only add to messages array if this is the current conversation
-    if (conversationId === currentConversationId.value) {
-      addMessage(message);
+    // Goes on screen when this conversation is the one being viewed, and into
+    // its background buffer otherwise, so a conversation running out of sight
+    // still builds a complete history.
+    const sink = messageSink(conversationId);
+    if (sink) {
+      addMessageTo(sink, message);
     }
 
     // Track streaming state for this conversation
@@ -375,12 +444,15 @@ export const useChatStore = defineStore('chat', () => {
 
     state.currentStreamingContent += chunk;
 
-    // If this is the current conversation, also update the message in view
-    if (conversationId === currentConversationId.value && state.streamingMessageId) {
+    // Update the message itself too — on screen, or in the background buffer
+    // when the user is looking elsewhere, so each streamed segment is kept
+    // rather than only the last one surviving to the save.
+    const sink = messageSink(conversationId);
+    if (sink && state.streamingMessageId) {
       // Search from end for the streaming message — it may not be the very last
       // message because background task or tool use messages can be appended after it.
-      for (let i = messages.value.length - 1; i >= 0; i--) {
-        const msg = messages.value[i];
+      for (let i = sink.length - 1; i >= 0; i--) {
+        const msg = sink[i];
         if (msg.id === state.streamingMessageId) {
           msg.content += chunk;
           break;
@@ -486,14 +558,21 @@ export const useChatStore = defineStore('chat', () => {
     const state = conversationStates.value.get(conversationId);
     if (!state?.streamingMessageId) return;
 
-    if (conversationId === currentConversationId.value) {
-      for (let i = messages.value.length - 1; i >= 0; i--) {
-        const msg = messages.value[i];
+    const sink = messageSink(conversationId);
+    if (sink) {
+      for (let i = sink.length - 1; i >= 0; i--) {
+        const msg = sink[i];
         if (msg.id === state.streamingMessageId) {
+          // Off screen the streamed text accumulates in state rather than on
+          // the message, so commit it before the stream is reset — otherwise
+          // the text preceding this tool call is dropped from the history.
+          if (conversationId !== currentConversationId.value && state.currentStreamingContent) {
+            msg.content = state.currentStreamingContent;
+          }
           if (msg.content.trim()) {
             msg.isStreaming = false;
           } else {
-            messages.value.splice(i, 1);
+            sink.splice(i, 1);
           }
           break;
         }
@@ -509,7 +588,8 @@ export const useChatStore = defineStore('chat', () => {
    * Shows the user what tool Claude is invoking, interleaved with text.
    */
   function addToolUseMessage(conversationId: string, action: PendingAction): void {
-    if (conversationId !== currentConversationId.value) return;
+    const sink = messageSink(conversationId);
+    if (!sink) return;
 
     splitStreamingForTool(conversationId);
 
@@ -526,7 +606,7 @@ export const useChatStore = defineStore('chat', () => {
         input: action.input,
       },
     };
-    addMessage(message);
+    addMessageTo(sink, message);
   }
 
   /**
@@ -644,7 +724,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function addAutoToolUseMessage(conversationId: string, capture: ToolCaptureData): void {
-    if (conversationId !== currentConversationId.value) return;
+    const sink = messageSink(conversationId);
+    if (!sink) return;
 
     splitStreamingForTool(conversationId);
 
@@ -665,21 +746,25 @@ export const useChatStore = defineStore('chat', () => {
         ...(capture.parentToolUseId && { parentToolUseId: capture.parentToolUseId }),
       },
     };
-    addMessage(message);
+    addMessageTo(sink, message);
 
     // Dedupe: if a backgroundTask inline message already exists for this
     // tool_use (e.g. task_started arrived before the assistant message
     // carrying the tool_use block), remove it — the tool_use indicator now
     // represents that task in the chat.
-    removeBackgroundTaskMessageByToolUseId(capture.toolUseBlockId);
+    removeBackgroundTaskMessageByToolUseId(conversationId, sink, capture.toolUseBlockId);
   }
 
   /**
    * Remove an inline backgroundTask message whose underlying task is tied
    * to the given tool_use ID. Background task still tracked in the Map.
    */
-  function removeBackgroundTaskMessageByToolUseId(toolUseId: string): void {
-    const state = getCurrentState();
+  function removeBackgroundTaskMessageByToolUseId(
+    conversationId: string,
+    sink: ChatMessage[],
+    toolUseId: string,
+  ): void {
+    const state = conversationStates.value.get(conversationId);
     if (!state) return;
 
     let linkedTaskId: string | null = null;
@@ -691,10 +776,10 @@ export const useChatStore = defineStore('chat', () => {
     }
     if (!linkedTaskId) return;
 
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      const msg = messages.value[i];
+    for (let i = sink.length - 1; i >= 0; i--) {
+      const msg = sink[i];
       if (msg.backgroundTask?.taskId === linkedTaskId) {
-        messages.value.splice(i, 1);
+        sink.splice(i, 1);
         return;
       }
     }
@@ -715,10 +800,11 @@ export const useChatStore = defineStore('chat', () => {
    * unenriched capture of this toolName is this call.
    */
   function enrichToolUseFromPermission(conversationId: string, action: PendingAction): void {
-    if (conversationId !== currentConversationId.value) return;
+    const sink = messageSink(conversationId);
+    if (!sink) return;
 
-    for (let i = 0; i < messages.value.length; i++) {
-      const msg = messages.value[i];
+    for (let i = 0; i < sink.length; i++) {
+      const msg = sink[i];
       if (
         msg.toolUse &&
         msg.toolUse.toolUseBlockId &&
@@ -745,7 +831,8 @@ export const useChatStore = defineStore('chat', () => {
    * content to the task-list handler when relevant.
    */
   function updateToolUseResult(conversationId: string, result: ToolResultData): void {
-    if (conversationId !== currentConversationId.value) return;
+    const sink = messageSink(conversationId);
+    if (!sink) return;
 
     if (result.taskListId) {
       rekeyPendingTask(conversationId, result.toolUseBlockId, result.taskListId);
@@ -754,8 +841,8 @@ export const useChatStore = defineStore('chat', () => {
       handleTaskListResult(conversationId, result.toolUseBlockId, result.content);
     }
 
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      const msg = messages.value[i];
+    for (let i = sink.length - 1; i >= 0; i--) {
+      const msg = sink[i];
       if (msg.toolUse?.toolUseBlockId === result.toolUseBlockId) {
         const newStatus: ToolUseInfo['status'] =
           msg.toolUse.status === 'approved' ? 'executed' : msg.toolUse.status;
@@ -777,9 +864,10 @@ export const useChatStore = defineStore('chat', () => {
     actionId: string,
     status: 'pending' | 'approved' | 'rejected' | 'executed' | 'failed',
   ): void {
-    if (conversationId !== currentConversationId.value) return;
+    const sink = messageSink(conversationId);
+    if (!sink) return;
 
-    const msg = messages.value.find((m) => m.toolUse?.actionId === actionId);
+    const msg = sink.find((m) => m.toolUse?.actionId === actionId);
     if (msg?.toolUse) {
       msg.toolUse.status = status;
     }
@@ -815,8 +903,10 @@ export const useChatStore = defineStore('chat', () => {
    * with run_in_background, absence of a match) → command.
    */
   function resolveTaskType(conversationId: string, toolUseId?: string): 'agent' | 'command' {
-    if (!toolUseId || conversationId !== currentConversationId.value) return 'command';
-    for (const m of messages.value) {
+    if (!toolUseId) return 'command';
+    const sink = messageSink(conversationId);
+    if (!sink) return 'command';
+    for (const m of sink) {
       if (m.toolUse?.toolUseBlockId === toolUseId) {
         const name = m.toolUse.toolName;
         return name === 'Task' || name === 'Agent' ? 'agent' : 'command';
@@ -944,8 +1034,9 @@ export const useChatStore = defineStore('chat', () => {
    * the given SDK tool_use block ID.
    */
   function hasToolUseMessage(conversationId: string, toolUseBlockId: string): boolean {
-    if (conversationId !== currentConversationId.value) return false;
-    for (const m of messages.value) {
+    const sink = messageSink(conversationId);
+    if (!sink) return false;
+    for (const m of sink) {
       if (m.toolUse?.toolUseBlockId === toolUseBlockId) return true;
     }
     return false;
@@ -955,7 +1046,8 @@ export const useChatStore = defineStore('chat', () => {
    * Insert an inline background task message into the message stream.
    */
   function addBackgroundTaskMessage(conversationId: string, task: BackgroundTask): void {
-    if (conversationId !== currentConversationId.value) return;
+    const sink = messageSink(conversationId);
+    if (!sink) return;
 
     const message: ChatMessage = {
       id: generateId(ID_PREFIXES.MESSAGE),
@@ -970,7 +1062,7 @@ export const useChatStore = defineStore('chat', () => {
         error: task.error,
       },
     };
-    addMessage(message);
+    addMessageTo(sink, message);
   }
 
   /**
@@ -985,9 +1077,10 @@ export const useChatStore = defineStore('chat', () => {
     error?: string,
     newTaskId?: string,
   ): void {
-    if (conversationId !== currentConversationId.value) return;
+    const sink = messageSink(conversationId);
+    if (!sink) return;
 
-    const msg = messages.value.find((m) => m.backgroundTask?.taskId === taskId);
+    const msg = sink.find((m) => m.backgroundTask?.taskId === taskId);
     if (msg?.backgroundTask) {
       // Replace the object (not just mutate) so Vue's reactivity detects the change
       msg.backgroundTask = {
@@ -1018,9 +1111,10 @@ export const useChatStore = defineStore('chat', () => {
    * Called when a query completes to ensure no tool use spinners linger.
    */
   function completeToolUseMessages(conversationId: string): void {
-    if (conversationId !== currentConversationId.value) return;
+    const sink = messageSink(conversationId);
+    if (!sink) return;
 
-    for (const msg of messages.value) {
+    for (const msg of sink) {
       if (msg.toolUse && (msg.toolUse.status === 'pending' || msg.toolUse.status === 'approved')) {
         msg.toolUse.status = 'executed';
       }
@@ -1296,6 +1390,9 @@ export const useChatStore = defineStore('chat', () => {
     handleTaskNotification,
     addBackgroundTaskMessage,
     updateBackgroundTaskMessage,
+    beginMessageBuffer,
+    getBufferedMessages,
+    endMessageBuffer,
     reconcileBackgroundTasks,
     completeRunningTasks,
     completeToolUseMessages,

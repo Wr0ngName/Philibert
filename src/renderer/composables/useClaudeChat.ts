@@ -45,17 +45,19 @@ let cleanupAuthInvalidated: (() => void) | null = null;
 // Shared slash commands state (singleton)
 const sharedSlashCommands = shallowRef<SlashCommandInfo[]>([]);
 
-// Track messages per conversation for background saves (when user switches away)
-// This is needed because we need to reconstruct the message list for non-current conversations
-const conversationMessages = new Map<string, ChatMessage[]>();
-
 /**
- * Get in-memory messages for a conversation that may be running in background
- * This is used when switching to a conversation to get the latest messages
- * without having to wait for the file to be saved
+ * Get in-memory messages for a conversation that may be running in background.
+ * Used when switching to a conversation to get the latest messages without
+ * waiting for the file to be saved.
+ *
+ * The buffer lives in the chat store rather than here. It used to be a private
+ * map in this module, which meant the store — the only place that knows how to
+ * build a tool-use message — could not reach it, so every tool-use function
+ * returned early for a conversation that was not on screen and its history
+ * came back with no tool uses at all.
  */
 export function getInMemoryMessages(conversationId: string): ChatMessage[] | null {
-  return conversationMessages.get(conversationId) || null;
+  return useChatStore().getBufferedMessages(conversationId);
 }
 
 export function useClaudeChat() {
@@ -179,9 +181,9 @@ export function useClaudeChat() {
     chatStore.startAssistantMessage(currentConvId);
     chatStore.setLoading(currentConvId, true);
 
-    // Track messages for this conversation (for background save)
-    // We include the empty assistant message so it can accumulate content even when not current
-    conversationMessages.set(currentConvId, [...chatStore.messages]);
+    // Start buffering for this conversation, seeded with what is on screen, so
+    // it keeps building a complete history if the user switches away mid-turn.
+    chatStore.beginMessageBuffer(currentConvId);
 
     try {
       // Get SDK session ID for this conversation (for resume support)
@@ -371,21 +373,11 @@ export function useClaudeChat() {
 
     // Handle streaming chunks - route to correct conversation
     cleanupChunk = window.electron.claude.onChunk((conversationId, chunk) => {
+      // appendChunk writes to the on-screen list or the background buffer as
+      // appropriate, so there is nothing to mirror here. The previous version
+      // appended to a separate tracked copy, which only ever updated the last
+      // assistant message and was then overwritten wholesale at save time.
       chatStore.appendChunk(conversationId, chunk);
-
-      // Update tracked messages for this conversation
-      if (conversationId === conversationsStore.currentConversationId) {
-        conversationMessages.set(conversationId, [...chatStore.messages]);
-      } else {
-        // For non-current conversations, update the tracked messages with the new chunk
-        const tracked = conversationMessages.get(conversationId);
-        if (tracked && tracked.length > 0) {
-          const lastMsg = tracked[tracked.length - 1];
-          if (lastMsg.role === 'assistant') {
-            lastMsg.content += chunk;
-          }
-        }
-      }
     });
 
     // Handle tool use requests - route to correct conversation
@@ -439,29 +431,28 @@ export function useClaudeChat() {
       if (conversationId === conversationsStore.currentConversationId) {
         // Current conversation - save normally
         await conversationsStore.saveCurrentConversation();
+        // Release the buffer here too, or a later switch away would read a
+        // stale snapshot from this finished turn.
+        chatStore.endMessageBuffer(conversationId);
       } else {
         // User switched away - need to save this conversation in background
         logger.info('Saving completed conversation in background', { conversationId });
 
-        // Get the streaming content that was accumulated
-        const state = chatStore.getConversationState(conversationId);
-
-        // Try to get the tracked messages for this conversation
-        let messages = conversationMessages.get(conversationId);
+        const messages = chatStore.getBufferedMessages(conversationId);
 
         if (messages && messages.length > 0) {
-          // Update the last assistant message with the full streamed content
+          // Clear any lingering streaming flag. The content itself is already
+          // on each message — appendChunk writes into this buffer — so unlike
+          // before there is nothing to copy across from the streaming state.
           const lastMsg = messages[messages.length - 1];
           if (lastMsg.role === 'assistant') {
-            lastMsg.content = state.currentStreamingContent || lastMsg.content;
             lastMsg.isStreaming = false;
           }
 
           await conversationsStore.saveConversation(conversationId, messages);
         }
 
-        // Clean up tracked messages
-        conversationMessages.delete(conversationId);
+        chatStore.endMessageBuffer(conversationId);
       }
     });
 

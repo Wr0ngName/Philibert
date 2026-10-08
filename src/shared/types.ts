@@ -1232,6 +1232,8 @@ export const IPC_CHANNELS = {
   CLAUDE_DONE: 'claude:done',
   /** Abort current Claude request */
   CLAUDE_ABORT: 'claude:abort',
+  /** Stop one running background task */
+  CLAUDE_STOP_TASK: 'claude:stop-task',
   /** Send action approval/rejection response */
   CLAUDE_ACTION_RESPONSE: 'claude:action-response',
   /** Available slash commands from SDK */

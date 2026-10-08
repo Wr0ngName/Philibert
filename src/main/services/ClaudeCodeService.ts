@@ -1278,6 +1278,29 @@ export class ClaudeCodeService {
    *
    * Falls back to hard termination only if interrupt() itself fails.
    */
+  /**
+   * Stop one running background task, leaving the session itself running.
+   *
+   * Distinct from {@link abort}, which tears down the whole turn. Only the SDK
+   * path can do this: the control request goes over the session's own channel,
+   * and channel mode drives the CLI through a PTY with no such channel. A
+   * caller is told rather than silently ignored, since "nothing happened" on
+   * a kill button is the worst outcome.
+   */
+  async stopBackgroundTask(conversationId: string, taskId: string): Promise<void> {
+    if (this.channelService && this.channelService.isConversationActive(conversationId)) {
+      throw new Error('Stopping a background task is not supported in channel mode');
+    }
+
+    const instance = this.activeSessions.get(conversationId);
+    if (!instance) {
+      throw new Error('That conversation has no running session, so its tasks cannot be stopped');
+    }
+
+    logger.info('Stopping background task', { conversationId, taskId });
+    await instance.query.stopTask(taskId);
+  }
+
   async abort(conversationId: string): Promise<void> {
     // Channel mode abort
     if (this.channelService && this.channelService.isConversationActive(conversationId)) {

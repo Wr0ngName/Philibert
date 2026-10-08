@@ -9,6 +9,7 @@ import { ref, watch, computed } from 'vue';
 import type { BackgroundTask } from '@shared/types';
 
 import { formatModelId } from '../../utils/model';
+import Button from '../shared/Button.vue';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
@@ -16,12 +17,20 @@ import Spinner from '../shared/Spinner.vue';
 interface Props {
   open: boolean;
   task: BackgroundTask | null;
+  /** Whether a stop request is in flight. */
+  stopping?: boolean;
+  /** Why the last stop attempt failed, if it did. */
+  stopError?: string | null;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+  stopping: false,
+  stopError: null,
+});
 
 const emit = defineEmits<{
   (e: 'close'): void;
+  (e: 'stop', taskId: string): void;
 }>();
 
 // Output file content (lazy-loaded when modal opens)
@@ -226,6 +235,40 @@ const statusDisplay = computed(() => {
           class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 max-h-80 overflow-y-auto"
         >
           <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono">{{ outputContent }}</pre>
+        </div>
+
+        <!-- Stopping a task. Only offered while it is actually running; the
+             status here is live, so the button disappears once the task ends
+             rather than offering to stop something already finished. -->
+        <div
+          v-if="task.status === 'running'"
+          class="pt-2 border-t border-surface-200 dark:border-surface-700"
+        >
+          <div
+            v-if="stopError"
+            class="text-xs text-red-500 mb-2 p-2 bg-red-50 dark:bg-red-900/20 rounded-lg"
+          >
+            {{ stopError }}
+          </div>
+          <Button
+            variant="danger"
+            size="sm"
+            :disabled="stopping"
+            @click="emit('stop', task.id)"
+          >
+            <Spinner
+              v-if="stopping"
+              size="xs"
+              class="mr-1"
+            />
+            <Icon
+              v-else
+              name="close"
+              size="xs"
+              class="mr-1"
+            />
+            {{ stopping ? 'Stopping…' : 'Stop task' }}
+          </Button>
         </div>
       </div>
     </div>

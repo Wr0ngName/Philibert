@@ -3,7 +3,7 @@
  * Main chat window component
  */
 
-import { ref, nextTick, watch } from 'vue';
+import { ref, computed, nextTick, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, PendingAction, PermissionScope, ToolUseInfo } from '@shared/types';
@@ -44,7 +44,18 @@ const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 
 // Task detail modal state
 const taskDetailOpen = ref(false);
-const taskDetailTask = ref<BackgroundTask | null>(null);
+/**
+ * The modal tracks the task by id, not by value. handleTaskNotification and
+ * the live-set reconciler both replace Map entries rather than mutating them,
+ * so a captured object never changes — an open modal sat on whatever the task
+ * looked like at click time and a running task appeared to stay running.
+ */
+const taskDetailTaskId = ref<string | null>(null);
+const taskDetailTask = computed<BackgroundTask | null>(() =>
+  taskDetailTaskId.value ? chatStore.backgroundTasks.get(taskDetailTaskId.value) ?? null : null,
+);
+const stoppingTask = ref(false);
+const stopTaskError = ref<string | null>(null);
 
 // Tool detail modal state
 const toolDetailOpen = ref(false);
@@ -100,16 +111,37 @@ function clearError() {
 }
 
 function openTaskDetail(taskId: string) {
-  const task = chatStore.backgroundTasks.get(taskId);
-  if (task) {
-    taskDetailTask.value = task;
-    taskDetailOpen.value = true;
-  }
+  if (!chatStore.backgroundTasks.has(taskId)) return;
+  taskDetailTaskId.value = taskId;
+  taskDetailOpen.value = true;
 }
 
 function closeTaskDetail() {
   taskDetailOpen.value = false;
-  taskDetailTask.value = null;
+  taskDetailTaskId.value = null;
+  stopTaskError.value = null;
+}
+
+/**
+ * Stop the task the modal is showing.
+ *
+ * Status is not set optimistically: the authoritative change arrives as a task
+ * notification, and the live list reconciles anything that notification misses.
+ * Writing 'stopped' here would show success even when the request failed.
+ */
+async function stopTaskFromDetail(taskId: string) {
+  const conversationId = conversationsStore.currentConversationId;
+  if (!conversationId) return;
+
+  stoppingTask.value = true;
+  stopTaskError.value = null;
+  try {
+    await window.electron.claude.stopTask(conversationId, taskId);
+  } catch (error) {
+    stopTaskError.value = error instanceof Error ? error.message : 'Failed to stop task';
+  } finally {
+    stoppingTask.value = false;
+  }
 }
 
 function openToolDetail(id: string) {
@@ -213,7 +245,10 @@ function closeToolDetail() {
     <BackgroundTaskDetailModal
       :open="taskDetailOpen"
       :task="taskDetailTask"
+      :stopping="stoppingTask"
+      :stop-error="stopTaskError"
       @close="closeTaskDetail"
+      @stop="stopTaskFromDetail"
     />
 
     <!-- Tool use detail modal -->
