@@ -11,7 +11,7 @@ import type {
   SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 
-import type { SlashCommandInfo, TaskNotification, BackgroundTaskStatus, SessionUsage, ToolCaptureData } from '../../../shared/types';
+import type { SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, ToolCaptureData } from '../../../shared/types';
 import logger from '../../utils/logger';
 
 import { BUILTIN_COMMANDS } from './BuiltinCommandHandler';
@@ -78,6 +78,11 @@ export interface MessageHandlerCallbacks {
   onChunk: (chunk: string) => void;
   onSlashCommands: (commands: SlashCommandInfo[]) => void;
   onTaskNotification: (notification: TaskNotification) => void;
+  /**
+   * The SDK's authoritative live-task list, pushed whenever the set changes.
+   * REPLACE semantics: this is every live task, not a delta.
+   */
+  onLiveBackgroundTasks?: (tasks: LiveBackgroundTask[]) => void;
   onUsageUpdate: (usage: SessionUsage) => void;
   onSystemNote: (note: string) => void;
   onToolUseCapture?: (capture: ToolCaptureData) => void;
@@ -677,6 +682,13 @@ export class SDKMessageHandler {
       };
       // task_progress fields
       last_tool_name?: string;
+      // background_tasks_changed: every live task after the change
+      tasks?: {
+        task_id: string;
+        task_type: string;
+        description: string;
+        ambient?: boolean;
+      }[];
       // model_refusal_fallback / model_refusal_no_fallback fields
       // (SDKModelRefusalFallbackMessage / SDKModelRefusalNoFallbackMessage)
       original_model?: string;
@@ -863,6 +875,28 @@ export class SDKMessageHandler {
         summary: systemMsg.summary,
         ...(systemMsg.tool_use_id && { toolUseId: systemMsg.tool_use_id }),
       });
+    }
+
+    // Handle background_tasks_changed — the authoritative live-task set.
+    //
+    // The incremental notifications above are the normal path, but any one of
+    // them can be missed: the session is replaced, the subprocess is swapped,
+    // or the ID remapping does not line up. Nothing then moves the task out of
+    // 'running', and the panel shows it running forever — the symptom being a
+    // task with a duration measured in hours. This message exists to close
+    // that hole, and carries REPLACE semantics.
+    if (systemMsg.subtype === 'background_tasks_changed' && Array.isArray(systemMsg.tasks)) {
+      const tasks: LiveBackgroundTask[] = systemMsg.tasks.map((task) => ({
+        taskId: task.task_id,
+        taskType: task.task_type,
+        description: task.description,
+        ambient: task.ambient === true,
+      }));
+      logger.debug('Live background tasks changed', {
+        count: tasks.length,
+        taskIds: tasks.map((t) => t.taskId),
+      });
+      this.callbacks.onLiveBackgroundTasks?.(tasks);
     }
 
     // Handle task_updated — patch-style status changes

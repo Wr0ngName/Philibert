@@ -31,6 +31,7 @@ let cleanupActiveModel: (() => void) | null = null;
 let cleanupSubagentActivity: (() => void) | null = null;
 let cleanupCommandAction: (() => void) | null = null;
 let cleanupTaskNotification: (() => void) | null = null;
+let cleanupBackgroundTasksChanged: (() => void) | null = null;
 let cleanupUsageUpdate: (() => void) | null = null;
 let cleanupActiveQueries: (() => void) | null = null;
 let cleanupSessionId: (() => void) | null = null;
@@ -509,6 +510,18 @@ export function useClaudeChat() {
       chatStore.handleTaskNotification(conversationId, notification);
     });
 
+    // The SDK's authoritative live-task set. The notifications above carry the
+    // real outcome and are the normal path; this closes the hole when one is
+    // missed, which otherwise left a finished task displayed as running
+    // indefinitely.
+    cleanupBackgroundTasksChanged = window.electron.claude.onBackgroundTasksChanged((conversationId, tasks) => {
+      logger.debug('Received live background task set', {
+        conversationId,
+        count: tasks.length,
+      });
+      chatStore.reconcileBackgroundTasks(conversationId, tasks);
+    });
+
     // Handle usage updates (token counts, cost, context info) - route to correct conversation
     cleanupUsageUpdate = window.electron.claude.onUsageUpdate((conversationId, usage) => {
       logger.debug('Received usage update', {
@@ -633,6 +646,10 @@ export function useClaudeChat() {
     if (cleanupCommandAction) {
       cleanupCommandAction();
       cleanupCommandAction = null;
+    }
+    if (cleanupBackgroundTasksChanged) {
+      cleanupBackgroundTasksChanged();
+      cleanupBackgroundTasksChanged = null;
     }
     if (cleanupTaskNotification) {
       cleanupTaskNotification();

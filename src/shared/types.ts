@@ -856,6 +856,31 @@ export interface BackgroundTask {
 /**
  * Notification from the SDK about a background task status change
  */
+/**
+ * One entry of the SDK's authoritative live-task list.
+ *
+ * The SDK pushes `system/background_tasks_changed` carrying every background
+ * task that is still live, with REPLACE semantics — the payload is the whole
+ * set, not a delta. It exists precisely so a host cannot drift out of sync by
+ * missing an incremental notification, which is how a finished task ends up
+ * displayed as running indefinitely.
+ */
+export interface LiveBackgroundTask {
+  /** SDK task identifier. */
+  taskId: string;
+  /** Friendly task-type label, e.g. 'shell', 'subagent', 'monitor'. */
+  taskType: string;
+  /** Free-text description, as the SDK reports it. */
+  description: string;
+  /**
+   * True for tasks that are not user-visible activity — watchers and anything
+   * flagged skip_transcript. The SDK asks hosts to keep these out of activity
+   * indicators, so they are never adopted as visible tasks; they still count
+   * as live, so a task of ours matching one is not retired.
+   */
+  ambient: boolean;
+}
+
 export interface TaskNotification {
   /** Task identifier */
   taskId: string;
@@ -1196,6 +1221,8 @@ export const IPC_CHANNELS = {
   CLAUDE_SUBAGENT_ACTIVITY: 'claude:subagent-activity',
   /** Background task notification */
   CLAUDE_TASK_NOTIFICATION: 'claude:task-notification',
+  /** Authoritative live background-task list (REPLACE semantics) */
+  CLAUDE_BACKGROUND_TASKS_CHANGED: 'claude:background-tasks-changed',
   /** Session usage update (token counts, cost) */
   CLAUDE_USAGE_UPDATE: 'claude:usage-update',
   /** Active query count changed */

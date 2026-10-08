@@ -24,6 +24,7 @@ import type {
   SessionPermissionEntry,
   SessionUsage,
   SlashCommandInfo,
+  LiveBackgroundTask,
   TaskNotification,
   ToolCaptureData,
   ToolResultData,
@@ -86,6 +87,12 @@ export interface ElectronAPI {
     onSubagentActivity: (callback: (conversationId: string, activity: { parentToolUseId: string; model?: string; inputTokens: number; outputTokens: number }) => void) => () => void;
     /** Background task notification for a conversation */
     onTaskNotification: (callback: (conversationId: string, notification: TaskNotification) => void) => () => void;
+    /**
+     * The SDK's authoritative live background-task set for a conversation.
+     * REPLACE semantics — the payload is every live task, so anything tracked
+     * locally and absent from it has ended.
+     */
+    onBackgroundTasksChanged: (callback: (conversationId: string, tasks: LiveBackgroundTask[]) => void) => () => void;
     /** Session usage updated for a conversation */
     onUsageUpdate: (callback: (conversationId: string, usage: SessionUsage) => void) => () => void;
     /** Active query count changed */

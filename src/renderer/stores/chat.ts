@@ -7,7 +7,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 
 import { primaryModelUsage } from '@shared/model-usage';
-import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData } from '@shared/types';
+import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData } from '@shared/types';
 
 import { CONSTANTS } from '../constants/app';
 import { generateId, ID_PREFIXES } from '../utils/id';
@@ -1027,13 +1027,69 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  function clearAllBackgroundTasks(conversationId?: string): void {
-    const targetId = conversationId ?? currentConversationId.value;
-    if (targetId) {
-      const state = conversationStates.value.get(targetId);
-      if (state) {
-        state.backgroundTasks.clear();
+  /**
+   * Reconcile tracked background tasks against the SDK's authoritative live
+   * set, which arrives with REPLACE semantics.
+   *
+   * The incremental notifications are the normal path and carry the real
+   * outcome, so this only has to resolve what they missed. Anything missed
+   * previously stayed 'running' forever — nothing else in the app ever
+   * revisited a task's status, which is how a finished task came to sit in the
+   * panel with a duration of 27 hours.
+   *
+   * Two steps, in order:
+   *
+   *   1. Adopt: a live task we track under a different key — the pre-remap
+   *      tool_use id, most often — is re-keyed to the SDK's id, so step 2 does
+   *      not mistake it for one that ended.
+   *   2. Retire: a running task absent from the live set is no longer running.
+   *      It is marked 'stopped' rather than 'completed' because the live list
+   *      says only that the task is gone, not that it succeeded; claiming
+   *      success would be inventing an outcome.
+   *
+   * Ambient tasks (watchers, skip_transcript) count as live for step 2 so a
+   * task of ours matching one is never retired, but are not adopted as new
+   * visible entries — the SDK asks hosts to keep them out of activity
+   * indicators.
+   */
+  function reconcileBackgroundTasks(conversationId: string, live: LiveBackgroundTask[]): void {
+    const state = conversationStates.value.get(conversationId);
+    if (!state) return;
+
+    const liveIds = new Set(live.map(t => t.taskId));
+
+    // Step 1 — adopt live tasks tracked under a stale key.
+    for (const liveTask of live) {
+      if (state.backgroundTasks.has(liveTask.taskId)) continue;
+
+      // Match on description, the only field shared between a locally created
+      // entry and the live list. Restricted to running entries whose id is not
+      // itself live, so an adopted key is never stolen from another task.
+      let staleKey: string | null = null;
+      for (const [key, task] of state.backgroundTasks.entries()) {
+        if (task.status !== 'running') continue;
+        if (liveIds.has(key)) continue;
+        if (task.description && task.description === liveTask.description) {
+          staleKey = key;
+          break;
+        }
       }
+      if (staleKey === null) continue;
+
+      const adopted = state.backgroundTasks.get(staleKey)!;
+      state.backgroundTasks.delete(staleKey);
+      state.backgroundTasks.set(liveTask.taskId, { ...adopted, id: liveTask.taskId });
+      liveIds.add(liveTask.taskId);
+    }
+
+    // Step 2 — retire running tasks the SDK no longer lists.
+    for (const [key, task] of state.backgroundTasks.entries()) {
+      if (task.status !== 'running' || liveIds.has(key)) continue;
+      state.backgroundTasks.set(key, {
+        ...task,
+        status: 'stopped',
+        completedAt: task.completedAt ?? Date.now(),
+      });
     }
   }
 
@@ -1240,7 +1296,7 @@ export const useChatStore = defineStore('chat', () => {
     handleTaskNotification,
     addBackgroundTaskMessage,
     updateBackgroundTaskMessage,
-    clearAllBackgroundTasks,
+    reconcileBackgroundTasks,
     completeRunningTasks,
     completeToolUseMessages,
 

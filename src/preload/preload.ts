@@ -131,6 +131,16 @@ const electronAPI: ElectronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, handler);
     },
 
+    onBackgroundTasksChanged: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        conversationId: string,
+        tasks: Parameters<typeof callback>[1]
+      ) => callback(conversationId, tasks);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_BACKGROUND_TASKS_CHANGED, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_BACKGROUND_TASKS_CHANGED, handler);
+    },
+
     onUsageUpdate: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

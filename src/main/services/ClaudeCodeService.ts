@@ -55,6 +55,7 @@ import {
   ActionResponse,
   SlashCommandInfo,
   EffortLevel,
+  LiveBackgroundTask,
   ModelInfo,
   TaskNotification,
   SessionUsage,
@@ -513,6 +514,9 @@ export class ClaudeCodeService {
       },
       onTaskNotification: (notification: TaskNotification) => {
         this.emitTaskNotification(conversationId, notification);
+      },
+      onLiveBackgroundTasks: (tasks: LiveBackgroundTask[]) => {
+        this.send(IPC_CHANNELS.CLAUDE_BACKGROUND_TASKS_CHANGED, conversationId, tasks);
       },
       onUsageUpdate: async (usage: SessionUsage) => {
         try {
