@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 
-import type { AppConfig, EffortLevel, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel } from '@shared/types';
+import type { AppConfig, EffortLevel, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel, WhisperModelId } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 
 import { useEventCleanup } from '../composables/useEventCleanup';
@@ -37,6 +37,9 @@ export const useSettingsStore = defineStore('settings', () => {
   const executionMode = computed(() => config.value.executionMode);
   const thinkingMode = computed(() => config.value.thinkingMode);
   const effortLevel = computed(() => config.value.effortLevel);
+  const speechEnabled = computed(() => config.value.speechEnabled);
+  const speechModel = computed(() => config.value.speechModel);
+  const speechLanguage = computed(() => config.value.speechLanguage);
   const switchModelsOnFlag = computed(() => config.value.switchModelsOnFlag);
   const strictModelEnforcement = computed(() => config.value.strictModelEnforcement);
   const needsSetup = computed(() => !workingDirectory.value || !hasAuth.value);
@@ -141,6 +144,18 @@ export const useSettingsStore = defineStore('settings', () => {
     await saveConfig({ effortLevel: level });
   }
 
+  async function setSpeechEnabled(enabled: boolean): Promise<void> {
+    await saveConfig({ speechEnabled: enabled });
+  }
+
+  async function setSpeechModel(model: WhisperModelId): Promise<void> {
+    await saveConfig({ speechModel: model });
+  }
+
+  async function setSpeechLanguage(language: string): Promise<void> {
+    await saveConfig({ speechLanguage: language });
+  }
+
   async function setSwitchModelsOnFlag(enabled: boolean): Promise<void> {
     await saveConfig({ switchModelsOnFlag: enabled });
   }
@@ -238,6 +253,9 @@ export const useSettingsStore = defineStore('settings', () => {
     executionMode,
     thinkingMode,
     effortLevel,
+    speechEnabled,
+    speechModel,
+    speechLanguage,
     switchModelsOnFlag,
     strictModelEnforcement,
     isDarkMode,
@@ -261,6 +279,9 @@ export const useSettingsStore = defineStore('settings', () => {
     setExecutionMode,
     setThinkingMode,
     setEffortLevel,
+    setSpeechEnabled,
+    setSpeechModel,
+    setSpeechLanguage,
     setSwitchModelsOnFlag,
     setStrictModelEnforcement,
     applyTheme,

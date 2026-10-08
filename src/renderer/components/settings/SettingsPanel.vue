@@ -3,8 +3,9 @@
  * Settings panel component with OAuth login support
  */
 
-import type { ExecutionMode, LogLevel, UpdateChannel } from '@shared/types';
-import { ref, computed, watch } from 'vue';
+import type { ExecutionMode, LogLevel, UpdateChannel, WhisperModelId } from '@shared/types';
+import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE, WHISPER_MODELS } from '@shared/speech';
+import { ref, computed, watch, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import { useSettingsStore } from '../../stores/settings';
@@ -34,7 +35,26 @@ const localLogLevel = ref<LogLevel>('info');
 const localEnableNotifications = ref(true);
 const localUpdateChannel = ref<UpdateChannel>('stable');
 const localExecutionMode = ref<ExecutionMode>('sdk');
+const localSpeechEnabled = ref(false);
+const localSpeechModel = ref<WhisperModelId>(DEFAULT_WHISPER_MODEL);
+const localSpeechLanguage = ref(WHISPER_AUTO_LANGUAGE);
 const authFormRef = ref<InstanceType<typeof AuthForm>>();
+
+/** Whether this build ships a whisper binary, and which models are cached. */
+const speechAvailable = ref(false);
+const downloadedModels = ref<WhisperModelId[]>([]);
+const speechModels = WHISPER_MODELS;
+
+onMounted(async () => {
+  const availability = await window.electron.speech.getAvailability();
+  speechAvailable.value = availability.available;
+  downloadedModels.value = availability.downloadedModels;
+});
+
+/** Download size as whole megabytes — exact bytes are noise at this scale. */
+function formatModelSize(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
 
 const isOAuthUser = computed(() =>
   authFormRef.value?.authStatus?.method === 'oauth' &&
@@ -60,6 +80,9 @@ watch(
     localEnableNotifications.value = newConfig.enableNotifications;
     localUpdateChannel.value = newConfig.updateChannel;
     localExecutionMode.value = newConfig.executionMode;
+    localSpeechEnabled.value = newConfig.speechEnabled;
+    localSpeechModel.value = newConfig.speechModel;
+    localSpeechLanguage.value = newConfig.speechLanguage;
   },
   { immediate: true }
 );
@@ -85,6 +108,10 @@ async function saveSettings() {
   await settingsStore.setUpdateChannel(localUpdateChannel.value);
   const effectiveMode = config.value.authMethod === 'oauth' ? localExecutionMode.value : 'sdk';
   await settingsStore.setExecutionMode(effectiveMode);
+  await settingsStore.setSpeechEnabled(localSpeechEnabled.value);
+  await settingsStore.setSpeechModel(localSpeechModel.value);
+  // An empty box means "detect it" rather than an empty language code.
+  await settingsStore.setSpeechLanguage(localSpeechLanguage.value.trim() || WHISPER_AUTO_LANGUAGE);
 
   emit('close');
 }
@@ -98,6 +125,9 @@ function cancel() {
   localEnableNotifications.value = config.value.enableNotifications;
   localUpdateChannel.value = config.value.updateChannel;
   localExecutionMode.value = config.value.executionMode;
+  localSpeechEnabled.value = config.value.speechEnabled;
+  localSpeechModel.value = config.value.speechModel;
+  localSpeechLanguage.value = config.value.speechLanguage;
   authFormRef.value?.resetState();
   emit('close');
 }
@@ -262,6 +292,90 @@ function cancel() {
             </div>
           </button>
         </div>
+      </div>
+
+      <!-- Dictation. Hidden entirely when this build has no whisper binary,
+           rather than offered and failing on click. -->
+      <div v-if="speechAvailable">
+        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+          Dictation
+        </label>
+        <div class="flex items-center justify-between mb-3">
+          <div class="pr-4">
+            <div class="text-sm text-surface-700 dark:text-surface-300">
+              Microphone input
+            </div>
+            <div class="text-xs text-surface-500 dark:text-surface-400">
+              Transcribed on this machine — the recording is never uploaded.
+              The first use downloads the selected model.
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            :class="[
+              'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
+              localSpeechEnabled
+                ? 'bg-primary-500'
+                : 'bg-surface-300 dark:bg-surface-600',
+            ]"
+            :aria-checked="localSpeechEnabled"
+            @click="localSpeechEnabled = !localSpeechEnabled"
+          >
+            <span
+              :class="[
+                'inline-block h-4 w-4 rounded-full bg-white transition-transform',
+                localSpeechEnabled ? 'translate-x-6' : 'translate-x-1',
+              ]"
+            />
+          </button>
+        </div>
+
+        <template v-if="localSpeechEnabled">
+          <label class="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1">
+            Model
+          </label>
+          <div class="grid grid-cols-2 gap-2 mb-3">
+            <button
+              v-for="model in speechModels"
+              :key="model.id"
+              :class="[
+                'px-3 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
+                localSpeechModel === model.id
+                  ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                  : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+              ]"
+              @click="localSpeechModel = model.id"
+            >
+              <div class="font-medium">
+                {{ model.label }}
+              </div>
+              <div class="text-xs opacity-75">
+                {{ formatModelSize(model.approxBytes) }}
+                <template v-if="downloadedModels.includes(model.id)">
+                  · downloaded
+                </template>
+              </div>
+            </button>
+          </div>
+
+          <label
+            for="speech-language"
+            class="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1"
+          >
+            Language
+          </label>
+          <input
+            id="speech-language"
+            v-model="localSpeechLanguage"
+            class="input-base"
+            :placeholder="WHISPER_AUTO_LANGUAGE"
+          >
+          <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
+            A language code such as <code>en</code> or <code>fr</code>, or
+            <code>auto</code> to detect it. English-only models ignore this.
+          </div>
+        </template>
       </div>
 
       <!-- Notifications -->

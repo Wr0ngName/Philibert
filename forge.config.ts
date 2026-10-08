@@ -38,6 +38,22 @@ const bundleTypeFile = './resources/bundle-type.txt';
 // Channel server output path (built by esbuild during generateAssets)
 const channelServerOutput = './out/channel-server.cjs';
 
+// whisper-cli for local speech-to-text, compiled by the vendor:whisper:* CI
+// jobs (whisper.cpp publishes no prebuilt binaries) and fetched into vendor/
+// by scripts/fetch-whisper.sh. Packaged under resources/whisper/<platform>/
+// so WhisperPaths finds it outside the asar.
+//
+// Absence is not a build failure: a build made before the vendor job ran
+// simply ships without dictation, and the feature reports itself unavailable
+// rather than appearing and failing on click.
+const whisperPlatformDir = isWindowsBuild ? 'win32-x64' : 'linux-x64';
+const whisperBinaryName = isWindowsBuild ? 'whisper-cli.exe' : 'whisper-cli';
+const whisperBinary = `./vendor/whisper/${whisperPlatformDir}/${whisperBinaryName}`;
+// The directory is what gets packaged, so the layout under resources matches
+// what WhisperPaths looks for: resources/whisper/<platform>/<binary>.
+const whisperResourceDir = './vendor/whisper';
+const hasWhisperBinary = fs.existsSync(whisperBinary);
+
 const config: ForgeConfig = {
   hooks: {
     generateAssets: async () => {
@@ -183,6 +199,8 @@ const config: ForgeConfig = {
       channelServerOutput,
       // Bundle type marker file (online or offline) - always included for Windows
       ...(isWindowsBuild ? [bundleTypeFile] : []),
+      // Local speech-to-text binary, when a build has one
+      ...(hasWhisperBinary ? [whisperResourceDir] : []),
       // Only include Node.js and Git for OFFLINE builds
       ...(isWindowsBuild && !isOnlineBuild && hasNodeExe ? [nodeExePath] : []),
       ...(isWindowsBuild && !isOnlineBuild && hasGitBashArchive ? [gitBashArchive, gitBashVersionFile] : []),

@@ -2,6 +2,7 @@
  * Type definitions for the preload API exposed to the renderer
  */
 
+import type { ModelDownloadProgress } from './speech';
 import type {
   ActionResponse,
   AppConfig,
@@ -30,6 +31,7 @@ import type {
   ToolResultData,
   UpdateInfo,
   UpdateProgress,
+  WhisperModelId,
 } from './types';
 
 /** Active query status info */
@@ -239,6 +241,20 @@ export interface ElectronAPI {
     onAvailable: (callback: (info: UpdateInfo) => void) => () => void;
     onProgress: (callback: (progress: UpdateProgress) => void) => () => void;
     onDownloaded: (callback: () => void) => () => void;
+  };
+
+  /** Local speech-to-text through the bundled whisper binary */
+  speech: {
+    /** Whether dictation is available in this build, and which models are cached */
+    getAvailability: () => Promise<{ available: boolean; downloadedModels: WhisperModelId[] }>;
+    /** Transcribe 16-bit PCM WAV audio to text */
+    transcribe: (
+      wav: ArrayBuffer,
+      model: WhisperModelId,
+      language: string,
+    ) => Promise<{ text: string; durationMs: number }>;
+    /** Progress while a model is being downloaded on first use */
+    onModelProgress: (callback: (progress: ModelDownloadProgress) => void) => () => void;
   };
 
   // Window operations

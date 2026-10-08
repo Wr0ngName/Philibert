@@ -378,6 +378,23 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SEARCH, query, scope, currentConversationId),
   },
 
+  // Local speech-to-text
+  speech: {
+    getAvailability: () => ipcRenderer.invoke(IPC_CHANNELS.SPEECH_GET_AVAILABILITY),
+
+    transcribe: (wav, model, language) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SPEECH_TRANSCRIBE, wav, model, language),
+
+    onModelProgress: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        progress: Parameters<typeof callback>[0]
+      ) => callback(progress);
+      ipcRenderer.on(IPC_CHANNELS.SPEECH_MODEL_PROGRESS, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.SPEECH_MODEL_PROGRESS, handler);
+    },
+  },
+
   // Update operations
   update: {
     check: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CHECK),

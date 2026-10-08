@@ -3,13 +3,14 @@
  * Chat input box component
  */
 
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import type { SlashCommandInfo } from '@shared/types';
 
 import { CONSTANTS } from '../../constants/app';
 import { useClaudeChat } from '../../composables/useClaudeChat';
+import { useSpeechInput } from '../../composables/useSpeechInput';
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useFilesStore } from '../../stores/files';
@@ -37,6 +38,81 @@ const { currentModeMismatch } = storeToRefs(conversationsStore);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const autocompleteRef = ref<InstanceType<typeof CommandAutocomplete> | null>(null);
 const message = ref('');
+
+// ── Dictation ──────────────────────────────────────────────────────────────
+const { speechEnabled, speechModel, speechLanguage } = storeToRefs(settingsStore);
+const speech = useSpeechInput();
+
+/** Whether this build actually has a whisper binary to transcribe with. */
+const speechAvailable = ref(false);
+
+onMounted(async () => {
+  // A build made before the vendor job ran has no binary; asking once on mount
+  // keeps the button from appearing where it could only fail.
+  speechAvailable.value = (await window.electron.speech.getAvailability()).available;
+});
+
+const micVisible = computed(() => speechEnabled.value && speechAvailable.value);
+
+const micTitle = computed(() => {
+  if (speech.isRecording.value) return 'Stop recording and transcribe';
+  if (speech.phase.value === 'transcribing') return 'Transcribing…';
+  return 'Dictate a message';
+});
+
+/** Progress line shown in place of the keyboard hint while dictating. */
+const speechStatus = computed(() => {
+  const progress = speech.downloadProgress.value;
+  if (progress) {
+    const received = Math.round(progress.receivedBytes / (1024 * 1024));
+    if (progress.totalBytes) {
+      const total = Math.round(progress.totalBytes / (1024 * 1024));
+      return `Downloading speech model… ${received}/${total} MB`;
+    }
+    return `Downloading speech model… ${received} MB`;
+  }
+  if (speech.isRecording.value) return 'Recording — click the stop button to transcribe';
+  if (speech.phase.value === 'transcribing') return 'Transcribing…';
+  return null;
+});
+
+/**
+ * Insert the transcript at the caret rather than replacing the box, so
+ * dictation can be mixed with typing.
+ */
+function insertTranscript(text: string): void {
+  const textarea = inputRef.value;
+  const existing = message.value;
+
+  if (!textarea) {
+    message.value = existing ? `${existing} ${text}` : text;
+    return;
+  }
+
+  const start = textarea.selectionStart ?? existing.length;
+  const end = textarea.selectionEnd ?? existing.length;
+  const before = existing.slice(0, start);
+  const after = existing.slice(end);
+  // Keep a space between dictated text and whatever it lands against.
+  const prefix = before && !/\s$/.test(before) ? ' ' : '';
+  const suffix = after && !/^\s/.test(after) ? ' ' : '';
+  message.value = `${before}${prefix}${text}${suffix}${after}`;
+
+  const caret = (before + prefix + text).length;
+  void nextTick(() => {
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+  });
+}
+
+async function toggleDictation(): Promise<void> {
+  if (speech.isRecording.value) {
+    const text = await speech.stopAndTranscribe(speechModel.value, speechLanguage.value);
+    if (text) insertTranscript(text);
+    return;
+  }
+  await speech.start();
+}
 
 const canSend = computed(() => {
   return message.value.trim().length > 0
@@ -174,6 +250,14 @@ function handleInput(event: Event) {
           >
             Type a command name...
           </span>
+          <span
+            v-else-if="speechStatus"
+            class="text-primary-500 dark:text-primary-400"
+          >{{ speechStatus }}</span>
+          <span
+            v-else-if="speech.error.value"
+            class="text-amber-600 dark:text-amber-400"
+          >{{ speech.error.value }}</span>
           <span v-else>Press Enter to send, Shift+Enter for new line</span>
           <div class="flex items-center gap-2">
             <span
@@ -186,6 +270,23 @@ function handleInput(event: Event) {
       </div>
 
       <div class="flex gap-2 h-[44px] items-center">
+        <!-- Dictation. Hidden unless enabled in settings and the build has a
+             whisper binary, so a build without one offers nothing that cannot
+             work. -->
+        <Button
+          v-if="micVisible"
+          :variant="speech.isRecording.value ? 'danger' : 'secondary'"
+          size="md"
+          :disabled="isDisabled || speech.phase.value === 'transcribing'"
+          :title="micTitle"
+          @click="toggleDictation"
+        >
+          <Icon
+            :name="speech.isRecording.value ? 'stop' : 'microphone'"
+            size="sm"
+          />
+        </Button>
+
         <Button
           v-if="isLoading"
           variant="danger"

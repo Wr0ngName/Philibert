@@ -109,6 +109,7 @@ export async function createWindow(options: WindowOptions = {}): Promise<Browser
   });
 
   installEditingContextMenu(mainWindow.webContents);
+  installMediaPermissionHandler(mainWindow);
 
   // Open DevTools in debug mode
   if (isDebugMode) {
@@ -125,6 +126,37 @@ export async function createWindow(options: WindowOptions = {}): Promise<Browser
 
   debugLog('createWindow() returning');
   return mainWindow;
+}
+
+/**
+ * Allow the window's own pages to use the microphone, and nothing else.
+ *
+ * Electron's default permission handler denies media requests, so without
+ * this `getUserMedia` rejects and dictation can never start. The grant is
+ * deliberately narrow: only the `media` permission, only for audio, and only
+ * for content this app loaded itself. Everything else is refused, including
+ * video — nothing here needs a camera, and a blanket allow would hand one to
+ * any page that found its way into this window.
+ */
+export function installMediaPermissionHandler(window: BrowserWindow): void {
+  window.webContents.session.setPermissionRequestHandler((_contents, permission, callback, details) => {
+    if (permission !== 'media') {
+      callback(false);
+      return;
+    }
+
+    // mediaTypes is absent on some requests; treat that as "not audio" rather
+    // than assuming, so an unexpected shape cannot widen the grant.
+    const mediaTypes = (details as { mediaTypes?: string[] }).mediaTypes ?? [];
+    const audioOnly = mediaTypes.length > 0 && mediaTypes.every((type) => type === 'audio');
+    if (!audioOnly) {
+      logger.info('Denied media permission request', { permission, mediaTypes });
+      callback(false);
+      return;
+    }
+
+    callback(true);
+  });
 }
 
 /**

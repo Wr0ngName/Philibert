@@ -4,6 +4,8 @@
 
 import { describe, it, expect } from 'vitest';
 
+import { DEFAULT_EFFORT } from '../effort';
+import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE } from '../speech';
 import {
   DEFAULT_CONFIG,
   IPC_CHANNELS,
@@ -123,5 +125,29 @@ describe('Type validations', () => {
   it('should allow all ActionStatus values', () => {
     const statuses: ActionStatus[] = ['pending', 'approved', 'rejected', 'executed', 'failed'];
     expect(statuses).toHaveLength(5);
+  });
+});
+
+/**
+ * DEFAULT_CONFIG spells some defaults out as literals because the modules
+ * that own them import their types from here, so importing the constants back
+ * would be a cycle. These assertions are what keeps the two copies in step.
+ */
+describe('DEFAULT_CONFIG defaults match their source of truth', () => {
+  it('uses the effort default from @shared/effort', () => {
+    expect(DEFAULT_CONFIG.effortLevel).toBe(DEFAULT_EFFORT);
+  });
+
+  it('uses the speech model default from @shared/speech', () => {
+    expect(DEFAULT_CONFIG.speechModel).toBe(DEFAULT_WHISPER_MODEL);
+  });
+
+  it('uses the auto-language value from @shared/speech', () => {
+    expect(DEFAULT_CONFIG.speechLanguage).toBe(WHISPER_AUTO_LANGUAGE);
+  });
+
+  it('leaves dictation off by default', () => {
+    // First use downloads a model of 75MB or more; that should be a choice.
+    expect(DEFAULT_CONFIG.speechEnabled).toBe(false);
   });
 });

@@ -598,6 +598,18 @@ export type ThinkingMode = 'auto' | 'disabled';
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /**
+ * A whisper.cpp GGML model offered for local dictation. The catalogue, with
+ * sizes and download URLs, lives in @shared/speech.
+ */
+export type WhisperModelId =
+  | 'tiny'
+  | 'tiny.en'
+  | 'base'
+  | 'base.en'
+  | 'small'
+  | 'small.en';
+
+/**
  * Application configuration settings
  */
 export interface AppConfig {
@@ -646,6 +658,16 @@ export interface AppConfig {
    */
   effortLevel: EffortLevel;
   /**
+   * Whether the microphone dictation button is offered. Off by default: the
+   * first use downloads a model of 75MB or more, which should be a choice
+   * rather than a surprise.
+   */
+  speechEnabled: boolean;
+  /** Whisper model used for dictation — see @shared/speech. */
+  speechModel: WhisperModelId;
+  /** Dictation language, or 'auto' to let whisper detect it. */
+  speechLanguage: string;
+  /**
    * Whether Claude Code may switch models by itself when a safety classifier
    * flags a message. Mirrors the CLI's own `switchModelsOnFlag` setting; when
    * false the session pauses instead of silently moving to another model.
@@ -683,6 +705,13 @@ export const DEFAULT_CONFIG: AppConfig = {
   executionMode: 'sdk',
   thinkingMode: 'auto',
   effortLevel: 'high',
+  speechEnabled: false,
+  // Literals rather than the constants in @shared/speech: that module imports
+  // WhisperModelId from here, so importing it back would be a cycle. Same
+  // reason effortLevel is spelled out above. A test asserts both stay in step
+  // with their source of truth.
+  speechModel: 'base.en',
+  speechLanguage: 'auto',
   switchModelsOnFlag: true,
   strictModelEnforcement: false,
 };
@@ -1223,6 +1252,12 @@ export const IPC_CHANNELS = {
   CLAUDE_TASK_NOTIFICATION: 'claude:task-notification',
   /** Authoritative live background-task list (REPLACE semantics) */
   CLAUDE_BACKGROUND_TASKS_CHANGED: 'claude:background-tasks-changed',
+  /** Whether local dictation is available, and which models are cached */
+  SPEECH_GET_AVAILABILITY: 'speech:get-availability',
+  /** Transcribe a WAV buffer to text */
+  SPEECH_TRANSCRIBE: 'speech:transcribe',
+  /** Progress of a whisper model download */
+  SPEECH_MODEL_PROGRESS: 'speech:model-progress',
   /** Session usage update (token counts, cost) */
   CLAUDE_USAGE_UPDATE: 'claude:usage-update',
   /** Active query count changed */

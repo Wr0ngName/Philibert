@@ -14,6 +14,8 @@
  * what channel mode exists for.
  */
 
+import type { WhisperModelId } from './types';
+
 /** A GGML model that can be downloaded and used for transcription. */
 export interface WhisperModel {
   /** Model identifier, matching the `ggml-<id>.bin` name upstream publishes. */
@@ -28,13 +30,7 @@ export interface WhisperModel {
   description: string;
 }
 
-export type WhisperModelId =
-  | 'tiny'
-  | 'tiny.en'
-  | 'base'
-  | 'base.en'
-  | 'small'
-  | 'small.en';
+export type { WhisperModelId };
 
 const MB = 1024 * 1024;
 

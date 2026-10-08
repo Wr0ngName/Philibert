@@ -135,8 +135,40 @@ typecheck:
 # =============================================================================
 
 # Linux build template
+# Pull the compiled whisper-cli into vendor/ so forge packages it.
+#
+# A curl in the job's own script rather than an artifact dependency: every
+# packaging job extends .docker_cleanup, whose `git clean -ffdx` runs after
+# artifacts are restored and would delete them.
+#
+# Never fatal. A release cut before the vendor job ran for this
+# WHISPER_VERSION simply ships without dictation — WhisperPaths finds no
+# binary and the feature reports itself unavailable — and that is preferable
+# to failing the release over an optional component.
+.whisper_fetch:
+  script:
+    - |
+      if [ -n "${WHISPER_PLATFORM:-}" ]; then
+        WHISPER_BIN="whisper-cli"
+        [ "$WHISPER_PLATFORM" = "win32-x64" ] && WHISPER_BIN="whisper-cli.exe"
+        mkdir -p "vendor/whisper/$WHISPER_PLATFORM"
+        if curl --fail --location --silent --show-error \
+             --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+             --output "vendor/whisper/$WHISPER_PLATFORM/$WHISPER_BIN" \
+             "${PACKAGE_REGISTRY_URL}/whisper/${WHISPER_VERSION}/whisper-cli-$WHISPER_PLATFORM"; then
+          chmod +x "vendor/whisper/$WHISPER_PLATFORM/$WHISPER_BIN"
+          echo "whisper-cli ${WHISPER_VERSION} fetched for $WHISPER_PLATFORM"
+        else
+          rm -rf "vendor/whisper/$WHISPER_PLATFORM"
+          echo "WARNING: whisper-cli ${WHISPER_VERSION} is not in the registry for $WHISPER_PLATFORM"
+          echo "WARNING: this build will ship without dictation — run vendor:whisper:${WHISPER_PLATFORM%%-*} to publish it"
+        fi
+      fi
+
 .build_linux:
   stage: build
+  variables:
+    WHISPER_PLATFORM: linux-x64
   # All packaging jobs share one resource group so they never run concurrently.
   # The runner has 5.7Gi and no swap; two simultaneous Electron packages, each
   # extracting the ~265MB bundled Claude Code binary, get OOM-killed (SIGKILL,
@@ -148,6 +180,7 @@ typecheck:
     - shell
   extends: .docker_cleanup
   script:
+    - !reference [.whisper_fetch, script]
     - |
       docker run --rm \
         -v "$CI_PROJECT_DIR:/app" \
@@ -257,6 +290,81 @@ vendor:whisper:linux:
         "${PACKAGE_REGISTRY_URL}/whisper/${WHISPER_VERSION}/whisper-cli-linux-x64"
     - echo "Published whisper-cli ${WHISPER_VERSION} for linux-x64"
 
+# Windows build, cross-compiled with mingw-w64.
+#
+# Cross-compiling rather than building under wine: the wine-mono image exists
+# to run the NSIS packager, not a C++ toolchain, and a native Windows compile
+# would need a Windows runner this project does not have.
+#
+# No smoke test here, unlike the linux job — the binary cannot be executed on
+# this runner. The linux job proves the CLI contract (that `-nt -np` puts the
+# transcript on stdout and nothing else); this one proves only that the same
+# source cross-compiles and links. What it cannot prove has to be checked by
+# running the packaged app on Windows.
+vendor:whisper:windows:
+  stage: vendor
+  tags:
+    - shell
+  extends: .docker_cleanup
+  resource_group: package-build
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  script:
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR:/app" \
+        -w /app \
+        -e WHISPER_VERSION="$WHISPER_VERSION" \
+        node:${NODE_VERSION} \
+        bash -euxc '
+          apt-get update
+          apt-get install -y --no-install-recommends cmake make git ca-certificates mingw-w64
+
+          rm -rf /tmp/whisper-win
+          git clone --depth 1 --branch "$WHISPER_VERSION" https://github.com/ggml-org/whisper.cpp.git /tmp/whisper-win
+          cd /tmp/whisper-win
+
+          # Static, and statically linked against libstdc++/libgcc too: the
+          # packaged app must not depend on mingw runtime DLLs being present
+          # on the user machine.
+          cmake -B build \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+            -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
+            -DCMAKE_FIND_ROOT_PATH=/usr/x86_64-w64-mingw32 \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_SERVER=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON
+          cmake --build build -j2 --target whisper-cli
+
+          test -f build/bin/whisper-cli.exe
+
+          # Confirm it is actually a Windows binary and not a host one that
+          # happened to build, and that nothing dynamic crept back in.
+          file build/bin/whisper-cli.exe | tee /tmp/file-out.txt
+          grep -q "PE32+" /tmp/file-out.txt
+          x86_64-w64-mingw32-objdump -p build/bin/whisper-cli.exe | grep -i "DLL Name" | sort -u
+
+          mkdir -p /app/vendor/whisper/win32-x64
+          cp build/bin/whisper-cli.exe /app/vendor/whisper/win32-x64/whisper-cli.exe
+          x86_64-w64-mingw32-strip /app/vendor/whisper/win32-x64/whisper-cli.exe || true
+        '
+    - ls -la vendor/whisper/win32-x64/
+    - |
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file vendor/whisper/win32-x64/whisper-cli.exe \
+        "${PACKAGE_REGISTRY_URL}/whisper/${WHISPER_VERSION}/whisper-cli-win32-x64"
+    - echo "Published whisper-cli ${WHISPER_VERSION} for win32-x64"
+
 # =============================================================================
 # Windows Build Templates
 # =============================================================================
@@ -274,6 +382,8 @@ vendor:whisper:linux:
 # Windows OFFLINE build template (bundles Node.js + Git)
 .build_windows_offline:
   stage: build
+  variables:
+    WHISPER_PLATFORM: win32-x64
   # All packaging jobs share one resource group so they never run concurrently.
   # The runner has 5.7Gi and no swap; two simultaneous Electron packages, each
   # extracting the ~265MB bundled Claude Code binary, get OOM-killed (SIGKILL,
@@ -285,6 +395,7 @@ vendor:whisper:linux:
     - shell
   extends: .docker_cleanup
   script:
+    - !reference [.whisper_fetch, script]
     - |
       docker run --rm \
         -v "$CI_PROJECT_DIR:/app" \
@@ -299,6 +410,8 @@ vendor:whisper:linux:
 # Windows ONLINE build template (smaller, downloads deps during install)
 .build_windows_online:
   stage: build
+  variables:
+    WHISPER_PLATFORM: win32-x64
   # All packaging jobs share one resource group so they never run concurrently.
   # The runner has 5.7Gi and no swap; two simultaneous Electron packages, each
   # extracting the ~265MB bundled Claude Code binary, get OOM-killed (SIGKILL,
@@ -310,6 +423,7 @@ vendor:whisper:linux:
     - shell
   extends: .docker_cleanup
   script:
+    - !reference [.whisper_fetch, script]
     - |
       docker run --rm \
         -v "$CI_PROJECT_DIR:/app" \
