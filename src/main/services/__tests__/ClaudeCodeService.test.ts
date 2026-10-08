@@ -1791,6 +1791,39 @@ describe('ClaudeCodeService', () => {
       expect(result.find(m => m.value === 'default')?.displayName).toBe('Default (recommended)');
     });
 
+    // The effort picker is driven entirely by what the SDK reports per model,
+    // so these fields have to survive the merge. Dropping them would silently
+    // turn the picker off for every model.
+    it('preserves the capability fields the SDK reports', () => {
+      const result = ClaudeCodeService.mergeWithKnownModels([
+        {
+          value: 'opus[1m]',
+          resolvedModel: 'claude-opus-5-5[1m]',
+          displayName: 'Opus (1M context)',
+          description: 'Opus 5.5 with 1M context',
+          supportsEffort: true,
+          supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        },
+      ]);
+
+      const alias = result.find(m => m.value === 'opus[1m]');
+      expect(alias?.supportsEffort).toBe(true);
+      expect(alias?.supportedEffortLevels).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    });
+
+    it('leaves capability fields absent on catalog-supplied rows', () => {
+      // The catalog knows versions, not capabilities. Inventing a value here
+      // would be indistinguishable from the SDK having reported one.
+      const result = ClaudeCodeService.mergeWithKnownModels([
+        { value: 'opus', resolvedModel: 'claude-opus-5-5', displayName: 'Opus', description: '' },
+      ]);
+
+      const fromCatalog = result.find(m => m.value === 'claude-opus-4-8');
+      expect(fromCatalog).toBeDefined();
+      expect(fromCatalog!.supportsEffort).toBeUndefined();
+      expect(fromCatalog!.supportedEffortLevels).toBeUndefined();
+    });
+
     it('keeps every family the 2.1.280 payload offers', () => {
       const result = ClaudeCodeService.mergeWithKnownModels(REAL_SDK_PAYLOAD_2_1_280);
       const families = new Set(

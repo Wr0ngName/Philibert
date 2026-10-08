@@ -5,7 +5,8 @@
 
 import { safeStorage, dialog } from 'electron';
 
-import { AppConfig, AuthMethod, DEFAULT_CONFIG, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel } from '../../shared/types';
+import { DEFAULT_EFFORT, isEffortLevel } from '../../shared/effort';
+import { AppConfig, AuthMethod, DEFAULT_CONFIG, EffortLevel, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { ConfigurationError, ERROR_CODES } from '../errors';
 import logger, { setLogLevel } from '../utils/logger';
@@ -32,6 +33,7 @@ interface StoredConfig {
   updateChannel: UpdateChannel;
   executionMode: ExecutionMode;
   thinkingMode: ThinkingMode;
+  effortLevel: EffortLevel;
   switchModelsOnFlag: boolean;
   strictModelEnforcement: boolean;
 }
@@ -105,6 +107,7 @@ export class ConfigService {
           updateChannel: 'stable',
           executionMode: 'sdk',
           thinkingMode: 'auto',
+          effortLevel: DEFAULT_EFFORT,
           switchModelsOnFlag: true,
           strictModelEnforcement: false,
         },
@@ -627,6 +630,32 @@ export class ConfigService {
 
     this.store.set('thinkingMode', mode);
     logger.info('Thinking mode changed', { mode });
+  }
+
+  /**
+   * Get the requested reasoning effort level.
+   *
+   * This is what the user asked for, not necessarily what a given model will
+   * run at — callers clamp it to the selected model's supported set with
+   * `clampEffort` from @shared/effort.
+   */
+  async getEffortLevel(): Promise<EffortLevel> {
+    await this.ensureInitialized();
+    if (!this.store) return DEFAULT_EFFORT;
+    const stored = this.store.get('effortLevel', DEFAULT_EFFORT);
+    // A store written by an older build, or hand-edited, can hold anything.
+    return isEffortLevel(stored) ? stored : DEFAULT_EFFORT;
+  }
+
+  /**
+   * Set the requested reasoning effort level.
+   */
+  async setEffortLevel(level: EffortLevel): Promise<void> {
+    await this.ensureInitialized();
+    if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
+
+    this.store.set('effortLevel', level);
+    logger.info('Effort level changed', { level });
   }
 
   /**

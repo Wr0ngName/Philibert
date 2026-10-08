@@ -28,6 +28,7 @@ import * as path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
+  ModelInfo as SDKModelInfo,
   Query,
   SDKUserMessage,
   SpawnOptions,
@@ -36,6 +37,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { BrowserWindow } from 'electron';
 
+import { resolveEffortForSelection } from '../../shared/effort';
 import {
   familyKeyOf,
   formatModelDisplayName,
@@ -52,6 +54,7 @@ import {
   PendingAction,
   ActionResponse,
   SlashCommandInfo,
+  EffortLevel,
   ModelInfo,
   TaskNotification,
   SessionUsage,
@@ -312,6 +315,7 @@ export class ClaudeCodeService {
           this.configService,
           this.send,
           this.notificationService,
+          (model) => this.resolveEffortForModel(model),
         );
         this.channelService.setOnTurnDone((convId) => {
           this.processingSessions.delete(convId);
@@ -615,6 +619,11 @@ export class ClaudeCodeService {
       const thinkingConfig: ThinkingConfig = thinkingMode === 'disabled'
         ? { type: 'disabled' }
         : { type: 'adaptive' };
+      // Effort is clamped to what the selected model actually accepts. The CLI
+      // would silently downgrade an unsupported level anyway, but clamping
+      // here means the level we log is the level that ran, and a model that
+      // takes no effort gets no effort parameter at all.
+      const effort = await this.resolveEffortForModel(selectedModel);
       // When resuming we also call setModel() after init, because a resumed
       // session restores the model it was created with.
       const shouldResume = !!resumeSessionId;
@@ -627,6 +636,7 @@ export class ClaudeCodeService {
         isSlashCommand,
         model: selectedModel || '(SDK default)',
         thinkingMode,
+        effort: effort ?? '(none — model takes no effort)',
         activeSessions: this.activeSessions.size,
         hasResumeSessionId: !!resumeSessionId,
         willResume: shouldResume,
@@ -661,6 +671,7 @@ export class ClaudeCodeService {
           includePartialMessages: true,
           agentProgressSummaries: true,
           thinking: thinkingConfig,
+          ...(effort ? { effort } : {}),
           // Always pass the selection, including on resume. `--model` is
           // documented as "Model for the current session" with no resume
           // carve-out; if a given CLI build does ignore it while resuming, the
@@ -1750,12 +1761,9 @@ export class ClaudeCodeService {
     for (const instance of this.activeSessions.values()) {
       try {
         const models = await instance.query.supportedModels();
-        this.cachedModels = ClaudeCodeService.mergeWithKnownModels(models.map((m) => ({
-          value: m.value,
-          resolvedModel: m.resolvedModel,
-          displayName: m.displayName,
-          description: m.description,
-        })));
+        this.cachedModels = ClaudeCodeService.mergeWithKnownModels(
+          models.map((m) => ClaudeCodeService.toModelInfo(m)),
+        );
         logger.info('Fetched models from SDK', { count: this.cachedModels.length });
         return this.cachedModels;
       } catch (error) {
@@ -1802,12 +1810,9 @@ export class ClaudeCodeService {
       });
 
       const models = await tempQuery.supportedModels();
-      this.cachedModels = ClaudeCodeService.mergeWithKnownModels(models.map((m) => ({
-        value: m.value,
-        resolvedModel: m.resolvedModel,
-        displayName: m.displayName,
-        description: m.description,
-      })));
+      this.cachedModels = ClaudeCodeService.mergeWithKnownModels(
+        models.map((m) => ClaudeCodeService.toModelInfo(m)),
+      );
       logger.info('Fetched models via temporary session', { count: this.cachedModels.length });
       this.send(IPC_CHANNELS.CLAUDE_MODEL_CHANGED, this.cachedModels);
     } finally {
@@ -1829,12 +1834,9 @@ export class ClaudeCodeService {
   private async fetchAndCacheModels(queryIterator: Query): Promise<void> {
     try {
       const models = await queryIterator.supportedModels();
-      this.cachedModels = ClaudeCodeService.mergeWithKnownModels(models.map((m) => ({
-        value: m.value,
-        resolvedModel: m.resolvedModel,
-        displayName: m.displayName,
-        description: m.description,
-      })));
+      this.cachedModels = ClaudeCodeService.mergeWithKnownModels(
+        models.map((m) => ClaudeCodeService.toModelInfo(m)),
+      );
       logger.info('Cached models from SDK', {
         count: this.cachedModels.length,
         models: this.cachedModels.map(m => ({ value: m.value, displayName: m.displayName })),
@@ -1895,6 +1897,42 @@ export class ClaudeCodeService {
 
   private static contextForFamily(family: string): string {
     return ClaudeCodeService.FAMILY_DEFAULT_CONTEXT[family] ?? '1M';
+  }
+
+  /**
+   * The effort level to send for a selected model, or null to send none.
+   *
+   * The requested level is the user's; what a model accepts is the SDK's to
+   * report. A selection can name an alias row (`opus[1m]`) or a concrete
+   * version the alias resolves to, and only one of those rows carries the
+   * capability fields — so look for either before concluding a model takes no
+   * effort. With no cached row at all the request is passed through unclamped
+   * and the CLI downgrades it if need be; suppressing effort because the list
+   * has not loaded would silently ignore the user's choice on the first turn.
+   */
+  private async resolveEffortForModel(selectedModel: string): Promise<EffortLevel | null> {
+    const requested = await this.configService.getEffortLevel();
+    return resolveEffortForSelection(requested, selectedModel, this.cachedModels);
+  }
+
+  /**
+   * Project an SDK model row onto the app's own {@link ModelInfo}.
+   *
+   * The SDK reports more than identity — capability flags travel on the same
+   * row — and the effort picker is driven entirely by `supportedEffortLevels`
+   * rather than by anything hardcoded here, so those fields have to survive
+   * the hop. Shared by every `supportedModels()` call site so a newly
+   * surfaced field only has to be added once.
+   */
+  private static toModelInfo(m: SDKModelInfo): ModelInfo {
+    return {
+      value: m.value,
+      resolvedModel: m.resolvedModel,
+      displayName: m.displayName,
+      description: m.description,
+      ...(m.supportsEffort !== undefined && { supportsEffort: m.supportsEffort }),
+      ...(m.supportedEffortLevels && { supportedEffortLevels: [...m.supportedEffortLevels] }),
+    };
   }
 
   /**

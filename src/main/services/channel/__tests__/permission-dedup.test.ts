@@ -155,7 +155,7 @@ describe('Channel mode permissions: MCP primary, PTY fallback', () => {
   beforeEach(async () => {
     mockSendFn = vi.fn().mockReturnValue(true);
     mockSend = mockSendFn as (channel: string, ...args: unknown[]) => boolean;
-    service = new ChannelService(makeConfigService(), mockSend, makeNotificationService());
+    service = new ChannelService(makeConfigService(), mockSend, makeNotificationService(), async () => 'high');
 
     const bridge = await service.ensureBridge();
     bridgePort = bridge.getPort();

@@ -38,6 +38,18 @@ export interface ModelInfo {
   displayName: string;
   /** Description of the model's capabilities */
   description?: string;
+  /**
+   * Whether this model accepts a reasoning-effort level at all. Reported by
+   * the SDK; absent on rows the SDK did not describe (catalog-supplied
+   * versions), which @shared/effort treats as "unknown", not "no".
+   */
+  supportsEffort?: boolean;
+  /**
+   * The effort levels this model accepts, as reported by the SDK. The set is
+   * genuinely per-model — `xhigh` arrived with Opus 4.7, and Haiku 4.5
+   * reports no effort support at all — so this is never hardcoded here.
+   */
+  supportedEffortLevels?: EffortLevel[];
 }
 
 /**
@@ -577,6 +589,15 @@ export type ExecutionMode = 'sdk' | 'channel';
 export type ThinkingMode = 'auto' | 'disabled';
 
 /**
+ * Reasoning-effort level, mirroring the SDK's `EffortLevel`.
+ *
+ * Which of these a given model accepts differs per model and is reported by
+ * the SDK — see `ModelInfo.supportedEffortLevels` and @shared/effort. `max` is
+ * session-only: the CLI never writes it to a settings file.
+ */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/**
  * Application configuration settings
  */
 export interface AppConfig {
@@ -619,6 +640,12 @@ export interface AppConfig {
   /** Extended thinking mode: 'auto' lets Claude decide, 'disabled' saves tokens */
   thinkingMode: ThinkingMode;
   /**
+   * Reasoning effort requested for the selected model. Clamped at use time to
+   * what that model actually accepts, since the supported set varies per model
+   * — see @shared/effort.
+   */
+  effortLevel: EffortLevel;
+  /**
    * Whether Claude Code may switch models by itself when a safety classifier
    * flags a message. Mirrors the CLI's own `switchModelsOnFlag` setting; when
    * false the session pauses instead of silently moving to another model.
@@ -655,6 +682,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   updateChannel: 'stable',
   executionMode: 'sdk',
   thinkingMode: 'auto',
+  effortLevel: 'high',
   switchModelsOnFlag: true,
   strictModelEnforcement: false,
 };

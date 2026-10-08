@@ -7,8 +7,16 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { storeToRefs } from 'pinia';
 
+import {
+  describeEffortLevel,
+  EFFORT_LEVELS,
+  effortLevelsFor,
+  findModelRow,
+  formatEffortLevel,
+  resolveEffortForSelection,
+} from '@shared/effort';
 import { capitalizeFamily, familyKeyOf, isSameModel, parseModelId } from '@shared/model-id';
-import type { ModelInfo } from '@shared/types';
+import type { EffortLevel, ModelInfo } from '@shared/types';
 import { useAsyncOperation } from '../../composables/useAsyncOperation';
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
@@ -26,6 +34,7 @@ const conversationsStore = useConversationsStore();
 const {
   selectedModel,
   thinkingMode,
+  effortLevel,
   switchModelsOnFlag,
   strictModelEnforcement,
 } = storeToRefs(settingsStore);
@@ -277,6 +286,42 @@ async function toggleThinking(): Promise<void> {
   const newMode = thinkingMode.value === 'auto' ? 'disabled' : 'auto';
   await settingsStore.setThinkingMode(newMode);
   logger.info('Thinking mode changed', { mode: newMode });
+}
+
+/**
+ * The model row the current selection refers to, whether the selection names
+ * an alias ('opus[1m]') or the concrete version that alias resolves to.
+ * Capability fields live on whichever row the SDK described.
+ */
+const selectedModelRow = computed<ModelInfo | undefined>(
+  () => findModelRow(models.value, selectedModel.value),
+);
+
+/**
+ * Effort levels offered for the current model, straight from what the SDK
+ * reported for it. Empty hides the picker entirely rather than showing levels
+ * the model would ignore.
+ */
+const availableEffortLevels = computed<EffortLevel[]>(() => {
+  // With no explicit selection the CLI chooses the model, so there is no row
+  // to read capabilities from. Offer the full set and let it downgrade.
+  if (!selectedModel.value) return [...EFFORT_LEVELS];
+  return effortLevelsFor(selectedModelRow.value);
+});
+
+/**
+ * The level that will actually be sent — resolved through the same function
+ * the main process uses, so the picker's check mark cannot disagree with what
+ * the session runs at.
+ */
+const effectiveEffortLevel = computed<EffortLevel | null>(
+  () => resolveEffortForSelection(effortLevel.value, selectedModel.value, models.value),
+);
+
+async function selectEffortLevel(level: EffortLevel): Promise<void> {
+  if (level === effortLevel.value) return;
+  await settingsStore.setEffortLevel(level);
+  logger.info('Effort level changed', { level });
 }
 
 async function toggleSwitchModelsOnFlag(): Promise<void> {
@@ -547,6 +592,53 @@ onUnmounted(() => {
             </div>
           </div>
         </button>
+
+        <!-- Reasoning effort. Which levels appear is reported by the SDK per
+             model (ModelInfo.supportedEffortLevels), never hardcoded here, so
+             the row is absent for a model that takes no effort. -->
+        <template v-if="availableEffortLevels.length > 0">
+          <div class="h-px bg-surface-200 dark:bg-surface-700 my-1" />
+          <div class="px-3 pt-2 pb-1">
+            <div class="text-xs font-medium text-surface-500 dark:text-surface-400 uppercase tracking-wide">
+              Reasoning effort
+            </div>
+          </div>
+          <button
+            v-for="level in availableEffortLevels"
+            :key="level"
+            class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors"
+            @click.stop="selectEffortLevel(level)"
+          >
+            <div class="flex items-center gap-2">
+              <span class="shrink-0 w-4 h-4 flex items-center justify-center">
+                <Icon
+                  v-if="level === effectiveEffortLevel"
+                  name="check"
+                  size="sm"
+                  class="text-primary-500"
+                />
+              </span>
+              <div class="flex-1 min-w-0">
+                <div class="font-medium text-surface-800 dark:text-surface-200">
+                  {{ formatEffortLevel(level) }}
+                </div>
+                <div class="text-xs text-surface-500 dark:text-surface-400">
+                  {{ describeEffortLevel(level) }}
+                </div>
+              </div>
+            </div>
+          </button>
+          <!-- The stored choice can outrank what this model accepts — picking
+               Max then switching to a model without it, say. Say so rather
+               than silently showing the check on a different row. -->
+          <div
+            v-if="effectiveEffortLevel && effectiveEffortLevel !== effortLevel"
+            class="px-3 pb-2 text-xs text-amber-600 dark:text-amber-400"
+          >
+            {{ formatEffortLevel(effortLevel) }} isn't available on this model —
+            running at {{ formatEffortLevel(effectiveEffortLevel) }}.
+          </div>
+        </template>
 
         <!-- Allow Claude Code to swap models when a message is flagged.
              Mirrors the CLI's own switchModelsOnFlag setting. -->

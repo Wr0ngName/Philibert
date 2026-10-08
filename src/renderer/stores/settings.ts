@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 
-import type { AppConfig, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel } from '@shared/types';
+import type { AppConfig, EffortLevel, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 
 import { useEventCleanup } from '../composables/useEventCleanup';
@@ -36,6 +36,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const updateChannel = computed(() => config.value.updateChannel);
   const executionMode = computed(() => config.value.executionMode);
   const thinkingMode = computed(() => config.value.thinkingMode);
+  const effortLevel = computed(() => config.value.effortLevel);
   const switchModelsOnFlag = computed(() => config.value.switchModelsOnFlag);
   const strictModelEnforcement = computed(() => config.value.strictModelEnforcement);
   const needsSetup = computed(() => !workingDirectory.value || !hasAuth.value);
@@ -136,6 +137,10 @@ export const useSettingsStore = defineStore('settings', () => {
     await saveConfig({ thinkingMode: mode });
   }
 
+  async function setEffortLevel(level: EffortLevel): Promise<void> {
+    await saveConfig({ effortLevel: level });
+  }
+
   async function setSwitchModelsOnFlag(enabled: boolean): Promise<void> {
     await saveConfig({ switchModelsOnFlag: enabled });
   }
@@ -232,6 +237,7 @@ export const useSettingsStore = defineStore('settings', () => {
     updateChannel,
     executionMode,
     thinkingMode,
+    effortLevel,
     switchModelsOnFlag,
     strictModelEnforcement,
     isDarkMode,
@@ -254,6 +260,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setUpdateChannel,
     setExecutionMode,
     setThinkingMode,
+    setEffortLevel,
     setSwitchModelsOnFlag,
     setStrictModelEnforcement,
     applyTheme,

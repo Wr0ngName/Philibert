@@ -12,6 +12,7 @@
  * has finished its turn.
  */
 
+import type { EffortResolver } from '../../../shared/effort';
 import type {
   AskUserQuestionAction,
   AskUserQuestionDetails,
@@ -70,6 +71,7 @@ export class ChannelService {
   private sessions: Map<string, ActiveChannelSession> = new Map();
   private send: (channel: string, ...args: unknown[]) => boolean;
   private configService: ConfigService;
+  private resolveEffort: EffortResolver;
   private notificationService: NotificationService;
   private authValidator: AuthValidator;
   private onTurnDone: ((conversationId: string) => void) | null = null;
@@ -82,10 +84,12 @@ export class ChannelService {
     configService: ConfigService,
     send: (channel: string, ...args: unknown[]) => boolean,
     notificationService: NotificationService,
+    resolveEffort: EffortResolver,
   ) {
     this.configService = configService;
     this.send = send;
     this.notificationService = notificationService;
+    this.resolveEffort = resolveEffort;
     this.authValidator = new AuthValidator(configService);
   }
 
@@ -302,6 +306,7 @@ export class ChannelService {
 
     const selectedModel = await this.configService.getSelectedModel();
     const thinkingMode = await this.configService.getThinkingMode();
+    const effortLevel = await this.resolveEffort(selectedModel);
     const authEnv = await this.authValidator.setupAuthEnv();
 
     const session = new ChannelSession({
@@ -314,6 +319,7 @@ export class ChannelService {
       model: selectedModel,
       authEnv,
       thinkingMode,
+      effortLevel,
       resumeSessionId,
       onSessionId: (convId, sessionId) => {
         this.send(IPC_CHANNELS.CLAUDE_SESSION_ID, convId, sessionId);

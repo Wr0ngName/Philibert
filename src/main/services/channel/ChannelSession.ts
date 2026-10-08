@@ -17,9 +17,10 @@ import * as path from 'node:path';
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 
+import { toPersistedEffort } from '../../../shared/effort';
 import type { TokenCounts } from '../../../shared/model-pricing';
 import { costUsdForModel, roundUsd, tokenCountsFromApiUsage } from '../../../shared/model-pricing';
-import type { ChannelUsageData, ChannelModelTokens, ThinkingMode } from '../../../shared/types';
+import type { ChannelUsageData, ChannelModelTokens, EffortLevel, ThinkingMode } from '../../../shared/types';
 import { MAIN_CONSTANTS } from '../../constants/app';
 import { stripAnsi } from '../../utils/ansi';
 import logger from '../../utils/logger';
@@ -141,6 +142,12 @@ export interface ChannelSessionOptions {
   model: string;
   authEnv: Record<string, string>;
   thinkingMode: ThinkingMode;
+  /**
+   * Requested reasoning effort, or null when the selected model takes none.
+   * Written into the session's settings file rather than passed as a query
+   * option, since this path drives the CLI through a PTY.
+   */
+  effortLevel: EffortLevel | null;
   resumeSessionId?: string;
   onFatalError?: ChannelSessionErrorCallback;
   onPtyError?: ChannelSessionErrorCallback;
@@ -158,6 +165,7 @@ export class ChannelSession {
   private model: string;
   private authEnv: Record<string, string>;
   private thinkingMode: ThinkingMode;
+  private effortLevel: EffortLevel | null;
   private onFatalError?: ChannelSessionErrorCallback;
   private onPtyError?: ChannelSessionErrorCallback;
   private onPermissionRequest?: ChannelSessionPermissionCallback;
@@ -183,6 +191,7 @@ export class ChannelSession {
     this.model = options.model;
     this.authEnv = options.authEnv;
     this.thinkingMode = options.thinkingMode;
+    this.effortLevel = options.effortLevel;
     this.resumeSessionId = options.resumeSessionId || null;
     this.onFatalError = options.onFatalError;
     this.onPtyError = options.onPtyError;
@@ -666,6 +675,11 @@ export class ChannelSession {
         allow: ['mcp__philibert__reply'],
       },
       alwaysThinkingEnabled: this.thinkingMode !== 'disabled',
+      // The CLI's own persisted key. `max` is session-only and is never
+      // written to a settings file, so toPersistedEffort() yields `xhigh` for
+      // it — the strongest level this path can express. Omitted entirely when
+      // the selected model takes no effort, so the CLI keeps its own default.
+      ...(this.effortLevel ? { effortLevel: toPersistedEffort(this.effortLevel) } : {}),
     };
 
     fs.writeFileSync(settingsPath, JSON.stringify(localSettings, null, 2) + '\n');

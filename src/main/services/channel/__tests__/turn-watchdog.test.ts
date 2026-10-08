@@ -109,6 +109,7 @@ describe('channel mode — a turn always ends', () => {
       makeConfigService(),
       send as unknown as (channel: string, ...args: unknown[]) => boolean,
       makeNotificationService(),
+      async () => 'high',
     );
   });
 
