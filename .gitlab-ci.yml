@@ -333,6 +333,12 @@ vendor:whisper:windows:
           git clone --depth 1 --branch "$WHISPER_VERSION" https://github.com/ggml-org/whisper.cpp.git /tmp/whisper-win
           cd /tmp/whisper-win
 
+          # _WIN32_WINNT=0x0A00 targets Windows 10, which the installers
+          # already require. ggml guards its thread-throttling call on
+          # `_WIN32_WINNT >= 0x0602` (Windows 8), but mingw-w64 only declares
+          # THREAD_POWER_THROTTLING_STATE at 0x0A00 — so the guard passes
+          # while the struct does not exist and ggml-cpu.c fails to compile.
+          #
           # Static, and statically linked against libstdc++/libgcc too: the
           # packaged app must not depend on mingw runtime DLLs being present
           # on the user machine.
@@ -347,6 +353,8 @@ vendor:whisper:windows:
             -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_C_FLAGS="-D_WIN32_WINNT=0x0A00" \
+            -DCMAKE_CXX_FLAGS="-D_WIN32_WINNT=0x0A00" \
             -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
             -DWHISPER_BUILD_TESTS=OFF \
             -DWHISPER_BUILD_SERVER=OFF \
