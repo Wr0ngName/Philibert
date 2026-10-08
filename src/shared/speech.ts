@@ -115,14 +115,33 @@ export function whisperModelUrl(id: WhisperModelId): string {
 }
 
 /**
- * Magic bytes at the start of a GGML weights file.
+ * Magic number at the start of a GGML weights file.
  *
  * Checked after download because the failure this guards against is not a
  * truncated file but an HTML one: a Hugging Face error page or captive-portal
  * redirect arrives with a 200 and would otherwise be cached as a model and
  * fail cryptically inside the binary on every later run.
+ *
+ * It is a little-endian uint32, not a string. Spelled as ASCII the constant
+ * reads "ggml", but on disk the bytes are `6c 6d 67 67` — "lmgg". Comparing
+ * the leading four bytes to the text "ggml" therefore rejects every valid
+ * model file, which is exactly what it did.
  */
-export const GGML_MAGIC = 'ggml';
+export const GGML_FILE_MAGIC = 0x67676d6c;
+
+/** Number of bytes {@link isGgmlMagic} needs. */
+export const GGML_MAGIC_BYTES = 4;
+
+/**
+ * Whether a buffer starts with the GGML magic number.
+ *
+ * Takes the whole leading chunk rather than a parsed value so the byte-order
+ * handling lives in one place and can be tested against real file bytes.
+ */
+export function isGgmlMagic(leadingBytes: Buffer): boolean {
+  if (leadingBytes.length < GGML_MAGIC_BYTES) return false;
+  return leadingBytes.readUInt32LE(0) === GGML_FILE_MAGIC;
+}
 
 /**
  * Sample rate the audio is resampled to before transcription.

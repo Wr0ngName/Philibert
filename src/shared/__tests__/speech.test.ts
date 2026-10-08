@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 
 import {
   DEFAULT_WHISPER_MODEL,
-  GGML_MAGIC,
+  GGML_FILE_MAGIC,
+  isGgmlMagic,
   isWhisperModelId,
   WHISPER_AUTO_LANGUAGE,
   WHISPER_MODELS,
@@ -102,7 +103,42 @@ describe('constants', () => {
     expect(WHISPER_AUTO_LANGUAGE).toBe('auto');
   });
 
-  it('matches the GGML magic bytes', () => {
-    expect(GGML_MAGIC).toBe('ggml');
+  it('matches the GGML magic number', () => {
+    expect(GGML_FILE_MAGIC).toBe(0x67676d6c);
+  });
+});
+
+describe('isGgmlMagic', () => {
+  /**
+   * The first bytes of a real ggml-base.en.bin from Hugging Face, read with
+   * `curl -r 0-7`. They are `6c 6d 67 67` — "lmgg" — because the magic is a
+   * little-endian uint32. An earlier version of this check compared the
+   * leading bytes to the text "ggml" and so rejected every valid model file,
+   * reporting it as a server error.
+   */
+  const REAL_MODEL_HEAD = Buffer.from([0x6c, 0x6d, 0x67, 0x67, 0x98, 0xca, 0x00, 0x00]);
+
+  it('accepts the leading bytes of a real model file', () => {
+    expect(isGgmlMagic(REAL_MODEL_HEAD)).toBe(true);
+  });
+
+  it('accepts exactly four bytes', () => {
+    expect(isGgmlMagic(REAL_MODEL_HEAD.subarray(0, 4))).toBe(true);
+  });
+
+  it('rejects the ASCII spelling of the magic', () => {
+    // This is the mistake being guarded against: "ggml" as text is the
+    // byte-reversed form and is not what a model file starts with.
+    expect(isGgmlMagic(Buffer.from('ggml', 'ascii'))).toBe(false);
+  });
+
+  it('rejects an HTML error page', () => {
+    // The failure the check actually exists for: a 200 carrying HTML.
+    expect(isGgmlMagic(Buffer.from('<!DOCTYPE html>', 'ascii'))).toBe(false);
+  });
+
+  it('rejects a truncated or empty read', () => {
+    expect(isGgmlMagic(Buffer.from([0x6c, 0x6d, 0x67]))).toBe(false);
+    expect(isGgmlMagic(Buffer.alloc(0))).toBe(false);
   });
 });

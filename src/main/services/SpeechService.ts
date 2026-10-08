@@ -19,7 +19,8 @@ import * as path from 'node:path';
 import { app } from 'electron';
 
 import {
-  GGML_MAGIC,
+  GGML_MAGIC_BYTES,
+  isGgmlMagic,
   isWhisperModelId,
   type ModelDownloadProgress,
   type TranscriptionResult,
@@ -90,11 +91,33 @@ export class SpeechService {
     let handle: fsp.FileHandle | undefined;
     try {
       handle = await fsp.open(file, 'r');
-      const buffer = Buffer.alloc(GGML_MAGIC.length);
-      const { bytesRead } = await handle.read(buffer, 0, GGML_MAGIC.length, 0);
-      return bytesRead === GGML_MAGIC.length && buffer.toString('ascii') === GGML_MAGIC;
+      const buffer = Buffer.alloc(GGML_MAGIC_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, GGML_MAGIC_BYTES, 0);
+      return bytesRead === GGML_MAGIC_BYTES && isGgmlMagic(buffer);
     } catch {
       return false;
+    } finally {
+      await handle?.close();
+    }
+  }
+
+  /**
+   * The file's leading bytes as hex, for an error message.
+   *
+   * Reporting what was actually there turns "not a GGML model" into something
+   * diagnosable: a wrong magic number and an HTML error page look identical
+   * otherwise, and the first version of this check blamed the server for what
+   * was a byte-order mistake on this side.
+   */
+  private async describeLeadingBytes(file: string): Promise<string> {
+    let handle: fsp.FileHandle | undefined;
+    try {
+      handle = await fsp.open(file, 'r');
+      const buffer = Buffer.alloc(GGML_MAGIC_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, GGML_MAGIC_BYTES, 0);
+      return bytesRead === 0 ? 'an empty file' : `0x${buffer.subarray(0, bytesRead).toString('hex')}`;
+    } catch {
+      return 'unreadable bytes';
     } finally {
       await handle?.close();
     }
@@ -170,7 +193,8 @@ export class SpeechService {
 
       if (!(await this.hasGgmlMagic(temp))) {
         throw new Error(
-          `Downloaded file for ${id} is not a GGML model — the server likely returned an error page`,
+          `Downloaded file for ${id} does not start with the GGML magic number `
+          + `(got ${await this.describeLeadingBytes(temp)}); it may be an error page rather than a model`,
         );
       }
 
