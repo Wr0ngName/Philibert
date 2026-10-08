@@ -325,7 +325,17 @@ export const useConversationsStore = defineStore('conversations', () => {
       id: conversationId,
       title,
       customTitle: existingConv?.customTitle,
-      workingDirectory: existingConv?.workingDirectory || workingDirectory,
+      // A conversation is pinned to the directory its session was created in:
+      // the CLI keys session files by a CWD-derived path
+      // (~/.claude/projects/<slugified-cwd>/<session-id>.jsonl), so resuming
+      // under a different directory would not find them and the context would
+      // be lost. Before there is a session there is nothing to pin to, so the
+      // current directory wins — otherwise a conversation whose session has
+      // gone would keep claiming the old directory while actually running in
+      // the new one.
+      workingDirectory: sdkSessionId
+        ? (existingConv?.workingDirectory || workingDirectory)
+        : workingDirectory,
       messages: rawMessages,
       createdAt: existingConv?.createdAt || Date.now(),
       updatedAt: lastMessageAt,
