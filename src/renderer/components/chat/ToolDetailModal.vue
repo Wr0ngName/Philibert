@@ -8,6 +8,7 @@ import { ref, watch, computed } from 'vue';
 
 import type { ToolUseInfo } from '@shared/types';
 
+import { formatToolInput, type InputParam } from '../../utils/tool-input';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
@@ -67,56 +68,7 @@ const statusDisplay = computed(() => {
   }
 });
 
-interface InputParam {
-  key: string;
-  label: string;
-  value: string;
-  isBlock: boolean;
-}
-
-const PARAM_LABELS: Record<string, string> = {
-  file_path: 'File',
-  content: 'Content',
-  command: 'Command',
-  old_string: 'Original',
-  new_string: 'Replacement',
-  pattern: 'Pattern',
-  path: 'Path',
-  offset: 'Offset',
-  limit: 'Limit',
-  description: 'Description',
-  replace_all: 'Replace All',
-  timeout: 'Timeout',
-  cwd: 'Working Directory',
-};
-
-const BLOCK_THRESHOLD = 80;
-
-function isBlockValue(key: string, value: unknown): boolean {
-  if (typeof value !== 'string') return false;
-  if (['content', 'command', 'old_string', 'new_string'].includes(key)) return true;
-  return value.length > BLOCK_THRESHOLD || value.includes('\n');
-}
-
-const inputParams = computed((): InputParam[] => {
-  if (!props.toolUse?.input) return [];
-  const input = props.toolUse.input;
-  return Object.entries(input).map(([key, value]) => {
-    const label = PARAM_LABELS[key] || key;
-    const isBlock = isBlockValue(key, value);
-    let displayValue: string;
-    if (value === null || value === undefined) {
-      displayValue = '';
-    } else if (typeof value === 'string') {
-      displayValue = value;
-    } else if (typeof value === 'boolean' || typeof value === 'number') {
-      displayValue = String(value);
-    } else {
-      displayValue = JSON.stringify(value, null, 2);
-    }
-    return { key, label, value: displayValue, isBlock };
-  });
-});
+const inputParams = computed((): InputParam[] => formatToolInput(props.toolUse?.input));
 </script>
 
 <template>

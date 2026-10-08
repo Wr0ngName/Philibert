@@ -57,6 +57,23 @@ const taskDetailTask = computed<BackgroundTask | null>(() =>
 const stoppingTask = ref(false);
 const stopTaskError = ref<string | null>(null);
 
+/**
+ * The tool call that spawned the task the modal is showing.
+ *
+ * Looked up live by the task's toolUseId, so the modal can show the command
+ * or agent prompt behind the task. Without it a running task had only its
+ * description, status and duration to show — summary, output file, model and
+ * tokens all arrive at the end.
+ */
+const taskDetailSpawningTool = computed<ToolUseInfo | null>(() => {
+  const toolUseId = taskDetailTask.value?.toolUseId;
+  if (!toolUseId) return null;
+  const message = chatStore.messages.find(
+    m => m.toolUse && (m.toolUse.toolUseBlockId === toolUseId || m.toolUse.actionId === toolUseId),
+  );
+  return message?.toolUse ?? null;
+});
+
 // Tool detail modal state
 const toolDetailOpen = ref(false);
 const toolDetailInfo = ref<ToolUseInfo | null>(null);
@@ -245,6 +262,7 @@ function closeToolDetail() {
     <BackgroundTaskDetailModal
       :open="taskDetailOpen"
       :task="taskDetailTask"
+      :spawning-tool="taskDetailSpawningTool"
       :stopping="stoppingTask"
       :stop-error="stopTaskError"
       @close="closeTaskDetail"

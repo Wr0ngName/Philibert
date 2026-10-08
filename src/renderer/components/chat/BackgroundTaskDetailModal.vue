@@ -6,9 +6,10 @@
 
 import { ref, watch, computed } from 'vue';
 
-import type { BackgroundTask } from '@shared/types';
+import type { BackgroundTask, ToolUseInfo } from '@shared/types';
 
 import { formatModelId } from '../../utils/model';
+import { formatToolInput, type InputParam } from '../../utils/tool-input';
 import Button from '../shared/Button.vue';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
@@ -17,6 +18,15 @@ import Spinner from '../shared/Spinner.vue';
 interface Props {
   open: boolean;
   task: BackgroundTask | null;
+  /**
+   * The tool call that spawned this task, when there is one.
+   *
+   * Its input is the detail worth reading — the shell command, or a
+   * sub-agent's prompt and type. Without it a running task showed only its
+   * description, status and duration, because every other field this modal
+   * has (summary, output file, model, tokens) only arrives at the end.
+   */
+  spawningTool?: ToolUseInfo | null;
   /** Whether a stop request is in flight. */
   stopping?: boolean;
   /** Why the last stop attempt failed, if it did. */
@@ -24,9 +34,13 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  spawningTool: null,
   stopping: false,
   stopError: null,
 });
+
+/** The spawning tool's input, formatted the same way the tool modal shows it. */
+const inputParams = computed((): InputParam[] => formatToolInput(props.spawningTool?.input));
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -203,6 +217,48 @@ const statusDisplay = computed(() => {
         </div>
       </div>
 
+      <!-- What the task is actually doing: the input to the tool call that
+           spawned it. For a shell task this is the command; for an agent it is
+           the prompt and sub-agent type. Rendered the same way the tool detail
+           modal renders a tool's input, from the same helper. -->
+      <div
+        v-if="inputParams.length > 0"
+        class="space-y-2"
+      >
+        <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
+          <Icon
+            name="cpu"
+            size="xs"
+          />
+          <span>Input</span>
+          <span
+            v-if="spawningTool"
+            class="font-mono text-surface-400 dark:text-surface-500"
+          >{{ spawningTool.toolName }}</span>
+        </div>
+
+        <div class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 space-y-2">
+          <div
+            v-for="param in inputParams"
+            :key="param.key"
+          >
+            <div class="text-xs text-surface-500 dark:text-surface-400 mb-0.5">
+              {{ param.label }}
+            </div>
+            <pre
+              v-if="param.isBlock"
+              class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono max-h-60 overflow-y-auto"
+            >{{ param.value }}</pre>
+            <div
+              v-else
+              class="text-xs text-surface-800 dark:text-surface-200 font-mono break-all"
+            >
+              {{ param.value }}
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Output File Content -->
       <div
         v-if="task.outputFile"
@@ -236,40 +292,53 @@ const statusDisplay = computed(() => {
         >
           <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono">{{ outputContent }}</pre>
         </div>
+      </div>
 
-        <!-- Stopping a task. Only offered while it is actually running; the
-             status here is live, so the button disappears once the task ends
-             rather than offering to stop something already finished. -->
+      <!-- No output yet. Said explicitly so a running task does not look like
+           it has nothing to show, which is how this modal read before. -->
+      <div
+        v-else-if="task.status === 'running'"
+        class="text-xs text-surface-500 dark:text-surface-400 italic"
+      >
+        Output will appear here once the task writes it.
+      </div>
+
+      <!-- Stopping a task. Only offered while it is actually running; the
+           status here is live, so the button disappears once the task ends
+           rather than offering to stop something already finished.
+           Deliberately a sibling of the output block, not a child of it — it
+           was nested inside `v-if="task.outputFile"`, so the button was
+           invisible for exactly the common case of a running task that has
+           not produced an output file. -->
+      <div
+        v-if="task.status === 'running'"
+        class="pt-2 border-t border-surface-200 dark:border-surface-700"
+      >
         <div
-          v-if="task.status === 'running'"
-          class="pt-2 border-t border-surface-200 dark:border-surface-700"
+          v-if="stopError"
+          class="text-xs text-red-500 mb-2 p-2 bg-red-50 dark:bg-red-900/20 rounded-lg"
         >
-          <div
-            v-if="stopError"
-            class="text-xs text-red-500 mb-2 p-2 bg-red-50 dark:bg-red-900/20 rounded-lg"
-          >
-            {{ stopError }}
-          </div>
-          <Button
-            variant="danger"
-            size="sm"
-            :disabled="stopping"
-            @click="emit('stop', task.id)"
-          >
-            <Spinner
-              v-if="stopping"
-              size="xs"
-              class="mr-1"
-            />
-            <Icon
-              v-else
-              name="close"
-              size="xs"
-              class="mr-1"
-            />
-            {{ stopping ? 'Stopping…' : 'Stop task' }}
-          </Button>
+          {{ stopError }}
         </div>
+        <Button
+          variant="danger"
+          size="sm"
+          :disabled="stopping"
+          @click="emit('stop', task.id)"
+        >
+          <Spinner
+            v-if="stopping"
+            size="xs"
+            class="mr-1"
+          />
+          <Icon
+            v-else
+            name="close"
+            size="xs"
+            class="mr-1"
+          />
+          {{ stopping ? 'Stopping…' : 'Stop task' }}
+        </Button>
       </div>
     </div>
   </Modal>
