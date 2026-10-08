@@ -4,6 +4,7 @@
 
 stages:
   - test
+  - vendor
   - build
   - release
   - cleanup
@@ -15,6 +16,10 @@ variables:
   PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic"
   # Disable git clean during checkout - we handle cleanup ourselves after fixing permissions
   GIT_CLEAN_FLAGS: none
+  # whisper.cpp release we compile and ship for speech-to-text. Bump this to
+  # move the binary; the vendor job keys its published artifact on this value,
+  # so nothing is rebuilt until it changes.
+  WHISPER_VERSION: "v1.9.5"
 
 # Common cleanup template - fixes root-owned files from docker
 # Uses docker to run chown as root (since host doesn't have passwordless sudo)
@@ -169,6 +174,88 @@ build:linux:manual:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
       allow_failure: true
+
+# =============================================================================
+# VENDOR STAGE — third-party binaries we ship
+# =============================================================================
+# whisper.cpp publishes no prebuilt binaries at all (the v1.9.5 release's asset
+# list is empty), so the speech-to-text binary has to be compiled here.
+#
+# It is deliberately NOT compiled inside the packaging jobs. This runner has
+# 5.7Gi and no swap, and those jobs already OOM under their own weight — see
+# the resource_group comment on .build_linux. This job compiles once per pinned
+# WHISPER_VERSION, smoke-tests the result, and publishes it to the package
+# registry; packaging jobs fetch it with curl.
+#
+# Fetching rather than passing artifacts is also deliberate: every packaging
+# job extends .docker_cleanup, whose `git clean -ffdx` runs after artifacts are
+# restored and would delete them. publish:packages is the one job that consumes
+# artifacts and it pointedly does not extend that template.
+#
+# Manual, because the output only changes when WHISPER_VERSION does. Run it
+# after bumping that variable, then the packaging jobs pick the new binary up.
+
+vendor:whisper:linux:
+  stage: vendor
+  tags:
+    - shell
+  extends: .docker_cleanup
+  # Never overlap a compile with a packaging job on a 5.7Gi no-swap runner.
+  resource_group: package-build
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  script:
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR:/app" \
+        -w /app \
+        -e WHISPER_VERSION="$WHISPER_VERSION" \
+        node:${NODE_VERSION} \
+        bash -euxc '
+          apt-get update
+          apt-get install -y --no-install-recommends cmake build-essential git curl ca-certificates
+
+          rm -rf /tmp/whisper
+          git clone --depth 1 --branch "$WHISPER_VERSION" https://github.com/ggml-org/whisper.cpp.git /tmp/whisper
+          cd /tmp/whisper
+
+          # Static link so the shipped artifact is one self-contained file with
+          # no libwhisper/libggml .so files to place next to it.
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_SERVER=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON
+          # -j2, not nproc: see the memory note above.
+          cmake --build build -j2 --target whisper-cli
+
+          test -x build/bin/whisper-cli
+
+          # Smoke test the exact contract the app depends on: with -nt -np,
+          # stdout must be the transcript and nothing else. Proving this here
+          # is the whole reason the job exists — it cannot be verified without
+          # a compiler, and getting it wrong is silent at runtime.
+          curl -fsSL -o /tmp/ggml-tiny.en.bin \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
+          ./build/bin/whisper-cli -m /tmp/ggml-tiny.en.bin -f samples/jfk.wav -nt -np > /tmp/out.txt
+          echo "--- whisper-cli stdout ---"
+          cat /tmp/out.txt
+          echo "--- end ---"
+          grep -qi "country" /tmp/out.txt
+
+          mkdir -p /app/vendor/whisper/linux-x64
+          cp build/bin/whisper-cli /app/vendor/whisper/linux-x64/whisper-cli
+          strip /app/vendor/whisper/linux-x64/whisper-cli || true
+        '
+    - ls -la vendor/whisper/linux-x64/
+    - |
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file vendor/whisper/linux-x64/whisper-cli \
+        "${PACKAGE_REGISTRY_URL}/whisper/${WHISPER_VERSION}/whisper-cli-linux-x64"
+    - echo "Published whisper-cli ${WHISPER_VERSION} for linux-x64"
 
 # =============================================================================
 # Windows Build Templates
