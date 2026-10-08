@@ -131,6 +131,49 @@ export const WindowsPaths = {
 };
 
 /**
+ * Bundled whisper-cli paths, for local speech-to-text.
+ *
+ * The binary is compiled by the `vendor:whisper:*` CI jobs (whisper.cpp ships
+ * no prebuilt binaries) and packaged under `resources/whisper/<platform>/`.
+ * In development it is fetched into `vendor/whisper/<platform>/` by
+ * `npm run fetch:whisper`, so both layouts are searched.
+ */
+export const WhisperPaths = {
+  /** Platform directory name, matching what the vendor jobs publish. */
+  platformDir(): string {
+    return process.platform === 'win32' ? 'win32-x64' : 'linux-x64';
+  },
+
+  binaryName(): string {
+    return process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
+  },
+
+  getBundledBinaryPaths(): string[] {
+    const platform = this.platformDir();
+    const name = this.binaryName();
+    return [
+      // Packaged: an extraResource, so outside the asar entirely.
+      path.join(getResourcesPath(), 'whisper', platform, name),
+      // Development: whatever fetch:whisper put in the working tree.
+      path.join(app.getAppPath(), 'vendor', 'whisper', platform, name),
+    ];
+  },
+
+  /**
+   * The bundled binary, or null when speech-to-text is not available in this
+   * build. Null is a normal state, not an error: a build made before the
+   * vendor job ran simply has no binary, and the feature reports itself
+   * unavailable rather than failing at record time.
+   */
+  findBundledBinary(): string | null {
+    for (const candidate of this.getBundledBinaryPaths()) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    return null;
+  },
+};
+
+/**
  * Claude CLI paths
  */
 export const ClaudeCliPaths = {
