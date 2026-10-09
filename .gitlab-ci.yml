@@ -54,16 +54,34 @@ variables:
 # TEST STAGE
 # =============================================================================
 
-lint:
+verify:
   stage: test
-  # Serialized for two reasons, both observed in pipeline 5969:
-  #  - The runner handed `lint` and `test` the SAME concurrent slot while they
-  #    overlapped, so both ran `git clean -ffdx` and `npm ci` inside one build
-  #    directory, wiping each other's node_modules.
-  #  - Three simultaneous `npm ci` runs on a 5.7Gi swapless runner OOM-killed
-  #    one of them ("Killed" during install, all three jobs failing together
-  #    while passing locally).
-  resource_group: test-suite
+  # One job, one `npm ci`.
+  #
+  # This was three jobs — lint, test, typecheck — each running its own full
+  # `npm ci` on the identical tree. They had to be serialized through
+  # `resource_group: test-suite` because of two things observed in pipeline
+  # 5969: the runner handed two of them the SAME concurrent slot, so both ran
+  # `git clean -ffdx` and `npm ci` in one build directory and wiped each
+  # other's node_modules; and three simultaneous `npm ci` runs on a 5.7Gi
+  # swapless runner OOM-killed one of them.
+  #
+  # Serializing stopped them killing each other but not the install being
+  # killed outright. In pipeline 7414 `typecheck` died inside `npm ci`
+  # ("Killed", exit 1) having never reached vue-tsc, with 2.0Gi available and
+  # 0B swap, while an unrelated project's pipeline was starting its own test
+  # backend and a buildx build on this shared shell runner — visible in this
+  # job's own before_script diagnostics as containers "Up 4 seconds" and a
+  # `docker-buildx` 29s old. `resource_group` cannot serialize against
+  # another project, so the install must simply happen less often: once
+  # instead of three times, a 3x smaller window in which that contention can
+  # land. The two extra installs bought nothing — all three checks need the
+  # same node_modules.
+  #
+  # The three checks then run in one shell, each one unconditionally, with
+  # their exit codes collected so the job still fails if any failed. Failing
+  # on the first one would hide the others and cost another ~5 minute
+  # pipeline on a runner this contended to discover each in turn.
   tags:
     - shell
   extends: .docker_cleanup
@@ -73,62 +91,17 @@ lint:
         -v "$CI_PROJECT_DIR:/app" \
         -w /app \
         node:${NODE_VERSION} \
-        sh -c "npm ci --prefer-offline && npm run lint"
+        sh -c 'set -u
+          npm ci --prefer-offline || exit 1
+          rc=0
+          npm run lint || rc=1
+          npm run typecheck || rc=1
+          npm run test || rc=1
+          exit $rc'
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-
-test:
-  stage: test
-  # Serialized for two reasons, both observed in pipeline 5969:
-  #  - The runner handed `lint` and `test` the SAME concurrent slot while they
-  #    overlapped, so both ran `git clean -ffdx` and `npm ci` inside one build
-  #    directory, wiping each other's node_modules.
-  #  - Three simultaneous `npm ci` runs on a 5.7Gi swapless runner OOM-killed
-  #    one of them ("Killed" during install, all three jobs failing together
-  #    while passing locally).
-  resource_group: test-suite
-  tags:
-    - shell
-  extends: .docker_cleanup
-  script:
-    - |
-      docker run --rm \
-        -v "$CI_PROJECT_DIR:/app" \
-        -w /app \
-        node:${NODE_VERSION} \
-        sh -c "npm ci --prefer-offline && npm run test"
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_TAG
-
-typecheck:
-  stage: test
-  # Serialized for two reasons, both observed in pipeline 5969:
-  #  - The runner handed `lint` and `test` the SAME concurrent slot while they
-  #    overlapped, so both ran `git clean -ffdx` and `npm ci` inside one build
-  #    directory, wiping each other's node_modules.
-  #  - Three simultaneous `npm ci` runs on a 5.7Gi swapless runner OOM-killed
-  #    one of them ("Killed" during install, all three jobs failing together
-  #    while passing locally).
-  resource_group: test-suite
-  tags:
-    - shell
-  extends: .docker_cleanup
-  script:
-    - |
-      docker run --rm \
-        -v "$CI_PROJECT_DIR:/app" \
-        -w /app \
-        node:${NODE_VERSION} \
-        sh -c "npm ci --prefer-offline && npm run typecheck"
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_TAG
-  allow_failure: true  # Allow failure until all type issues are resolved
 
 # =============================================================================
 # BUILD STAGE

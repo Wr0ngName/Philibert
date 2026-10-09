@@ -159,11 +159,22 @@ Jobs on this runner are OOM-killed under memory pressure, which looks like a
 mysterious failure but is not one:
 
 - `Killed`, or exit code `137` (SIGKILL), means the OOM killer.
-- Lint, test and typecheck all failing together while passing locally means
-  the `npm ci` install step, not the code.
+- Read the job log from the top, not the bottom. The `verify` job runs
+  `npm ci` before any check, so a kill during the install leaves a log whose
+  last lines are `npm warn deprecated ...` then `Killed` — and **no**
+  `added N packages` line and no check output at all. That is the install
+  dying, not the code. A real failure shows the check's own output
+  (`error TS...`, a failing test name, an ESLint rule).
 - `before_script` prints `free -h` and the top RSS consumers on the runner —
   read those first. Jobs have been observed failing below ~1Gi available and
   passing above ~1.5Gi.
+- The runner is shared with other projects, and their pipelines are the usual
+  cause. `resource_group` only serializes *this* project's jobs; it cannot
+  hold off another project's. In pipeline 7414 the old `typecheck` job was
+  killed while an unrelated project started a test backend and a buildx build
+  seconds earlier — both visible in the `docker ps` output `before_script`
+  prints, as containers "Up 4 seconds". Check that output for container names
+  that aren't ours before suspecting the code.
 
 Re-running the job alone often passes. That is contention, not a fix.
 
@@ -172,10 +183,15 @@ Re-running the job alone often passes. That is contention, not a fix.
 Pushing a tag matching `v\d+\.\d+\.\d+` (or `v*-rc.*`) triggers the GitLab CI
 pipeline (`.gitlab-ci.yml`):
 
-### Test Stage (parallel)
-- `lint` — ESLint in a `node:25` container
-- `test` — Vitest in a `node:25` container
-- `typecheck` — vue-tsc + tsc (allowed to fail)
+### Test Stage
+- `verify` — ESLint, then vue-tsc + tsc, then Vitest, in one `node:25`
+  container after a single `npm ci`. All three run even if an earlier one
+  fails, so one pipeline reports every problem; the job fails if any of them
+  failed. None of them is allowed to fail.
+
+  It is one job because `npm ci` is the memory peak on this runner and
+  running it three times tripled the chance of being OOM-killed — see *If CI
+  fails* above.
 
 ### Build Stage (parallel)
 - `build:linux` — DEB + RPM packages via `electron-forge make` in a `node:25`
