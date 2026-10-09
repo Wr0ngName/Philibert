@@ -139,6 +139,66 @@ describe('modified file tracking', () => {
     expect(modified(store)).toEqual(['/repo/src/a.ts']);
   });
 
+  it('records a watcher change while a query is running', () => {
+    // The Bash case: a file written by a shell command. Its path is not in
+    // any tool input, so the watcher is the only thing that sees it.
+    const store = useChatStore();
+    store.setLoading(CONV, true);
+
+    store.trackWatcherModification('/repo/dist/bundle.js');
+
+    expect(modified(store)).toEqual(['/repo/dist/bundle.js']);
+  });
+
+  it('ignores a watcher change when no query is running', () => {
+    // Otherwise every save in the user's own editor would mark files as
+    // though Claude had changed them — indistinguishable from a real edit,
+    // and worse than the under-reporting this replaced.
+    const store = useChatStore();
+    store.setLoading(CONV, false);
+
+    store.trackWatcherModification('/repo/src/typed-by-hand.ts');
+
+    expect(modified(store)).toEqual([]);
+  });
+
+  it('attributes a watcher change to every running conversation', () => {
+    // The watcher reports a path, not a cause. With two queries in flight,
+    // picking one owner would be invention.
+    const store = useChatStore();
+    store.setLoading(CONV, true);
+    store.setLoading('conv-2', true);
+
+    store.trackWatcherModification('/repo/shared.ts');
+
+    expect(modified(store)).toEqual(['/repo/shared.ts']);
+    expect([...store.getConversationState('conv-2').modifiedFilesInLastQuery])
+      .toEqual(['/repo/shared.ts']);
+  });
+
+  it('does not attribute a watcher change to an idle conversation', () => {
+    const store = useChatStore();
+    store.setLoading(CONV, true);
+    store.setLoading('conv-idle', false);
+
+    store.trackWatcherModification('/repo/shared.ts');
+
+    expect([...store.getConversationState('conv-idle').modifiedFilesInLastQuery]).toEqual([]);
+  });
+
+  it('merges watcher and tool-derived paths without duplicating', () => {
+    const store = useChatStore();
+    store.setLoading(CONV, true);
+    store.addAutoToolUseMessage(CONV, capture());
+    store.updateToolUseResult(CONV, result('toolu_1'));
+
+    // The watcher also sees the write the Edit tool just made.
+    store.trackWatcherModification('/repo/src/a.ts');
+    store.trackWatcherModification('/repo/dist/out.js');
+
+    expect(modified(store)).toEqual(['/repo/dist/out.js', '/repo/src/a.ts']);
+  });
+
   it('clears between queries', () => {
     const store = useChatStore();
     store.addAutoToolUseMessage(CONV, capture());

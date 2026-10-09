@@ -11,6 +11,7 @@ import { useEventCleanup } from '../composables/useEventCleanup';
 import { CONSTANTS } from '../constants/app';
 import { logger } from '../utils/logger';
 
+import { useChatStore } from './chat';
 import { useSettingsStore } from './settings';
 
 export const useFilesStore = defineStore('files', () => {
@@ -279,6 +280,22 @@ export const useFilesStore = defineStore('files', () => {
     // Set up new watcher
     fileWatcherUnsubscribe = window.electron.files.onChange((changes: FileChange[]) => {
       logger.debug('File changes detected', { changeCount: changes.length });
+
+      // Feed the "modified in the last query" indicator. This is the only way
+      // a file written by a shell command gets marked: Bash can write
+      // anywhere and its targets are not derivable from the command line, so
+      // rm, sed -i, a formatter or a build step are invisible to tool-input
+      // tracking. The chat store decides attribution — it only counts a
+      // change while a query is in flight, so edits made in the user's own
+      // editor do not light up the tree.
+      //
+      // 'unlink' is left out: a deleted file has no tree row to mark, so
+      // recording it would only grow the set with nothing to show.
+      const chatStore = useChatStore();
+      for (const change of changes) {
+        if (change.type === 'unlink') continue;
+        chatStore.trackWatcherModification(change.path);
+      }
 
       // Use incremental updates for better performance
       // Only reload full tree if there are many changes (likely a major operation)

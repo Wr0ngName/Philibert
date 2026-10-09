@@ -1296,6 +1296,32 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /**
+   * Record a filesystem change the watcher observed.
+   *
+   * Covers what the tool inputs cannot: a file written by a shell command.
+   * `Bash` can write anywhere and its targets are not derivable from the
+   * command line without interpreting it, so `rm`, `sed -i`, a formatter or a
+   * build step would otherwise never appear in the indicator.
+   *
+   * Attributed only to conversations with a query in flight. Without that
+   * gate every save in the user's own editor, and every background process
+   * touching the tree, would mark files as though Claude had changed them —
+   * which is worse than the under-reporting this fixes, because it cannot be
+   * distinguished from a real edit.
+   *
+   * When two conversations are running at once a change is attributed to
+   * both: the watcher reports a path, not a cause, and guessing one owner
+   * would be invention. Over-attribution between two concurrently running
+   * queries is the honest answer.
+   */
+  function trackWatcherModification(path: string): void {
+    for (const state of conversationStates.value.values()) {
+      if (!state.isLoading) continue;
+      state.modifiedFilesInLastQuery.add(path);
+    }
+  }
+
   function clearModifiedFiles(conversationId: string): void {
     const state = conversationStates.value.get(conversationId);
     if (state) {
@@ -1440,6 +1466,7 @@ export const useChatStore = defineStore('chat', () => {
     // Modified files tracking
     modifiedFilesInLastQuery,
     trackFileModification,
+    trackWatcherModification,
     clearModifiedFiles,
 
     // Cleanup
