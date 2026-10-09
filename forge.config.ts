@@ -1,15 +1,16 @@
-import type { ForgeConfig } from '@electron-forge/shared-types';
-import { MakerZIP } from '@electron-forge/maker-zip';
-import { MakerDeb } from '@electron-forge/maker-deb';
-import { MakerRpm } from '@electron-forge/maker-rpm';
-import type { MakerRpmConfigOptions } from '@electron-forge/maker-rpm/dist/Config';
-import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
-import { VitePlugin } from '@electron-forge/plugin-vite';
-import { FusesPlugin } from '@electron-forge/plugin-fuses';
-import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import { execSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+
+import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import { MakerDeb } from '@electron-forge/maker-deb';
+import { MakerRpm } from '@electron-forge/maker-rpm';
+import type { MakerRpmConfigOptions } from '@electron-forge/maker-rpm/dist/Config';
+import { MakerZIP } from '@electron-forge/maker-zip';
+import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
+import { FusesPlugin } from '@electron-forge/plugin-fuses';
+import { VitePlugin } from '@electron-forge/plugin-vite';
+import type { ForgeConfig } from '@electron-forge/shared-types';
 
 // Check if we're building for Windows (either native or cross-compiling)
 // The make command sets --platform=win32 which we can detect via npm_config_platform
@@ -127,14 +128,26 @@ const config: ForgeConfig = {
           stdio: 'inherit',
           shell: true,
         });
-        npm.on('close', (code) => {
+        npm.on('close', (code, signal) => {
           if (code === 0) return resolve();
-          // 137 is SIGKILL, which on this build host means the OOM killer.
-          // Say so explicitly — the bare exit code sent us looking for a
-          // dependency fault when the machine had simply run out of memory.
-          const hint = code === 137
-            ? ' (SIGKILL — almost certainly the OOM killer; this host has no swap)'
-            : '';
+
+          // Both branches below name the OOM killer, because it is by far the
+          // most common cause here: the host has 5.7Gi and no swap, and this
+          // step peaks while npm extracts a ~265MB binary and node-gyp builds
+          // node-pty. Saying only "exited with code: 137" once sent a
+          // diagnosis looking for a dependency fault.
+          const OOM = 'almost certainly the OOM killer; this host has no swap';
+
+          // A process killed by a signal reports a null exit code, so the code
+          // alone says nothing — the previous version printed
+          // "exited with code: null" for exactly this case.
+          if (signal) {
+            const hint = signal === 'SIGKILL' ? ` (${OOM})` : '';
+            return reject(new Error(`npm install was killed by ${signal}${hint}`));
+          }
+
+          // 137 is SIGKILL as an intervening shell reports it.
+          const hint = code === 137 ? ` (SIGKILL — ${OOM})` : '';
           reject(new Error(`npm install exited with code: ${code}${hint}`));
         });
         npm.on('error', reject);
@@ -149,6 +162,36 @@ const config: ForgeConfig = {
       for (const mod of pinnedModules) {
         console.log(`Installing external module: ${mod}`);
         await runNpm(['install', ...npmFlags, mod]);
+      }
+
+      // Check what actually landed, instead of trusting that the loop above
+      // ran to completion.
+      //
+      // This guard is here because of a real failure, in v0.21.0-rc.1's
+      // pipeline: on a memory-starved runner the npm child was killed during
+      // node-pty's native build, the rejection never reached Forge, and
+      // packaging reported SUCCESS with two of the three external modules
+      // missing. The `&&` chain then ran electron-builder, which failed with
+      //
+      //   ENOENT: no such file or directory, copyfile
+      //     '…/nsis-3.0.4.1/elevate.exe' -> '…/resources/elevate.exe'
+      //
+      // — the *destination* directory did not exist. That reads as an NSIS or
+      // download fault and cost a long detour before the real cause showed up.
+      // An incomplete package has to fail here, while the cause is still on
+      // screen.
+      const missingModules = modulesToInstall.filter(
+        (mod: string) => !fs.existsSync(path.join(buildPath, 'node_modules', mod)),
+      );
+      if (missingModules.length > 0) {
+        throw new Error(
+          `Packaging incomplete: ${missingModules.join(', ')} ` +
+          `${missingModules.length === 1 ? 'is' : 'are'} missing from ` +
+          `${path.join(buildPath, 'node_modules')} after installing. ` +
+          'The install above did not finish — on this build host that is usually the OOM ' +
+          'killer. Do not chase the next error in the log: anything electron-builder reports ' +
+          'about a missing file under out/ is a symptom of this.',
+        );
       }
 
       // Platform-specific binary packages have os/cpu restrictions that npm rejects
@@ -171,8 +214,27 @@ const config: ForgeConfig = {
           fs.chmodSync(destBin, 0o755);
         }
         console.log(`Placed ${platform}-${arch} claude binary at bin/claude.exe`);
+      } else if (claudeCodeVersion) {
+        // We just installed the package that provides this binary, so its
+        // absence means that install was incomplete — the same failure the
+        // module check above catches, one step later.
+        //
+        // A warning was not enough. Without the target binary the package
+        // ships with the *build host's* Claude CLI (a Linux ELF inside a
+        // Windows installer), which fails the first time a user sends a
+        // message, with nothing in the build log pointing back here. Both
+        // currently passing builds reach the "Placed …" line above, so this is
+        // not a path a healthy build takes.
+        throw new Error(
+          `Platform binary missing at ${srcBin} after installing ` +
+          `${platformPkg}@${claudeCodeVersion}. The package would ship with the build ` +
+          `host's Claude binary instead of the ${platform}-${arch} one.`,
+        );
       } else {
+        // No version resolved from the lockfile, so the cross-platform install
+        // was skipped entirely and there is nothing to have failed.
         console.warn(`\x1b[33m⚠ WARNING: Platform binary not found at ${srcBin}\x1b[0m`);
+        console.warn('  No @anthropic-ai/claude-code version in package-lock.json to install from.');
       }
     },
   },

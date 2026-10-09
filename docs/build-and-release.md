@@ -168,9 +168,30 @@ mysterious failure but is not one:
 - `before_script` prints `free -h` and the top RSS consumers on the runner —
   read those first. Jobs have been observed failing below ~1Gi available and
   passing above ~1.5Gi.
+- **Do not trust the last error in a packaging job.** `build:windows` reports
+  the heaviest step, and a kill during it used to surface three steps later as
+  something unrelated. In v0.21.0-rc.1 the npm child died building `node-pty`,
+  the failure did not propagate, packaging reported success with two of three
+  external modules missing, and `electron-builder` then said:
+
+  ```
+  ENOENT: no such file or directory, copyfile
+    '…/nsis-3.0.4.1/elevate.exe' -> '…/resources/elevate.exe'
+  ```
+
+  That reads as an NSIS download fault. It was not — the *destination*
+  directory did not exist, because the package was half-built.
+  `forge.config.ts` now fails at the point of the incomplete install instead,
+  naming the missing modules, so this particular red herring cannot recur. Any
+  similar "missing file under `out/`" is a symptom; look at the install above
+  it.
 - The runner is shared with other projects, and their pipelines are the usual
   cause. `resource_group` only serializes *this* project's jobs; it cannot
-  hold off another project's. In pipeline 7414 the old `typecheck` job was
+  hold off another project's. Read the `docker ps` output `before_script`
+  prints, not just the RSS table: in v0.21.0-rc.1's pipeline the memory went
+  to eight `amplea-bot_test_e2e_*` containers and a headless Chrome from
+  another project's e2e run, which the process list alone did not make
+  obvious. In pipeline 7414 the old `typecheck` job was
   killed while an unrelated project started a test backend and a buildx build
   seconds earlier — both visible in the `docker ps` output `before_script`
   prints, as containers "Up 4 seconds". Check that output for container names

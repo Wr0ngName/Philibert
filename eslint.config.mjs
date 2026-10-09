@@ -24,6 +24,12 @@ export default [
       '*.config.js',
       '*.config.mjs',
       '*.config.ts',
+      // forge.config.ts is not configuration in the declarative sense — it
+      // holds the packaging hook that decides what ships, including a
+      // multi-step npm install whose failure must propagate. It was covered by
+      // neither tsconfig nor eslint, and a silent-failure bug in it shipped as
+      // a result. Re-included; it is now also in tsconfig.main.json.
+      '!forge.config.ts',
     ],
   },
 

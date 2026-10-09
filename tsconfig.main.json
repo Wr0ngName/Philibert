@@ -5,5 +5,15 @@
     "moduleResolution": "bundler",
     "types": ["node"]
   },
-  "include": ["src/main/**/*", "src/shared/**/*", "forge.env.d.ts"]
+  "include": [
+    "src/main/**/*",
+    "src/shared/**/*",
+    "forge.env.d.ts",
+    // forge.config.ts decides what goes into every package, and until now it
+    // was checked by nothing: no tsconfig named it and eslint ignores
+    // *.config.ts. A silent-failure bug in its packaging hook shipped as a
+    // result, surfacing only as a misleading electron-builder error. It is
+    // plain TypeScript running on node, so it belongs in this project.
+    "forge.config.ts"
+  ]
 }
