@@ -133,21 +133,32 @@ const familyEntries = computed<FamilyEntry[]>(() => {
     .filter(f => f.alias || f.versions.length > 0);
 });
 
-// Which family's submenu is currently open (hover or focus)
-const hoveredFamily = ref<string | null>(null);
+/**
+ * Which submenu is open (hover or focus).
+ *
+ * Keyed by a string so families are not the only thing that can have one:
+ * reasoning effort and the session-behaviour toggles use the same mechanism,
+ * which is what keeps them out of the top-level list. Family keys are
+ * lower-case family names, so the sentinels below cannot collide with one.
+ */
+const openSubmenuKey = ref<string | null>(null);
 let hoverCloseTimer: ReturnType<typeof setTimeout> | null = null;
 
-function openSubmenu(familyKey: string): void {
+/** Submenu keys that are not model families. */
+const EFFORT_SUBMENU = 'effort:levels';
+const SESSION_SUBMENU = 'session:behaviour';
+
+function openSubmenu(key: string): void {
   if (hoverCloseTimer) {
     clearTimeout(hoverCloseTimer);
     hoverCloseTimer = null;
   }
-  hoveredFamily.value = familyKey;
+  openSubmenuKey.value = key;
 }
 
 function closeSubmenu(): void {
   hoverCloseTimer = setTimeout(() => {
-    hoveredFamily.value = null;
+    openSubmenuKey.value = null;
   }, 150);
 }
 
@@ -193,12 +204,27 @@ const isModelMismatched = computed(() => {
 // Current model display name. With no explicit selection, show what the CLI
 // actually resolved rather than the word "Default", which tells the user
 // nothing about which model is spending their tokens.
+/**
+ * Label for the selector chip, which has far less room than a menu row.
+ *
+ * Deliberately the short form — "Opus 5.5", not "Claude Opus 5.5". The chip
+ * truncates, and the row's own displayName starts with "Claude", so the
+ * version was the part that got cut: "Claude Opus 5.5" rendered as "Claude
+ * Opus…" and hid the one thing the user had just chosen. Dropping the
+ * redundant prefix keeps the version visible instead. Menu rows keep the full
+ * name, and the tooltip carries the rest.
+ */
 const currentModelDisplay = computed(() => {
   if (!selectedModel.value) {
     return activeModelLabel.value || 'Auto';
   }
-  const model = models.value.find(m => m.value === selectedModel.value);
-  return model?.displayName || formatModelId(selectedModel.value);
+  // formatModelId yields "Opus 5.5" for a versioned ID and returns anything
+  // it cannot parse unchanged, so fall back to the family for alias rows.
+  if (parseModelId(selectedModel.value)) {
+    return formatModelId(selectedModel.value);
+  }
+  const family = familyKeyOf(selectedModel.value);
+  return family ? capitalizeFamily(family) : selectedModel.value;
 });
 
 // Tooltip on the selector button — always states both sides when they differ.
@@ -318,6 +344,33 @@ const effectiveEffortLevel = computed<EffortLevel | null>(
   () => resolveEffortForSelection(effortLevel.value, selectedModel.value, models.value),
 );
 
+/**
+ * What the collapsed "Reasoning effort" row says.
+ *
+ * Shows the level that will actually be sent, and names the requested one
+ * when the model cannot honour it — otherwise the row would read "Max" on a
+ * model running at High.
+ */
+const effortSummary = computed(() => {
+  const effective = effectiveEffortLevel.value;
+  if (!effective) return 'Not supported by this model';
+  if (effective !== effortLevel.value) {
+    return `${formatEffortLevel(effective)} — ${formatEffortLevel(effortLevel.value)} unavailable here`;
+  }
+  return formatEffortLevel(effective);
+});
+
+/**
+ * What the collapsed "Session behaviour" row says: which of the two options
+ * are on, so the state is visible without opening the submenu.
+ */
+const sessionBehaviourSummary = computed(() => {
+  const on: string[] = [];
+  if (switchModelsOnFlag.value) on.push('model fallback');
+  if (strictModelEnforcement.value) on.push('single model');
+  return on.length === 0 ? 'Both off' : `On: ${on.join(', ')}`;
+});
+
 async function selectEffortLevel(level: EffortLevel): Promise<void> {
   if (level === effortLevel.value) return;
   await settingsStore.setEffortLevel(level);
@@ -330,8 +383,8 @@ async function toggleSwitchModelsOnFlag(): Promise<void> {
   logger.info('Auto-switch on flag changed', { enabled });
   chatStore.addSystemMessage(
     enabled
-      ? 'Claude Code may switch models when a message is flagged.'
-      : 'Model switching disabled — a flagged message will pause the session instead. Applies to new sessions.',
+      ? 'If a safety check declines a message, Claude Code will continue on a different model. Applies to new sessions.'
+      : 'If a safety check declines a message, the session will pause and tell you rather than switching model. Applies to new sessions.',
   );
 }
 
@@ -341,8 +394,8 @@ async function toggleStrictModelEnforcement(): Promise<void> {
   logger.info('Strict model enforcement changed', { enabled });
   chatStore.addSystemMessage(
     enabled
-      ? `Locked to ${currentModelDisplay.value}. Background agents and Claude Code's internal tasks (titles, summaries, classifiers) are forced onto it too, which costs more than letting them use Haiku. Applies to new sessions.`
-      : 'Model lock removed — background agents may run the model named in their own definition, and Haiku handles internal tasks.',
+      ? `Everything now runs on ${currentModelDisplay.value} — background agents and housekeeping (titles, summaries, classifiers) included, which costs more than letting them use Haiku. Applies to new sessions.`
+      : 'Background agents may again run the model named in their own definition, and Haiku handles housekeeping. Applies to new sessions.',
   );
 }
 
@@ -402,7 +455,7 @@ onUnmounted(() => {
         :class="isModelMismatched ? 'shrink-0 text-amber-500' : 'shrink-0'"
       />
       <span
-        class="max-w-[100px] truncate"
+        class="max-w-[150px] truncate"
         :class="{ 'text-amber-600 dark:text-amber-400': isModelMismatched }"
       >{{ currentModelDisplay }}</span>
       <Icon
@@ -521,7 +574,7 @@ onUnmounted(() => {
 
             <!-- Submenu: specific versions for this family -->
             <div
-              v-if="hoveredFamily === family.familyKey && family.versions.length > 0"
+              v-if="openSubmenuKey === family.familyKey && family.versions.length > 0"
               class="absolute right-full top-0 mr-1 z-50 min-w-[220px] max-w-[280px] rounded-lg shadow-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 py-1"
               @mouseenter="openSubmenu(family.familyKey)"
               @mouseleave="closeSubmenu()"
@@ -593,113 +646,198 @@ onUnmounted(() => {
           </div>
         </button>
 
-        <!-- Reasoning effort. Which levels appear is reported by the SDK per
-             model (ModelInfo.supportedEffortLevels), never hardcoded here, so
-             the row is absent for a model that takes no effort. -->
-        <template v-if="availableEffortLevels.length > 0">
-          <div class="h-px bg-surface-200 dark:bg-surface-700 my-1" />
-          <div class="px-3 pt-2 pb-1">
-            <div class="text-xs font-medium text-surface-500 dark:text-surface-400 uppercase tracking-wide">
-              Reasoning effort
-            </div>
-          </div>
+        <!-- Reasoning effort, as a submenu rather than five rows inline. The
+             levels come from the SDK per model (supportedEffortLevels), never
+             hardcoded, so the row is absent for a model that takes none. -->
+        <div
+          v-if="availableEffortLevels.length > 0"
+          class="relative"
+          @mouseenter="openSubmenu(EFFORT_SUBMENU)"
+          @mouseleave="closeSubmenu()"
+        >
           <button
-            v-for="level in availableEffortLevels"
-            :key="level"
             class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors"
-            @click.stop="selectEffortLevel(level)"
+            @focus="openSubmenu(EFFORT_SUBMENU)"
+            @blur="closeSubmenu()"
           >
             <div class="flex items-center gap-2">
-              <span class="shrink-0 w-4 h-4 flex items-center justify-center">
-                <Icon
-                  v-if="level === effectiveEffortLevel"
-                  name="check"
-                  size="sm"
-                  class="text-primary-500"
-                />
-              </span>
+              <span class="shrink-0 w-4 h-4" />
               <div class="flex-1 min-w-0">
                 <div class="font-medium text-surface-800 dark:text-surface-200">
-                  {{ formatEffortLevel(level) }}
+                  Reasoning effort
                 </div>
-                <div class="text-xs text-surface-500 dark:text-surface-400">
-                  {{ describeEffortLevel(level) }}
+                <div class="text-xs text-surface-500 dark:text-surface-400 truncate">
+                  {{ effortSummary }}
                 </div>
               </div>
+              <Icon
+                name="chevron-right"
+                size="xs"
+                class="shrink-0 opacity-60"
+              />
             </div>
           </button>
-          <!-- The stored choice can outrank what this model accepts — picking
-               Max then switching to a model without it, say. Say so rather
-               than silently showing the check on a different row. -->
+
           <div
-            v-if="effectiveEffortLevel && effectiveEffortLevel !== effortLevel"
-            class="px-3 pb-2 text-xs text-amber-600 dark:text-amber-400"
+            v-if="openSubmenuKey === EFFORT_SUBMENU"
+            class="absolute right-full top-0 mr-1 z-50 min-w-[240px] max-w-[300px] rounded-lg shadow-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 py-1"
+            @mouseenter="openSubmenu(EFFORT_SUBMENU)"
+            @mouseleave="closeSubmenu()"
           >
-            {{ formatEffortLevel(effortLevel) }} isn't available on this model —
-            running at {{ formatEffortLevel(effectiveEffortLevel) }}.
-          </div>
-        </template>
-
-        <!-- Allow Claude Code to swap models when a message is flagged.
-             Mirrors the CLI's own switchModelsOnFlag setting. -->
-        <button
-          class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors"
-          @click.stop="toggleSwitchModelsOnFlag"
-        >
-          <div class="flex items-center gap-2">
-            <span class="shrink-0 w-4 h-4 flex items-center justify-center">
-              <Icon
-                v-if="switchModelsOnFlag"
-                name="check"
-                size="sm"
-                class="text-primary-500"
-              />
-            </span>
-            <div class="flex-1 min-w-0">
-              <div class="font-medium text-surface-800 dark:text-surface-200">
-                Auto-switch when flagged
+            <div class="px-3 pt-1.5 pb-2 text-xs text-surface-500 dark:text-surface-400 border-b border-surface-200 dark:border-surface-700">
+              How hard Claude thinks before answering. Higher is slower and
+              costs more.
+            </div>
+            <button
+              v-for="level in availableEffortLevels"
+              :key="level"
+              class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors"
+              :class="{ 'bg-primary-50 dark:bg-primary-900/20': level === effectiveEffortLevel }"
+              @click.stop="selectEffortLevel(level)"
+            >
+              <div class="flex items-center gap-2">
+                <span class="shrink-0 w-4 h-4 flex items-center justify-center">
+                  <Icon
+                    v-if="level === effectiveEffortLevel"
+                    name="check"
+                    size="sm"
+                    class="text-primary-500"
+                  />
+                </span>
+                <div class="flex-1 min-w-0">
+                  <div class="font-medium text-surface-800 dark:text-surface-200">
+                    {{ formatEffortLevel(level) }}
+                  </div>
+                  <div class="text-xs text-surface-500 dark:text-surface-400">
+                    {{ describeEffortLevel(level) }}
+                  </div>
+                </div>
               </div>
-              <div class="text-xs text-surface-500 dark:text-surface-400">
-                {{
-                  switchModelsOnFlag
-                    ? 'On — switches model to keep going'
-                    : 'Off — pauses instead of switching'
-                }}
-              </div>
+            </button>
+            <!-- The stored choice can outrank what this model accepts —
+                 picking Max then switching to a model without it, say. Say so
+                 rather than silently showing the check on a different row. -->
+            <div
+              v-if="effectiveEffortLevel && effectiveEffortLevel !== effortLevel"
+              class="px-3 pt-1 pb-2 text-xs text-amber-600 dark:text-amber-400"
+            >
+              {{ formatEffortLevel(effortLevel) }} isn't available on this model —
+              running at {{ formatEffortLevel(effectiveEffortLevel) }}.
             </div>
           </div>
-        </button>
+        </div>
 
-        <!-- Restrict the whole session, sub-agents included, to the selection. -->
-        <button
-          class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors disabled:opacity-50"
-          :disabled="!selectedModel"
-          :title="!selectedModel ? 'Pin a model first' : ''"
-          @click.stop="toggleStrictModelEnforcement"
+        <!-- Session behaviour, as its own submenu. These two are not model
+             choices and sat in the middle of the model list looking like
+             they were, with one-line labels that did not say what they do.
+             Both only take effect on new sessions, which the old rows never
+             mentioned. -->
+        <div
+          class="relative"
+          @mouseenter="openSubmenu(SESSION_SUBMENU)"
+          @mouseleave="closeSubmenu()"
         >
-          <div class="flex items-center gap-2">
-            <span class="shrink-0 w-4 h-4 flex items-center justify-center">
+          <button
+            class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors"
+            @focus="openSubmenu(SESSION_SUBMENU)"
+            @blur="closeSubmenu()"
+          >
+            <div class="flex items-center gap-2">
+              <span class="shrink-0 w-4 h-4" />
+              <div class="flex-1 min-w-0">
+                <div class="font-medium text-surface-800 dark:text-surface-200">
+                  Session behaviour
+                </div>
+                <div class="text-xs text-surface-500 dark:text-surface-400 truncate">
+                  {{ sessionBehaviourSummary }}
+                </div>
+              </div>
               <Icon
-                v-if="strictModelEnforcement"
-                name="check"
-                size="sm"
-                class="text-primary-500"
+                name="chevron-right"
+                size="xs"
+                class="shrink-0 opacity-60"
               />
-            </span>
-            <div class="flex-1 min-w-0">
-              <div class="font-medium text-surface-800 dark:text-surface-200">
-                Lock to this model
-              </div>
-              <div class="text-xs text-surface-500 dark:text-surface-400">
-                {{
-                  strictModelEnforcement
-                    ? 'On — agents and internal tasks forced onto it too'
-                    : 'Off — Haiku still runs titles, summaries, classifiers'
-                }}
-              </div>
             </div>
+          </button>
+
+          <div
+            v-if="openSubmenuKey === SESSION_SUBMENU"
+            class="absolute right-full bottom-0 mr-1 z-50 min-w-[300px] max-w-[340px] rounded-lg shadow-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 py-1"
+            @mouseenter="openSubmenu(SESSION_SUBMENU)"
+            @mouseleave="closeSubmenu()"
+          >
+            <div class="px-3 pt-1.5 pb-2 text-xs text-surface-500 dark:text-surface-400 border-b border-surface-200 dark:border-surface-700">
+              How a session handles models. Changes apply to new sessions, not
+              the one already running.
+            </div>
+
+            <!-- switchModelsOnFlag. "Flagged" is the CLI's word for a safety
+                 classifier declining a message; the old label assumed the
+                 reader knew that. -->
+            <button
+              class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors"
+              @click.stop="toggleSwitchModelsOnFlag"
+            >
+              <div class="flex items-center gap-2">
+                <span class="shrink-0 w-4 h-4 flex items-center justify-center mt-0.5">
+                  <Icon
+                    v-if="switchModelsOnFlag"
+                    name="check"
+                    size="sm"
+                    class="text-primary-500"
+                  />
+                </span>
+                <div class="flex-1 min-w-0">
+                  <div class="font-medium text-surface-800 dark:text-surface-200">
+                    Continue on another model if one declines
+                  </div>
+                  <div class="text-xs text-surface-500 dark:text-surface-400">
+                    Claude's safety checks occasionally refuse a message.
+                    {{
+                      switchModelsOnFlag
+                        ? 'Currently: Claude Code quietly continues on a different model.'
+                        : 'Currently: the session pauses and tells you instead of switching.'
+                    }}
+                  </div>
+                </div>
+              </div>
+            </button>
+
+            <!-- strictModelEnforcement via the CLI's availableModels
+                 allowlist. The cost consequence is the part users miss. -->
+            <button
+              class="w-full px-3 py-2 text-left text-sm hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors disabled:opacity-50"
+              :disabled="!selectedModel"
+              :title="!selectedModel ? 'Pick a specific model first — there is nothing to restrict to while Claude Code chooses' : ''"
+              @click.stop="toggleStrictModelEnforcement"
+            >
+              <div class="flex items-center gap-2">
+                <span class="shrink-0 w-4 h-4 flex items-center justify-center mt-0.5">
+                  <Icon
+                    v-if="strictModelEnforcement"
+                    name="check"
+                    size="sm"
+                    class="text-primary-500"
+                  />
+                </span>
+                <div class="flex-1 min-w-0">
+                  <div class="font-medium text-surface-800 dark:text-surface-200">
+                    Use this model for everything
+                  </div>
+                  <div class="text-xs text-surface-500 dark:text-surface-400">
+                    Background agents and housekeeping (titles, summaries,
+                    classifiers) normally run on cheap Haiku.
+                    {{
+                      strictModelEnforcement
+                        ? 'Currently: they are forced onto your chosen model, which costs more.'
+                        : 'Currently: they use their own models, which is cheaper.'
+                    }}
+                  </div>
+                </div>
+              </div>
+            </button>
           </div>
-        </button>
+        </div>
       </div>
     </TransitionFade>
 
