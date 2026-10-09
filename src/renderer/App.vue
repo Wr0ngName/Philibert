@@ -14,6 +14,7 @@ import ConversationSearch from './components/chat/ConversationSearch.vue';
 import WorkingDirectory from './components/files/WorkingDirectory.vue';
 import FileTree from './components/files/FileTree.vue';
 import ConversationHistory from './components/conversations/ConversationHistory.vue';
+import AboutPanel from './components/settings/AboutPanel.vue';
 import SettingsPanel from './components/settings/SettingsPanel.vue';
 import InitWizard from './components/wizard/InitWizard.vue';
 import ErrorBoundary from './components/shared/ErrorBoundary.vue';
@@ -29,6 +30,7 @@ const conversationsStore = useConversationsStore();
 const { isLoading, needsSetup, hasCompletedInitialSetup, showHistorySidebar, showFilesSidebar } = storeToRefs(settingsStore);
 
 const showSettings = ref(false);
+const showAbout = ref(false);
 const showWizard = ref(false);
 const showSearch = ref(false);
 const sidebarWidth = ref(280);
@@ -74,6 +76,14 @@ async function onWizardComplete() {
 
 function openSettings() {
   showSettings.value = true;
+}
+
+function openAbout() {
+  showAbout.value = true;
+}
+
+function closeAbout() {
+  showAbout.value = false;
 }
 
 function openSearch() {
@@ -215,6 +225,25 @@ const isMac = window.electron?.platform === 'darwin';
                 stroke-linejoin="round"
                 stroke-width="2"
                 d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+              />
+            </svg>
+          </button>
+          <button
+            class="btn-icon"
+            title="About Philibert — versions and paths"
+            @click="openAbout"
+          >
+            <svg
+              class="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
               />
             </svg>
           </button>
@@ -365,6 +394,12 @@ const isMac = window.electron?.platform === 'darwin';
       <SettingsPanel
         :open="showSettings"
         @close="closeSettings"
+      />
+
+      <!-- About Modal -->
+      <AboutPanel
+        :open="showAbout"
+        @close="closeAbout"
       />
 
       <!-- Conversation search -->

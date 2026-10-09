@@ -10,6 +10,7 @@ import { BrowserWindow, ipcMain } from 'electron';
 
 import { isWhisperModelId, WHISPER_AUTO_LANGUAGE } from '../../shared/speech';
 import { IPC_CHANNELS } from '../../shared/types';
+import { collectAboutInfo } from '../services/AboutService';
 import SpeechService from '../services/SpeechService';
 import { sendToRenderer, formatErrorMessage } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
@@ -63,4 +64,19 @@ export function setupSpeechIPC(
   );
 
   return speechService;
+}
+
+/**
+ * Versions and environment facts for the About dialog. Lives here rather than
+ * in its own module because it is a single read-only handler.
+ */
+export function setupAboutIPC(): void {
+  ipcMain.handle(IPC_CHANNELS.ABOUT_GET_INFO, async () => {
+    try {
+      return await collectAboutInfo();
+    } catch (error) {
+      logger.error('Failed to collect About info', { error });
+      throw new Error(formatErrorMessage('Failed to read version information', error), { cause: error });
+    }
+  });
 }

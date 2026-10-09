@@ -38,7 +38,7 @@ import { setupConversationIPC } from './conversations';
 import { setupFilesIPC } from './files';
 import { setupGitIPC } from './git';
 import { setupMcpIPC } from './mcp';
-import { setupSpeechIPC } from './speech';
+import { setupAboutIPC, setupSpeechIPC } from './speech';
 import { setupUpdateIPC } from './update';
 import { setupWindowIPC } from './window';
 
@@ -91,6 +91,7 @@ const REGISTERED_CHANNELS = {
     IPC_CHANNELS.UPDATE_INSTALL,
     IPC_CHANNELS.SPEECH_GET_AVAILABILITY,
     IPC_CHANNELS.SPEECH_TRANSCRIBE,
+    IPC_CHANNELS.ABOUT_GET_INFO,
   ] as const,
   // Listeners (ipcMain.on) - use removeAllListeners on specific channel
   listeners: [
@@ -198,6 +199,7 @@ export function setupIPC(
     setupConversationIPC(conversationService);
     setupUpdateIPC(updateService);
     setupSpeechIPC(getMainWindow);
+    setupAboutIPC();
     setupWindowIPC();
 
     logger.info('All IPC handlers registered');

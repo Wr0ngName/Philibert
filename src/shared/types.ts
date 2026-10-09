@@ -1101,6 +1101,44 @@ export type IpcMainEvents = {
 /**
  * Represents a detected change to a file
  */
+/**
+ * Versions and environment facts shown in the About dialog.
+ *
+ * Every field is read from the running installation rather than from build
+ * constants, so it describes what is actually present: the bundled CLI's
+ * installed package version, the whisper binary's own reported version, and
+ * the runtime's own numbers. A field is null when it genuinely cannot be
+ * determined, which is itself worth showing — "unknown" is information when
+ * a component is meant to be bundled.
+ */
+export interface AboutInfo {
+  /** The app's own version, from Electron. */
+  appVersion: string;
+  /** Installed @anthropic-ai/claude-agent-sdk version, or null if unreadable. */
+  agentSdkVersion: string | null;
+  /** Installed @anthropic-ai/claude-code version, or null if unreadable. */
+  claudeCodeVersion: string | null;
+  /** Version reported by the bundled whisper binary, or null when absent. */
+  whisperVersion: string | null;
+  /** Where the whisper binary was found, for diagnosing a build without one. */
+  whisperBinaryPath: string | null;
+  electronVersion: string;
+  chromeVersion: string;
+  nodeVersion: string;
+  /** 'linux' | 'win32' | … as reported by the process. */
+  platform: string;
+  arch: string;
+  /** 'online' or 'offline' for Windows bundles; null elsewhere. */
+  bundleType: string | null;
+  /** Repository URL from the manifest. */
+  repositoryUrl: string | null;
+  license: string | null;
+  /** Directory holding config, logs and the whisper model cache. */
+  userDataPath: string;
+  /** Where the app's log file lives, for bug reports. */
+  logPath: string;
+}
+
 export interface FileChange {
   /** Type of change that occurred */
   type: 'add' | 'change' | 'unlink';
@@ -1260,6 +1298,8 @@ export const IPC_CHANNELS = {
   SPEECH_TRANSCRIBE: 'speech:transcribe',
   /** Progress of a whisper model download */
   SPEECH_MODEL_PROGRESS: 'speech:model-progress',
+  /** Versions and environment facts for the About dialog */
+  ABOUT_GET_INFO: 'about:get-info',
   /** Session usage update (token counts, cost) */
   CLAUDE_USAGE_UPDATE: 'claude:usage-update',
   /** Active query count changed */

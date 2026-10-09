@@ -398,6 +398,11 @@ const electronAPI: ElectronAPI = {
     },
   },
 
+  // About dialog information
+  about: {
+    getInfo: () => ipcRenderer.invoke(IPC_CHANNELS.ABOUT_GET_INFO),
+  },
+
   // Update operations
   update: {
     check: () => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CHECK),

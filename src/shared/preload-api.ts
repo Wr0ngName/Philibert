@@ -4,6 +4,7 @@
 
 import type { ModelDownloadProgress } from './speech';
 import type {
+  AboutInfo,
   ActionResponse,
   AppConfig,
   AskUserQuestionResponse,
@@ -257,6 +258,11 @@ export interface ElectronAPI {
     ) => Promise<{ text: string; durationMs: number }>;
     /** Progress while a model is being downloaded on first use */
     onModelProgress: (callback: (progress: ModelDownloadProgress) => void) => () => void;
+  };
+
+  /** Versions and environment facts for the About dialog */
+  about: {
+    getInfo: () => Promise<AboutInfo>;
   };
 
   // Window operations
