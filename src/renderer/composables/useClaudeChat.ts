@@ -10,7 +10,7 @@
 
 import { onMounted, onUnmounted, shallowRef } from 'vue';
 
-import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, PendingAction, PermissionScope } from '@shared/types';
+import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, PermissionScope } from '@shared/types';
 
 import { useChatStore } from '../stores/chat';
 import { useConversationsStore } from '../stores/conversations';
@@ -108,20 +108,6 @@ export function useClaudeChat() {
       chatStore.updateActiveConversationIds(status.activeConversationIds);
     } catch (err) {
       logger.warn('Failed to load active queries', { error: err });
-    }
-  }
-
-  /**
-   * Extract file path from a pending action (if it modifies a file)
-   */
-  function getModifiedFilePath(action: PendingAction): string | null {
-    switch (action.type) {
-      case 'file-edit':
-      case 'file-create':
-      case 'file-delete':
-        return action.details.filePath;
-      default:
-        return null;
     }
   }
 
@@ -225,15 +211,10 @@ export function useClaudeChat() {
     }
 
     try {
-      // Track file modification before removing the action
-      const action = chatStore.pendingActions.find((a) => a.id === actionId);
-      if (action) {
-        const filePath = getModifiedFilePath(action);
-        if (filePath) {
-          chatStore.trackFileModification(currentConvId, filePath);
-        }
-      }
-
+      // Modified files are no longer recorded here. Approving is not the same
+      // as writing, and this branch only runs for prompted tools — so every
+      // auto-approved write went untracked. The store now records them when a
+      // tool use reaches 'executed', whatever route it took to get there.
       chatStore.updateActionStatus(currentConvId, actionId, 'approved');
       chatStore.updateToolUseStatus(currentConvId, actionId, 'approved');
       await window.electron.claude.approve(currentConvId, actionId, undefined, alwaysAllow, chosenScope);

@@ -6,6 +6,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 
+import { modifiedPathsForTool } from '@shared/file-modifications';
 import { primaryModelUsage } from '@shared/model-usage';
 import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData } from '@shared/types';
 
@@ -851,6 +852,9 @@ export const useChatStore = defineStore('chat', () => {
           outputFile: result.outputFile,
           status: newStatus,
         };
+        if (newStatus === 'executed') {
+          trackModificationsFor(conversationId, msg.toolUse);
+        }
         return;
       }
     }
@@ -870,6 +874,9 @@ export const useChatStore = defineStore('chat', () => {
     const msg = sink.find((m) => m.toolUse?.actionId === actionId);
     if (msg?.toolUse) {
       msg.toolUse.status = status;
+      if (status === 'executed') {
+        trackModificationsFor(conversationId, msg.toolUse);
+      }
     }
   }
 
@@ -1117,6 +1124,7 @@ export const useChatStore = defineStore('chat', () => {
     for (const msg of sink) {
       if (msg.toolUse && (msg.toolUse.status === 'pending' || msg.toolUse.status === 'approved')) {
         msg.toolUse.status = 'executed';
+        trackModificationsFor(conversationId, msg.toolUse);
       }
     }
   }
@@ -1267,6 +1275,25 @@ export const useChatStore = defineStore('chat', () => {
   function trackFileModification(conversationId: string, filePath: string): void {
     const state = getConversationState(conversationId);
     state.modifiedFilesInLastQuery.add(filePath);
+  }
+
+  /**
+   * Record the files a tool call changed, once it has actually run.
+   *
+   * Called from every point where a tool use reaches 'executed', which is
+   * what makes this cover auto-approved writes. The previous single caller
+   * was the permission-prompt Approve branch, so anything auto-approved —
+   * every write after an "always allow", everything under acceptEdits or
+   * bypassPermissions — was never recorded and the indicator appeared on a
+   * fraction of the files that had changed.
+   *
+   * Keyed on execution rather than invocation so a denied or failed call does
+   * not mark a file that was never written.
+   */
+  function trackModificationsFor(conversationId: string, toolUse: ToolUseInfo): void {
+    for (const path of modifiedPathsForTool(toolUse.toolName, toolUse.input)) {
+      trackFileModification(conversationId, path);
+    }
   }
 
   function clearModifiedFiles(conversationId: string): void {
