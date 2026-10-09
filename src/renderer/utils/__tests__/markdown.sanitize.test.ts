@@ -2,7 +2,7 @@
  * Markdown rendering is sanitised.
  *
  * These are not incidental. `vue/no-v-html` is switched off for
- * MessageItem.vue and MarkdownViewerModal.vue in eslint.config.js, and the
+ * MessageItem.vue and MarkdownViewerModal.vue in eslint.config.mjs, and the
  * sole justification is that the value they bind comes from these two
  * functions, which run DOMPurify with an explicit allowlist. Nothing tested
  * that: if SANITIZE_CONFIG were widened or the sanitize call dropped, those
@@ -55,7 +55,13 @@ describe('renderMarkdown removes disallowed HTML', () => {
   });
 
   it('removes an iframe', () => {
-    expect(renderMarkdown('<iframe src="https://example.com"></iframe>')).not.toMatch(/<iframe/i);
+    // No src, deliberately. DOMPurify parses into a real happy-dom document,
+    // and happy-dom NAVIGATES an iframe that has one — an `src` here made the
+    // suite open a TLS connection to the outside world on every run, which
+    // printed AsyncTaskManager/AbortError noise locally and would stall on a
+    // CI container with no egress. The sanitiser drops `iframe` because the
+    // tag is not on the allowlist; its URL never enters into it.
+    expect(renderMarkdown('<iframe></iframe>')).not.toMatch(/<iframe/i);
   });
 
   it('removes an object', () => {
