@@ -97,9 +97,19 @@ export default [
     },
   },
 
-  // Specific files with intentional v-html usage (content is sanitized with DOMPurify)
+  // Files with intentional v-html.
+  //
+  // The rule stays on everywhere else, so adding a file here is a deliberate
+  // claim about it. The only thing that justifies the claim: the bound value
+  // comes from renderMarkdown or renderUserMarkdown in utils/markdown, which
+  // run DOMPurify.sanitize with an explicit tag and attribute allowlist.
+  // v-html bound to anything else — a raw IPC payload, a file's contents, a
+  // tool result — does not belong here and should be rendered as text.
   {
-    files: ['src/renderer/components/chat/MessageItem.vue'],
+    files: [
+      'src/renderer/components/chat/MessageItem.vue',
+      'src/renderer/components/files/MarkdownViewerModal.vue',
+    ],
     rules: {
       'vue/no-v-html': 'off',
     },
