@@ -25,6 +25,7 @@ import type {
   PermissionScope,
   SessionPermissionEntry,
   SessionUsage,
+  AgentInfo,
   RewindOutcome,
   RewindPreview,
   RewindScope,
@@ -71,6 +72,8 @@ export interface ElectronAPI {
     stopTask: (conversationId: string, taskId: string) => Promise<void>;
     /** Get available slash commands */
     getCommands: () => Promise<SlashCommandInfo[]>;
+    /** Subagents this session can delegate to, from the SDK. */
+    getAgents: () => Promise<AgentInfo[]>;
     /** What a rewind to this user turn would restore. Changes nothing. */
     previewRewind: (conversationId: string, messageUuid: string) => Promise<RewindPreview>;
     /** Restore files and/or the conversation to this user turn. */

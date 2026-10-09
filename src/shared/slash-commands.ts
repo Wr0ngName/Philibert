@@ -38,6 +38,7 @@ export type GuiCommandAction =
   | 'bug'
   | 'memory'
   | 'model'
+  | 'agents'
   | 'rewind';
 
 /** A GUI surface a command can hand the user to. */
@@ -73,6 +74,7 @@ export const GUI_DISPOSITIONS: Readonly<Record<string, CommandDisposition>> = {
   bug: { kind: 'gui', action: 'bug' },
   memory: { kind: 'gui', action: 'memory' },
   model: { kind: 'gui', action: 'model' },
+  agents: { kind: 'gui', action: 'agents' },
 
   // The CLI draws an interactive checkpoint picker for this one; the GUI shows
   // the same choice as a dialog and calls Query.rewindFiles / resumeSessionAt.
@@ -146,14 +148,6 @@ export const GUI_DISPOSITIONS: Readonly<Record<string, CommandDisposition>> = {
       'Installing the GitHub app runs an interactive browser and repository flow that Philibert ' +
       'does not host. Run `claude /install-github-app` in a terminal; once installed it applies ' +
       'to this project too, since it is configured in the repository rather than in the client.',
-  },
-  agents: {
-    kind: 'unavailable',
-    message:
-      'The CLI\'s `/agents` is an interactive editor, which Philibert has no screen for yet. ' +
-      'Subagents are plain Markdown files with YAML frontmatter — `.claude/agents/<name>.md` in ' +
-      'the project, or `~/.claude/agents/<name>.md` for your own — and any you add are picked ' +
-      'up by **new conversations**.',
   },
 };
 

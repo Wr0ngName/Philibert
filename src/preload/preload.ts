@@ -39,6 +39,8 @@ const electronAPI: ElectronAPI = {
 
     getCommands: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_COMMANDS),
 
+    getAgents: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_AGENTS),
+
     previewRewind: (conversationId, messageUuid) =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_REWIND_PREVIEW, conversationId, messageUuid),
 

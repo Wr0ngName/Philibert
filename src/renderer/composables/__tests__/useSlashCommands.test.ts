@@ -41,6 +41,7 @@ const COMMANDS: SlashCommandInfo[] = [
   cmd('model', { builtin: true, argumentHint: '[model]' }),
   cmd('memory', { builtin: true }),
   cmd('rewind', { builtin: true }),
+  cmd('agents', { builtin: true }),
   cmd('mcp', { builtin: true }),
   cmd('login', { builtin: true }),
   cmd('vim', { builtin: true }),
@@ -73,6 +74,10 @@ function stubElectron(overrides: Record<string, unknown> = {}) {
       getModels: vi.fn(async () => [
         { value: 'claude-opus-5', displayName: 'Opus 5' },
         { value: 'claude-sonnet-5', displayName: 'Sonnet 5' },
+      ]),
+      getAgents: vi.fn(async () => [
+        { name: 'Explore', description: 'Read-only search agent', model: 'inherit' },
+        { name: 'reviewer', description: 'Code review specialist' },
       ]),
       previewRewind: vi.fn(),
       applyRewind: vi.fn(),
@@ -413,6 +418,96 @@ describe('/memory', () => {
     expect(ui.markdownViewerPath).toBeNull();
     expect(chat.messages.at(-1)?.content).toContain('CLAUDE.md');
     expect(chat.messages.at(-1)?.content).toContain('~/.claude/CLAUDE.md');
+  });
+});
+
+describe('/agents', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    stubElectron();
+    useChatStore().setCurrentConversation(CONV);
+  });
+
+  it('lists the real agents with their models', async () => {
+    // The regression this pins: /agents used to print an apology telling the
+    // user to go and read .claude/agents/*.md themselves. It must report what
+    // the SDK actually says is available.
+    const chat = useChatStore();
+    const { handleSlashCommand } = dispatcher();
+
+    expect(await handleSlashCommand('/agents')).toBe(true);
+
+    const answer = chat.messages.at(-1)?.content ?? '';
+    expect(answer).toContain('Explore');
+    expect(answer).toContain('Read-only search agent');
+    expect(answer).toContain('reviewer');
+    expect(answer).toContain('inherit');
+  });
+
+  it('is never an apology', async () => {
+    const chat = useChatStore();
+    const { handleSlashCommand } = dispatcher();
+
+    await handleSlashCommand('/agents');
+
+    const answer = chat.messages.at(-1)?.content ?? '';
+    expect(answer).not.toMatch(/no screen|not (yet )?(available|supported)/i);
+  });
+
+  it('shows one agent in detail when named', async () => {
+    const chat = useChatStore();
+    const { handleSlashCommand } = dispatcher();
+
+    expect(await handleSlashCommand('/agents reviewer')).toBe(true);
+
+    const answer = chat.messages.at(-1)?.content ?? '';
+    expect(answer).toContain('## reviewer');
+    expect(answer).toContain('Code review specialist');
+  });
+
+  it('matches a name case-insensitively and partially', async () => {
+    const chat = useChatStore();
+    const { handleSlashCommand } = dispatcher();
+
+    await handleSlashCommand('/agents EXPLO');
+
+    expect(chat.messages.at(-1)?.content).toContain('## Explore');
+  });
+
+  it('opens the project definition file when the project defines the agent', async () => {
+    stubElectron();
+    (window as unknown as { electron: { files: { read: unknown } } }).electron.files.read = vi.fn(
+      async () => '---\nname: reviewer\n---\nreview things',
+    );
+    setWorkingDirectory('/mnt/data/git/philibert');
+    const ui = useUiStore();
+    const { handleSlashCommand } = dispatcher();
+
+    await handleSlashCommand('/agents reviewer');
+
+    expect(ui.markdownViewerPath).toBe('/mnt/data/git/philibert/.claude/agents/reviewer.md');
+  });
+
+  it('does not claim a definition is missing for a builtin agent', async () => {
+    // Claude Code's own agents have no file in the project. That is normal,
+    // not an error, and the wording must not read as a fault.
+    setWorkingDirectory('/mnt/data/git/philibert');
+    const chat = useChatStore();
+    const ui = useUiStore();
+    const { handleSlashCommand } = dispatcher();
+
+    await handleSlashCommand('/agents Explore');
+
+    expect(ui.markdownViewerPath).toBeNull();
+    expect(chat.messages.at(-1)?.content).toContain('Claude Code itself');
+  });
+
+  it('says so plainly when there is no agent by that name', async () => {
+    const chat = useChatStore();
+    const { handleSlashCommand } = dispatcher();
+
+    expect(await handleSlashCommand('/agents nope')).toBe(true);
+    expect(chat.messages.at(-1)?.content).toContain('No agent matches');
   });
 });
 

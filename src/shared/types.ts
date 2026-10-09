@@ -36,6 +36,26 @@ export interface SlashCommandInfo {
 }
 
 /**
+ * A subagent the current session can delegate to, as the SDK reports it.
+ *
+ * Covers Claude Code's own agents, the project's `.claude/agents/*.md`, your
+ * personal ones and any a plugin defines — the same single source of truth
+ * that SlashCommandInfo comes from. The SDK does not report where an agent is
+ * defined, so a file path has to be resolved separately when one is needed.
+ */
+export interface AgentInfo {
+  /** Agent type identifier, e.g. "Explore". */
+  name: string;
+  /** When to use this agent. */
+  description: string;
+  /**
+   * Model it runs on: an alias, a model ID, or 'inherit' for the parent's.
+   * Absent means the configured default subagent model, else the parent's.
+   */
+  model?: string;
+}
+
+/**
  * Information about an available Claude model from the SDK
  */
 export interface ModelInfo {
@@ -1346,6 +1366,8 @@ export const IPC_CHANNELS = {
   CLAUDE_SLASH_COMMANDS: 'claude:slash-commands',
   /** Get available slash commands */
   CLAUDE_GET_COMMANDS: 'claude:get-commands',
+  /** Subagents the session can delegate to. */
+  CLAUDE_GET_AGENTS: 'claude:get-agents',
   /** Dry run: what a rewind to a given user message would restore. */
   CLAUDE_REWIND_PREVIEW: 'claude:rewind-preview',
   /** Perform the rewind. */

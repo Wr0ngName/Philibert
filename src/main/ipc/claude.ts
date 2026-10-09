@@ -243,6 +243,23 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
     }
   });
 
+  // Subagents the session can delegate to.
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_GET_AGENTS, async () => {
+    try {
+      logger.debug('IPC: claude:get-agents');
+      ensureService(claudeService, 'ClaudeCodeService');
+      return await claudeService.getAgents();
+    } catch (error) {
+      logger.error('Failed to get agents', { error });
+      throw new IpcError(
+        formatErrorMessage('Failed to get agents', error),
+        IPC_CHANNELS.CLAUDE_GET_AGENTS,
+        ERROR_CODES.IPC_HANDLER_FAILED,
+        error,
+      );
+    }
+  });
+
   // What a rewind would restore, without restoring anything.
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_REWIND_PREVIEW,

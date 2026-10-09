@@ -61,6 +61,7 @@ are answered directly in the chat.
 | `/memory` | Opens the project's `CLAUDE.md` in the viewer, or explains how to create one |
 | `/model` | With a name, switches model (a partial name is enough); without, lists what is available |
 | `/clear` | Empties the transcript |
+| `/agents` | Lists the subagents this session can delegate to, with their models; `/agents <name>` shows one and opens its definition file |
 | `/rewind` | Opens the rewind dialog — see below |
 
 ### 3. It opens the part of the GUI that does the job
@@ -69,9 +70,14 @@ are answered directly in the chat.
 Settings, scrolled to the relevant section, and say in the chat where they sent
 you.
 
-A few commands genuinely do not apply — `/vim`, `/terminal-setup`,
-`/install-github-app`, `/agents` — and say what they would have done and what
-to do instead. None of them is a bare "not available".
+A few commands genuinely do not apply — `/vim`, `/terminal-setup` and
+`/install-github-app` — and say what they would have done and what to do
+instead. None of them is a bare "not available".
+
+The bar for being on that list is that the GUI *cannot* do the job, not that it
+has no screen for it yet. `/agents` was wrongly on it: the SDK reports the
+agent list through `supportedAgents()`, so there was nothing stopping the
+command from answering, and it now does.
 
 ---
 

@@ -23,7 +23,7 @@ import {
   type CommandNavigationTarget,
   type GuiCommandAction,
 } from '@shared/slash-commands';
-import type { AboutInfo, SlashCommandInfo } from '@shared/types';
+import type { AboutInfo, AgentInfo, SlashCommandInfo } from '@shared/types';
 
 import { useChatStore } from '../stores/chat';
 import { useConversationsStore } from '../stores/conversations';
@@ -304,6 +304,95 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
     reply(`## Memory\n\nOpening \`${PROJECT_MEMORY_FILE}\` in the viewer.`);
   }
 
+  /**
+   * Markdown for the subagent list. Pure, so the grouping is testable.
+   *
+   * Exported for the same reason renderCommandList is: this is the content a
+   * user actually reads, and it previously did not exist — `/agents` printed an
+   * apology telling people to go and read Markdown files themselves.
+   */
+  function renderAgentList(agents: readonly AgentInfo[]): string {
+    if (agents.length === 0) {
+      return (
+        '## Subagents\n\n' +
+        'None available — the list comes from Claude Code, and it could not be reached. ' +
+        'Check **Settings → Authentication**, since the CLI cannot start without credentials.'
+      );
+    }
+
+    return [
+      '## Subagents\n',
+      `${agents.length} available to delegate to:\n`,
+      ...agents.map((agent) => {
+        const model = agent.model ? ` _(${agent.model})_` : '';
+        const description = agent.description || '_no description_';
+        return `- **${agent.name}**${model} — ${description}`;
+      }),
+      '',
+      'Run `/agents <name>` for one agent\'s details and its definition file.',
+      '',
+      'Add your own as Markdown with YAML frontmatter — `.claude/agents/<name>.md` in this ' +
+        'project, or `~/.claude/agents/<name>.md` for every project. New ones are picked up by ' +
+        '**new conversations**.',
+    ].join('\n');
+  }
+
+  async function handleAgents(args: string): Promise<void> {
+    const agents = await window.electron.claude.getAgents();
+
+    if (!args) {
+      reply(renderAgentList(agents));
+      return;
+    }
+
+    const requested = args.trim();
+    const match =
+      agents.find((a) => a.name.toLowerCase() === requested.toLowerCase()) ??
+      agents.find((a) => a.name.toLowerCase().includes(requested.toLowerCase()));
+
+    if (!match) {
+      reply(
+        [
+          '## Subagents\n',
+          `No agent matches **${requested}**.`,
+          '',
+          ...agents.map((a) => `- **${a.name}**`),
+        ].join('\n'),
+      );
+      return;
+    }
+
+    const lines = [
+      `## ${match.name}\n`,
+      match.description || '_No description._',
+      '',
+      `- **Model:** ${match.model ?? '_default subagent model, else this conversation\'s_'}`,
+    ];
+
+    // The SDK reports which agents exist but not where they are defined, so
+    // the project file is resolved here. Claude Code's own agents and plugin
+    // ones have no file in the project, which is not an error — say so rather
+    // than implying the definition is missing.
+    const cwd = filesStore.workingDirectory;
+    if (cwd) {
+      const separator = cwd.includes('\\') ? '\\' : '/';
+      const agentFile = `${cwd}${separator}.claude${separator}agents${separator}${match.name}.md`;
+      const contents = await filesStore.readFile(agentFile);
+      if (contents !== null) {
+        uiStore.openMarkdownViewer(agentFile);
+        lines.push(`- **Defined in:** \`${agentFile}\``, '', 'Opening it in the viewer.');
+      } else {
+        lines.push(
+          '',
+          'This project defines no `.claude/agents/' + match.name + '.md`, so the agent comes ' +
+            'from Claude Code itself, your personal `~/.claude/agents/`, or a plugin.',
+        );
+      }
+    }
+
+    reply(lines.join('\n'));
+  }
+
   async function handleModel(args: string): Promise<void> {
     const models = await window.electron.claude.getModels();
     const current = activeModel.value || settingsStore.selectedModel;
@@ -393,6 +482,10 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
         await handleModel(args);
         return;
 
+      case 'agents':
+        await handleAgents(args);
+        return;
+
       case 'rewind':
         uiStore.openRewind();
         return;
@@ -449,5 +542,5 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
     }
   }
 
-  return { handleSlashCommand, renderCommandList };
+  return { handleSlashCommand, renderCommandList, renderAgentList };
 }

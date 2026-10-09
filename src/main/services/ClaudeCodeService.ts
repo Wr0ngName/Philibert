@@ -28,6 +28,7 @@ import * as path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
+  AgentInfo as SDKAgentInfo,
   ModelInfo as SDKModelInfo,
   Query,
   SDKUserMessage,
@@ -51,6 +52,7 @@ import {
   stripDateSuffix,
 } from '../../shared/model-id';
 import {
+  AgentInfo,
   IPC_CHANNELS,
   PendingAction,
   ActionResponse,
@@ -165,6 +167,8 @@ export class ClaudeCodeService {
   private cachedModels: ModelInfo[] = [];
   // Cached slash commands (shared across all sessions)
   private cachedSlashCommands: SlashCommandInfo[] = [];
+  // Cached subagent list (shared across all sessions)
+  private cachedAgents: AgentInfo[] = [];
   /**
    * Conversations whose next session must resume at an earlier user message,
    * set by a conversation-scope rewind and consumed when that session starts.
@@ -1564,6 +1568,46 @@ export class ClaudeCodeService {
    * Get available slash commands
    * Returns cached commands from the last SDK init message
    */
+  /**
+   * Subagents the session can delegate to, from the SDK.
+   *
+   * Same shape as getSlashCommands(): cache, then a live session, then a
+   * throwaway query, because `/agents` has to answer before any conversation
+   * exists. supportedAgents() is a free control command.
+   */
+  async getAgents(): Promise<AgentInfo[]> {
+    if (this.cachedAgents.length > 0) {
+      return this.cachedAgents;
+    }
+
+    for (const instance of this.activeSessions.values()) {
+      try {
+        const agents = await instance.query.supportedAgents();
+        this.cachedAgents = agents.map(ClaudeCodeService.toAgentInfo);
+        logger.info('Fetched agents from session', { count: this.cachedAgents.length });
+        return this.cachedAgents;
+      } catch (error) {
+        logger.warn('Failed to fetch agents from session', { error });
+      }
+    }
+
+    await this.withTemporaryQuery('supportedAgents', async (tempQuery) => {
+      const agents = await tempQuery.supportedAgents();
+      this.cachedAgents = agents.map(ClaudeCodeService.toAgentInfo);
+      logger.info('Fetched agents via temporary session', { count: this.cachedAgents.length });
+    });
+
+    return this.cachedAgents;
+  }
+
+  private static toAgentInfo(agent: SDKAgentInfo): AgentInfo {
+    return {
+      name: agent.name,
+      description: agent.description,
+      ...(agent.model ? { model: agent.model } : {}),
+    };
+  }
+
   /**
    * What a rewind to `messageUuid` would restore, without restoring anything.
    *
