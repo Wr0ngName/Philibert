@@ -9,10 +9,13 @@ import { storeToRefs } from 'pinia';
 import { useSettingsStore } from './stores/settings';
 import { useFilesStore } from './stores/files';
 import { useConversationsStore } from './stores/conversations';
+import { useUiStore } from './stores/ui';
 import ChatWindow from './components/chat/ChatWindow.vue';
 import ConversationSearch from './components/chat/ConversationSearch.vue';
+import RewindModal from './components/chat/RewindModal.vue';
 import WorkingDirectory from './components/files/WorkingDirectory.vue';
 import FileTree from './components/files/FileTree.vue';
+import MarkdownViewerModal from './components/files/MarkdownViewerModal.vue';
 import ConversationHistory from './components/conversations/ConversationHistory.vue';
 import AboutPanel from './components/settings/AboutPanel.vue';
 import SettingsPanel from './components/settings/SettingsPanel.vue';
@@ -29,10 +32,14 @@ const filesStore = useFilesStore();
 const conversationsStore = useConversationsStore();
 const { isLoading, needsSetup, hasCompletedInitialSetup, showHistorySidebar, showFilesSidebar } = storeToRefs(settingsStore);
 
-const showSettings = ref(false);
-const showAbout = ref(false);
+// Panel visibility lives in the ui store because slash commands open these
+// too — `/mcp` has to reach Settings from the command dispatcher, which is
+// nowhere near this template.
+const uiStore = useUiStore();
+const { showSettings, showAbout, showSearch, showRewind, markdownViewerPath } =
+  storeToRefs(uiStore);
+// Stays local: driven by setup state, not by anything the user can ask for.
 const showWizard = ref(false);
-const showSearch = ref(false);
 const sidebarWidth = ref(280);
 const historyWidth = ref(240);
 
@@ -72,30 +79,6 @@ async function onWizardComplete() {
   // Reload config and files after wizard completes
   settingsStore.loadConfig();
   filesStore.initialize();
-}
-
-function openSettings() {
-  showSettings.value = true;
-}
-
-function openAbout() {
-  showAbout.value = true;
-}
-
-function closeAbout() {
-  showAbout.value = false;
-}
-
-function openSearch() {
-  showSearch.value = true;
-}
-
-function closeSearch() {
-  showSearch.value = false;
-}
-
-function closeSettings() {
-  showSettings.value = false;
 }
 
 function toggleHistory() {
@@ -172,7 +155,7 @@ const isMac = window.electron?.platform === 'darwin';
           <button
             class="btn-icon"
             title="Search messages (current or all discussions)"
-            @click="openSearch"
+            @click="uiStore.openSearch()"
           >
             <svg
               class="w-5 h-5"
@@ -231,7 +214,7 @@ const isMac = window.electron?.platform === 'darwin';
           <button
             class="btn-icon"
             title="About Philibert — versions and paths"
-            @click="openAbout"
+            @click="uiStore.openAbout()"
           >
             <svg
               class="w-5 h-5"
@@ -250,7 +233,7 @@ const isMac = window.electron?.platform === 'darwin';
           <button
             class="btn-icon"
             title="Settings"
-            @click="openSettings"
+            @click="uiStore.openSettings()"
           >
             <svg
               class="w-5 h-5"
@@ -393,19 +376,35 @@ const isMac = window.electron?.platform === 'darwin';
       <!-- Settings Modal -->
       <SettingsPanel
         :open="showSettings"
-        @close="closeSettings"
+        @close="uiStore.closeSettings()"
       />
 
       <!-- About Modal -->
       <AboutPanel
         :open="showAbout"
-        @close="closeAbout"
+        @close="uiStore.closeAbout()"
       />
 
       <!-- Conversation search -->
       <ConversationSearch
         :open="showSearch"
-        @close="closeSearch"
+        @close="uiStore.closeSearch()"
+      />
+
+      <!-- Rewind dialog, reached by /rewind -->
+      <RewindModal
+        :open="showRewind"
+        @close="uiStore.closeRewind()"
+      />
+
+      <!--
+        Markdown viewer, hosted here rather than in the file tree: /memory
+        opens CLAUDE.md in it, and the sidebar holding the tree may be hidden.
+      -->
+      <MarkdownViewerModal
+        :open="markdownViewerPath !== null"
+        :file-path="markdownViewerPath"
+        @close="uiStore.closeMarkdownViewer()"
       />
 
       <!-- Initial Setup Wizard -->

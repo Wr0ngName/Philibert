@@ -31,6 +31,7 @@ import type {
   ModelInfo as SDKModelInfo,
   Query,
   SDKUserMessage,
+  SlashCommand,
   SpawnOptions,
   SpawnedProcess,
   ThinkingConfig,
@@ -57,6 +58,9 @@ import {
   EffortLevel,
   LiveBackgroundTask,
   ModelInfo,
+  RewindOutcome,
+  RewindPreview,
+  RewindScope,
   TaskNotification,
   SessionUsage,
   ToolCaptureData,
@@ -76,7 +80,6 @@ import {
   SDKMessageHandler,
   AuthValidator,
   ErrorHandler,
-  BuiltinCommandHandler,
   SessionPermissionCache,
 } from './claude';
 import { isHumanOriginatedResult, resolveResultError } from './claude/SDKMessageHandler';
@@ -146,7 +149,6 @@ interface SessionInstance {
 export class ClaudeCodeService {
   private authValidator: AuthValidator;
   private errorHandler: ErrorHandler;
-  private builtinCommandHandler: BuiltinCommandHandler;
 
   // Channel mode service (lazily initialized)
   private channelService: ChannelService | null = null;
@@ -163,6 +165,11 @@ export class ClaudeCodeService {
   private cachedModels: ModelInfo[] = [];
   // Cached slash commands (shared across all sessions)
   private cachedSlashCommands: SlashCommandInfo[] = [];
+  /**
+   * Conversations whose next session must resume at an earlier user message,
+   * set by a conversation-scope rewind and consumed when that session starts.
+   */
+  private pendingRewindPoints = new Map<string, string>();
   private configService: ConfigService;
   private notificationService: NotificationService;
   private sessionPermissionCache: SessionPermissionCache;
@@ -183,14 +190,6 @@ export class ClaudeCodeService {
     // Initialize shared modules (not per-session)
     this.authValidator = new AuthValidator(configService);
     this.errorHandler = new ErrorHandler();
-
-    // Builtin command handler is shared (for /help, /clear, etc.)
-    this.builtinCommandHandler = new BuiltinCommandHandler({
-      getSlashCommands: () => this.cachedSlashCommands,
-      // Note: builtin commands need conversationId, handled in sendMessage
-      onChunk: () => {}, // Will be overridden per-call
-      onDone: () => {},  // Will be overridden per-call
-    });
 
     logger.info('ClaudeCodeService initialized with persistent session support', {
       maxConcurrentQueries: this.maxConcurrentQueries,
@@ -346,27 +345,12 @@ export class ClaudeCodeService {
       return;
     }
 
-    // Check if this is a built-in command that must be handled locally
-    // (SDK doesn't support built-in CLI commands like /help, /clear, etc.)
-    if (this.builtinCommandHandler.isBuiltinCommand(message)) {
-      const result = this.builtinCommandHandler.handleCommand(message);
-      if (result.handled) {
-        logger.info('Handled built-in command locally', {
-          conversationId,
-          command: message.trim().split(' ')[0],
-          hasAction: !!result.action,
-        });
-        if (result.response) {
-          this.emitChunk(conversationId, result.response);
-        }
-        // Emit special action if needed (e.g., clear conversation)
-        if (result.action) {
-          this.send(IPC_CHANNELS.CLAUDE_COMMAND_ACTION, result.action);
-        }
-        this.emitDone(conversationId);
-        return;
-      }
-    }
+    // Commands the GUI answers itself are intercepted in the renderer, before
+    // the message is ever sent — see useSlashCommands there. They need the
+    // renderer's own state (usage totals, context occupation, panels, the
+    // CLAUDE.md viewer), so answering them here meant replying "not available
+    // in GUI mode" to questions the GUI could in fact answer. Anything that
+    // reaches this point is meant for the CLI.
 
     // Check if this is a slash command (starts with /)
     const isSlashCommand = message.trim().startsWith('/');
@@ -511,6 +495,9 @@ export class ClaudeCodeService {
       onSlashCommands: (commands: SlashCommandInfo[]) => {
         this.cachedSlashCommands = commands;
         this.emitSlashCommands(conversationId, commands);
+      },
+      onUserTurnUuid: (uuid: string) => {
+        this.send(IPC_CHANNELS.CLAUDE_USER_TURN_UUID, conversationId, uuid);
       },
       onTaskNotification: (notification: TaskNotification) => {
         this.emitTaskNotification(conversationId, notification);
@@ -663,6 +650,16 @@ export class ClaudeCodeService {
       // Create the async channel for multi-turn input
       const inputChannel = new AsyncChannel<SDKUserMessage>();
 
+      // Set by a conversation-scope rewind: the session resumes at that user
+      // message, so everything after it leaves the transcript. Consumed here so
+      // it applies once, to the session the rewind asked for, rather than to
+      // every later session of this conversation.
+      const rewindPoint = this.pendingRewindPoints.get(conversationId);
+      this.pendingRewindPoints.delete(conversationId);
+      if (rewindPoint) {
+        logger.info('Resuming session at an earlier user message', { conversationId, rewindPoint });
+      }
+
       // Start query with AsyncIterable prompt — this keeps the process alive
       const queryIterator = query({
         prompt: inputChannel,
@@ -675,6 +672,12 @@ export class ClaudeCodeService {
           includePartialMessages: true,
           agentProgressSummaries: true,
           thinking: thinkingConfig,
+          // Required for /rewind. The SDK documents it as what makes
+          // Query.rewindFiles() work: "File checkpointing creates backups of
+          // files before they are modified, allowing you to restore them to
+          // previous states." Without it rewindFiles has nothing to restore
+          // from and refuses, which is why /rewind did nothing at all.
+          enableFileCheckpointing: true,
           ...(effort ? { effort } : {}),
           // Always pass the selection, including on resume. `--model` is
           // documented as "Model for the current session" with no resume
@@ -684,6 +687,7 @@ export class ClaudeCodeService {
           ...(selectedModel ? { model: selectedModel } : {}),
           ...(managedSettings ? { managedSettings } : {}),
           ...(shouldResume ? { resume: resumeSessionId } : {}),
+          ...(rewindPoint ? { resumeSessionAt: rewindPoint } : {}),
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {
             return this.spawnSDKProcess(options, conversationId);
           },
@@ -896,14 +900,28 @@ export class ClaudeCodeService {
   /**
    * Fetch full slash command details and emit to renderer.
    */
+  /**
+   * Map an SDK command row to the renderer's shape.
+   *
+   * `aliases` and `builtin` are carried across deliberately: without aliases
+   * `/cost` does not resolve to `/usage` the way it does in the CLI, and
+   * without `builtin` the autocomplete cannot tell Claude Code's own commands
+   * from a project's, nor resolve a name both define.
+   */
+  private static toSlashCommandInfo(cmd: SlashCommand): SlashCommandInfo {
+    return {
+      name: cmd.name,
+      description: cmd.description,
+      argumentHint: cmd.argumentHint,
+      ...(cmd.aliases && cmd.aliases.length > 0 ? { aliases: cmd.aliases } : {}),
+      ...(cmd.builtin ? { builtin: true } : {}),
+    };
+  }
+
   private async fetchAndEmitSlashCommandDetails(conversationId: string, queryIterator: Query): Promise<void> {
     try {
       const commands = await queryIterator.supportedCommands();
-      const slashCommands = commands.map((cmd) => ({
-        name: cmd.name,
-        description: cmd.description,
-        argumentHint: cmd.argumentHint,
-      }));
+      const slashCommands = commands.map((cmd) => ClaudeCodeService.toSlashCommandInfo(cmd));
 
       // Update cached commands
       this.cachedSlashCommands = slashCommands;
@@ -1546,7 +1564,176 @@ export class ClaudeCodeService {
    * Get available slash commands
    * Returns cached commands from the last SDK init message
    */
-  getSlashCommands(): SlashCommandInfo[] {
+  /**
+   * What a rewind to `messageUuid` would restore, without restoring anything.
+   *
+   * A dry run, because restoring files overwrites the working tree and nothing
+   * in this app can undo that — the user gets to see the file list and the
+   * line counts first.
+   *
+   * Note the SDK's caveat on the preview: `skippedLinks` "is never set" on a
+   * dry run "and the preview counts do not reflect link-safety refusals", so a
+   * real rewind can still skip files this preview counted. The outcome reports
+   * that, which is why it is shown afterwards too.
+   */
+  async previewRewind(conversationId: string, messageUuid: string): Promise<RewindPreview> {
+    const session = this.activeSessions.get(conversationId);
+    if (!session) {
+      return {
+        canRewind: false,
+        error:
+          'This conversation has no live Claude Code session, so there are no file ' +
+          'checkpoints to restore from. Checkpoints last as long as the session.',
+        filesChanged: [],
+        insertions: 0,
+        deletions: 0,
+      };
+    }
+
+    try {
+      const result = await session.query.rewindFiles(messageUuid, { dryRun: true });
+      return {
+        canRewind: result.canRewind,
+        ...(result.error ? { error: result.error } : {}),
+        filesChanged: result.filesChanged ?? [],
+        insertions: result.insertions ?? 0,
+        deletions: result.deletions ?? 0,
+      };
+    } catch (error) {
+      logger.warn('Rewind preview failed', { conversationId, messageUuid, error });
+      return {
+        canRewind: false,
+        error: error instanceof Error ? error.message : String(error),
+        filesChanged: [],
+        insertions: 0,
+        deletions: 0,
+      };
+    }
+  }
+
+  /**
+   * Rewind to `messageUuid`.
+   *
+   * Files first, then the conversation. That order matters: rewinding the
+   * conversation ends the session, and the session is what holds the file
+   * checkpoints, so doing it the other way round would throw away the
+   * checkpoints before they had been used.
+   *
+   * A conversation rewind does not happen here — it is a property of how the
+   * next session starts. The point is recorded and the session closed; the next
+   * message resumes at that turn with everything after it dropped.
+   */
+  async applyRewind(
+    conversationId: string,
+    messageUuid: string,
+    scope: RewindScope,
+  ): Promise<RewindOutcome> {
+    const wantsFiles = scope === 'code' || scope === 'both';
+    const wantsConversation = scope === 'conversation' || scope === 'both';
+
+    let filesChanged: string[] = [];
+    let insertions = 0;
+    let deletions = 0;
+    let skippedLinks: number | undefined;
+
+    if (wantsFiles) {
+      const session = this.activeSessions.get(conversationId);
+      if (!session) {
+        return {
+          ok: false,
+          error:
+            'This conversation has no live Claude Code session, so there are no file ' +
+            'checkpoints to restore from. Checkpoints last as long as the session.',
+          filesChanged: [],
+          insertions: 0,
+          deletions: 0,
+          conversationRewound: false,
+        };
+      }
+
+      try {
+        const result = await session.query.rewindFiles(messageUuid);
+        if (!result.canRewind) {
+          return {
+            ok: false,
+            error: result.error ?? 'Claude Code refused the rewind without giving a reason.',
+            filesChanged: [],
+            insertions: 0,
+            deletions: 0,
+            conversationRewound: false,
+          };
+        }
+        filesChanged = result.filesChanged ?? [];
+        insertions = result.insertions ?? 0;
+        deletions = result.deletions ?? 0;
+        skippedLinks = result.skippedLinks;
+      } catch (error) {
+        logger.error('Rewind failed', { conversationId, messageUuid, error });
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          filesChanged: [],
+          insertions: 0,
+          deletions: 0,
+          conversationRewound: false,
+        };
+      }
+    }
+
+    if (wantsConversation) {
+      this.pendingRewindPoints.set(conversationId, messageUuid);
+      // Ends the session so the next message starts one with resumeSessionAt.
+      this.cleanupSession(conversationId);
+      logger.info('Conversation rewind armed', { conversationId, messageUuid });
+    }
+
+    return {
+      ok: true,
+      filesChanged,
+      insertions,
+      deletions,
+      ...(skippedLinks ? { skippedLinks } : {}),
+      conversationRewound: wantsConversation,
+    };
+  }
+
+  /**
+   * Available slash commands, from the SDK.
+   *
+   * Mirrors getModels(): cache, then any live session, then a throwaway query.
+   * The last step is what matters — this is called when the renderer mounts,
+   * before any conversation exists, and returning an empty list there left the
+   * prompt box with nothing to autocomplete, so the commands appeared not to
+   * exist at all until after the first message of a session.
+   */
+  async getSlashCommands(): Promise<SlashCommandInfo[]> {
+    if (this.cachedSlashCommands.length > 0) {
+      return this.cachedSlashCommands;
+    }
+
+    for (const instance of this.activeSessions.values()) {
+      try {
+        const commands = await instance.query.supportedCommands();
+        this.cachedSlashCommands = commands.map((cmd) => ClaudeCodeService.toSlashCommandInfo(cmd));
+        logger.info('Fetched slash commands from session', { count: this.cachedSlashCommands.length });
+        return this.cachedSlashCommands;
+      } catch (error) {
+        logger.warn('Failed to fetch slash commands from session', { error });
+      }
+    }
+
+    await this.withTemporaryQuery('supportedCommands', async (tempQuery) => {
+      const commands = await tempQuery.supportedCommands();
+      this.cachedSlashCommands = commands.map((cmd) => ClaudeCodeService.toSlashCommandInfo(cmd));
+      logger.info('Fetched slash commands via temporary session', {
+        count: this.cachedSlashCommands.length,
+      });
+      // No emit here: this path is driven by the renderer's own getCommands()
+      // call and the awaited return value is what it assigns. The
+      // CLAUDE_SLASH_COMMANDS push exists for the SDK's mid-session changes,
+      // which carry a conversation.
+    });
+
     return this.cachedSlashCommands;
   }
 
@@ -1812,9 +1999,23 @@ export class ClaudeCodeService {
     return [];
   }
 
-  private async fetchModelsViaTemporarySession(): Promise<void> {
+  /**
+   * Run a control command against a throwaway SDK query.
+   *
+   * The query is created with an input channel nothing is ever pushed to, so
+   * the CLI starts, answers the control command and is aborted without a turn
+   * ever running — `supportedModels()` and `supportedCommands()` are both free
+   * and cost no tokens. This is the only way to answer "what can I do?" before
+   * the user has sent a first message.
+   *
+   * Returns null when there are no credentials, since the CLI cannot start.
+   */
+  private async withTemporaryQuery<T>(
+    label: string,
+    use: (tempQuery: Query) => Promise<T>,
+  ): Promise<T | null> {
     const hasAuthCreds = await this.authValidator.hasAuth();
-    if (!hasAuthCreds) return;
+    if (!hasAuthCreds) return null;
 
     const authEnv = await this.authValidator.setupAuthEnv();
     const originalEnv: Record<string, string | undefined> = {};
@@ -1836,12 +2037,10 @@ export class ClaudeCodeService {
         },
       });
 
-      const models = await tempQuery.supportedModels();
-      this.cachedModels = ClaudeCodeService.mergeWithKnownModels(
-        models.map((m) => ClaudeCodeService.toModelInfo(m)),
-      );
-      logger.info('Fetched models via temporary session', { count: this.cachedModels.length });
-      this.send(IPC_CHANNELS.CLAUDE_MODEL_CHANGED, this.cachedModels);
+      return await use(tempQuery);
+    } catch (error) {
+      logger.warn('Temporary SDK query failed', { label, error });
+      return null;
     } finally {
       abortController.abort();
       inputChannel.close();
@@ -1853,6 +2052,17 @@ export class ClaudeCodeService {
         }
       });
     }
+  }
+
+  private async fetchModelsViaTemporarySession(): Promise<void> {
+    await this.withTemporaryQuery('supportedModels', async (tempQuery) => {
+      const models = await tempQuery.supportedModels();
+      this.cachedModels = ClaudeCodeService.mergeWithKnownModels(
+        models.map((m) => ClaudeCodeService.toModelInfo(m)),
+      );
+      logger.info('Fetched models via temporary session', { count: this.cachedModels.length });
+      this.send(IPC_CHANNELS.CLAUDE_MODEL_CHANGED, this.cachedModels);
+    });
   }
 
   /**

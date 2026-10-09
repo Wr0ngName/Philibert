@@ -39,7 +39,7 @@ const mockElectron = {
     onError: vi.fn(),
     onDone: vi.fn(),
     onSlashCommands: vi.fn(),
-    onCommandAction: vi.fn(),
+    onUserTurnUuid: vi.fn(),
     onTaskNotification: vi.fn(),
     onUsageUpdate: vi.fn(),
     onActiveQueriesChange: vi.fn(),
@@ -143,7 +143,7 @@ describe('useClaudeChat core logic', () => {
     mockElectron.claude.onSlashCommands.mockImplementation(() => {
       return () => {};
     });
-    mockElectron.claude.onCommandAction.mockImplementation(() => {
+    mockElectron.claude.onUserTurnUuid.mockImplementation(() => {
       return () => {};
     });
     mockElectron.claude.onTaskNotification.mockImplementation(() => {

@@ -5,10 +5,11 @@
 
 import type { ExecutionMode, LogLevel, UpdateChannel, WhisperModelId } from '@shared/types';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE, WHISPER_MODELS } from '@shared/speech';
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, nextTick, watch, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import { useSettingsStore } from '../../stores/settings';
+import { useUiStore } from '../../stores/ui';
 import Button from '../shared/Button.vue';
 import Modal from '../shared/Modal.vue';
 import AuthForm from '../shared/AuthForm.vue';
@@ -25,7 +26,29 @@ const emit = defineEmits<{
 }>();
 
 const settingsStore = useSettingsStore();
+const uiStore = useUiStore();
 const { config, isSaving } = storeToRefs(settingsStore);
+
+// Scroll targets for commands that open this panel at a particular control:
+// `/login` wants Authentication, `/mcp` wants Tool Servers. Without this the
+// panel opens at the top and the user has to hunt for what they asked for.
+const authSectionRef = ref<HTMLElement | null>(null);
+const mcpSectionRef = ref<HTMLElement | null>(null);
+
+watch(
+  () => props.open,
+  async (open) => {
+    if (!open) return;
+    // Consumed, so a later open does not jump to the same place again.
+    const section = uiStore.takeSettingsSection();
+    if (!section) return;
+
+    // After the modal has rendered, or there is nothing to scroll yet.
+    await nextTick();
+    const target = section === 'auth' ? authSectionRef.value : mcpSectionRef.value;
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  },
+);
 
 // Local form state
 const localTheme = ref<'light' | 'dark' | 'system'>('system');
@@ -142,10 +165,12 @@ function cancel() {
   >
     <div class="space-y-6">
       <!-- Authentication Section -->
-      <AuthForm
-        ref="authFormRef"
-        :show-title="true"
-      />
+      <div ref="authSectionRef">
+        <AuthForm
+          ref="authFormRef"
+          :show-title="true"
+        />
+      </div>
 
       <!-- Execution Mode (OAuth/Pro/Max users only) -->
       <div v-if="isOAuthUser">
@@ -197,7 +222,9 @@ function cancel() {
       </div>
 
       <!-- Tool servers (MCP) for the active project -->
-      <McpServersPanel />
+      <div ref="mcpSectionRef">
+        <McpServersPanel />
+      </div>
 
       <!-- Theme -->
       <div>

@@ -7,31 +7,28 @@ import { onMounted, onUnmounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import { useFilesStore } from '../../stores/files';
+import { useUiStore } from '../../stores/ui';
 import FileTreeItem from './FileTreeItem.vue';
-import MarkdownViewerModal from './MarkdownViewerModal.vue';
 import Spinner from '../shared/Spinner.vue';
 import Icon from '../shared/Icon.vue';
 import { logger } from '../../utils/logger';
 
 const filesStore = useFilesStore();
+const uiStore = useUiStore();
 const { fileTree, hasFiles, hasWorkingDirectory, isLoading, error } = storeToRefs(filesStore);
 
 const rootRef = ref<HTMLElement | null>(null);
-const viewerOpen = ref(false);
-const viewerPath = ref<string | null>(null);
 
 function handleFileSelect(path: string) {
   logger.debug('File selected', { path });
   // Could open in editor, show preview, etc.
 }
 
+// The viewer itself is mounted at app level and its state lives in the ui
+// store, because /memory opens CLAUDE.md in the same one and this sidebar may
+// be hidden at the time.
 function handleViewMarkdown(path: string) {
-  viewerPath.value = path;
-  viewerOpen.value = true;
-}
-
-function closeMarkdownViewer() {
-  viewerOpen.value = false;
+  uiStore.openMarkdownViewer(path);
 }
 
 function refresh() {
@@ -143,12 +140,5 @@ onUnmounted(() => {
         />
       </div>
     </div>
-
-    <!-- Markdown viewer modal for .md/.markdown/.mdx files -->
-    <MarkdownViewerModal
-      :open="viewerOpen"
-      :file-path="viewerPath"
-      @close="closeMarkdownViewer"
-    />
   </div>
 </template>

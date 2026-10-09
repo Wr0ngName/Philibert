@@ -379,6 +379,72 @@ export const useChatStore = defineStore('chat', () => {
     return message;
   }
 
+  /**
+   * Add a complete assistant message, with no streaming involved.
+   *
+   * For answers the app produces itself — a slash command handled in the GUI,
+   * for instance. Streamed replies go through startAssistantMessage and
+   * appendChunk instead; using those here would leave the turn spinner running,
+   * since nothing would ever arrive to finish the stream.
+   */
+  function addAssistantMessage(content: string): ChatMessage {
+    const message: ChatMessage = {
+      id: generateId(ID_PREFIXES.MESSAGE),
+      role: 'assistant',
+      content,
+      timestamp: Date.now(),
+    };
+    addMessage(message);
+    return message;
+  }
+
+  /**
+   * Record Claude Code's transcript id against the user turn it belongs to.
+   *
+   * Assigned to the newest user message that does not have one yet. The CLI
+   * echoes a turn back right after it is pushed and before any assistant
+   * content, so the newest unlabelled user message is the one it refers to.
+   *
+   * Goes through messageSink so a conversation running in the background gets
+   * its ids too — otherwise its turns would silently become un-rewindable just
+   * for having been started from another tab.
+   */
+  function recordUserTurnUuid(conversationId: string, uuid: string): void {
+    const sink = messageSink(conversationId);
+    if (!sink) return;
+
+    for (let i = sink.length - 1; i >= 0; i -= 1) {
+      const message = sink[i];
+      if (message.role !== 'user') continue;
+      if (message.turnUuid) return; // Newest user turn is already labelled.
+      message.turnUuid = uuid;
+      return;
+    }
+  }
+
+  /**
+   * Drop everything that came after a user turn, that turn included.
+   *
+   * Used after a conversation-scope rewind, so the transcript on screen matches
+   * the one the next session will resume with. Without this the view would keep
+   * showing turns Claude Code has been told to forget, and the user would be
+   * reading a history the model no longer has.
+   *
+   * The turn itself goes too: resumeSessionAt resumes *at* that prompt, so it
+   * is about to be replayed rather than kept.
+   */
+  function truncateAfterUserTurn(conversationId: string, turnUuid: string): void {
+    const sink = messageSink(conversationId);
+    if (!sink) return;
+
+    const index = sink.findIndex(
+      (message) => message.role === 'user' && message.turnUuid === turnUuid,
+    );
+    if (index === -1) return;
+
+    sink.splice(index);
+  }
+
   function addSystemMessage(content: string): ChatMessage {
     const message: ChatMessage = {
       id: generateId(ID_PREFIXES.MESSAGE),
@@ -1414,7 +1480,10 @@ export const useChatStore = defineStore('chat', () => {
     // Message actions
     addMessage,
     addUserMessage,
+    addAssistantMessage,
     addSystemMessage,
+    recordUserTurnUuid,
+    truncateAfterUserTurn,
     startAssistantMessage,
     appendChunk,
     appendToLastMessage, // Legacy

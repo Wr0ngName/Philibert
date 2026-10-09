@@ -18,6 +18,8 @@ import { useFilesStore } from '../stores/files';
 import { useSettingsStore } from '../stores/settings';
 import { logger } from '../utils/logger';
 
+import { useSlashCommands } from './useSlashCommands';
+
 // Singleton state for IPC listeners - shared across all composable instances
 // This prevents duplicate listener registration when multiple components use this composable
 let listenersRegistered = false;
@@ -29,7 +31,7 @@ let cleanupDone: (() => void) | null = null;
 let cleanupSlashCommands: (() => void) | null = null;
 let cleanupActiveModel: (() => void) | null = null;
 let cleanupSubagentActivity: (() => void) | null = null;
-let cleanupCommandAction: (() => void) | null = null;
+let cleanupUserTurnUuid: (() => void) | null = null;
 let cleanupTaskNotification: (() => void) | null = null;
 let cleanupBackgroundTasksChanged: (() => void) | null = null;
 let cleanupUsageUpdate: (() => void) | null = null;
@@ -69,18 +71,9 @@ export function useClaudeChat() {
   // Reference to shared slash commands
   const slashCommands = sharedSlashCommands;
 
-  /**
-   * Check if a message is a slash command
-   */
-  function isSlashCommand(message: string): SlashCommandInfo | null {
-    const trimmed = message.trim();
-    if (!trimmed.startsWith('/')) return null;
-
-    // Extract command name (without arguments)
-    const cmdPart = trimmed.split(' ')[0].slice(1); // Remove leading /
-
-    return slashCommands.value.find((cmd) => cmd.name === cmdPart) || null;
-  }
+  // Dispatch for commands the GUI handles itself. The list is passed in so the
+  // dispatcher does not import this module back.
+  const { handleSlashCommand } = useSlashCommands(slashCommands);
 
   /**
    * Load available slash commands from the SDK
@@ -153,14 +146,12 @@ export function useClaudeChat() {
     // Add user message to chat
     chatStore.addUserMessage(content);
 
-    // Check if this is a slash command
-    const slashCmd = isSlashCommand(content);
-    if (slashCmd) {
-      logger.info('Slash command detected', {
-        command: content.split(' ')[0],
-        name: slashCmd.name,
-        description: slashCmd.description,
-      });
+    // Commands this GUI answers itself stop here: the prompt is never sent, no
+    // turn is started and no tokens are spent. The user's message is added
+    // first so the transcript reads as a normal exchange — and so /clear wipes
+    // its own invocation along with everything else.
+    if (await handleSlashCommand(content)) {
+      return;
     }
 
     // Start assistant message for streaming - pass conversation ID for proper tracking
@@ -456,19 +447,9 @@ export function useClaudeChat() {
       logger.debug('Received slash commands from SDK', { conversationId, count: commands.length });
     });
 
-    // Handle command actions (clear, compact, etc.)
-    cleanupCommandAction = window.electron.claude.onCommandAction((conversationId, action) => {
-      logger.info('Received command action', { conversationId, action });
-
-      // Only apply to current conversation
-      if (conversationId === conversationsStore.currentConversationId) {
-        if (action === 'clear') {
-          setTimeout(() => {
-            chatStore.clearMessages();
-            logger.info('Chat cleared via /clear command');
-          }, 500);
-        }
-      }
+    // Claude Code's transcript id for each user turn — the rewind target.
+    cleanupUserTurnUuid = window.electron.claude.onUserTurnUuid((conversationId, uuid) => {
+      chatStore.recordUserTurnUuid(conversationId, uuid);
     });
 
     // Handle background task notifications - route to correct conversation
@@ -615,9 +596,9 @@ export function useClaudeChat() {
       cleanupSubagentActivity();
       cleanupSubagentActivity = null;
     }
-    if (cleanupCommandAction) {
-      cleanupCommandAction();
-      cleanupCommandAction = null;
+    if (cleanupUserTurnUuid) {
+      cleanupUserTurnUuid();
+      cleanupUserTurnUuid = null;
     }
     if (cleanupBackgroundTasksChanged) {
       cleanupBackgroundTasksChanged();

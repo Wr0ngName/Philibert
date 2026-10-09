@@ -457,19 +457,15 @@ describe('ClaudeCodeService', () => {
 
       await service.sendMessage(TEST_CONV_ID, 'Hi', '/home/user');
 
-      // Should emit merged commands (built-in + SDK skills)
+      // Emits exactly what the SDK named, with nothing added from a local
+      // table — that merge is what used to hide commands the table lacked.
       expect(mockSend).toHaveBeenCalledWith(
         IPC_CHANNELS.CLAUDE_SLASH_COMMANDS,
         TEST_CONV_ID,
-        expect.arrayContaining([
-          // Built-in commands
-          expect.objectContaining({ name: 'help' }),
-          expect.objectContaining({ name: 'clear' }),
-          expect.objectContaining({ name: 'compact' }),
-          // SDK skills from init
+        [
           expect.objectContaining({ name: 'custom-skill' }),
           expect.objectContaining({ name: 'another-skill' }),
-        ])
+        ]
       );
     });
   });
@@ -1109,12 +1105,12 @@ describe('ClaudeCodeService', () => {
   // Slash Commands
   // ===========================================================================
   describe('getSlashCommands', () => {
-    it('should return cached slash commands', () => {
-      const commands = service.getSlashCommands();
+    it('should return an array', async () => {
+      const commands = await service.getSlashCommands();
       expect(Array.isArray(commands)).toBe(true);
     });
 
-    it('should return merged built-in and SDK commands after init message', async () => {
+    it('should report exactly what the SDK reports, with nothing added locally', async () => {
       const mockIterator = createMockQueryIterator([
         {
           type: 'system',
@@ -1127,14 +1123,14 @@ describe('ClaudeCodeService', () => {
 
       await service.sendMessage(TEST_CONV_ID, 'Hi', '/home/user');
 
-      const commands = service.getSlashCommands();
-      // Should have built-in commands + SDK commands merged
-      expect(commands.length).toBeGreaterThan(2);
-      // Built-in commands should be present with descriptions
-      expect(commands.find(c => c.name === 'help')).toBeDefined();
-      expect(commands.find(c => c.name === 'clear')).toBeDefined();
-      // SDK commands should also be present
-      expect(commands.find(c => c.name === 'custom-skill')).toBeDefined();
+      const commands = await service.getSlashCommands();
+      expect(commands.map((c) => c.name)).toEqual(['custom-skill', 'another-skill']);
+
+      // Nothing is injected from a local table any more. A hand-written list
+      // of the CLI's commands is what hid /rewind: it did not have it, and the
+      // merge made the stale table outrank the SDK's own rows.
+      expect(commands.find((c) => c.name === 'help')).toBeUndefined();
+      expect(commands.find((c) => c.name === 'clear')).toBeUndefined();
     });
   });
 

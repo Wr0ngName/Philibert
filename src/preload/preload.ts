@@ -39,6 +39,12 @@ const electronAPI: ElectronAPI = {
 
     getCommands: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_COMMANDS),
 
+    previewRewind: (conversationId, messageUuid) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_REWIND_PREVIEW, conversationId, messageUuid),
+
+    applyRewind: (conversationId, messageUuid, scope) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_REWIND_APPLY, conversationId, messageUuid, scope),
+
     getModels: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_MODELS),
 
     getActiveQueries: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_ACTIVE_QUERIES),
@@ -85,14 +91,14 @@ const electronAPI: ElectronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_SLASH_COMMANDS, handler);
     },
 
-    onCommandAction: (callback) => {
+    onUserTurnUuid: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
         conversationId: string,
-        action: Parameters<typeof callback>[1]
-      ) => callback(conversationId, action);
-      ipcRenderer.on(IPC_CHANNELS.CLAUDE_COMMAND_ACTION, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_COMMAND_ACTION, handler);
+        uuid: Parameters<typeof callback>[1]
+      ) => callback(conversationId, uuid);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_USER_TURN_UUID, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_USER_TURN_UUID, handler);
     },
 
     onModelsChanged: (callback) => {

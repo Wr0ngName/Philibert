@@ -14,8 +14,6 @@ import type {
 import type { SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, ToolCaptureData } from '../../../shared/types';
 import logger from '../../utils/logger';
 
-import { BUILTIN_COMMANDS } from './BuiltinCommandHandler';
-
 /**
  * Best-effort extraction of an error string from an SDK result message.
  *
@@ -77,6 +75,12 @@ export function isHumanOriginatedResult(message: { origin?: { kind?: string } })
 export interface MessageHandlerCallbacks {
   onChunk: (chunk: string) => void;
   onSlashCommands: (commands: SlashCommandInfo[]) => void;
+  /**
+   * The CLI's transcript id for a turn the user typed, as echoed back in its
+   * SDKUserMessageReplay. It is the target `/rewind` restores to, so the
+   * renderer records it against the message it just displayed.
+   */
+  onUserTurnUuid?: (uuid: string) => void;
   onTaskNotification: (notification: TaskNotification) => void;
   /**
    * The SDK's authoritative live-task list, pushed whenever the set changes.
@@ -168,8 +172,17 @@ export interface MessageProcessingResult {
 export class SDKMessageHandler {
   private callbacks: MessageHandlerCallbacks;
   private querySucceeded = false;
-  // Initialize with built-in commands so they're available immediately at startup
-  private cachedSlashCommands: SlashCommandInfo[] = [...BUILTIN_COMMANDS];
+  /**
+   * Commands for this session, as the SDK reports them.
+   *
+   * Starts empty on purpose. It used to be seeded from a hand-written table so
+   * that something was available "immediately", but a session's handler is
+   * constructed when the session starts — too late to help the prompt box at
+   * app start, which is what actually needed it — and the seed then shadowed
+   * the SDK's own rows. ClaudeCodeService.getSlashCommands() answers the
+   * startup case properly, from the SDK.
+   */
+  private cachedSlashCommands: SlashCommandInfo[] = [];
   /** Tracks when the last user message was a slash command for output handling */
   private lastMessageWasSlashCommand = false;
   /** Tracks if content was streamed via content_block_delta events */
@@ -182,11 +195,10 @@ export class SDKMessageHandler {
 
   constructor(callbacks: MessageHandlerCallbacks) {
     this.callbacks = callbacks;
-    // Emit built-in commands immediately so renderer has them at startup
-    this.callbacks.onSlashCommands(this.cachedSlashCommands);
-    logger.info('SDKMessageHandler initialized with built-in commands', {
-      count: this.cachedSlashCommands.length,
-    });
+    // No onSlashCommands emit here. The renderer REPLACES its list with
+    // whatever this channel sends — that is the SDK's documented contract for
+    // the mid-session push — so emitting the empty starting value would clear
+    // a list the renderer had already fetched.
   }
 
   /**
@@ -208,31 +220,22 @@ export class SDKMessageHandler {
   }
 
   /**
-   * Update cached slash commands with full details (descriptions, argument hints).
-   * Called after fetching details via supportedCommands().
-   * Merges SDK skills with built-in CLI commands.
+   * Replace the session's command list with what the SDK reports.
+   *
+   * A replacement, not a merge. The SDK's push is documented as authoritative
+   * ("Clients should REPLACE their cached command list with this payload"), and
+   * it already contains Claude Code's own commands alongside the project's,
+   * plugins' and MCP servers'. Merging a local table over it was what hid
+   * `/rewind`: the table did not list it, and listing commands by hand cannot
+   * keep up with the CLI.
+   *
+   * Rows sharing a name are kept rather than collapsed — the SDK allows it and
+   * defines which one a typed name runs (see findCommand in
+   * shared/slash-commands.ts), so discarding one here would break that rule.
    */
   updateSlashCommands(commands: SlashCommandInfo[]): void {
-    // Merge built-in commands with SDK-provided skills
-    // SDK skills take precedence if they have the same name (more specific descriptions)
-    const commandMap = new Map<string, SlashCommandInfo>();
-
-    // Add built-in commands first
-    for (const cmd of BUILTIN_COMMANDS) {
-      commandMap.set(cmd.name, cmd);
-    }
-
-    // Override/add SDK commands (skills)
-    for (const cmd of commands) {
-      commandMap.set(cmd.name, cmd);
-    }
-
-    this.cachedSlashCommands = Array.from(commandMap.values());
-    logger.info('Updated slash commands with full details', {
-      count: this.cachedSlashCommands.length,
-      builtinCount: BUILTIN_COMMANDS.length,
-      sdkCount: commands.length,
-    });
+    this.cachedSlashCommands = commands;
+    logger.info('Updated slash commands from SDK', { count: commands.length });
   }
 
   /**
@@ -414,14 +417,47 @@ export class SDKMessageHandler {
   private processUserMessage(message: SDKMessage): void {
     const userMsg = message as {
       type: 'user';
-      message?: { role: string; content?: Array<{ tool_use_id?: string; type?: string; content?: string }> };
+      message?: { role: string; content?: Array<{ tool_use_id?: string; type?: string; content?: string }> | string };
       tool_use_result?: unknown;
+      uuid?: string;
+      isSynthetic?: boolean;
+      origin?: { kind?: string };
     };
 
+    // A user message's content is a string for a typed turn and an array of
+    // blocks when it carries tool results. Narrowed once here, since both the
+    // uuid capture below and the tool-result handling need to know which.
+    const contentBlocks = Array.isArray(userMsg.message?.content)
+      ? userMsg.message.content
+      : undefined;
+
+    // Capture the transcript id of a turn the user actually typed.
+    //
+    // The CLI echoes each user message back as SDKUserMessageReplay, which
+    // carries the uuid it filed the turn under — and that uuid is what
+    // rewindFiles() and resumeSessionAt take as their target. Reading it here
+    // beats inventing one client-side: an id the CLI did not assign would be
+    // rejected, and a rewind that silently targets nothing is worse than no
+    // rewind at all.
+    //
+    // Only real turns qualify. Tool results also arrive as user messages (that
+    // is what the rest of this method is for), as do synthetic ones the CLI
+    // composes itself, and neither is a point a user could sensibly go back to.
+    const isToolResult = contentBlocks?.some((block) => block.type === 'tool_result') ?? false;
+
+    if (
+      userMsg.uuid &&
+      !isToolResult &&
+      !userMsg.isSynthetic &&
+      isHumanOriginatedResult(userMsg) &&
+      this.callbacks.onUserTurnUuid
+    ) {
+      this.callbacks.onUserTurnUuid(userMsg.uuid);
+    }
+
     // Extract tool result content for the detail view
-    const msgContent = userMsg.message?.content;
-    if (Array.isArray(msgContent)) {
-      for (const block of msgContent) {
+    if (contentBlocks) {
+      for (const block of contentBlocks) {
         if (block.tool_use_id && block.type === 'tool_result') {
           const resultBlock = block as { tool_use_id: string; content?: unknown };
           const content = typeof resultBlock.content === 'string'
@@ -472,7 +508,7 @@ export class SDKMessageHandler {
       backgroundedByUser?: boolean;
     } | undefined;
     if (toolResult?.backgroundTaskId) {
-      const toolUseId = userMsg.message?.content?.[0]?.tool_use_id;
+      const toolUseId = contentBlocks?.[0]?.tool_use_id;
       const backgroundTaskId = toolResult.backgroundTaskId;
 
       if (toolUseId) {
@@ -734,18 +770,22 @@ export class SDKMessageHandler {
         this.callbacks.onModelReported?.(systemMsg.model, 'init');
       }
 
-      // Process slash commands if present
+      // Process slash commands if present.
+      //
+      // The init message carries names only — no descriptions, aliases or
+      // builtin markers — so this is a preliminary list that gets the names
+      // into the autocomplete immediately. supportedCommands() follows with
+      // the full rows and replaces it wholesale via updateSlashCommands().
+      // Existing rows are therefore kept as they are: they may already be the
+      // detailed ones, and overwriting them with a bare name would throw away
+      // a description the user is reading.
       if (systemMsg.slash_commands) {
-        // Always merge SDK commands with existing cache (built-in + any previous SDK commands)
-        // This preserves descriptions from built-in commands and supportedCommands()
         const commandMap = new Map<string, SlashCommandInfo>();
 
-        // Add existing cached commands first (preserves descriptions)
         for (const cmd of this.cachedSlashCommands) {
           commandMap.set(cmd.name, cmd);
         }
 
-        // Add new SDK commands (only if not already present - preserve existing descriptions)
         for (const name of systemMsg.slash_commands) {
           if (!commandMap.has(name)) {
             commandMap.set(name, { name, description: '', argumentHint: '' });
@@ -753,7 +793,7 @@ export class SDKMessageHandler {
         }
 
         this.cachedSlashCommands = Array.from(commandMap.values());
-        logger.info('Merged built-in and SDK commands from init', {
+        logger.info('Recorded slash command names from init', {
           total: this.cachedSlashCommands.length,
           sdkCount: systemMsg.slash_commands.length,
         });

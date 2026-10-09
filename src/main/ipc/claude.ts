@@ -13,7 +13,7 @@
 
 import { ipcMain } from 'electron';
 
-import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionScope, SessionPermissionEntry } from '../../shared/types';
+import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionScope, RewindScope, SessionPermissionEntry } from '../../shared/types';
 import { IpcError, ValidationError, AppError, ERROR_CODES } from '../errors';
 import ClaudeCodeService from '../services/ClaudeCodeService';
 import { validateString, validateObject, validateBoolean, formatErrorMessage, ensureService } from '../utils/ipc-helpers';
@@ -236,12 +236,52 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
       // Validate service
       ensureService(claudeService, 'ClaudeCodeService');
 
-      return claudeService.getSlashCommands();
+      return await claudeService.getSlashCommands();
     } catch (error) {
       logger.error('Failed to get slash commands', { error });
       throw new IpcError(formatErrorMessage('Failed to get slash commands', error), IPC_CHANNELS.CLAUDE_GET_COMMANDS, ERROR_CODES.IPC_HANDLER_FAILED, error);
     }
   });
+
+  // What a rewind would restore, without restoring anything.
+  ipcMain.handle(
+    IPC_CHANNELS.CLAUDE_REWIND_PREVIEW,
+    async (_event, conversationId: string, messageUuid: string) => {
+      try {
+        logger.debug('IPC: claude:rewind-preview', { conversationId, messageUuid });
+        ensureService(claudeService, 'ClaudeCodeService');
+        return await claudeService.previewRewind(conversationId, messageUuid);
+      } catch (error) {
+        logger.error('Failed to preview rewind', { error, conversationId, messageUuid });
+        throw new IpcError(
+          formatErrorMessage('Failed to preview rewind', error),
+          IPC_CHANNELS.CLAUDE_REWIND_PREVIEW,
+          ERROR_CODES.IPC_HANDLER_FAILED,
+          error,
+        );
+      }
+    },
+  );
+
+  // Perform a rewind.
+  ipcMain.handle(
+    IPC_CHANNELS.CLAUDE_REWIND_APPLY,
+    async (_event, conversationId: string, messageUuid: string, scope: RewindScope) => {
+      try {
+        logger.info('IPC: claude:rewind-apply', { conversationId, messageUuid, scope });
+        ensureService(claudeService, 'ClaudeCodeService');
+        return await claudeService.applyRewind(conversationId, messageUuid, scope);
+      } catch (error) {
+        logger.error('Failed to apply rewind', { error, conversationId, messageUuid, scope });
+        throw new IpcError(
+          formatErrorMessage('Failed to apply rewind', error),
+          IPC_CHANNELS.CLAUDE_REWIND_APPLY,
+          ERROR_CODES.IPC_HANDLER_FAILED,
+          error,
+        );
+      }
+    },
+  );
 
   // Get available models from SDK
   ipcMain.handle(IPC_CHANNELS.CLAUDE_GET_MODELS, async () => {

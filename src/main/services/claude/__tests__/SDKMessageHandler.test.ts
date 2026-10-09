@@ -96,31 +96,51 @@ describe('SDKMessageHandler', () => {
   });
 
   describe('updateSlashCommands', () => {
-    it('should merge SDK commands with built-in commands', () => {
+    it('should replace the list with exactly what the SDK reports', () => {
+      // A replacement, not a merge. The SDK's push is authoritative
+      // ("Clients should REPLACE their cached command list with this
+      // payload") and already includes Claude Code's own commands. Merging a
+      // local table over it was what hid /rewind, which the table lacked.
       const commands: SlashCommandInfo[] = [
         { name: 'custom-skill', description: 'Custom skill', argumentHint: '' },
       ];
 
       handler.updateSlashCommands(commands);
 
-      const result = handler.getSlashCommands();
-      // Should have built-in commands + the custom skill
-      expect(result.length).toBeGreaterThan(1);
-      expect(result.find(c => c.name === 'help')).toBeDefined();
-      expect(result.find(c => c.name === 'custom-skill')).toBeDefined();
+      expect(handler.getSlashCommands()).toEqual(commands);
     });
 
-    it('should override built-in commands with SDK commands of same name', () => {
+    it('should keep aliases and the builtin marker', () => {
+      // Dropping these broke alias resolution (/cost → /usage) and left the
+      // autocomplete unable to tell a project command from a builtin one.
       const commands: SlashCommandInfo[] = [
-        { name: 'help', description: 'SDK help description', argumentHint: '[topic]' },
+        {
+          name: 'usage',
+          description: 'Token and cost totals',
+          argumentHint: '',
+          aliases: ['cost', 'stats'],
+          builtin: true,
+        },
       ];
 
       handler.updateSlashCommands(commands);
 
-      const result = handler.getSlashCommands();
-      const helpCmd = result.find(c => c.name === 'help');
-      expect(helpCmd?.description).toBe('SDK help description');
-      expect(helpCmd?.argumentHint).toBe('[topic]');
+      const usage = handler.getSlashCommands().find((c) => c.name === 'usage');
+      expect(usage?.aliases).toEqual(['cost', 'stats']);
+      expect(usage?.builtin).toBe(true);
+    });
+
+    it('should keep two rows that share a name', () => {
+      // The SDK allows it and defines which one a typed name runs, so
+      // collapsing them here would break that rule.
+      const commands: SlashCommandInfo[] = [
+        { name: 'review', description: 'project version', argumentHint: '' },
+        { name: 'review', description: 'builtin version', argumentHint: '', builtin: true },
+      ];
+
+      handler.updateSlashCommands(commands);
+
+      expect(handler.getSlashCommands()).toHaveLength(2);
     });
   });
 
@@ -254,7 +274,10 @@ describe('SDKMessageHandler', () => {
   });
 
   describe('handleMessage - system type with init', () => {
-    it('should merge SDK and built-in commands from init message', async () => {
+    it('should record the command names the init message carries', async () => {
+      // init carries names only, so this is the preliminary list that gets
+      // them into the autocomplete at once; supportedCommands() follows with
+      // the detailed rows. Nothing is added from a local table.
       await handler.handleMessage({
         type: 'system',
         subtype: 'init',
@@ -262,20 +285,32 @@ describe('SDKMessageHandler', () => {
         model: 'claude-3',
       } as never);
 
-      const commands = handler.getSlashCommands();
-      // Should have built-in commands + SDK commands
-      expect(commands.length).toBeGreaterThan(2);
-      // Built-in commands should have descriptions
-      const helpCmd = commands.find(c => c.name === 'help');
-      expect(helpCmd).toBeDefined();
-      expect(helpCmd?.description).toBeTruthy();
-      // SDK commands without built-in match should have empty descriptions
-      const customCmd = commands.find(c => c.name === 'custom-skill');
-      expect(customCmd).toBeDefined();
+      expect(handler.getSlashCommands()).toEqual([
+        { name: 'custom-skill', description: '', argumentHint: '' },
+        { name: 'another-skill', description: '', argumentHint: '' },
+      ]);
     });
 
-    it('should emit merged commands to callback', async () => {
-      // Clear mock calls from constructor
+    it('should not downgrade a detailed row to a bare name', async () => {
+      // A description the user is reading must not be replaced by nothing
+      // just because init lists the same command again.
+      handler.updateSlashCommands([
+        { name: 'custom-skill', description: 'Full description', argumentHint: '<arg>' },
+      ]);
+
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'init',
+        slash_commands: ['custom-skill'],
+        model: 'claude-3',
+      } as never);
+
+      const command = handler.getSlashCommands().find((c) => c.name === 'custom-skill');
+      expect(command?.description).toBe('Full description');
+      expect(command?.argumentHint).toBe('<arg>');
+    });
+
+    it('should emit the command list to the callback', async () => {
       vi.clearAllMocks();
 
       await handler.handleMessage({
@@ -287,11 +322,16 @@ describe('SDKMessageHandler', () => {
 
       expect(callbacks.onSlashCommands).toHaveBeenCalled();
       const mockFn = callbacks.onSlashCommands as ReturnType<typeof vi.fn>;
-      // Get the last call (after init message)
       const emittedCommands = mockFn.mock.calls[mockFn.mock.calls.length - 1][0];
-      // Should include both built-in and SDK commands
-      expect(emittedCommands.find((c: SlashCommandInfo) => c.name === 'help')).toBeDefined();
       expect(emittedCommands.find((c: SlashCommandInfo) => c.name === 'custom-skill')).toBeDefined();
+    });
+
+    it('should not emit an empty list when constructed', () => {
+      // The renderer REPLACES its list with whatever arrives on this channel,
+      // so emitting the empty starting value would clear a list it had
+      // already fetched for the prompt box.
+      const emissions = (callbacks.onSlashCommands as ReturnType<typeof vi.fn>).mock.calls;
+      expect(emissions.filter((call) => (call[0] as SlashCommandInfo[]).length === 0)).toEqual([]);
     });
 
     it('should add new SDK commands while preserving existing descriptions', async () => {

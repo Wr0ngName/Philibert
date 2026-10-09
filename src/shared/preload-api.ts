@@ -25,6 +25,9 @@ import type {
   PermissionScope,
   SessionPermissionEntry,
   SessionUsage,
+  RewindOutcome,
+  RewindPreview,
+  RewindScope,
   SlashCommandInfo,
   LiveBackgroundTask,
   TaskNotification,
@@ -68,6 +71,14 @@ export interface ElectronAPI {
     stopTask: (conversationId: string, taskId: string) => Promise<void>;
     /** Get available slash commands */
     getCommands: () => Promise<SlashCommandInfo[]>;
+    /** What a rewind to this user turn would restore. Changes nothing. */
+    previewRewind: (conversationId: string, messageUuid: string) => Promise<RewindPreview>;
+    /** Restore files and/or the conversation to this user turn. */
+    applyRewind: (
+      conversationId: string,
+      messageUuid: string,
+      scope: RewindScope,
+    ) => Promise<RewindOutcome>;
     /** Get available models */
     getModels: () => Promise<ModelInfo[]>;
     /** Get current active query status */
@@ -82,8 +93,11 @@ export interface ElectronAPI {
     onDone: (callback: (conversationId: string) => void) => () => void;
     /** Slash commands updated for a conversation */
     onSlashCommands: (callback: (conversationId: string, commands: SlashCommandInfo[]) => void) => () => void;
-    /** Command action triggered for a conversation */
-    onCommandAction: (callback: (conversationId: string, action: string) => void) => () => void;
+    /**
+     * The CLI's transcript id for the user turn just sent. It is the target a
+     * rewind restores to, so the renderer stores it on the message it shows.
+     */
+    onUserTurnUuid: (callback: (conversationId: string, uuid: string) => void) => () => void;
     /** Models changed */
     onModelsChanged: (callback: (models: ModelInfo[]) => void) => () => void;
     /** The model the CLI reports it is actually running for a conversation */

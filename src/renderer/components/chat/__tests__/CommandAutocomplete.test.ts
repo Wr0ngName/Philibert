@@ -78,8 +78,11 @@ describe('CommandAutocomplete', () => {
         },
       });
 
+      // cost and compact match by name. Descriptions are not searched at two
+      // characters — "co" is inside "commands" and "conversation" too, so
+      // doing it there would widen the list instead of narrowing it.
       const options = wrapper.findAll('[role="option"]');
-      expect(options).toHaveLength(2); // cost, compact
+      expect(options).toHaveLength(2);
     });
 
     it('should be case insensitive', () => {
@@ -191,8 +194,14 @@ describe('CommandAutocomplete', () => {
 
       await wrapper.findAll('[role="option"]')[1].trigger('click');
 
+      // The list is ordered, not left in the order the SDK happened to send:
+      // Claude Code's own commands first, then alphabetically. None of these
+      // fixtures is marked builtin, so the order is clear, compact, cost,
+      // help — making the second row "compact".
       expect(wrapper.emitted('select')).toBeTruthy();
-      expect(wrapper.emitted('select')![0]).toEqual([mockCommands[1]]);
+      expect(wrapper.emitted('select')![0]).toEqual([
+        mockCommands.find((c) => c.name === 'compact'),
+      ]);
     });
 
     it('should update selection on mouse enter', async () => {

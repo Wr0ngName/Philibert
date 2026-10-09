@@ -20,6 +20,19 @@ export interface SlashCommandInfo {
   description: string;
   /** Hint for command arguments */
   argumentHint: string;
+  /**
+   * Alternate names that resolve to this command, from the SDK row — e.g.
+   * `/cost` and `/stats` both resolve to `/usage`. Kept so the autocomplete
+   * can offer an alias the user types and so resolution matches the CLI's.
+   */
+  aliases?: string[];
+  /**
+   * True when the command is Claude Code's own; absent for one defined by a
+   * user, project, plugin or MCP server. Rows can share a name, and a marked
+   * row wins — see findCommand in shared/slash-commands.ts, which implements
+   * the SDK's documented rule.
+   */
+  builtin?: boolean;
 }
 
 /**
@@ -136,6 +149,15 @@ export interface ChatMessage {
   toolUse?: ToolUseInfo;
   /** If set, this message represents an inline background task indicator */
   backgroundTask?: BackgroundTaskInfo;
+  /**
+   * For a user message, the id Claude Code filed this turn under in its
+   * transcript, as echoed back in its SDKUserMessageReplay.
+   *
+   * It is what a rewind targets, so only messages carrying one can be rewound
+   * to — which excludes anything sent before this field existed, and anything
+   * a session never acknowledged.
+   */
+  turnUuid?: string;
 }
 
 // Tool use / Action types
@@ -1139,6 +1161,52 @@ export interface AboutInfo {
   logPath: string;
 }
 
+/**
+ * What a rewind should restore.
+ *
+ * The CLI offers the same three, and they are genuinely different operations:
+ * code is `Query.rewindFiles()`, conversation is resuming the session at an
+ * earlier user message, and neither implies the other.
+ */
+export type RewindScope = 'code' | 'conversation' | 'both';
+
+/**
+ * What a rewind would do, from a dry run. Shown before anything is written,
+ * because restoring files is not undoable from inside the app.
+ */
+export interface RewindPreview {
+  /** False when there is nothing to restore, or checkpointing cannot serve it. */
+  canRewind: boolean;
+  /** Why not, when canRewind is false. */
+  error?: string;
+  /** Paths that differ from the checkpoint and would be restored. */
+  filesChanged: string[];
+  /** Lines that would be added by restoring. */
+  insertions: number;
+  /** Lines that would be removed by restoring. */
+  deletions: number;
+}
+
+/** What a rewind actually did. */
+export interface RewindOutcome {
+  /** False when the rewind was refused; `error` then says why. */
+  ok: boolean;
+  error?: string;
+  /** What was restored. Empty for a conversation-only rewind. */
+  filesChanged: string[];
+  insertions: number;
+  deletions: number;
+  /**
+   * Tracked files left alone because the path was a symlink or hard link, its
+   * parent no longer resolves where it did, or the backup could not be read
+   * safely. Surfaced rather than swallowed: the restore was partial, and the
+   * user is the only one who can judge whether that matters.
+   */
+  skippedLinks?: number;
+  /** True when the conversation was rewound and the session will restart. */
+  conversationRewound: boolean;
+}
+
 export interface FileChange {
   /** Type of change that occurred */
   type: 'add' | 'change' | 'unlink';
@@ -1278,8 +1346,13 @@ export const IPC_CHANNELS = {
   CLAUDE_SLASH_COMMANDS: 'claude:slash-commands',
   /** Get available slash commands */
   CLAUDE_GET_COMMANDS: 'claude:get-commands',
+  /** Dry run: what a rewind to a given user message would restore. */
+  CLAUDE_REWIND_PREVIEW: 'claude:rewind-preview',
+  /** Perform the rewind. */
+  CLAUDE_REWIND_APPLY: 'claude:rewind-apply',
+  /** The CLI's transcript id for the user turn just sent. */
+  CLAUDE_USER_TURN_UUID: 'claude:user-turn-uuid',
   /** Built-in command action (clear, compact, etc.) */
-  CLAUDE_COMMAND_ACTION: 'claude:command-action',
   /** Get available models from SDK */
   CLAUDE_GET_MODELS: 'claude:get-models',
   /** Model changed event */

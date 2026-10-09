@@ -6,6 +6,7 @@
 
 import { computed, ref, watch } from 'vue';
 
+import { parseSlashInput, rankCommandMatches } from '@shared/slash-commands';
 import type { SlashCommandInfo } from '@shared/types';
 import TransitionFade from '../shared/TransitionFade.vue';
 
@@ -16,8 +17,6 @@ interface Props {
   inputValue: string;
   /** Whether to show the autocomplete dropdown */
   show: boolean;
-  /** Whether a conversation has been started (affects hint display) */
-  hasConversation?: boolean;
 }
 
 const props = defineProps<Props>();
@@ -31,22 +30,24 @@ const emit = defineEmits<{
 const selectedIndex = ref(0);
 
 /**
- * Filter commands based on user input.
- * Matches command names that contain the typed text (after /).
+ * Commands matching what has been typed.
+ *
+ * Ranking lives in shared/slash-commands so it can be tested on its own and
+ * so it matches the resolution the dispatcher uses: names before aliases,
+ * prefixes before substrings, Claude Code's own commands before a project's.
+ * It also searches descriptions, which is what makes the list useful when you
+ * know what you want but not what it is called.
  */
 const filteredCommands = computed((): SlashCommandInfo[] => {
   if (!props.show) return [];
 
-  // Extract the query after the /
   const trimmed = props.inputValue.trim();
   if (!trimmed.startsWith('/')) return [];
 
-  const query = trimmed.slice(1).toLowerCase().split(' ')[0]; // Only match command name part
-  if (!query) return props.commands;
-
-  return props.commands.filter((cmd) =>
-    cmd.name.toLowerCase().includes(query)
-  );
+  // A bare "/" parses to nothing, which is the whole list — the right answer
+  // for someone who has just opened the menu.
+  const parsed = parseSlashInput(trimmed);
+  return rankCommandMatches(props.commands, parsed?.name ?? '');
 });
 
 // Reset selection when input changes
@@ -112,16 +113,9 @@ defineExpose({ handleKeydown });
       role="listbox"
       :aria-label="'Slash commands'"
     >
-      <!-- Hint when no conversation started -->
-      <div
-        v-if="!hasConversation"
-        class="px-4 py-2 text-xs text-surface-500 dark:text-surface-400 bg-surface-50 dark:bg-surface-700/50 border-b border-surface-200 dark:border-surface-600"
-      >
-        Showing built-in commands only. Start a conversation to see project-specific commands.
-      </div>
       <div
         v-for="(cmd, index) in filteredCommands"
-        :key="cmd.name"
+        :key="`${cmd.name}-${index}`"
         :class="[
           'px-4 py-3 cursor-pointer transition-colors',
           index === selectedIndex
@@ -133,7 +127,7 @@ defineExpose({ handleKeydown });
         @click="selectCommand(cmd)"
         @mouseenter="selectedIndex = index"
       >
-        <div class="flex items-baseline gap-2">
+        <div class="flex items-baseline gap-2 flex-wrap">
           <span class="font-mono font-semibold text-primary-600 dark:text-primary-400">
             /{{ cmd.name }}
           </span>
@@ -142,6 +136,26 @@ defineExpose({ handleKeydown });
             class="font-mono text-sm text-surface-500 dark:text-surface-400"
           >
             {{ cmd.argumentHint }}
+          </span>
+          <!--
+            Aliases are shown because they are typeable: /cost resolves to
+            /usage, and without this the user cannot tell that from the list.
+          -->
+          <span
+            v-if="cmd.aliases?.length"
+            class="font-mono text-xs text-surface-400 dark:text-surface-500"
+          >
+            {{ cmd.aliases.map((alias) => `/${alias}`).join(' ') }}
+          </span>
+          <!--
+            Marks where a command came from. A project command can be edited
+            on disk; one of Claude Code's own cannot.
+          -->
+          <span
+            v-if="!cmd.builtin"
+            class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-surface-100 dark:bg-surface-700 text-surface-500 dark:text-surface-400"
+          >
+            project
           </span>
         </div>
         <div
