@@ -1141,6 +1141,10 @@ export const useChatStore = defineStore('chat', () => {
         status: task.status,
         summary: task.summary,
         error: task.error,
+        // Carried so this row can act as the parent for tool calls the task
+        // makes. They reference the spawning tool_use id, and when no message
+        // provides it they are orphaned and end up in the main conversation.
+        ...(task.toolUseId && { toolUseId: task.toolUseId }),
       },
     };
     addMessageTo(sink, message);

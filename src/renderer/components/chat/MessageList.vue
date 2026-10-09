@@ -18,6 +18,11 @@ import type { ChatMessage } from '@shared/types';
 
 import { useChatStore } from '../../stores/chat';
 import { formatTime } from '../../utils/date';
+import {
+  childrenByParent as buildChildrenByParent,
+  descendantCounts,
+  topLevelSequence,
+} from '../../utils/message-tree';
 import MessageItem from './MessageItem.vue';
 import Icon from '../shared/Icon.vue';
 import Spinner from '../shared/Spinner.vue';
@@ -58,69 +63,23 @@ function toggleAgentExpand(toolUseId: string): void {
 }
 
 // Index: parent tool_use ID → direct child messages
-const childrenByParent = computed((): Map<string, ChatMessage[]> => {
-  const map = new Map<string, ChatMessage[]>();
-  for (const m of messages.value) {
-    const parent = m.toolUse?.parentToolUseId;
-    if (!parent) continue;
-    const list = map.get(parent);
-    if (list) {
-      list.push(m);
-    } else {
-      map.set(parent, [m]);
-    }
-  }
-  return map;
-});
-
-// Set of tool_use block IDs that exist in the conversation.
-// Used to detect orphan children (parent missing) so they surface at top level
-// instead of disappearing.
-const knownToolUseIds = computed((): Set<string> => {
-  const s = new Set<string>();
-  for (const m of messages.value) {
-    const id = m.toolUse?.toolUseBlockId;
-    if (id) s.add(id);
-  }
-  return s;
-});
+const childrenByParent = computed((): Map<string, ChatMessage[]> =>
+  buildChildrenByParent(messages.value),
+);
 
 // Transitive count of tool_use descendants per parent tool_use ID.
-const descendantCount = computed((): Map<string, number> => {
-  const counts = new Map<string, number>();
-  const visiting = new Set<string>();
-  function count(id: string): number {
-    const cached = counts.get(id);
-    if (cached !== undefined) return cached;
-    if (visiting.has(id)) return 0; // cycle guard
-    visiting.add(id);
-    const kids = childrenByParent.value.get(id) ?? [];
-    let n = 0;
-    for (const k of kids) {
-      if (!k.toolUse) continue;
-      n++;
-      const kid = k.toolUse.toolUseBlockId;
-      if (kid) n += count(kid);
-    }
-    visiting.delete(id);
-    counts.set(id, n);
-    return n;
-  }
-  for (const m of messages.value) {
-    const id = m.toolUse?.toolUseBlockId;
-    if (id) count(id);
-  }
-  return counts;
-});
+const descendantCount = computed((): Map<string, number> => descendantCounts(messages.value));
 
-// Messages whose parent is unknown (or absent) — these get rendered at top level.
-const topLevelMessages = computed((): ChatMessage[] => {
-  return messages.value.filter((m) => {
-    const parent = m.toolUse?.parentToolUseId;
-    if (!parent) return true;
-    return !knownToolUseIds.value.has(parent);
-  });
-});
+/**
+ * The main conversation.
+ *
+ * A tool call whose parent agent is missing from the list used to be promoted
+ * to top level here, so an agent's edits and commands appeared as though
+ * Claude had made them directly in the main thread. They are now given a
+ * stand-in parent and collapse behind it like any other agent — see
+ * topLevelSequence.
+ */
+const topLevelMessages = computed((): ChatMessage[] => topLevelSequence(messages.value));
 
 const messageGroups = computed((): MessageGroup[] => {
   const groups: MessageGroup[] = [];

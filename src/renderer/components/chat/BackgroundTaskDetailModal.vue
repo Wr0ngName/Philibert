@@ -8,6 +8,7 @@ import { ref, watch, computed } from 'vue';
 
 import type { BackgroundTask, ToolUseInfo } from '@shared/types';
 
+import type { ActivityRow } from '../../utils/message-tree';
 import { formatModelId } from '../../utils/model';
 import { formatToolInput, type InputParam } from '../../utils/tool-input';
 import Button from '../shared/Button.vue';
@@ -27,6 +28,15 @@ interface Props {
    * has (summary, output file, model, tokens) only arrives at the end.
    */
   spawningTool?: ToolUseInfo | null;
+  /**
+   * Tool calls this task has made, flattened, deepest-nested indented.
+   *
+   * The task's own fields — summary, output file, model, tokens — are only
+   * filled in once it finishes, so for the whole time a task is live this is
+   * the only thing there is to show. Without it the modal was an empty
+   * "Output:" box.
+   */
+  activity?: ActivityRow[];
   /** Whether a stop request is in flight. */
   stopping?: boolean;
   /** Why the last stop attempt failed, if it did. */
@@ -35,6 +45,7 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   spawningTool: null,
+  activity: () => [],
   stopping: false,
   stopError: null,
 });
@@ -45,7 +56,14 @@ const inputParams = computed((): InputParam[] => formatToolInput(props.spawningT
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'stop', taskId: string): void;
+  /** Show one of the task's tool calls in the tool detail modal. */
+  (e: 'open-tool-detail', toolUse: ToolUseInfo): void;
 }>();
+
+/** Open a tool call's own detail. Guarded: a row without one is not clickable. */
+function openToolDetail(toolUse: ToolUseInfo | undefined): void {
+  if (toolUse) emit('open-tool-detail', toolUse);
+}
 
 // Output file content (lazy-loaded when modal opens)
 const outputContent = ref<string | null>(null);
@@ -257,6 +275,53 @@ const statusDisplay = computed(() => {
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- What the task has actually been doing.
+           This is the substance of the modal while a task runs: the output
+           file, summary, model and token fields are all empty until it
+           finishes, so without this a live task showed an empty box. -->
+      <div
+        v-if="activity.length > 0"
+        class="space-y-2"
+      >
+        <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
+          <Icon
+            name="terminal"
+            size="xs"
+          />
+          <span>Activity:</span>
+          <span>{{ activity.length }} tool {{ activity.length === 1 ? 'call' : 'calls' }}</span>
+        </div>
+
+        <div class="bg-surface-50 dark:bg-surface-900 rounded-lg divide-y divide-surface-200 dark:divide-surface-700 max-h-80 overflow-y-auto">
+          <button
+            v-for="row in activity"
+            :key="row.message.id"
+            type="button"
+            class="w-full text-left px-3 py-2 hover:bg-surface-100 dark:hover:bg-surface-800 transition-colors"
+            :style="row.depth > 0 ? { paddingLeft: 0.75 + row.depth * 0.75 + 'rem' } : undefined"
+            @click="openToolDetail(row.message.toolUse)"
+          >
+            <div class="flex items-baseline gap-2 min-w-0">
+              <span class="font-mono text-xs font-medium text-primary-600 dark:text-primary-400 shrink-0">
+                {{ row.message.toolUse?.toolName }}
+              </span>
+              <span class="text-xs text-surface-600 dark:text-surface-300 truncate">
+                {{ row.message.toolUse?.description }}
+              </span>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      <!-- A running task that has not called a tool yet. Said explicitly, so
+           it does not read as a broken modal. -->
+      <div
+        v-else-if="task.status === 'running'"
+        class="text-xs text-surface-500 dark:text-surface-400 italic"
+      >
+        No tool calls recorded for this task yet.
       </div>
 
       <!-- Output File Content -->

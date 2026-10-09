@@ -11,6 +11,7 @@ import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
 import { useClaudeChat } from '../../composables/useClaudeChat';
+import { descendantsOf, type ActivityRow } from '../../utils/message-tree';
 import ActionApproval from './ActionApproval.vue';
 import AskUserQuestionMessage from './AskUserQuestionMessage.vue';
 import BackgroundTaskDetailModal from './BackgroundTaskDetailModal.vue';
@@ -72,6 +73,19 @@ const taskDetailSpawningTool = computed<ToolUseInfo | null>(() => {
     m => m.toolUse && (m.toolUse.toolUseBlockId === toolUseId || m.toolUse.actionId === toolUseId),
   );
   return message?.toolUse ?? null;
+});
+
+/**
+ * The tool calls the open task has made.
+ *
+ * Read from the message stream rather than the task record, because the task
+ * record carries no history of what it did — only its final summary. While a
+ * task runs this is the only thing the detail modal has to show.
+ */
+const taskDetailActivity = computed<ActivityRow[]>(() => {
+  const toolUseId = taskDetailTask.value?.toolUseId;
+  if (!toolUseId) return [];
+  return descendantsOf(chatStore.messages, toolUseId);
 });
 
 // Tool detail modal state
@@ -186,6 +200,18 @@ function openToolDetail(id: string) {
   }
 }
 
+/**
+ * Show a tool call the task modal handed over directly.
+ *
+ * Separate from openToolDetail, which looks a call up by id: the task modal
+ * already holds the ToolUseInfo, and searching for it again would fail for a
+ * call whose parent agent is no longer in the message list.
+ */
+function openToolDetailFor(toolUse: ToolUseInfo) {
+  toolDetailInfo.value = toolUse;
+  toolDetailOpen.value = true;
+}
+
 function closeToolDetail() {
   toolDetailOpen.value = false;
   toolDetailInfo.value = null;
@@ -278,10 +304,12 @@ function closeToolDetail() {
       :open="taskDetailOpen"
       :task="taskDetailTask"
       :spawning-tool="taskDetailSpawningTool"
+      :activity="taskDetailActivity"
       :stopping="stoppingTask"
       :stop-error="stopTaskError"
       @close="closeTaskDetail"
       @stop="stopTaskFromDetail"
+      @open-tool-detail="openToolDetailFor"
     />
 
     <!-- Tool use detail modal -->

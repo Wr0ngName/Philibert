@@ -149,6 +149,15 @@ export interface BackgroundTaskInfo {
   summary?: string;
   /** Error message when failed */
   error?: string;
+  /**
+   * tool_use block id of the tool that spawned this task, when it had one.
+   *
+   * Carried so this row can stand in for that tool_use as a parent. Tool calls
+   * made by the task name it in their `parentToolUseId`, and if nothing in the
+   * message list provides it they are orphaned — which used to mean they were
+   * promoted into the main conversation and read as Claude's own work.
+   */
+  toolUseId?: string;
 }
 
 /**
