@@ -16,6 +16,7 @@ import { storeToRefs } from 'pinia';
 
 import type { ChatMessage } from '@shared/types';
 
+import { useVirtualList } from '../../composables/useVirtualList';
 import { useChatStore } from '../../stores/chat';
 import { formatTime } from '../../utils/date';
 import {
@@ -34,6 +35,10 @@ const emit = defineEmits<{
 
 const chatStore = useChatStore();
 const { messages, hasMessages, currentStreamingContent, isLoading } = storeToRefs(chatStore);
+
+// Declared up here because useVirtualList reads it while the component sets
+// up, which is before the scrolling section further down would have run.
+const listRef = ref<HTMLDivElement | null>(null);
 
 interface MessageGroup {
   id: string;
@@ -136,6 +141,149 @@ function getVisibleTurnItems(group: MessageGroup): VisibleItem[] {
   return out;
 }
 
+/**
+ * One rendered row.
+ *
+ * The list is flattened to rows so only the rows on screen need to be
+ * mounted. A turn is therefore no longer one element: its header, its content
+ * and its trailing spinner are separate rows, and the bubble is drawn as
+ * contiguous slices (see `sliceClass`) so it survives being cut by the window.
+ */
+interface Row {
+  key: string;
+  kind: 'standalone' | 'turn-header' | 'turn-item' | 'turn-spinner' | 'thinking';
+  msg?: ChatMessage;
+  depth: number;
+  childCount: number;
+  isExpanded: boolean;
+  /** First row of a turn bubble: rounds and closes its top. */
+  bubbleFirst: boolean;
+  /** Last row of a turn bubble: rounds and closes its bottom. */
+  bubbleLast: boolean;
+  /** Header timestamp. */
+  timestamp?: number;
+  /** Starts a new visual block, so it carries the gap above it. */
+  startsBlock: boolean;
+}
+
+function blankRow(key: string, kind: Row['kind']): Row {
+  return {
+    key,
+    kind,
+    depth: 0,
+    childCount: 0,
+    isExpanded: false,
+    bubbleFirst: false,
+    bubbleLast: false,
+    startsBlock: false,
+  };
+}
+
+const rows = computed((): Row[] => {
+  const out: Row[] = [];
+
+  for (const group of messageGroups.value) {
+    if (group.type === 'standalone') {
+      // MessageItem draws its own bubble for these, so no slicing.
+      const row = blankRow(group.messages[0].id, 'standalone');
+      row.msg = group.messages[0];
+      row.startsBlock = true;
+      out.push(row);
+      continue;
+    }
+
+    const turnRows: Row[] = [];
+
+    const header = blankRow(`${group.id}:header`, 'turn-header');
+    header.bubbleFirst = true;
+    header.startsBlock = true;
+    header.timestamp = group.messages[0].timestamp;
+    turnRows.push(header);
+
+    for (const item of getVisibleTurnItems(group)) {
+      const row = blankRow(item.msg.id, 'turn-item');
+      row.msg = item.msg;
+      row.depth = item.depth;
+      row.childCount = item.childCount;
+      row.isExpanded = item.isExpanded;
+      turnRows.push(row);
+    }
+
+    if (showTurnSpinner(group)) {
+      turnRows.push(blankRow(`${group.id}:spinner`, 'turn-spinner'));
+    }
+
+    turnRows[turnRows.length - 1].bubbleLast = true;
+    out.push(...turnRows);
+  }
+
+  if (showThinkingPlaceholder.value) {
+    const row = blankRow('thinking', 'thinking');
+    row.startsBlock = true;
+    out.push(row);
+  }
+
+  return out;
+});
+
+const rowKeys = computed((): string[] => rows.value.map((r) => r.key));
+
+const virtual = useVirtualList({
+  container: listRef,
+  keys: () => rowKeys.value,
+});
+
+const virtualWindow = computed(() => virtual.window.value);
+
+const visibleRows = computed((): Row[] =>
+  rows.value.slice(virtualWindow.value.start, virtualWindow.value.end),
+);
+
+/** Row elements currently mounted, so each can be unobserved when replaced. */
+const rowElements = new Map<string, HTMLElement>();
+
+/**
+ * Template ref callback for a row. Vue passes null as a row unmounts, which is
+ * when its element must stop being observed — a ResizeObserver holds its
+ * targets strongly, so leaving them attached would leak every row the user
+ * ever scrolled past.
+ */
+function bindRow(key: string, el: unknown): void {
+  const previous = rowElements.get(key);
+  if (el instanceof HTMLElement) {
+    if (previous && previous !== el) virtual.releaseRow(previous);
+    rowElements.set(key, el);
+    virtual.measureRow(key, el);
+    return;
+  }
+  if (previous) {
+    virtual.releaseRow(previous);
+    rowElements.delete(key);
+  }
+}
+
+/** Classes drawing a turn bubble as a slice of itself. */
+function sliceClass(row: Row): string[] {
+  if (row.kind === 'standalone') return [];
+  if (row.kind === 'thinking') {
+    return ['rounded-lg', 'animate-fade-in', 'message-bubble', 'message-assistant'];
+  }
+  // Colours taken from the `message-assistant` utility so a sliced bubble is
+  // indistinguishable from the single-element one it replaces.
+  const classes = [
+    'turn-slice',
+    'bg-white',
+    'dark:bg-surface-800',
+    'border-x',
+    'border-surface-200',
+    'dark:border-surface-700',
+  ];
+  if (row.bubbleFirst) classes.push('turn-slice-first', 'border-t', 'rounded-t-lg');
+  if (row.bubbleLast) classes.push('turn-slice-last', 'border-b', 'rounded-b-lg');
+  if (row.kind !== 'turn-header') classes.push('turn-slice-inner-gap');
+  return classes;
+}
+
 function isTurnStreaming(group: MessageGroup): boolean {
   return group.messages.some(m => m.isStreaming);
 }
@@ -175,7 +323,6 @@ const showThinkingPlaceholder = computed(() => {
   return last.role !== 'assistant';
 });
 
-const listRef = ref<HTMLDivElement | null>(null);
 
 // Track if user is at/near bottom of scroll (within threshold)
 const SCROLL_THRESHOLD = 80; // pixels from bottom to consider "at bottom"
@@ -213,6 +360,19 @@ const HIGHLIGHT_DURATION_MS = 1800;
 async function scrollToMessage(messageId: string): Promise<void> {
   if (!listRef.value || !messageId) return;
   const root = listRef.value;
+
+  // A virtualised target is probably not mounted, so no selector could find
+  // it. Jump the scroll position to where its row sits first; the retry loop
+  // below then finds the real element once that slice has rendered, and
+  // centres it properly.
+  if (virtual.enabled.value) {
+    const index = rows.value.findIndex((r) => r.msg?.id === messageId);
+    if (index >= 0) {
+      root.scrollTop = virtual.offsetOf(index);
+      virtual.syncViewport();
+      await nextTick();
+    }
+  }
   const escapedId = (window.CSS && CSS.escape) ? CSS.escape(messageId) : messageId.replace(/"/g, '\\"');
   const selector = `[data-message-id="${escapedId}"]`;
 
@@ -237,6 +397,9 @@ async function scrollToMessage(messageId: string): Promise<void> {
  * Handle scroll events to track user position
  */
 function handleScroll(): void {
+  // The window to render is derived from the scroll position, so this has to
+  // run before anything reads it.
+  virtual.syncViewport();
   isUserAtBottom.value = checkIfAtBottom();
   if (isUserAtBottom.value) {
     unreadCount.value = 0;
@@ -320,8 +483,20 @@ let contentObserver: MutationObserver | null = null;
 let viewportObserver: ResizeObserver | null = null;
 
 // Set up scroll listener + content-mutation observer + viewport-resize observer
+// Measurements belong to one conversation's rows. Switching conversation
+// replaces every row, and keeping stale heights would place the new ones with
+// the old one's geometry.
+watch(
+  () => chatStore.currentConversationId,
+  () => {
+    virtual.reset();
+    nextTick(() => virtual.syncViewport());
+  },
+);
+
 onMounted(() => {
   if (listRef.value) {
+    virtual.syncViewport();
     listRef.value.addEventListener('scroll', handleScroll, { passive: true });
 
     contentObserver = new MutationObserver(() => {
@@ -336,6 +511,9 @@ onMounted(() => {
     // Guarded: happy-dom and older runtimes may not provide ResizeObserver.
     if (typeof ResizeObserver !== 'undefined') {
       viewportObserver = new ResizeObserver(() => {
+        // A shorter viewport shows fewer rows, so the window has to be
+        // recomputed even when the scroll position has not moved.
+        virtual.syncViewport();
         // isUserAtBottom still holds the pre-resize state here: a resize emits
         // no scroll event, and ResizeObserver runs before paint. So it is
         // exactly the right question — was the user following the tail before
@@ -384,68 +562,82 @@ onUnmounted(() => {
         </p>
       </div>
 
-      <!-- Messages grouped by turn -->
+      <!--
+        Flat, windowed row list.
+
+        When virtualising, the outer div is a spacer holding the full scroll
+        height and the inner one is translated to where the rendered slice
+        belongs; otherwise both are inert and the rows simply flow. One markup
+        path either way, so a short conversation and a long one render
+        identically.
+      -->
       <div
         v-else
-        class="message-list-spacing"
+        :style="virtual.enabled.value
+          ? { height: virtualWindow.totalHeight + 'px', position: 'relative' }
+          : undefined"
       >
-        <template
-          v-for="group in messageGroups"
-          :key="group.id"
+        <div
+          :style="virtual.enabled.value
+            ? { position: 'absolute', top: '0px', left: '0px', right: '0px',
+                transform: `translateY(${virtualWindow.offsetTop}px)` }
+            : undefined"
         >
-          <!-- Standalone (user/system) message -->
           <div
-            v-if="group.type === 'standalone'"
-            :data-message-id="group.messages[0].id"
+            v-for="row in visibleRows"
+            :key="row.key"
+            :ref="(el) => bindRow(row.key, el)"
+            :class="['chat-row', row.startsBlock ? 'row-gap' : '']"
           >
-            <MessageItem
-              :message="group.messages[0]"
-              @open-task-detail="emit('open-task-detail', $event)"
-              @open-tool-detail="emit('open-tool-detail', $event)"
-            />
-          </div>
+            <div
+              :class="sliceClass(row)"
+              :data-message-id="row.msg?.id"
+            >
+              <!-- User or system message: its own bubble -->
+              <MessageItem
+                v-if="row.kind === 'standalone' && row.msg"
+                :message="row.msg"
+                @open-task-detail="emit('open-task-detail', $event)"
+                @open-tool-detail="emit('open-tool-detail', $event)"
+              />
 
-          <!-- Assistant turn: single bubble with header + interleaved content -->
-          <div
-            v-else
-            class="rounded-lg animate-fade-in message-bubble message-assistant"
-          >
-            <!-- Turn header -->
-            <div class="flex items-center gap-2 assistant-turn-header">
-              <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200">
-                C
-              </div>
-              <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
-                Claude
-              </span>
-              <span class="text-xs text-surface-400 dark:text-surface-500">
-                {{ formatTime(group.messages[0].timestamp) }}
-              </span>
-            </div>
-
-            <!-- Turn content -->
-            <div class="assistant-turn-content">
+              <!-- Turn header -->
               <div
-                v-for="item in getVisibleTurnItems(group)"
-                :key="item.msg.id"
-                :data-message-id="item.msg.id"
-                :class="item.depth > 0 ? 'nested-agent-item' : ''"
-                :style="item.depth > 0 ? { paddingLeft: (item.depth * 0.75) + 'rem' } : undefined"
+                v-else-if="row.kind === 'turn-header'"
+                class="flex items-center gap-2 assistant-turn-header"
+              >
+                <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200">
+                  C
+                </div>
+                <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
+                  Claude
+                </span>
+                <span class="text-xs text-surface-400 dark:text-surface-500">
+                  {{ formatTime(row.timestamp ?? 0) }}
+                </span>
+              </div>
+
+              <!-- Turn content -->
+              <div
+                v-else-if="row.kind === 'turn-item' && row.msg"
+                :class="row.depth > 0 ? 'nested-agent-item' : ''"
+                :style="row.depth > 0 ? { paddingLeft: (row.depth * 0.75) + 'rem' } : undefined"
               >
                 <MessageItem
-                  :message="item.msg"
-                  :child-count="item.childCount"
-                  :is-expanded="item.isExpanded"
+                  :message="row.msg"
+                  :child-count="row.childCount"
+                  :is-expanded="row.isExpanded"
                   grouped
                   @open-task-detail="emit('open-task-detail', $event)"
                   @open-tool-detail="emit('open-tool-detail', $event)"
                   @toggle-agent-expand="toggleAgentExpand"
                 />
               </div>
+
               <!-- Trailing spinner: sits under the last rendered content so the
                    user can see the turn is still running on long answers -->
               <div
-                v-if="showTurnSpinner(group)"
+                v-else-if="row.kind === 'turn-spinner'"
                 class="flex items-center gap-2 assistant-turn-trailing-spinner"
               >
                 <Spinner
@@ -453,26 +645,24 @@ onUnmounted(() => {
                   class="text-primary-500"
                 />
               </div>
-            </div>
-          </div>
-        </template>
 
-        <!-- Thinking placeholder: shown when loading but no assistant output yet -->
-        <div
-          v-if="showThinkingPlaceholder"
-          class="rounded-lg animate-fade-in message-bubble message-assistant"
-        >
-          <div class="flex items-center gap-2">
-            <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200">
-              C
+              <!-- Thinking placeholder: loading but no assistant output yet -->
+              <div
+                v-else-if="row.kind === 'thinking'"
+                class="flex items-center gap-2"
+              >
+                <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200">
+                  C
+                </div>
+                <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
+                  Claude
+                </span>
+                <Spinner
+                  size="sm"
+                  class="ml-2 text-primary-500"
+                />
+              </div>
             </div>
-            <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
-              Claude
-            </span>
-            <Spinner
-              size="sm"
-              class="ml-2 text-primary-500"
-            />
           </div>
         </div>
       </div>
@@ -497,16 +687,49 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.message-list-spacing > * + * {
-  margin-top: calc(var(--chat-line-height, 1.6) * 0.6rem);
+/*
+ * Spacing between blocks is PADDING on the row wrapper, never margin.
+ *
+ * Virtualised geometry is the sum of measured row heights, and offsetHeight
+ * excludes margins — so a margin-based gap would make every offset drift by
+ * the number of gaps above it, and the further down the conversation the
+ * worse it would get. Padding on the outer wrapper is included in the
+ * measurement and sits outside the bubble, so the gap stays uncoloured.
+ */
+.row-gap {
+  padding-top: calc(var(--chat-line-height, 1.6) * 0.6rem);
 }
 
 .assistant-turn-header {
   margin-bottom: calc(var(--chat-line-height, 1.6) * 0.3rem);
 }
 
-.assistant-turn-content > * + * {
-  margin-top: calc(var(--chat-line-height, 1.6) * 0.25rem);
+/*
+ * A turn bubble drawn as a stack of slices.
+ *
+ * A turn is no longer a single element — its header, content rows and
+ * trailing spinner are separate rows so the window can cut between them — so
+ * the bubble is assembled from each row's own edges. Side padding and borders
+ * on every slice; the top and bottom are closed and rounded only on the
+ * first and last. The result is continuous because the rows are adjacent in
+ * normal flow with no margin between them.
+ */
+.turn-slice {
+  padding-left: calc(var(--chat-line-height, 1.6) * 0.6rem);
+  padding-right: calc(var(--chat-line-height, 1.6) * 0.6rem);
+}
+
+.turn-slice-first {
+  padding-top: calc(var(--chat-line-height, 1.6) * 0.6rem);
+}
+
+.turn-slice-last {
+  padding-bottom: calc(var(--chat-line-height, 1.6) * 0.6rem);
+}
+
+/* Interior spacing between a turn's rows, inside the bubble. */
+.turn-slice-inner-gap {
+  padding-top: calc(var(--chat-line-height, 1.6) * 0.25rem);
 }
 
 /* Subtle left rail for sub-agent activity to anchor depth visually */
