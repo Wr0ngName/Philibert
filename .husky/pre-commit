@@ -36,7 +36,13 @@ if [ -z "$STAGED_FILES" ]; then
 fi
 
 echo "Running eslint on staged files..."
-npx eslint $STAGED_FILES
+# --no-warn-ignored: the staged list is every .ts/.vue/.js file, which includes
+# root config files that eslint.config.mjs ignores on purpose (vitest.config.ts,
+# forge.config.ts, ...). Naming one on the command line otherwise produces
+# "File ignored because of a matching ignore pattern", so committing a config
+# change printed a warning for a file nobody asked to lint. Preferred over
+# re-listing the ignored patterns here, which would drift from the eslint config.
+npx eslint --no-warn-ignored $STAGED_FILES
 
 echo "Running typecheck..."
 npm run typecheck
