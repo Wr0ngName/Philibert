@@ -10,7 +10,6 @@ import { modifiedPathsForTool } from '@shared/file-modifications';
 import { primaryModelUsage } from '@shared/model-usage';
 import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData } from '@shared/types';
 
-import { CONSTANTS } from '../constants/app';
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
 
@@ -314,15 +313,24 @@ export const useChatStore = defineStore('chat', () => {
     addMessageTo(messages.value, message);
   }
 
-  /** Append to a specific message list, enforcing the same cap. */
+  /**
+   * Append to a specific message list.
+   *
+   * Deliberately unbounded. This used to splice the oldest messages off once
+   * the list passed a 1000-message cap, which destroyed the user's
+   * transcript: this array *is* what gets persisted —
+   * `buildConversationPayload(id, chatStore.messages, …)` in the conversations
+   * store serialises it verbatim — so the next autosave wrote the truncated
+   * list back over the file. Scrollback past the cap was gone for good, with
+   * nothing said about it.
+   *
+   * The cap existed to keep the DOM manageable, which is a rendering concern
+   * and is now solved by rendering only the visible rows (see
+   * useVirtualList / MessageList). Trimming history is not a legitimate way to
+   * make a list render faster.
+   */
   function addMessageTo(sink: ChatMessage[], message: ChatMessage): void {
     sink.push(message);
-
-    // Enforce message limit
-    if (sink.length > CONSTANTS.MESSAGES.MAX_COUNT) {
-      const removeCount = sink.length - CONSTANTS.MESSAGES.MAX_COUNT;
-      sink.splice(0, removeCount);
-    }
   }
 
   /**

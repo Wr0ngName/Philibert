@@ -52,14 +52,6 @@ function createFileEditAction(overrides: Partial<FileEditAction> & { id: string 
 }
 
 // Mock CONSTANTS with testable values
-vi.mock('../../constants/app', () => ({
-  CONSTANTS: {
-    MESSAGES: {
-      MAX_COUNT: 100,
-    },
-  },
-}));
-
 describe('useChatStore', () => {
   let store: ReturnType<typeof useChatStore>;
 
@@ -198,9 +190,13 @@ describe('useChatStore', () => {
       expect(store.messages[2].content).toBe('Third');
     });
 
-    it('should enforce message limit by removing oldest', () => {
-      // Add more than MAX_COUNT messages
-      for (let i = 0; i < 105; i++) {
+    it('should never drop old messages, however many arrive', () => {
+      // This array is what gets persisted: the conversations store serialises
+      // it verbatim via buildConversationPayload. It used to be spliced down
+      // to a 1000-message cap, so the next autosave wrote the truncated list
+      // back over the file and the user's earlier scrollback was gone for
+      // good. Keeping a render cap out of the data layer is the whole point.
+      for (let i = 0; i < 2500; i++) {
         store.addMessage({
           id: `msg-${i}`,
           role: 'user',
@@ -208,24 +204,10 @@ describe('useChatStore', () => {
           timestamp: i,
         });
       }
-      // Should only have MAX_COUNT messages (100)
-      expect(store.messages).toHaveLength(100);
-      // Should have removed oldest (first 5)
-      expect(store.messages[0].content).toBe('Message 5');
-      expect(store.messages[99].content).toBe('Message 104');
-    });
 
-    it('should handle exactly MAX_COUNT messages', () => {
-      for (let i = 0; i < 100; i++) {
-        store.addMessage({
-          id: `msg-${i}`,
-          role: 'user',
-          content: `Message ${i}`,
-          timestamp: i,
-        });
-      }
-      expect(store.messages).toHaveLength(100);
+      expect(store.messages).toHaveLength(2500);
       expect(store.messages[0].content).toBe('Message 0');
+      expect(store.messages[2499].content).toBe('Message 2499');
     });
   });
 

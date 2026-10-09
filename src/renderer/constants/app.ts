@@ -30,11 +30,6 @@ export const CONSTANTS = {
     /** Threshold for batch file changes before full tree reload */
     BATCH_CHANGE_THRESHOLD: FILE_CONSTANTS.BATCH_CHANGE_THRESHOLD,
   },
-  /** Message-related limits */
-  MESSAGES: {
-    /** Maximum number of messages to keep in memory */
-    MAX_COUNT: 1000,
-  },
   /** UI configuration */
   UI: {
     /** Maximum height for auto-resizing textarea (pixels) */
