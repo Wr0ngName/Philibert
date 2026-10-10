@@ -24,6 +24,7 @@ import { computed, onUnmounted, ref, type Ref } from 'vue';
 import {
   buildOffsets,
   estimateFrom,
+  findIndexAtOffset,
   scrollCorrection,
   visibleWindow,
   type VirtualWindow,
@@ -116,25 +117,35 @@ export function useVirtualList(options: UseVirtualListOptions) {
     const previous = heights.get(key);
     if (previous === height) return;
 
+    // Captured before the measurement is stored, because both are what the
+    // geometry assumed up to now: the estimate this row was contributing, and
+    // which row the user is actually looking at.
+    const estimateBefore = estimateFrom(heights.values(), estimatedHeight);
+    const rowKeys = keys();
+    const changedIndex = rowKeys.indexOf(key);
+    // The first row the viewport actually shows, NOT window.start — that is
+    // `overscan` rows higher, and rows in between are above the viewport, so
+    // measuring them does move the view and does need correcting.
+    const anchorIndex = findIndexAtOffset(offsets.value, scrollTop.value);
+
     heights.set(key, height);
     heightsVersion.value += 1;
 
-    // A first measurement means the row just mounted, which is what happens
-    // when the window moves. Only a row that already had a height and now has
-    // a different one represents content actually changing size.
-    if (previous === undefined) return;
+    // A row that already had a height and now reports a different one is
+    // content changing size. A first measurement just means the row mounted,
+    // which is what happens when the window moves — so it must not be
+    // reported as content growth, or scrolling would re-pin to the bottom.
+    if (previous !== undefined) options.onRowResized?.();
 
-    options.onRowResized?.();
+    if (!enabled.value || changedIndex === -1) return;
 
-    if (!enabled.value) return;
-
-    // Keep what the user is looking at still. The anchor is the first row in
-    // the current window, and only changes strictly above it need cancelling.
-    const rowKeys = keys();
-    const changedIndex = rowKeys.indexOf(key);
-    if (changedIndex === -1) return;
-
-    const correction = scrollCorrection(changedIndex, window.value.start, height - previous);
+    const correction = scrollCorrection(
+      changedIndex,
+      anchorIndex,
+      height,
+      previous,
+      estimateBefore,
+    );
     if (correction !== 0 && container.value) {
       container.value.scrollTop += correction;
       scrollTop.value = container.value.scrollTop;

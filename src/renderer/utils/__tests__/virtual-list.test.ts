@@ -176,23 +176,39 @@ describe('visibleWindow', () => {
 });
 
 describe('scrollCorrection', () => {
-  it('compensates for a row above the anchor growing', () => {
-    // Measuring an estimated row taller pushes the anchor down; moving the
-    // scroll position by the same amount keeps it still.
-    expect(scrollCorrection(3, 10, 40)).toBe(40);
+  it('compensates for an already-measured row above the anchor growing', () => {
+    // 100 → 140 pushes everything below down by 40.
+    expect(scrollCorrection(3, 10, 140, 100, 72)).toBe(40);
   });
 
-  it('compensates for a row above the anchor shrinking', () => {
-    expect(scrollCorrection(3, 10, -40)).toBe(-40);
+  it('compensates for an already-measured row above the anchor shrinking', () => {
+    expect(scrollCorrection(3, 10, 60, 100, 72)).toBe(-40);
+  });
+
+  it('compensates for a row measured for the FIRST time above the anchor', () => {
+    // This is the case that made scrolling up feel stuck. The row was
+    // contributing the estimate (72); its real height is 200, so the content
+    // below it — including what the user is reading — drops by 128 unless the
+    // scroll position follows.
+    expect(scrollCorrection(3, 10, 200, undefined, 72)).toBe(128);
+  });
+
+  it('corrects nothing when a first measurement matches the estimate', () => {
+    expect(scrollCorrection(3, 10, 72, undefined, 72)).toBe(0);
+  });
+
+  it('corrects downward when a first measurement is shorter than the estimate', () => {
+    expect(scrollCorrection(3, 10, 40, undefined, 72)).toBe(-32);
   });
 
   it('ignores a change at the anchor itself', () => {
     // The anchor growing is the row the user is reading changing size, which
     // is expected; correcting for it would itself move the content.
-    expect(scrollCorrection(10, 10, 40)).toBe(0);
+    expect(scrollCorrection(10, 10, 140, 100, 72)).toBe(0);
   });
 
   it('ignores a change below the anchor', () => {
-    expect(scrollCorrection(50, 10, 40)).toBe(0);
+    expect(scrollCorrection(50, 10, 140, 100, 72)).toBe(0);
+    expect(scrollCorrection(50, 10, 200, undefined, 72)).toBe(0);
   });
 });

@@ -58,7 +58,7 @@ function stubLayout(): void {
   offsetHeightSpy = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
   Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
     configurable: true,
-    get(): number {
+    get(this: HTMLElement): number {
       return rowHeight;
     },
   });
@@ -254,7 +254,13 @@ describe('MessageList virtualisation', () => {
     fireRowResize(wrapper.findAll('.chat-row')[0].element);
     await nextTick();
 
-    expect(container.scrollTop).toBe(1_000);
+    // Asserted as "nowhere near the bottom" rather than "unchanged": a row
+    // above the viewport growing legitimately moves the scroll position, by
+    // exactly as much as the content above gained, so that what the user is
+    // reading stays put. That anchor correction is the fix for sticky
+    // upward scrolling — what must not happen is a jump to the tail.
+    expect(container.scrollTop).not.toBe(100_000);
+    expect(container.scrollTop).toBeLessThan(50_000);
   });
 
   it('does not re-pin when rows are added after the user has scrolled away', async () => {

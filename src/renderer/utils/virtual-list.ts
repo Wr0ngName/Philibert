@@ -136,12 +136,19 @@ export function visibleWindow(
 
 /**
  * How far to move the scroll position to keep what the user is looking at
- * still, after rows above the viewport changed height.
+ * still, after a row above the viewport changed height.
  *
- * Measuring a row that was previously an estimate moves everything below it.
- * When that row is above the viewport the content the user is reading slides
- * under them, which during streaming happens continuously. Shifting the
- * scroll position by the same delta cancels it out.
+ * Any row above the viewport whose height changes moves everything below it,
+ * including what the user is reading. Shifting the scroll position by the same
+ * delta cancels that out.
+ *
+ * `previousHeight` is undefined for a row being measured for the first time,
+ * which is the common case when scrolling UP into rows that have never
+ * rendered. Those rows were contributing `estimate` to the geometry, so that
+ * is what their real height replaces — and skipping this case is what made
+ * scrolling up feel stuck: the rows above gained height as they were measured,
+ * pushing the content down by roughly as far as the user had just scrolled it
+ * up, so slow scrolling went nowhere while fast scrolling outran it.
  *
  * Returns 0 when the change was at or below the anchor, where it is harmless
  * and correcting for it would itself cause a jump.
@@ -149,8 +156,10 @@ export function visibleWindow(
 export function scrollCorrection(
   changedIndex: number,
   anchorIndex: number,
-  heightDelta: number,
+  newHeight: number,
+  previousHeight: number | undefined,
+  estimate: number,
 ): number {
   if (changedIndex >= anchorIndex) return 0;
-  return heightDelta;
+  return newHeight - (previousHeight ?? estimate);
 }
