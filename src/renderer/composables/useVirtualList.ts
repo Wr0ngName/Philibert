@@ -40,6 +40,16 @@ export interface UseVirtualListOptions {
   overscan?: number;
   /** Row count below which everything is rendered. */
   threshold?: number;
+  /**
+   * A row that had already been measured changed height — content grew or
+   * shrank in place, rather than a row appearing.
+   *
+   * Deliberately not called for a row's first measurement, which is what
+   * happens when a row mounts because the window moved. That distinction is
+   * what lets a caller re-pin to the bottom on content growth without a
+   * scroll being mistaken for it.
+   */
+  onRowResized?: () => void;
 }
 
 /** A row count below which virtualising costs more than it saves. */
@@ -109,7 +119,14 @@ export function useVirtualList(options: UseVirtualListOptions) {
     heights.set(key, height);
     heightsVersion.value += 1;
 
-    if (previous === undefined || !enabled.value) return;
+    // A first measurement means the row just mounted, which is what happens
+    // when the window moves. Only a row that already had a height and now has
+    // a different one represents content actually changing size.
+    if (previous === undefined) return;
+
+    options.onRowResized?.();
+
+    if (!enabled.value) return;
 
     // Keep what the user is looking at still. The anchor is the first row in
     // the current window, and only changes strictly above it need cancelling.

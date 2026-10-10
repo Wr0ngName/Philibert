@@ -27,11 +27,29 @@ import MessageList from '../MessageList.vue';
 const ROW_HEIGHT = 50;
 const VIEWPORT_HEIGHT = 500;
 
+/** Mutable, so a row can be made to grow after it has been measured. */
+let rowHeight = ROW_HEIGHT;
+
+/** Captured resize callbacks, so a row changing height can be simulated. */
+let resizeCallbacks: ResizeObserverCallback[] = [];
+
 class MockResizeObserver implements ResizeObserver {
-  constructor(_cb: ResizeObserverCallback) {}
+  constructor(cb: ResizeObserverCallback) {
+    resizeCallbacks.push(cb);
+  }
   observe() {}
   unobserve() {}
   disconnect() {}
+}
+
+/** Report that an already-measured row changed size. */
+function fireRowResize(target: Element): void {
+  for (const cb of resizeCallbacks) {
+    cb(
+      [{ target } as unknown as ResizeObserverEntry],
+      null as unknown as ResizeObserver,
+    );
+  }
 }
 
 let offsetHeightSpy: PropertyDescriptor | undefined;
@@ -41,7 +59,7 @@ function stubLayout(): void {
   Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
     configurable: true,
     get(): number {
-      return ROW_HEIGHT;
+      return rowHeight;
     },
   });
 }
@@ -96,6 +114,8 @@ async function mountList() {
 describe('MessageList virtualisation', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    rowHeight = ROW_HEIGHT;
+    resizeCallbacks = [];
     vi.stubGlobal('ResizeObserver', MockResizeObserver);
     stubLayout();
   });
@@ -200,6 +220,41 @@ describe('MessageList virtualisation', () => {
     await nextTick();
 
     expect(container.scrollTop).toBe(100_000); // scrollHeight
+  });
+
+  it('re-pins when a row grows in place while following the tail', async () => {
+    // The case the removed MutationObserver also covered and the rows-length
+    // watcher cannot see: content getting taller without a new row — a
+    // background task gaining its summary, a tool row being enriched, an
+    // image finishing loading.
+    seedConversation(300);
+    const { wrapper, container } = await mountList();
+
+    Object.defineProperty(container, 'scrollTop', { value: 99_950, writable: true, configurable: true });
+    container.dispatchEvent(new Event('scroll')); // at bottom, following
+    await nextTick();
+
+    // A row that has already been measured now reports a bigger height.
+    rowHeight = 200;
+    fireRowResize(wrapper.findAll('.chat-row')[0].element);
+    await nextTick();
+
+    expect(container.scrollTop).toBe(100_000); // scrollHeight
+  });
+
+  it('does not re-pin when a row grows after the user has scrolled away', async () => {
+    seedConversation(300);
+    const { wrapper, container } = await mountList();
+
+    Object.defineProperty(container, 'scrollTop', { value: 1_000, writable: true, configurable: true });
+    container.dispatchEvent(new Event('scroll'));
+    await nextTick();
+
+    rowHeight = 200;
+    fireRowResize(wrapper.findAll('.chat-row')[0].element);
+    await nextTick();
+
+    expect(container.scrollTop).toBe(1_000);
   });
 
   it('does not re-pin when rows are added after the user has scrolled away', async () => {

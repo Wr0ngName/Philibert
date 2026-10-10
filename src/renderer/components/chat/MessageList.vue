@@ -231,6 +231,14 @@ const rowKeys = computed((): string[] => rows.value.map((r) => r.key));
 const virtual = useVirtualList({
   container: listRef,
   keys: () => rowKeys.value,
+  // Keep following the tail when a row grows in place rather than a new row
+  // appearing — a background task gaining its summary, a tool row being
+  // enriched, an image finishing loading. The rows-length watcher below cannot
+  // see those, and this fires only for a row that already had a height, so a
+  // row mounting because the window moved does not trigger it.
+  onRowResized: () => {
+    if (isUserAtBottom.value) scrollToBottom();
+  },
 });
 
 const virtualWindow = computed(() => virtual.window.value);
