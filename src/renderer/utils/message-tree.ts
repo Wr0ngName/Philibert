@@ -159,6 +159,22 @@ export function topLevelSequence(messages: readonly ChatMessage[]): ChatMessage[
   return sequence;
 }
 
+/**
+ * The tool_use block id a background task is linked to, if any.
+ *
+ * `toolUseId` is the proper field, but the CLI's first notification for a
+ * backgrounded tool sends the tool_use block id as the task's `id` and sets no
+ * `toolUseId` at all (SDKMessageHandler emits `taskId: toolBlock.id`). Falling
+ * back to the id is what lets such a task find the tool that spawned it — the
+ * shell command or agent prompt behind it, and any tool calls it has made.
+ *
+ * For a task whose id is a real task id the fallback simply matches nothing,
+ * which is the same as having no link.
+ */
+export function toolUseIdForTask(task: { id: string; toolUseId?: string }): string {
+  return task.toolUseId ?? task.id;
+}
+
 /** One tool call made beneath an agent or background task. */
 export interface ActivityRow {
   message: ChatMessage;

@@ -315,13 +315,17 @@ const statusDisplay = computed(() => {
         </div>
       </div>
 
-      <!-- A running task that has not called a tool yet. Said explicitly, so
-           it does not read as a broken modal. -->
+      <!-- A running AGENT that has not called a tool yet.
+           Only for agents: a background command runs one shell command and
+           never makes tool calls, so telling the user none were recorded is
+           noise about something that was never going to happen. What a
+           command has to show is its command line and its output, above and
+           below this. -->
       <div
-        v-else-if="task.status === 'running'"
+        v-else-if="task.status === 'running' && task.taskType === 'agent'"
         class="text-xs text-surface-500 dark:text-surface-400 italic"
       >
-        No tool calls recorded for this task yet.
+        No tool calls recorded for this agent yet.
       </div>
 
       <!-- Output File Content -->

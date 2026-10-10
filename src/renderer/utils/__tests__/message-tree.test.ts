@@ -19,6 +19,7 @@ import {
   descendantsOf,
   knownToolUseIds,
   splitTopLevel,
+  toolUseIdForTask,
   topLevelSequence,
 } from '../message-tree';
 
@@ -296,6 +297,27 @@ describe('descendantsOf', () => {
     const b = toolUse('toolu_b', 'Task', 'toolu_a');
 
     expect(() => descendantsOf([a, b], 'toolu_a')).not.toThrow();
+  });
+});
+
+describe('toolUseIdForTask', () => {
+  it('prefers the proper field when it is set', () => {
+    expect(toolUseIdForTask({ id: 'task-1', toolUseId: 'toolu_x' })).toBe('toolu_x');
+  });
+
+  it('falls back to the task id', () => {
+    // A backgrounded tool's first notification sends the tool_use block id as
+    // the task id and sets no toolUseId (SDKMessageHandler emits
+    // `taskId: toolBlock.id`). Keying only on toolUseId is why the detail
+    // modal showed no command for background commands.
+    expect(toolUseIdForTask({ id: 'toolu_bash' })).toBe('toolu_bash');
+  });
+
+  it('lets a task with only an id find its spawning tool', () => {
+    const messages = [toolUse('toolu_bash', 'Bash')];
+    const id = toolUseIdForTask({ id: 'toolu_bash' });
+
+    expect(knownToolUseIds(messages).has(id)).toBe(true);
   });
 });
 

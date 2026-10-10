@@ -167,19 +167,13 @@ const config: ForgeConfig = {
       // Check what actually landed, instead of trusting that the loop above
       // ran to completion.
       //
-      // This guard is here because of a real failure, in v0.21.0-rc.1's
-      // pipeline: on a memory-starved runner the npm child was killed during
-      // node-pty's native build, the rejection never reached Forge, and
-      // packaging reported SUCCESS with two of the three external modules
-      // missing. The `&&` chain then ran electron-builder, which failed with
-      //
-      //   ENOENT: no such file or directory, copyfile
-      //     '…/nsis-3.0.4.1/elevate.exe' -> '…/resources/elevate.exe'
-      //
-      // — the *destination* directory did not exist. That reads as an NSIS or
-      // download fault and cost a long detour before the real cause showed up.
-      // An incomplete package has to fail here, while the cause is still on
-      // screen.
+      // Note what this can and cannot catch. It catches an install that
+      // *returned* without producing the module. It does NOT catch the failure
+      // that prompted it — on a memory-starved runner the npm child was killed
+      // and the rejection never reached Forge, so execution never got past the
+      // `await` above and nothing below it ran at all. That case is caught
+      // outside Forge, by scripts/verify-package.mjs, via the manifest written
+      // at the end of this hook.
       const missingModules = modulesToInstall.filter(
         (mod: string) => !fs.existsSync(path.join(buildPath, 'node_modules', mod)),
       );
@@ -236,6 +230,27 @@ const config: ForgeConfig = {
         console.warn(`\x1b[33m⚠ WARNING: Platform binary not found at ${srcBin}\x1b[0m`);
         console.warn('  No @anthropic-ai/claude-code version in package-lock.json to install from.');
       }
+
+      // Record what this hook installed — the LAST thing it does.
+      //
+      // Its position is the point. scripts/verify-package.mjs runs between
+      // packaging and making, and treats a missing manifest as a failed
+      // packaging run. That catches the failure no in-hook check can: when the
+      // npm child is killed by the OOM killer the rejection does not reach
+      // Forge, execution stops at the `await` and never reaches any later
+      // check — but it never reaches this write either, so the absent manifest
+      // is the signal.
+      //
+      // The module list is written rather than hard-coded anywhere, so the
+      // check stays derived from the Vite config's `external` and cannot drift
+      // from what packaging actually needs.
+      const manifestPath = path.join(__dirname, 'out', `.philibert-externals-${platform}.json`);
+      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+      fs.writeFileSync(
+        manifestPath,
+        JSON.stringify({ platform, arch, modules: modulesToInstall, completedAt: new Date().toISOString() }, null, 2),
+      );
+      console.log(`Wrote packaging manifest ${manifestPath}`);
     },
   },
   packagerConfig: {

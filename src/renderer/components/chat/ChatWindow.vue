@@ -11,7 +11,7 @@ import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
 import { useClaudeChat } from '../../composables/useClaudeChat';
-import { descendantsOf, type ActivityRow } from '../../utils/message-tree';
+import { descendantsOf, toolUseIdForTask, type ActivityRow } from '../../utils/message-tree';
 import ActionApproval from './ActionApproval.vue';
 import AskUserQuestionMessage from './AskUserQuestionMessage.vue';
 import BackgroundTaskDetailModal from './BackgroundTaskDetailModal.vue';
@@ -67,8 +67,13 @@ const stopTaskError = ref<string | null>(null);
  * tokens all arrive at the end.
  */
 const taskDetailSpawningTool = computed<ToolUseInfo | null>(() => {
-  const toolUseId = taskDetailTask.value?.toolUseId;
-  if (!toolUseId) return null;
+  const task = taskDetailTask.value;
+  if (!task) return null;
+  // toolUseIdForTask, not task.toolUseId: a backgrounded tool's first
+  // notification carries its tool_use block id as the task id and leaves
+  // toolUseId unset, so keying on that field alone found nothing and the
+  // modal showed no command at all for every background command.
+  const toolUseId = toolUseIdForTask(task);
   const message = chatStore.messages.find(
     m => m.toolUse && (m.toolUse.toolUseBlockId === toolUseId || m.toolUse.actionId === toolUseId),
   );
@@ -83,9 +88,9 @@ const taskDetailSpawningTool = computed<ToolUseInfo | null>(() => {
  * task runs this is the only thing the detail modal has to show.
  */
 const taskDetailActivity = computed<ActivityRow[]>(() => {
-  const toolUseId = taskDetailTask.value?.toolUseId;
-  if (!toolUseId) return [];
-  return descendantsOf(chatStore.messages, toolUseId);
+  const task = taskDetailTask.value;
+  if (!task) return [];
+  return descendantsOf(chatStore.messages, toolUseIdForTask(task));
 });
 
 // Tool detail modal state

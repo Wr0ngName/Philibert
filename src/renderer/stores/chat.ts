@@ -1092,7 +1092,11 @@ export const useChatStore = defineStore('chat', () => {
         sessionId: notification.sessionId,
         error: notification.error,
         ...(notification.toolUseId && { toolUseId: notification.toolUseId }),
-        taskType: resolveTaskType(conversationId, notification.toolUseId),
+        // Falls back to the task id, because a backgrounded tool's first
+        // notification sends its tool_use block id as `taskId` and sets no
+        // `toolUseId`. Keying only on toolUseId classified every background
+        // task as a plain command, including backgrounded agents.
+        taskType: resolveTaskType(conversationId, notification.toolUseId ?? notification.taskId),
       };
       if (notification.status !== 'running') {
         task.completedAt = Date.now();
