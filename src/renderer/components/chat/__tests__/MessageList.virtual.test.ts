@@ -34,6 +34,27 @@ class MockResizeObserver implements ResizeObserver {
   disconnect() {}
 }
 
+/** Captured content-observer callbacks, so a row mounting can be simulated. */
+let mutationCallbacks: MutationCallback[] = [];
+
+class MockMutationObserver implements MutationObserver {
+  constructor(cb: MutationCallback) {
+    mutationCallbacks.push(cb);
+  }
+  observe() {}
+  disconnect() {}
+  takeRecords(): MutationRecord[] {
+    return [];
+  }
+}
+
+/** Simulate the DOM mutation every virtualised scroll causes. */
+function fireMutation(): void {
+  for (const cb of mutationCallbacks) {
+    cb([] as unknown as MutationRecord[], null as unknown as MutationObserver);
+  }
+}
+
 let offsetHeightSpy: PropertyDescriptor | undefined;
 
 function stubLayout(): void {
@@ -96,7 +117,9 @@ async function mountList() {
 describe('MessageList virtualisation', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    mutationCallbacks = [];
     vi.stubGlobal('ResizeObserver', MockResizeObserver);
+    vi.stubGlobal('MutationObserver', MockMutationObserver);
     stubLayout();
   });
 
@@ -161,6 +184,48 @@ describe('MessageList virtualisation', () => {
 
     expect(idsAfterScroll).not.toEqual(idsAtTop);
     expect(idsAfterScroll.length).toBeGreaterThan(0);
+  });
+
+  it('does not snap back to the bottom while the user is scrolling', async () => {
+    // The reported bug. Virtualised rendering mounts and unmounts rows as the
+    // window moves, so every scroll produces DOM mutations, which the content
+    // observer read as new content. A slow scroll stayed inside
+    // SCROLL_THRESHOLD, so isUserAtBottom was still true, and each mutation
+    // snapped the view back to the bottom — the conversation would not scroll
+    // at all unless one gesture cleared the threshold outright.
+    seedConversation(300);
+    const { container } = await mountList();
+
+    Object.defineProperty(container, 'scrollTop', { value: 99_950, writable: true, configurable: true });
+    container.dispatchEvent(new Event('scroll')); // user scrolls, still near bottom
+    await nextTick();
+
+    // A row mounting or unmounting, as happens on any scroll.
+    fireMutation();
+
+    expect(container.scrollTop).toBe(99_950);
+  });
+
+  it('still re-pins to the bottom once the user has stopped', async () => {
+    // The backstop this observer exists for — streaming content growing while
+    // the user is following the tail — must keep working.
+    vi.useFakeTimers();
+    try {
+      seedConversation(300);
+      const { container } = await mountList();
+
+      Object.defineProperty(container, 'scrollTop', { value: 99_950, writable: true, configurable: true });
+      container.dispatchEvent(new Event('scroll'));
+      await nextTick();
+
+      // Past the settle window: the user is no longer scrolling.
+      vi.advanceTimersByTime(1_000);
+      fireMutation();
+
+      expect(container.scrollTop).toBe(100_000); // scrollHeight
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders everything when ResizeObserver is unavailable', async () => {

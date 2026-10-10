@@ -21,7 +21,13 @@
 
 import { computed, onUnmounted, ref, type Ref } from 'vue';
 
-import { buildOffsets, scrollCorrection, visibleWindow, type VirtualWindow } from '../utils/virtual-list';
+import {
+  buildOffsets,
+  estimateFrom,
+  scrollCorrection,
+  visibleWindow,
+  type VirtualWindow,
+} from '../utils/virtual-list';
 
 export interface UseVirtualListOptions {
   /** The scrolling element. */
@@ -74,7 +80,12 @@ export function useVirtualList(options: UseVirtualListOptions) {
     const rowKeys = keys();
     // Touch the version so measurements invalidate this.
     void heightsVersion.value;
-    return buildOffsets(rowKeys.length, (i) => heights.get(rowKeys[i]), estimatedHeight);
+    // Unmeasured rows are estimated from the rows already measured in this
+    // conversation, not from a constant: a wrong estimate moves the total
+    // height when the real value arrives, and a constant is wrong by a lot
+    // when rows range from a one-line tool call to a long answer.
+    const estimate = estimateFrom(heights.values(), estimatedHeight);
+    return buildOffsets(rowKeys.length, (i) => heights.get(rowKeys[i]), estimate);
   });
 
   const window = computed((): VirtualWindow => {
