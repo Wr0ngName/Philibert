@@ -13,7 +13,6 @@ import { describe, it, expect } from 'vitest';
 
 import {
   buildOffsets,
-  estimateFrom,
   findIndexAtOffset,
   scrollCorrection,
   visibleWindow,
@@ -45,27 +44,6 @@ describe('buildOffsets', () => {
 
   it('returns a single zero for an empty list', () => {
     expect(buildOffsets(0, () => undefined, 50)).toEqual([0]);
-  });
-});
-
-describe('estimateFrom', () => {
-  it('averages what has been measured', () => {
-    expect(estimateFrom([100, 200, 300], 72)).toBe(200);
-  });
-
-  it('falls back until something has been measured', () => {
-    expect(estimateFrom([], 72)).toBe(72);
-  });
-
-  it('tracks the conversation rather than a constant', () => {
-    // The point of it: a fixed guess is wrong by a lot when rows range from a
-    // one-line tool call to a long answer, and every wrong guess moves the
-    // total height when the real value arrives.
-    expect(estimateFrom([400, 420, 380], 72)).toBeCloseTo(400);
-  });
-
-  it('honours measured zeroes rather than skipping them', () => {
-    expect(estimateFrom([0, 0, 90], 72)).toBe(30);
   });
 });
 

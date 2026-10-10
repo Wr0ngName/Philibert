@@ -24,6 +24,11 @@ import {
   descendantCounts,
   topLevelSequence,
 } from '../../utils/message-tree';
+import {
+  recalledPosition,
+  rememberPosition,
+  resolveScrollTarget,
+} from '../../utils/scroll-memory';
 import MessageItem from './MessageItem.vue';
 import Icon from '../shared/Icon.vue';
 import Spinner from '../shared/Spinner.vue';
@@ -342,9 +347,36 @@ const unreadCount = ref(0);
  */
 function checkIfAtBottom(): boolean {
   if (!listRef.value) return true;
-  const { scrollTop, scrollHeight, clientHeight } = listRef.value;
-  return scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD;
+  return distanceFromBottom() <= SCROLL_THRESHOLD;
 }
+
+/** How far the end of the conversation sits below the viewport. */
+function distanceFromBottom(): number {
+  const el = listRef.value;
+  if (!el) return 0;
+  return el.scrollHeight - el.scrollTop - el.clientHeight;
+}
+
+/**
+ * Whether the view was sitting exactly at the end of the conversation, as
+ * opposed to merely near it.
+ *
+ * `isUserAtBottom` is true anywhere within SCROLL_THRESHOLD, which is right
+ * for deciding whether to follow new content — a reader a few pixels off the
+ * end clearly still wants the next message. It is the wrong question for
+ * re-pinning after the geometry shifts under us, because a small upward scroll
+ * stays inside that threshold: re-pinning on it would drag the user back to
+ * the bottom and make slow scrolling impossible for the first 80 pixels, which
+ * is the stickiness this list has already been through once.
+ *
+ * Exactly-at-the-bottom has no such ambiguity. Any deliberate scroll leaves
+ * it, including a single trackpad nudge, while a jump to the bottom lands on it
+ * precisely because the browser clamps the position to the maximum.
+ *
+ * Starts true: the first paint pins to the newest message.
+ */
+const PINNED_EPSILON_PX = 2;
+const wasPinnedToBottom = ref(true);
 
 /**
  * Scroll to bottom of container
@@ -399,6 +431,7 @@ async function scrollToMessage(messageId: string): Promise<void> {
   // Once the user has explicitly jumped to an older message, stop the
   // auto-scroll-to-bottom watchers from yanking them back on the next event.
   isUserAtBottom.value = false;
+  wasPinnedToBottom.value = false;
 }
 
 /**
@@ -409,9 +442,43 @@ function handleScroll(): void {
   // run before anything reads it.
   virtual.syncViewport();
   isUserAtBottom.value = checkIfAtBottom();
+  wasPinnedToBottom.value = distanceFromBottom() <= PINNED_EPSILON_PX;
   if (isUserAtBottom.value) {
     unreadCount.value = 0;
   }
+  recordPosition();
+}
+
+/**
+ * Note where this conversation is sitting, for when it is shown again.
+ *
+ * Recorded on every scroll rather than captured when the conversation changes,
+ * and that is not an optimisation — it is the only point at which the question
+ * can be answered. Switching conversation replaces the message list *before*
+ * setting the new id (`loadConversation` calls `loadMessages` first), so by the
+ * time a watcher on the id runs, the rows already belong to the conversation
+ * being entered while the scroll position still belongs to the one being left.
+ * Resolving one against the other gives a position in the wrong conversation.
+ */
+function recordPosition(): void {
+  const el = listRef.value;
+  const conversationId = chatStore.currentConversationId;
+  if (!el || !conversationId) return;
+
+  if (isUserAtBottom.value) {
+    rememberPosition(conversationId, { atBottom: true });
+    return;
+  }
+
+  const index = virtual.indexAt(el.scrollTop);
+  const rowKey = rowKeys.value[index];
+  if (rowKey === undefined) return;
+
+  rememberPosition(conversationId, {
+    atBottom: false,
+    rowKey,
+    within: el.scrollTop - virtual.offsetOf(index),
+  });
 }
 
 function handleScrollToBottom(): void {
@@ -514,14 +581,73 @@ defineExpose({ scrollToBottom, scrollToMessage });
 let viewportObserver: ResizeObserver | null = null;
 
 // Set up scroll listener + content-mutation observer + viewport-resize observer
-// Measurements belong to one conversation's rows. Switching conversation
-// replaces every row, and keeping stale heights would place the new ones with
-// the old one's geometry.
+// Switching conversation: forget the old rows' measurements, and put the
+// scroll position back where this conversation was left.
+//
+// Measurements belong to one conversation's rows — keeping stale heights would
+// place the new ones with the old one's geometry. The restore is the other half
+// of that: after a reset the container is left holding the previous
+// conversation's scroll offset against entirely different content, which is
+// what made switching land somewhere arbitrary. `isUserAtBottom` carried over
+// too, so a conversation entered after one that was scrolled up did not follow
+// its own tail.
 watch(
   () => chatStore.currentConversationId,
   () => {
     virtual.reset();
-    nextTick(() => virtual.syncViewport());
+
+    const target = resolveScrollTarget(
+      recalledPosition(chatStore.currentConversationId ?? ''),
+      rowKeys.value,
+    );
+
+    // Set synchronously, before the row- and message-count watchers reach
+    // their own nextTick callbacks: they consult this flag, so leaving the
+    // previous conversation's value in place lets them fight the restore.
+    isUserAtBottom.value = target.kind === 'bottom';
+    wasPinnedToBottom.value = target.kind === 'bottom';
+    unreadCount.value = 0;
+
+    nextTick(() => {
+      const el = listRef.value;
+      if (!el) return;
+
+      if (target.kind === 'bottom') {
+        scrollToBottom();
+      } else {
+        // By row, not by the pixel offset that was recorded: the rows above
+        // are unmeasured again after the reset, so they contribute estimates
+        // and the same row now sits somewhere else entirely. As they are
+        // measured the anchor correction keeps this row under the top of the
+        // viewport, so the position firms up rather than drifting.
+        el.scrollTop = virtual.offsetOf(target.index) + target.within;
+      }
+      virtual.syncViewport();
+    });
+  },
+);
+
+// Hold the bottom when the geometry changes underneath us.
+//
+// Any measurement changes the total height: a row near the tail being measured
+// for the first time replaces its estimate, so the end of the content moves
+// while the scroll position stays. Nothing else notices — no message arrived,
+// no row appeared, and a first measurement is deliberately not reported as
+// content growth — so an idle conversation slid off the bottom and stayed
+// there, measured at 293px after the rows around the tail had settled.
+//
+// Watching the total height covers every cause of that at once. It is
+// conditioned on having been exactly at the bottom rather than on
+// `isUserAtBottom`, so it cannot pull back a user who has started scrolling
+// up; see `wasPinnedToBottom`.
+watch(
+  () => virtual.totalHeight.value,
+  () => {
+    if (!wasPinnedToBottom.value) return;
+    nextTick(() => {
+      if (!wasPinnedToBottom.value) return;
+      scrollToBottom();
+    });
   },
 );
 

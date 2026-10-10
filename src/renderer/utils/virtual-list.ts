@@ -26,26 +26,6 @@ export interface VirtualWindow {
 }
 
 /**
- * Height to assume for a row that has never rendered.
- *
- * The mean of what has actually been measured, falling back to `fallback`
- * until something has. A constant is a poor guess here — a one-line tool row
- * and a long answer differ by an order of magnitude — and every wrong guess
- * moves the total height when the real value arrives, which churns the
- * scrollbar and shifts rows below the correction. Estimating from this
- * conversation's own rows keeps that movement small.
- */
-export function estimateFrom(measuredHeights: Iterable<number>, fallback: number): number {
-  let sum = 0;
-  let count = 0;
-  for (const height of measuredHeights) {
-    sum += height;
-    count += 1;
-  }
-  return count > 0 ? sum / count : fallback;
-}
-
-/**
  * Cumulative row tops. `offsets[i]` is the top edge of row `i`; the final
  * entry is the total height, so the array has `count + 1` entries.
  */

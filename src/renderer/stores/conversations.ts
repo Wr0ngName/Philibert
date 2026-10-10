@@ -12,6 +12,7 @@ import { getInMemoryMessages } from '../composables/useClaudeChat';
 import { CONSTANTS } from '../constants/app';
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
+import { forgetPosition } from '../utils/scroll-memory';
 
 import { useChatStore } from './chat';
 import { useSettingsStore } from './settings';
@@ -539,6 +540,10 @@ export const useConversationsStore = defineStore('conversations', () => {
 
       // Clear conversation state from chat store
       chatStore.clearConversationState(id);
+
+      // And the remembered scroll position, which is view state and so is not
+      // part of that.
+      forgetPosition(id);
 
       // Clear session permissions in the main process
       try {

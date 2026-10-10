@@ -41,7 +41,11 @@ export default defineConfig({
     globals: true,
     environment: 'happy-dom',
     include: ['src/**/*.{test,spec}.ts'],
-    exclude: ['node_modules', 'dist'],
+    // `*.browser.test.ts` needs a real layout engine and runs under
+    // vitest.browser.config.ts (`npm run test:browser`). Here it would match
+    // the include pattern and fail on happy-dom's zero heights, which is
+    // exactly the false signal those tests exist to replace.
+    exclude: ['node_modules', 'dist', 'src/**/*.browser.test.ts'],
     coverage: {
       reporter: ['text', 'json', 'html'],
       exclude: ['node_modules/', 'src/**/*.d.ts'],

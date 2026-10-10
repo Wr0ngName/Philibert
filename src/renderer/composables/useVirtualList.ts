@@ -23,7 +23,6 @@ import { computed, onUnmounted, ref, type Ref } from 'vue';
 
 import {
   buildOffsets,
-  estimateFrom,
   findIndexAtOffset,
   scrollCorrection,
   visibleWindow,
@@ -87,16 +86,28 @@ export function useVirtualList(options: UseVirtualListOptions) {
    */
   const enabled = computed(() => measurementAvailable && keys().length >= threshold);
 
+  /**
+   * Row offsets, from measurements where they exist and a FIXED estimate
+   * everywhere else.
+   *
+   * The estimate must not move. It was briefly the mean of the rows measured
+   * so far, on the reasoning that a closer guess means a steadier scrollbar.
+   * That is true and beside the point: changing it resizes every row that has
+   * not been measured, all at once. Scrolling up, where most rows above are
+   * unmeasured, that moved the content by far more than the one row being
+   * measured ever did — and no per-row correction can account for it, because
+   * nothing told the scroll position that a hundred other rows had just
+   * changed size. Measured in a browser: the content advanced 345px for 480px
+   * of scrolling with a moving estimate, and 495px with a fixed one.
+   *
+   * A fixed estimate costs some scrollbar accuracy until rows are measured,
+   * which is cosmetic and converges. Sticky scrolling is neither.
+   */
   const offsets = computed((): number[] => {
     const rowKeys = keys();
     // Touch the version so measurements invalidate this.
     void heightsVersion.value;
-    // Unmeasured rows are estimated from the rows already measured in this
-    // conversation, not from a constant: a wrong estimate moves the total
-    // height when the real value arrives, and a constant is wrong by a lot
-    // when rows range from a one-line tool call to a long answer.
-    const estimate = estimateFrom(heights.values(), estimatedHeight);
-    return buildOffsets(rowKeys.length, (i) => heights.get(rowKeys[i]), estimate);
+    return buildOffsets(rowKeys.length, (i) => heights.get(rowKeys[i]), estimatedHeight);
   });
 
   const window = computed((): VirtualWindow => {
@@ -120,7 +131,7 @@ export function useVirtualList(options: UseVirtualListOptions) {
     // Captured before the measurement is stored, because both are what the
     // geometry assumed up to now: the estimate this row was contributing, and
     // which row the user is actually looking at.
-    const estimateBefore = estimateFrom(heights.values(), estimatedHeight);
+    const estimateBefore = estimatedHeight;
     const rowKeys = keys();
     const changedIndex = rowKeys.indexOf(key);
     // The first row the viewport actually shows, NOT window.start — that is
@@ -213,6 +224,18 @@ export function useVirtualList(options: UseVirtualListOptions) {
     return all[Math.min(index, all.length - 1)];
   }
 
+  /**
+   * Index of the row at a scroll offset — the inverse of `offsetOf`.
+   *
+   * Lets a caller name a scroll position by the row it lands on rather than in
+   * pixels, which is the only form that survives measurements changing: the
+   * same row is at a different pixel offset once the rows above it have been
+   * measured.
+   */
+  function indexAt(offset: number): number {
+    return findIndexAtOffset(offsets.value, offset);
+  }
+
   onUnmounted(() => {
     observer?.disconnect();
     observer = null;
@@ -228,5 +251,8 @@ export function useVirtualList(options: UseVirtualListOptions) {
     syncViewport,
     reset,
     offsetOf,
+    indexAt,
+    /** Height of every row, measured where known and estimated elsewhere. */
+    totalHeight: computed(() => window.value.totalHeight),
   };
 }
