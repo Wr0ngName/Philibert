@@ -339,30 +339,10 @@ function checkIfAtBottom(): boolean {
 }
 
 /**
- * How long after a user scroll the content observer stays quiet.
- *
- * Long enough to cover the mutations one scroll gesture causes, short enough
- * that streaming re-pins the moment the user stops.
- */
-const SCROLL_SETTLE_MS = 300;
-
-/** When the user last scrolled by hand. 0 means never. */
-let lastUserScrollAt = 0;
-
-/**
- * Set before this component moves the scroll position itself, so the
- * resulting scroll event is not mistaken for the user scrolling. Without
- * this, auto-scrolling would mark the user as "recently scrolling" and
- * suppress the next auto-scroll — breaking stick-to-bottom during streaming.
- */
-let programmaticScroll = false;
-
-/**
  * Scroll to bottom of container
  */
 function scrollToBottom(): void {
   if (listRef.value) {
-    programmaticScroll = true;
     listRef.value.scrollTop = listRef.value.scrollHeight;
   }
 }
@@ -420,13 +400,6 @@ function handleScroll(): void {
   // The window to render is derived from the scroll position, so this has to
   // run before anything reads it.
   virtual.syncViewport();
-
-  if (programmaticScroll) {
-    programmaticScroll = false;
-  } else {
-    lastUserScrollAt = Date.now();
-  }
-
   isUserAtBottom.value = checkIfAtBottom();
   if (isUserAtBottom.value) {
     unreadCount.value = 0;
@@ -452,6 +425,35 @@ watch(
       }
     });
   }
+);
+
+// Auto-scroll when the number of rows changes (if user is at bottom).
+//
+// This replaces a MutationObserver on the scroll container. That observer was
+// added because the messages-length watcher misses rows that appear without a
+// new message — a sub-agent's children when its parent is expanded. Once the
+// list was virtualised it became actively harmful: rows mount and unmount as
+// the window slides, so every scroll produced mutations, the observer read
+// them as new content, and a slow scroll that stayed inside SCROLL_THRESHOLD
+// was dragged back to the bottom. A settle timer was tried and is not a fix:
+// whether it helps depends on how far apart the scroll events happen to fall,
+// so slow scrolling stayed sticky unpredictably.
+//
+// `rows` is the full flat list, not the rendered slice, so its length changes
+// when content appears and never when the window merely moves. That makes the
+// distinction exact rather than a question of timing.
+//
+// It also removes the staleness the observer was guarding against: while
+// virtualising, scrollHeight comes from the spacer, whose height is our own
+// computed total — so it is correct as soon as a row is added, with no need to
+// wait for layout.
+watch(
+  () => rows.value.length,
+  () => {
+    nextTick(() => {
+      if (isUserAtBottom.value) scrollToBottom();
+    });
+  },
 );
 
 // Auto-scroll during streaming (if user is at bottom)
@@ -484,12 +486,6 @@ watch(
 
 defineExpose({ scrollToBottom, scrollToMessage });
 
-// MutationObserver catches DOM additions inside the scroll container that the
-// reactive length watcher misses — specifically new sub-agent child tool_use
-// items rendered inside an expanded parent, and late text streaming reflows.
-// The length watcher's nextTick can run before the child layout is committed,
-// leaving scrollHeight stale.
-let contentObserver: MutationObserver | null = null;
 
 // ResizeObserver catches the scroll VIEWPORT changing size, which neither of
 // the other mechanisms can see.
@@ -526,29 +522,6 @@ onMounted(() => {
     virtual.syncViewport();
     listRef.value.addEventListener('scroll', handleScroll, { passive: true });
 
-    contentObserver = new MutationObserver(() => {
-      // Not while the user is scrolling.
-      //
-      // Virtualised rendering mounts and unmounts rows as the window moves, so
-      // every scroll now produces DOM mutations — which this observer used to
-      // read as new content. Scrolling up slowly stayed inside
-      // SCROLL_THRESHOLD, so isUserAtBottom was still true, and each mutation
-      // snapped the view straight back to the bottom: the conversation would
-      // not scroll at all unless a single gesture cleared the threshold
-      // outright. Before virtualisation a scroll mutated nothing, so this
-      // could not happen.
-      //
-      // Content genuinely growing — streaming, an expanded agent — happens
-      // while the user is not scrolling, so the backstop still does its job.
-      if (Date.now() - lastUserScrollAt < SCROLL_SETTLE_MS) return;
-      if (isUserAtBottom.value) scrollToBottom();
-    });
-    contentObserver.observe(listRef.value, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    });
-
     // Guarded: happy-dom and older runtimes may not provide ResizeObserver.
     if (typeof ResizeObserver !== 'undefined') {
       viewportObserver = new ResizeObserver(() => {
@@ -570,8 +543,6 @@ onUnmounted(() => {
   if (listRef.value) {
     listRef.value.removeEventListener('scroll', handleScroll);
   }
-  contentObserver?.disconnect();
-  contentObserver = null;
   viewportObserver?.disconnect();
   viewportObserver = null;
 });

@@ -34,27 +34,6 @@ class MockResizeObserver implements ResizeObserver {
   disconnect() {}
 }
 
-/** Captured content-observer callbacks, so a row mounting can be simulated. */
-let mutationCallbacks: MutationCallback[] = [];
-
-class MockMutationObserver implements MutationObserver {
-  constructor(cb: MutationCallback) {
-    mutationCallbacks.push(cb);
-  }
-  observe() {}
-  disconnect() {}
-  takeRecords(): MutationRecord[] {
-    return [];
-  }
-}
-
-/** Simulate the DOM mutation every virtualised scroll causes. */
-function fireMutation(): void {
-  for (const cb of mutationCallbacks) {
-    cb([] as unknown as MutationRecord[], null as unknown as MutationObserver);
-  }
-}
-
 let offsetHeightSpy: PropertyDescriptor | undefined;
 
 function stubLayout(): void {
@@ -117,9 +96,7 @@ async function mountList() {
 describe('MessageList virtualisation', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    mutationCallbacks = [];
     vi.stubGlobal('ResizeObserver', MockResizeObserver);
-    vi.stubGlobal('MutationObserver', MockMutationObserver);
     stubLayout();
   });
 
@@ -186,46 +163,58 @@ describe('MessageList virtualisation', () => {
     expect(idsAfterScroll.length).toBeGreaterThan(0);
   });
 
-  it('does not snap back to the bottom while the user is scrolling', async () => {
-    // The reported bug. Virtualised rendering mounts and unmounts rows as the
-    // window moves, so every scroll produces DOM mutations, which the content
-    // observer read as new content. A slow scroll stayed inside
-    // SCROLL_THRESHOLD, so isUserAtBottom was still true, and each mutation
-    // snapped the view back to the bottom — the conversation would not scroll
-    // at all unless one gesture cleared the threshold outright.
+  it('does not drag a slow scroll back to the bottom', async () => {
+    // The reported bug, and the reason it is no longer timing-dependent.
+    //
+    // Scrolling slides the window, which mounts and unmounts rows. That used
+    // to be read as new content and snapped the view back whenever the user
+    // was still inside SCROLL_THRESHOLD — so a slow scroll went nowhere. A
+    // settle timer only hid it: whether it helped depended on how far apart
+    // the scroll events fell. Re-pinning is now driven by the row count,
+    // which scrolling does not change.
+    seedConversation(300);
+    const { wrapper, container } = await mountList();
+
+    Object.defineProperty(container, 'scrollTop', { value: 99_950, writable: true, configurable: true });
+    container.dispatchEvent(new Event('scroll')); // still within the threshold
+    await nextTick();
+    await nextTick();
+
+    expect(container.scrollTop).toBe(99_950);
+    // And the window really did move, so this is not passing vacuously.
+    expect(wrapper.findAll('.chat-row').length).toBeLessThan(60);
+  });
+
+  it('re-pins when rows are added while following the tail', async () => {
+    // What the removed observer was for: content appearing without the user
+    // scrolling — a new message, or a sub-agent's children being expanded.
     seedConversation(300);
     const { container } = await mountList();
 
     Object.defineProperty(container, 'scrollTop', { value: 99_950, writable: true, configurable: true });
-    container.dispatchEvent(new Event('scroll')); // user scrolls, still near bottom
+    container.dispatchEvent(new Event('scroll')); // at bottom, following
     await nextTick();
 
-    // A row mounting or unmounting, as happens on any scroll.
-    fireMutation();
+    useChatStore().addUserMessage('another message');
+    await nextTick();
+    await nextTick();
 
-    expect(container.scrollTop).toBe(99_950);
+    expect(container.scrollTop).toBe(100_000); // scrollHeight
   });
 
-  it('still re-pins to the bottom once the user has stopped', async () => {
-    // The backstop this observer exists for — streaming content growing while
-    // the user is following the tail — must keep working.
-    vi.useFakeTimers();
-    try {
-      seedConversation(300);
-      const { container } = await mountList();
+  it('does not re-pin when rows are added after the user has scrolled away', async () => {
+    seedConversation(300);
+    const { container } = await mountList();
 
-      Object.defineProperty(container, 'scrollTop', { value: 99_950, writable: true, configurable: true });
-      container.dispatchEvent(new Event('scroll'));
-      await nextTick();
+    Object.defineProperty(container, 'scrollTop', { value: 1_000, writable: true, configurable: true });
+    container.dispatchEvent(new Event('scroll')); // well clear of the bottom
+    await nextTick();
 
-      // Past the settle window: the user is no longer scrolling.
-      vi.advanceTimersByTime(1_000);
-      fireMutation();
+    useChatStore().addUserMessage('another message');
+    await nextTick();
+    await nextTick();
 
-      expect(container.scrollTop).toBe(100_000); // scrollHeight
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(container.scrollTop).toBe(1_000);
   });
 
   it('renders everything when ResizeObserver is unavailable', async () => {
