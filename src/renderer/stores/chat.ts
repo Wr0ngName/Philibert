@@ -1341,6 +1341,42 @@ export const useChatStore = defineStore('chat', () => {
     activeConversationIds.value = ids;
   }
 
+  /**
+   * Make the per-conversation busy flags agree with the main process.
+   *
+   * The main process owns the truth here — `processingSessions`, which it
+   * emits on every change — and this is the only thing that corrects drift.
+   * `isLoading` is otherwise set optimistically when a message is sent and
+   * cleared by CLAUDE_DONE, so a done that is missed, duplicated, or
+   * attributed to a different turn leaves a conversation's activity indicator
+   * wrong for the rest of the session. With two conversations in flight that
+   * showed up as exactly the reported pair of symptoms: one conversation kept
+   * its spinner after finishing, the other lost it while still running.
+   *
+   * State is created for a listed conversation that has none, because a
+   * conversation can be running without ever having been opened in this
+   * session — and the indicator reads that state.
+   *
+   * One deliberate looseness: a conversation can briefly be absent here
+   * between the renderer optimistically marking it busy and the main process
+   * registering it. The next emit — which the main process sends as soon as it
+   * registers — puts it back, so the window is a few milliseconds.
+   */
+  function reconcileActiveConversations(ids: string[]): void {
+    activeConversationIds.value = ids;
+    const active = new Set(ids);
+
+    for (const [conversationId, state] of conversationStates.value) {
+      if (state.isLoading && !active.has(conversationId)) {
+        state.isLoading = false;
+      }
+    }
+
+    for (const conversationId of active) {
+      getConversationState(conversationId).isLoading = true;
+    }
+  }
+
   // ============================================
   // Session Permission Actions
   // ============================================
@@ -1544,6 +1580,7 @@ export const useChatStore = defineStore('chat', () => {
     // Resource tracking
     updateActiveQueries,
     updateActiveConversationIds,
+    reconcileActiveConversations,
 
     // Session permission actions
     updateSessionPermissions,

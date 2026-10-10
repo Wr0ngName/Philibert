@@ -118,7 +118,19 @@ export interface ElectronAPI {
     /** Session usage updated for a conversation */
     onUsageUpdate: (callback: (conversationId: string, usage: SessionUsage) => void) => () => void;
     /** Active query count changed */
-    onActiveQueriesChange: (callback: (count: number, maxCount: number, processingCount: number) => void) => () => void;
+    /**
+     * Active-query status changed. `activeConversationIds` is the authoritative
+     * set of conversations mid-turn, so the renderer can correct a busy flag
+     * that a missed or misattributed CLAUDE_DONE left wrong.
+     */
+    onActiveQueriesChange: (
+      callback: (
+        count: number,
+        maxCount: number,
+        processingCount: number,
+        activeConversationIds: string[],
+      ) => void,
+    ) => () => void;
     /** System status note (compaction, model change) — rendered as separator */
     onSystemNote: (callback: (conversationId: string, note: string) => void) => () => void;
     /** SDK session ID received for a conversation (for resume support) */

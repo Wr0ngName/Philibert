@@ -488,10 +488,21 @@ export function useClaudeChat() {
     });
 
     // Handle active query count changes
-    cleanupActiveQueries = window.electron.claude.onActiveQueriesChange((count, maxCount, processingCount) => {
-      logger.debug('Active queries changed', { count, maxCount, processingCount });
-      chatStore.updateActiveQueries(count, maxCount, processingCount);
-    });
+    cleanupActiveQueries = window.electron.claude.onActiveQueriesChange(
+      (count, maxCount, processingCount, activeConversationIds) => {
+        logger.debug('Active queries changed', {
+          count,
+          maxCount,
+          processingCount,
+          activeConversationIds,
+        });
+        chatStore.updateActiveQueries(count, maxCount, processingCount);
+        // The authoritative set, so a busy flag left wrong by a missed or
+        // misattributed CLAUDE_DONE is corrected rather than persisting for
+        // the rest of the session.
+        chatStore.reconcileActiveConversations(activeConversationIds);
+      },
+    );
 
     // Handle SDK session ID for resume support
     cleanupSessionId = window.electron.claude.onSessionId((conversationId, sessionId) => {

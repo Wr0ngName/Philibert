@@ -294,8 +294,26 @@ export class ClaudeCodeService {
   /**
    * Emit active query count to renderer
    */
+  /**
+   * Tell the renderer which conversations are running, not just how many.
+   *
+   * `processingSessions` is the only authority on whether a conversation is
+   * mid-turn, and every change to it emits this. The renderer previously got
+   * three numbers and had to maintain its own per-conversation busy flag,
+   * which it set on send and cleared on CLAUDE_DONE — so a done that was
+   * missed, duplicated or attributed to another turn left a conversation's
+   * activity indicator wrong for the rest of the session, with nothing able to
+   * correct it. Sending the set makes the renderer's view reconcilable, which
+   * matters most with two conversations in flight.
+   */
   private emitActiveQueryCount(): void {
-    this.send(IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES, this.activeSessions.size, this.maxConcurrentQueries, this.processingSessions.size);
+    this.send(
+      IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES,
+      this.activeSessions.size,
+      this.maxConcurrentQueries,
+      this.processingSessions.size,
+      Array.from(this.processingSessions),
+    );
   }
 
   /**
