@@ -176,9 +176,33 @@ function handleAbort() {
  * rest.
  */
 async function handleAbortEverything() {
+  await stopAllRunningTasks();
+  abort();
+}
+
+/**
+ * Stop the background tasks when there is no turn to interrupt.
+ *
+ * The turn ending no longer ends the work it started, so the work can outlive
+ * it — and the Stop control went away with the turn, which left running agents
+ * reachable only one at a time through each task's detail modal. This is the
+ * same request as "stop everything" minus the interrupt there is nothing to
+ * interrupt.
+ */
+async function handleStopTasks() {
+  await stopAllRunningTasks();
+}
+
+/**
+ * Ask every running background task to stop.
+ *
+ * Each is requested independently, so one that refuses does not spare the
+ * rest. The list is copied first because stopping them mutates it as the
+ * notifications come back.
+ */
+async function stopAllRunningTasks(): Promise<void> {
   const tasks = [...chatStore.runningBackgroundTasksList];
   await Promise.allSettled(tasks.map((task) => stopTask(task.id)));
-  abort();
 }
 
 function handleApprove(actionId: string, alwaysAllow?: boolean, chosenScope?: PermissionScope) {
@@ -426,6 +450,7 @@ function closeToolDetail() {
       @unqueue="handleUnqueue"
       @abort="handleAbort"
       @abort-everything="handleAbortEverything"
+      @stop-tasks="handleStopTasks"
     />
   </div>
 </template>

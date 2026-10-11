@@ -274,9 +274,72 @@ describe('what Stop stops', () => {
     expect(calls(IPC_CHANNELS.CLAUDE_ABORT)).toHaveLength(1);
   });
 
-  it('offers no Stop at all when no turn is running', async () => {
+  it('keeps the caret part of the Stop button rather than beside it', async () => {
+    // Two buttons with a gap between them read as two controls, one of which
+    // happens to sit nearby. The caret is a second way to press Stop, so it
+    // belongs inside the same control; the scoped CSS squares the inner
+    // corners and draws a seam, which is only coherent if they really are
+    // siblings in one container.
+    const wrapper = mountChat();
+    chat.setLoading(CONV, true);
+    startTask('task-1');
+    await settle();
+
+    const split = wrapper.find('.split-control');
+    expect(split.exists()).toBe(true);
+    expect(split.findAll('button')).toHaveLength(2);
+    expect(split.findAll('button')[1].attributes('title')).toContain('More ways to stop');
+  });
+
+  it('offers a way to stop background work once the turn has ended', async () => {
+    // The hole this opened: Stop spares running agents and tasks, so they
+    // outlive the turn — and the Stop control went away with the turn, leaving
+    // Send as the only button while agents were still working. They were
+    // reachable only one at a time through each task's detail modal.
     const wrapper = mountChat();
     startTask('task-1');
+    startTask('task-2');
+    await settle();
+
+    const stopTasks = findButton(wrapper, 'Stop 2 tasks');
+    expect(stopTasks).toBeDefined();
+
+    await stopTasks!.trigger('click');
+    await settle();
+
+    const stopped = calls(IPC_CHANNELS.CLAUDE_STOP_TASK).map((call) => call.args[1]);
+    expect(stopped.sort()).toEqual(['task-1', 'task-2']);
+    // Nothing to interrupt, so nothing should be asked of the turn.
+    expect(calls(IPC_CHANNELS.CLAUDE_ABORT)).toHaveLength(0);
+  });
+
+  it('counts a single idle task in the singular', async () => {
+    const wrapper = mountChat();
+    startTask('only-one');
+    await settle();
+
+    expect(findButton(wrapper, 'Stop 1 task')).toBeDefined();
+    expect(findButton(wrapper, 'Stop 1 tasks')).toBeUndefined();
+  });
+
+  it('offers nothing to stop when the turn has ended and the tasks with it', async () => {
+    const wrapper = mountChat();
+    startTask('task-1');
+    finishTask('task-1');
+    await settle();
+
+    expect(findButton(wrapper, 'Stop')).toBeUndefined();
+  });
+
+  it('drops the idle stop control once the tasks finish', async () => {
+    // The count is live, so it has to disappear rather than offering to stop
+    // something that already stopped.
+    const wrapper = mountChat();
+    startTask('task-1');
+    await settle();
+    expect(findButton(wrapper, 'Stop 1 task')).toBeDefined();
+
+    finishTask('task-1');
     await settle();
 
     expect(findButton(wrapper, 'Stop')).toBeUndefined();

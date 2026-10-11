@@ -31,6 +31,8 @@ const emit = defineEmits<{
   (e: 'abort'): void;
   /** Stop the turn and every background task it left running. */
   (e: 'abort-everything'): void;
+  /** Stop the background tasks, with no turn running to interrupt. */
+  (e: 'stop-tasks'): void;
 }>();
 
 const chatStore = useChatStore();
@@ -422,10 +424,13 @@ function handleInput(event: Event) {
 
         <!-- Stop sits ALONGSIDE the submit button during a turn rather than
              replacing it. Replacing it was the whole problem: the only control
-             available mid-turn was the one that kills the run. -->
+             available mid-turn was the one that kills the run.
+
+             One split control, not two buttons with a gap: the caret is a
+             second way to press the same thing, so it reads as part of it. -->
         <div
           v-if="isLoading"
-          class="flex items-center gap-1"
+          class="split-control"
         >
           <Button
             variant="danger"
@@ -458,6 +463,29 @@ function handleInput(event: Event) {
           </Button>
         </div>
 
+        <!-- Background work outlives the turn, so the control for it has to as
+             well. Stop deliberately spares running agents and tasks, which
+             means that once the turn ends they are still going and this is the
+             only place to end them — the alternative was opening each task's
+             detail modal in turn, or nothing at all. -->
+        <Button
+          v-else-if="hasRunningBackgroundTasks"
+          variant="danger"
+          size="md"
+          :title="`Stop the ${runningBackgroundTasksList.length} background ${
+            runningBackgroundTasksList.length === 1 ? 'task' : 'tasks'
+          } still running`"
+          @click="emit('stop-tasks')"
+        >
+          <Icon
+            name="stop"
+            size="sm"
+            class="mr-1"
+          />
+          Stop {{ runningBackgroundTasksList.length }}
+          {{ runningBackgroundTasksList.length === 1 ? 'task' : 'tasks' }}
+        </Button>
+
         <Button
           variant="primary"
           size="md"
@@ -488,3 +516,35 @@ function handleInput(event: Event) {
     />
   </div>
 </template>
+
+<style scoped>
+/*
+ * One control split into a main action and a caret.
+ *
+ * Written as CSS rather than utility classes on the buttons: `btn` already
+ * sets `border-radius`, so squaring off the inner corners with a utility would
+ * mean relying on which of two equally specific rules the stylesheet happens
+ * to emit last. A scoped selector carries the component's data attribute as
+ * well as a child combinator, so it wins outright and the result does not
+ * depend on utility ordering.
+ *
+ * The divider is an inset line rather than a gap: a gap made the caret read as
+ * a separate button that happened to sit nearby.
+ */
+.split-control {
+  display: inline-flex;
+  align-items: center;
+}
+
+.split-control > :not(:last-child) {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.split-control > :not(:first-child) {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  /* Light enough to read as a seam in one surface, not an edge between two. */
+  box-shadow: inset 1px 0 0 rgb(255 255 255 / 0.25);
+}
+</style>
