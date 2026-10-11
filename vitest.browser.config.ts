@@ -1,7 +1,30 @@
-import { playwright } from '@vitest/browser-playwright';
+import { defineBrowserCommand, playwright } from '@vitest/browser-playwright';
 import vue from '@vitejs/plugin-vue';
 import { resolve } from 'path';
 import { defineConfig } from 'vitest/config';
+
+/**
+ * Scroll with a real mouse wheel.
+ *
+ * Setting `scrollTop` from a test is not the same input and cannot stand in
+ * for this. A script-driven scroll is one of the documented suppression
+ * triggers for Chromium's own scroll anchoring, so a test that scrolls that
+ * way silently turns off a browser feature that is very much on in the app —
+ * and the app's list does its own anchoring, so what the user actually gets is
+ * both corrections at once. A wheel event dispatched from JavaScript is no
+ * better: it is untrusted, so it performs no default scrolling at all.
+ *
+ * Driving Playwright's mouse produces the same trusted input a user does.
+ * `hover()` first, because the wheel goes wherever the pointer is and the
+ * tests run inside the runner's iframe — Playwright resolves that offset,
+ * which hand-computed page coordinates would get wrong.
+ */
+const wheel = defineBrowserCommand<[selector: string, deltaY: number]>(
+  async ({ iframe, page }, selector, deltaY) => {
+    await iframe.locator(selector).first().hover();
+    await page.mouse.wheel(0, deltaY);
+  },
+);
 
 /**
  * Tests that need a real layout engine.
@@ -36,6 +59,7 @@ export default defineConfig({
       // Nothing here is a visual regression test, and failure screenshots
       // would write files into the repo on every red run.
       screenshotFailures: false,
+      commands: { wheel },
     },
   },
   resolve: {

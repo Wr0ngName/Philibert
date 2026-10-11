@@ -24,6 +24,7 @@
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { describe, it, expect, beforeEach } from 'vitest';
+import { commands } from 'vitest/browser';
 
 import { useChatStore } from '../../../stores/chat';
 import MessageList from '../MessageList.vue';
@@ -36,15 +37,28 @@ const MESSAGE_COUNT = 400;
  * short prompts and tool-sized lines next to long answers. The spread is the
  * point — it is what makes any single estimate wrong.
  */
+/**
+ * A sentence that wraps, repeated. Row heights have to vary the way a real
+ * conversation's do — a one-line prompt next to an answer with a code block in
+ * it — because the defects here all live in the gap between a row's estimated
+ * height and its real one. An earlier version of this file used a narrow
+ * spread and passed against a list where a slow scroll travelled *backwards*.
+ */
+const PARAGRAPH = 'This answer runs on for several lines so that it wraps. ';
+
+/** Repeats per row, cycling: a very long answer down to a bare one-liner. */
+const LENGTHS = [60, 20, 8, 0, 0];
+
 function messagesFor(prefix: string, count = MESSAGE_COUNT) {
   return Array.from({ length: count }, (_unused, index) => {
-    const long = index % 3 === 0;
+    const repeats = LENGTHS[index % LENGTHS.length];
     return {
       id: `${prefix}-${index}`,
       role: (index % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
-      content: long
-        ? `Message ${index}. ${'This answer runs on for several lines so that it wraps. '.repeat(8)}`
-        : `Message ${index}`,
+      content:
+        repeats === 0
+          ? `Message ${index}`
+          : `Message ${index}. ${PARAGRAPH.repeat(repeats)}`,
       timestamp: index,
     };
   });
@@ -54,6 +68,45 @@ function seedConversation(): void {
   const store = useChatStore();
   store.setCurrentConversation('conv-browser');
   for (const message of messagesFor('msg')) store.addMessage(message);
+}
+
+/**
+ * Scroll up with real wheel clicks and report how far the content travelled.
+ *
+ * Travel is measured against a row, not against `scrollTop`. The list moves
+ * the scroll position itself whenever a row above the viewport is measured —
+ * that is how it holds the content still — so `scrollTop` legitimately ends
+ * somewhere unrelated to the gesture, while the row the user is looking at
+ * should have moved down by exactly as far as they scrolled.
+ *
+ * `framesBetween` is the cadence, and it matters more than anything else here:
+ * a burst of clicks all land before any measurement runs and travelled
+ * correctly even when the list was badly broken. The defects only appear when
+ * each click is followed by a measurement pass, which is what rolling a wheel
+ * at a human speed does.
+ */
+async function wheelUp(
+  container: HTMLElement,
+  clicks: number,
+  perClick: number,
+  framesBetween: number,
+): Promise<number> {
+  const anchor = topRowElement(container);
+  if (!anchor) throw new Error('no rendered row to measure against');
+
+  const offset = () =>
+    anchor.getBoundingClientRect().top - container.getBoundingClientRect().top;
+  const before = offset();
+
+  for (let click = 0; click < clicks; click += 1) {
+    await commands.wheel(WHEEL_TARGET, -perClick);
+    await settle(framesBetween);
+  }
+  // Long enough for Chromium's wheel animation and every resulting
+  // measurement to finish, so a slow scroll is not mistaken for a lost one.
+  await settle(30);
+
+  return offset() - before;
 }
 
 /**
@@ -148,6 +201,17 @@ function distanceFromBottom(container: HTMLElement): number {
  * from pinned as far as the behaviour goes.
  */
 const SETTLE_TOLERANCE_PX = 80;
+
+/** Where the wheel command puts the pointer: the scroll container itself. */
+const WHEEL_TARGET = '.overflow-y-auto';
+
+/**
+ * Frames to wait between wheel clicks, to stand in for a hand rolling a wheel
+ * rather than flicking it: long enough that each click's measurement pass runs
+ * before the next one arrives, which is the condition every scrolling defect
+ * in this list has needed.
+ */
+const SLOW_CADENCE_FRAMES = 6;
 
 /** The rendered row element nearest the top of the viewport. */
 function topRowElement(container: HTMLElement): HTMLElement | null {
@@ -308,6 +372,66 @@ describe('MessageList scrolling with real layout', () => {
     await settle(20);
 
     expect(distanceFromBottom(container)).toBeLessThan(SETTLE_TOLERANCE_PX);
+  });
+
+  it('turns off the browser s own scroll anchoring', async () => {
+    // Asserted directly, because the behaviour below depends entirely on it
+    // and a stylesheet change could remove it without any other test noticing.
+    // The list corrects the scroll position itself, from knowledge the browser
+    // does not have — that a row's height just went from an estimate to a
+    // measurement — so with both of them compensating, the user's gesture is
+    // what gets cancelled.
+    seedConversation();
+    const { container } = await mountList();
+
+    expect(getComputedStyle(container).overflowAnchor).toBe('none');
+  });
+
+  it('travels a full wheel click per click, at every cadence, from the bottom', async () => {
+    // The user's report, in their words: "it still feels like it's registering
+    // 1 scroll click out of 10". Measured from the end of the conversation,
+    // four clicks of 100px: the content moved 0px at every cadence.
+    seedConversation();
+    const { container } = await mountList();
+
+    await clearMeasurements();
+    container.scrollTop = container.scrollHeight;
+    await settle();
+
+    // Four clicks of 100px, kept under one viewport so the row being measured
+    // against stays rendered and keeps reporting a real position.
+    const travelled = await wheelUp(container, 4, 100, SLOW_CADENCE_FRAMES);
+    expect(travelled).toBeGreaterThan(4 * 100 * 0.8);
+  });
+
+  it('travels a full wheel click per click when scrolling up mid-conversation', async () => {
+    // The same gesture from the middle, where rows above have never been
+    // rendered, was the worst case: the content moved 158px the WRONG way.
+    seedConversation();
+    const { container } = await mountList();
+
+    await clearMeasurements();
+    container.scrollTop = Math.floor(container.scrollHeight * 0.5);
+    await settle();
+
+    const travelled = await wheelUp(container, 4, 100, SLOW_CADENCE_FRAMES);
+    expect(travelled).toBeGreaterThan(4 * 100 * 0.8);
+  });
+
+  it('travels correctly for a fast flick too', async () => {
+    // This cadence worked throughout, and that is the point of keeping it:
+    // clicks that all land before any measurement runs are the one case the
+    // defect spared, so a test that only flicks proves nothing. It is here to
+    // document that, and to catch a fix that trades one cadence for the other.
+    seedConversation();
+    const { container } = await mountList();
+
+    await clearMeasurements();
+    container.scrollTop = Math.floor(container.scrollHeight * 0.5);
+    await settle();
+
+    const travelled = await wheelUp(container, 4, 100, 0);
+    expect(travelled).toBeGreaterThan(4 * 100 * 0.8);
   });
 
   it('stays where a nudge smaller than the at-bottom threshold put it', async () => {

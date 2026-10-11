@@ -834,6 +834,31 @@ onUnmounted(() => {
 
 <style scoped>
 /*
+ * Turn off the browser's own scroll anchoring on this container.
+ *
+ * Chromium keeps the content still when something above the viewport changes
+ * size by adjusting the scroll position — the same job the virtual list does
+ * for itself, because it has to: it knows a row's height changed from an
+ * estimate to a measurement, which is a fact no browser heuristic can see.
+ *
+ * With both of them doing it, the content shift is compensated twice and the
+ * second compensation has nothing left to cancel, so it eats the user's
+ * gesture. Measured with real wheel input over rows whose heights vary the way
+ * an actual conversation's do: four clicks up, 400px requested, the content
+ * moved 158px the WRONG way, and the scroll position itself ended 317px lower
+ * than it started. A fast burst of the same four clicks travelled the full
+ * 400px, because every click landed before any measurement — which is exactly
+ * the "sticky unless you scroll fast" this list was reported for.
+ *
+ * Programmatic scrolling is a documented suppression trigger for anchoring, so
+ * a test that scrolls by assigning scrollTop sees none of this; the browser
+ * suite drives a real wheel through Playwright for that reason.
+ */
+.message-list-spacing {
+  overflow-anchor: none;
+}
+
+/*
  * Spacing between blocks is PADDING on the row wrapper, never margin.
  *
  * Virtualised geometry is the sum of measured row heights, and offsetHeight
