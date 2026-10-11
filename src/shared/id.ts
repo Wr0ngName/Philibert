@@ -37,4 +37,6 @@ export const ID_PREFIXES = {
   ACTION: 'action',
   /** Modal ID prefix */
   MODAL: 'modal',
+  /** Queued-prompt ID prefix (a prompt written during a running turn) */
+  QUEUED_PROMPT: 'queued',
 } as const;

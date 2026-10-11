@@ -30,7 +30,15 @@ const settingsStore = useSettingsStore();
 const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, hasTaskListItems, taskListItems, sessionUsage, hasSessionUsage, pendingScrollMessageId } = storeToRefs(chatStore);
 const { currentModeMismatch } = storeToRefs(conversationsStore);
 
-const { sendMessage, approveAction, rejectAction, abort, sendQuestionAnswer } = useClaudeChat();
+const {
+  sendMessage,
+  queuePrompt,
+  releaseQueuedPrompts,
+  approveAction,
+  rejectAction,
+  abort,
+  sendQuestionAnswer,
+} = useClaudeChat();
 
 async function continueInCurrentMode() {
   await conversationsStore.adoptCurrentExecutionMode();
@@ -100,6 +108,22 @@ const toolDetailInfo = ref<ToolUseInfo | null>(null);
 function handleSend(message: string) {
   sendMessage(message);
   nextTick(() => messageListRef.value?.scrollToBottom());
+}
+
+function handleQueue(message: string) {
+  queuePrompt(message);
+}
+
+function handleReleaseQueue() {
+  // Scrolls to the bottom for the same reason a send does: a prompt the user
+  // just released is the newest thing in the conversation.
+  void releaseQueuedPrompts();
+  nextTick(() => messageListRef.value?.scrollToBottom());
+}
+
+function handleUnqueue(promptId: string) {
+  const conversationId = conversationsStore.currentConversationId;
+  if (conversationId) chatStore.removeQueuedPrompt(conversationId, promptId);
 }
 
 // Search modal sets pendingScrollMessageId; forward it to the MessageList ref
@@ -365,6 +389,9 @@ function closeToolDetail() {
     <!-- Input -->
     <InputBox
       @send="handleSend"
+      @queue="handleQueue"
+      @release-queue="handleReleaseQueue"
+      @unqueue="handleUnqueue"
       @abort="handleAbort"
     />
   </div>

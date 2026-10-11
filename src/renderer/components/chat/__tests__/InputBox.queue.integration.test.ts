@@ -1,0 +1,358 @@
+/**
+ * Queueing a prompt during a running turn, through the real path.
+ *
+ * The point of testing it here rather than against the store is that the
+ * behaviour spans three pieces that each looked fine alone: the input decides
+ * whether Enter sends or queues, the store holds the queue, and an IPC event
+ * from the main process is what releases it. The defect this replaces was
+ * entirely in the seam — there was no way to submit mid-turn at all, because
+ * the Send button was swapped for Stop.
+ *
+ * Only Electron is mocked. `window.electron` is built by our own preload, so
+ * a hand-written fake would be free to drift from the API the app calls — see
+ * the note in MessageList.spinner.integration.test.ts.
+ */
+
+import { mount } from '@vue/test-utils';
+import { createPinia, setActivePinia } from 'pinia';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { nextTick } from 'vue';
+
+type IpcHandler = (event: unknown, ...args: unknown[]) => void;
+const { ipcListeners, exposed, invoked } = vi.hoisted(() => ({
+  ipcListeners: new Map<string, ((event: unknown, ...args: unknown[]) => void)[]>(),
+  exposed: { api: null as Record<string, unknown> | null },
+  /** Every invoke the renderer made, so sends can be asserted on. */
+  invoked: [] as { channel: string; args: unknown[] }[],
+}));
+
+vi.mock('electron', () => ({
+  contextBridge: {
+    exposeInMainWorld: (_key: string, api: Record<string, unknown>) => {
+      exposed.api = api;
+    },
+  },
+  ipcRenderer: {
+    invoke: vi.fn(async (channel: string, ...args: unknown[]) => {
+      invoked.push({ channel, args });
+      if (typeof channel === 'string' && /availability/i.test(channel)) {
+        // The input asks whether dictation is available during setup and
+        // reads `.available` off the answer, so undefined throws.
+        return { available: false };
+      }
+      if (typeof channel === 'string' && /commands|models|list|queries|permissions/i.test(channel)) {
+        return [];
+      }
+      return undefined;
+    }),
+    send: vi.fn(),
+    on: (channel: string, handler: IpcHandler) => {
+      const list = ipcListeners.get(channel) ?? [];
+      list.push(handler);
+      ipcListeners.set(channel, list);
+    },
+    removeListener: (channel: string, handler: IpcHandler) => {
+      const list = ipcListeners.get(channel) ?? [];
+      const i = list.indexOf(handler);
+      if (i >= 0) list.splice(i, 1);
+    },
+  },
+}));
+
+import { IPC_CHANNELS } from '../../../../shared/types';
+import { useChatStore } from '../../../stores/chat';
+import { useConversationsStore } from '../../../stores/conversations';
+import { useFilesStore } from '../../../stores/files';
+import { useSettingsStore } from '../../../stores/settings';
+import ChatWindow from '../ChatWindow.vue';
+
+// Importing the real preload runs exposeInMainWorld and populates `exposed`.
+import '../../../../preload/preload';
+
+const CONV = 'conv-queue-1';
+
+function emitIpc(channel: string, ...args: unknown[]) {
+  for (const handler of [...(ipcListeners.get(channel) ?? [])]) {
+    handler({}, ...args);
+  }
+}
+
+function installBridge() {
+  ipcListeners.clear();
+  invoked.length = 0;
+  if (!exposed.api) throw new Error('preload did not expose its API');
+  (globalThis as unknown as { window: Record<string, unknown> }).window.electron = exposed.api;
+}
+
+/** Prompts actually sent to Claude, in order. */
+function sentPrompts(): string[] {
+  return invoked
+    .filter((call) => call.channel === IPC_CHANNELS.CLAUDE_SEND)
+    .map((call) => String(call.args[1]));
+}
+
+let mounted: ReturnType<typeof mount> | null = null;
+
+/**
+ * Mount the real ChatWindow, with nothing internal stubbed.
+ *
+ * The whole seam is the point: the input decides whether Enter sends or
+ * queues, ChatWindow binds that to the composable, the store holds the queue,
+ * and an IPC event releases it. A purpose-built host that rendered the input
+ * without binding its events passed every "nothing was sent" assertion for the
+ * wrong reason — which is what the first version of this file did.
+ *
+ * Only Electron is mocked. Nothing of ours is.
+ */
+function mountHost() {
+  const wrapper = mount(ChatWindow);
+  // A silent mount failure looks like a passing test here: no listeners, no
+  // sends, and every "nothing was sent" assertion holds for the wrong reason.
+  if (!ipcListeners.has(IPC_CHANNELS.CLAUDE_DONE)) {
+    throw new Error('useClaudeChat did not subscribe — mount failed silently');
+  }
+  mounted = wrapper;
+  return wrapper;
+}
+
+async function settle() {
+  for (let i = 0; i < 6; i += 1) await nextTick();
+}
+
+/** Type a prompt and press Enter, as the user does. */
+async function submit(wrapper: ReturnType<typeof mount>, text: string) {
+  const textarea = wrapper.find('textarea');
+  await textarea.setValue(text);
+  await textarea.trigger('keydown', { key: 'Enter' });
+  await settle();
+}
+
+describe('queueing prompts during a turn', () => {
+  let chat: ReturnType<typeof useChatStore>;
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    installBridge();
+
+    chat = useChatStore();
+    chat.currentConversationId = CONV;
+    useConversationsStore().currentConversationId = CONV;
+
+    // Prerequisites for sending at all; without them every submit is refused
+    // and the test would prove nothing. Both live on the settings config —
+    // the files store's workingDirectory is a computed over it, so assigning
+    // to that one silently does nothing.
+    const settings = useSettingsStore();
+    settings.config.apiKey = 'test-key';
+    settings.config.workingDirectory = '/tmp/project';
+    if (!useFilesStore().hasWorkingDirectory) {
+      throw new Error('test setup did not establish a working directory');
+    }
+  });
+
+  afterEach(() => {
+    // useClaudeChat registers its listeners once behind a ref count, so
+    // skipping this leaves the next test subscribed to nothing.
+    mounted?.unmount();
+    mounted = null;
+  });
+
+  it('sends immediately when no turn is running', async () => {
+    const wrapper = mountHost();
+
+    await submit(wrapper, 'first question');
+
+    expect(sentPrompts()).toEqual(['first question']);
+    expect(chat.queuedPrompts).toHaveLength(0);
+  });
+
+  it('queues instead of sending while a turn is running', async () => {
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+
+    await submit(wrapper, 'while you work on that');
+
+    expect(sentPrompts()).toEqual([]);
+    expect(chat.queuedPrompts.map((p) => p.content)).toEqual(['while you work on that']);
+  });
+
+  it('offers Queue rather than hiding the submit button mid-turn', async () => {
+    // The reported problem: during a turn the only button was Stop, so saying
+    // the next thing meant killing the run and its agents.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+
+    const labels = wrapper.findAll('button').map((b) => b.text());
+    expect(labels.some((label) => label.includes('Queue'))).toBe(true);
+    expect(labels.some((label) => label.includes('Stop'))).toBe(true);
+  });
+
+  it('clears the textarea when a prompt is queued', async () => {
+    // Otherwise the user cannot tell a queued prompt from an unsent draft.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+
+    await submit(wrapper, 'queued text');
+
+    expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('sends the queued prompt when the turn finishes', async () => {
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'the follow-up');
+
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+    await settle();
+
+    expect(sentPrompts()).toEqual(['the follow-up']);
+    expect(chat.queuedPrompts).toHaveLength(0);
+  });
+
+  it('sends only one queued prompt per turn, in order', async () => {
+    // Two turns must not start at once, and the order the user wrote them in
+    // is the order they meant.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'first');
+    await submit(wrapper, 'second');
+
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+    await settle();
+
+    expect(sentPrompts()).toEqual(['first']);
+    expect(chat.queuedPrompts.map((p) => p.content)).toEqual(['second']);
+  });
+
+  it('keeps the queue when the turn ends in an error', async () => {
+    // The prompt was written expecting the turn before it to have worked.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'next step');
+
+    emitIpc(IPC_CHANNELS.CLAUDE_ERROR, CONV, 'something broke');
+    await settle();
+
+    expect(sentPrompts()).toEqual([]);
+    expect(chat.queuedPrompts.map((p) => p.content)).toEqual(['next step']);
+  });
+
+  it('keeps the queue when the user stops the turn', async () => {
+    // Stop is a request for the app to stop working, so it must not
+    // immediately start the next prompt. The queue stays, visible, with a
+    // "Send now" button for when the user does want it.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'after you stop');
+
+    await wrapper.findAll('button').find((b) => b.text().includes('Stop'))!.trigger('click');
+    await settle();
+
+    expect(sentPrompts()).toEqual([]);
+    expect(chat.queuedPrompts).toHaveLength(1);
+  });
+
+  it('sends the queue on request once nothing is running', async () => {
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'send this when I say');
+
+    chat.setLoading(CONV, false);
+    await settle();
+
+    const sendNow = wrapper.findAll('button').find((b) => b.text().includes('Send now'));
+    expect(sendNow).toBeDefined();
+    await sendNow!.trigger('click');
+    await settle();
+
+    expect(sentPrompts()).toEqual(['send this when I say']);
+  });
+
+  it('does not offer Send now while a turn is running', async () => {
+    // It would start a second turn in the same conversation.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'queued');
+
+    expect(wrapper.findAll('button').some((b) => b.text().includes('Send now'))).toBe(false);
+  });
+
+  it('lists what is queued, so the user can see Enter did something', async () => {
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'a visible queued prompt');
+
+    expect(wrapper.text()).toContain('a visible queued prompt');
+    expect(wrapper.text()).toContain('1 queued');
+  });
+
+  it('removes a queued prompt the user discards', async () => {
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'changed my mind');
+
+    const remove = wrapper.findAll('button').find((b) => b.attributes('title')?.includes('Remove'));
+    expect(remove).toBeDefined();
+    await remove!.trigger('click');
+    await settle();
+
+    expect(chat.queuedPrompts).toHaveLength(0);
+
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+    await settle();
+    expect(sentPrompts()).toEqual([]);
+  });
+
+  it('holds a queue belonging to a conversation the user has left', async () => {
+    // sendMessage only targets the conversation in view, so releasing this
+    // would append to the wrong transcript.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'for the first conversation');
+
+    chat.currentConversationId = 'conv-elsewhere';
+    useConversationsStore().currentConversationId = 'conv-elsewhere';
+    await settle();
+
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+    await settle();
+
+    expect(sentPrompts()).toEqual([]);
+    expect(chat.getConversationState(CONV).queuedPrompts).toHaveLength(1);
+  });
+
+  it('ignores an empty submission mid-turn', async () => {
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+
+    await submit(wrapper, '   ');
+
+    expect(chat.queuedPrompts).toHaveLength(0);
+  });
+
+  it('leaves Shift+Enter to insert a newline rather than queueing', async () => {
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+
+    const textarea = wrapper.find('textarea');
+    await textarea.setValue('still typing');
+    await textarea.trigger('keydown', { key: 'Enter', shiftKey: true });
+    await settle();
+
+    expect(chat.queuedPrompts).toHaveLength(0);
+  });
+});

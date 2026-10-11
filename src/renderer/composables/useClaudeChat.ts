@@ -17,6 +17,7 @@ import { useConversationsStore } from '../stores/conversations';
 import { useFilesStore } from '../stores/files';
 import { useSettingsStore } from '../stores/settings';
 import { logger } from '../utils/logger';
+import { nextFlush } from '../utils/prompt-queue';
 
 import { useSlashCommands } from './useSlashCommands';
 
@@ -107,26 +108,37 @@ export function useClaudeChat() {
   /**
    * Send a message to Claude
    */
-  async function sendMessage(content: string) {
+  /**
+   * What became of a send.
+   *
+   * `sendMessage` used to return nothing, and every caller simply hoped. The
+   * queue needs to tell three outcomes apart: a turn is now running, so the
+   * next queued prompt waits for it; the prompt was a command this GUI answers
+   * itself, so no turn is coming and the queue should carry straight on; or it
+   * was refused, so the prompt must go back in the queue rather than vanish.
+   */
+  type SendOutcome = 'started' | 'handled' | 'rejected';
+
+  async function sendMessage(content: string): Promise<SendOutcome> {
     if (!content.trim()) {
-      return;
+      return 'rejected';
     }
 
     const currentConvId = conversationsStore.currentConversationId;
     if (!currentConvId) {
       chatStore.setError(currentConvId || 'unknown', 'No active conversation');
-      return;
+      return 'rejected';
     }
 
     // Check prerequisites
     if (!settingsStore.hasAuth) {
       chatStore.setError(currentConvId, 'Please log in or configure your API key in Settings');
-      return;
+      return 'rejected';
     }
 
     if (!filesStore.workingDirectory) {
       chatStore.setError(currentConvId, 'Please select a working directory');
-      return;
+      return 'rejected';
     }
 
     // Check resource limits
@@ -136,7 +148,7 @@ export function useClaudeChat() {
         `Maximum concurrent runs (${chatStore.maxConcurrentQueries}) reached. ` +
         `Please wait for another conversation's current turn to finish or cancel it.`
       );
-      return;
+      return 'rejected';
     }
 
     // Clear any previous error and modified files from last query
@@ -151,7 +163,7 @@ export function useClaudeChat() {
     // first so the transcript reads as a normal exchange — and so /clear wipes
     // its own invocation along with everything else.
     if (await handleSlashCommand(content)) {
-      return;
+      return 'handled';
     }
 
     // Start assistant message for streaming - pass conversation ID for proper tracking
@@ -182,11 +194,103 @@ export function useClaudeChat() {
 
       // Send message via IPC with conversationId and optional resume session ID
       await window.electron.claude.send(currentConvId, content, effectiveCwd, resumeSessionId);
+      return 'started';
     } catch (err) {
       logger.error('Failed to send message', err);
       chatStore.setError(currentConvId, 'Failed to send message to Claude');
       chatStore.setLoading(currentConvId, false);
+      return 'rejected';
     }
+  }
+
+  /**
+   * Hold a prompt until the running turn finishes.
+   *
+   * The alternative the user had was to press Stop, which aborts the run and
+   * every agent inside it, just to be able to say the next thing.
+   */
+  function queuePrompt(content: string): void {
+    const currentConvId = conversationsStore.currentConversationId;
+    if (!currentConvId || !content.trim()) return;
+
+    chatStore.queuePrompt(currentConvId, content);
+    logger.info('Prompt queued for the end of the current turn', {
+      conversationId: currentConvId,
+      queued: chatStore.queuedPrompts.length,
+    });
+  }
+
+  /**
+   * Release queued prompts, as far as the conditions allow.
+   *
+   * Called when a turn ends. `nextFlush` owns the rules and is tested on its
+   * own; this is the side effects.
+   *
+   * It is a loop rather than a single step because of commands this GUI
+   * answers itself: `/help` starts no turn, so there is no later event to
+   * resume the queue from, and stopping after one would leave the rest stuck
+   * until the user happened to run another query. Each pass removes an entry,
+   * so it ends — on a started turn, on a hold, or on an empty queue.
+   */
+  async function flushQueuedPrompts(conversationId: string, errored: boolean): Promise<void> {
+    for (;;) {
+      const state = chatStore.getConversationState(conversationId);
+      const decision = nextFlush({
+        conversationId,
+        currentConversationId: conversationsStore.currentConversationId,
+        queue: state.queuedPrompts,
+        isLoading: chatStore.isConversationLoading(conversationId),
+        atResourceLimit: chatStore.isAtResourceLimit,
+        errored,
+      });
+
+      if (decision.kind === 'hold') {
+        if (decision.reason !== 'empty') {
+          logger.info('Queued prompts held', {
+            conversationId,
+            reason: decision.reason,
+            queued: state.queuedPrompts.length,
+          });
+        }
+        return;
+      }
+
+      const prompt = chatStore.takeNextQueuedPrompt(conversationId);
+      if (!prompt) return;
+
+      logger.info('Sending queued prompt', { conversationId, promptId: prompt.id });
+      const outcome = await sendMessage(prompt.content);
+
+      if (outcome === 'rejected') {
+        // Refused before a turn began — no auth, no working directory, the
+        // cap reached since the check. Put it back rather than lose what the
+        // user wrote; the reason is already in the transcript as an error.
+        logger.warn('Queued prompt was refused — returning it to the queue', {
+          conversationId,
+          promptId: prompt.id,
+        });
+        chatStore.restoreQueuedPrompt(conversationId, prompt);
+        return;
+      }
+
+      // A turn is now running; the rest of the queue waits for it to finish.
+      if (outcome === 'started') return;
+    }
+  }
+
+  /**
+   * Send the queued prompts now, at the user's request.
+   *
+   * Needed because not every hold has a later event to release it. Stopping a
+   * turn is the clearest case: the abort is honoured — nothing is sent behind
+   * the user's back — but then no turn will ever end for this conversation, so
+   * without this the queue would sit there with no way forward but deleting
+   * it. Same for a turn that errored, and for the concurrent-run cap.
+   */
+  async function releaseQueuedPrompts(): Promise<void> {
+    const currentConvId = conversationsStore.currentConversationId;
+    if (!currentConvId) return;
+    await flushQueuedPrompts(currentConvId, false);
   }
 
   /**
@@ -365,6 +469,12 @@ export function useClaudeChat() {
       chatStore.setLoading(conversationId, false);
       chatStore.finishStreaming(conversationId);
       chatStore.completeToolUseMessages(conversationId);
+
+      // Deliberately not flushed: a queued prompt was written expecting the
+      // turn before it to have worked. `nextFlush` holds on `errored`, and
+      // this call is here so that decision is made in one place and the
+      // "held, N waiting" log appears for a failed turn too.
+      void flushQueuedPrompts(conversationId, true);
     });
 
     // Handle completion - route to correct conversation
@@ -426,6 +536,10 @@ export function useClaudeChat() {
 
         chatStore.endMessageBuffer(conversationId);
       }
+
+      // Anything the user wrote during the turn goes now — after the save, so
+      // the finished turn is on disk before the next one starts changing it.
+      await flushQueuedPrompts(conversationId, false);
     });
 
     // The main-loop model the CLI reports. Registered once here and held in
@@ -683,6 +797,8 @@ export function useClaudeChat() {
   return {
     // Actions
     sendMessage,
+    queuePrompt,
+    releaseQueuedPrompts,
     approveAction,
     rejectAction,
     sendQuestionAnswer,

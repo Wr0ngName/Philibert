@@ -12,6 +12,7 @@ import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, 
 
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
+import type { QueuedPrompt } from '../utils/prompt-queue';
 
 /**
  * Per-conversation state tracked for multi-instance support
@@ -25,6 +26,15 @@ export interface ConversationState {
   streamingMessageId: string | null;
   /** Pending actions waiting for user approval */
   pendingActions: PendingAction[];
+  /**
+   * Prompts written while this conversation's turn was running, oldest first.
+   *
+   * Not part of the transcript and never persisted: these have not been sent,
+   * so writing them into the saved conversation would show the user a message
+   * they never actually asked, and reloading would lose the queue's meaning
+   * (the turn it was waiting on is long over).
+   */
+  queuedPrompts: QueuedPrompt[];
   /** Background tasks for this conversation */
   backgroundTasks: Map<string, BackgroundTask>;
   /** Model's todo list — reconstructed from TaskCreate/TaskUpdate/TaskList tool
@@ -73,6 +83,7 @@ function createConversationState(): ConversationState {
     currentStreamingContent: '',
     streamingMessageId: null,
     pendingActions: [],
+    queuedPrompts: [],
     backgroundTasks: new Map(),
     taskListItems: new Map(),
     sessionUsage: null,
@@ -193,6 +204,12 @@ export const useChatStore = defineStore('chat', () => {
   });
 
   const hasPendingActions = computed(() => pendingActions.value.length > 0);
+
+  // Current conversation's queued prompts, for the strip above the input.
+  const queuedPrompts = computed((): QueuedPrompt[] => {
+    const state = getCurrentState();
+    return state?.queuedPrompts ?? [];
+  });
 
   // Current conversation's background tasks
   const backgroundTasks = computed(() => {
@@ -1448,6 +1465,61 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // ============================================
+  // Queued Prompt Actions
+  // ============================================
+
+  /**
+   * Hold a prompt until the running turn finishes.
+   *
+   * Empty input is rejected here as well as at the call site, so the queue
+   * cannot acquire an entry that `sendMessage` would later refuse to send and
+   * which the user would then have to clear by hand.
+   */
+  function queuePrompt(conversationId: string, content: string): QueuedPrompt | null {
+    const trimmed = content.trim();
+    if (!trimmed) return null;
+
+    const prompt: QueuedPrompt = {
+      id: generateId(ID_PREFIXES.QUEUED_PROMPT),
+      content: trimmed,
+      queuedAt: Date.now(),
+    };
+    getConversationState(conversationId).queuedPrompts.push(prompt);
+    return prompt;
+  }
+
+  /**
+   * Remove and return the oldest queued prompt.
+   *
+   * Taking it out before it is sent, rather than after, so a send that throws
+   * cannot leave the same prompt queued *and* in the transcript — it would be
+   * sent again at the end of the next turn.
+   */
+  function takeNextQueuedPrompt(conversationId: string): QueuedPrompt | null {
+    const state = conversationStates.value.get(conversationId);
+    return state?.queuedPrompts.shift() ?? null;
+  }
+
+  /** Drop one queued prompt, for the remove button on its chip. */
+  function removeQueuedPrompt(conversationId: string, promptId: string): void {
+    const state = conversationStates.value.get(conversationId);
+    if (!state) return;
+    const index = state.queuedPrompts.findIndex((p) => p.id === promptId);
+    if (index !== -1) state.queuedPrompts.splice(index, 1);
+  }
+
+  /** Drop every queued prompt for a conversation. */
+  function clearQueuedPrompts(conversationId: string): void {
+    const state = conversationStates.value.get(conversationId);
+    if (state) state.queuedPrompts = [];
+  }
+
+  /** Put a prompt back at the front, after a send failed to start a turn. */
+  function restoreQueuedPrompt(conversationId: string, prompt: QueuedPrompt): void {
+    getConversationState(conversationId).queuedPrompts.unshift(prompt);
+  }
+
+  // ============================================
   // Cleanup Actions
   // ============================================
 
@@ -1590,6 +1662,14 @@ export const useChatStore = defineStore('chat', () => {
     trackFileModification,
     trackWatcherModification,
     clearModifiedFiles,
+
+    // Prompts written while a turn was running
+    queuedPrompts,
+    queuePrompt,
+    takeNextQueuedPrompt,
+    removeQueuedPrompt,
+    clearQueuedPrompts,
+    restoreQueuedPrompt,
 
     // Cleanup
     clearConversationState,

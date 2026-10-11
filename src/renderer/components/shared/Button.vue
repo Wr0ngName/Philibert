@@ -44,10 +44,24 @@ const variantClasses = {
   success: 'btn-success',
 };
 
+/**
+ * Each size carries a minimum height as well as padding.
+ *
+ * Without it a button's height came from its content, so an icon-only button
+ * ended up shorter than one with a label beside the same icon — the icon is
+ * 16px and a line of text is 20px, so they differed by 4px and sat visibly
+ * mismatched next to each other (the dictate button against Send/Stop in the
+ * chat input, among others).
+ *
+ * The minimums are the heights the labelled buttons already had, so labelled
+ * buttons do not move and icon-only ones grow to match. `min-h` rather than
+ * `h`, so a button with unusual content — two lines, a larger icon — can still
+ * grow instead of overflowing.
+ */
 const sizeClasses = {
-  sm: 'px-3 py-1.5 text-xs',
-  md: 'px-4 py-2 text-sm',
-  lg: 'px-6 py-3 text-base',
+  sm: 'min-h-7 px-3 py-1.5 text-xs',
+  md: 'min-h-9 px-4 py-2 text-sm',
+  lg: 'min-h-12 px-6 py-3 text-base',
 };
 </script>
 

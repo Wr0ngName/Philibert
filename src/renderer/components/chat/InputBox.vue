@@ -21,6 +21,12 @@ import CommandAutocomplete from './CommandAutocomplete.vue';
 
 const emit = defineEmits<{
   (e: 'send', message: string): void;
+  /** Hold this prompt until the running turn finishes. */
+  (e: 'queue', message: string): void;
+  /** Send what is queued now, without waiting for a turn to end. */
+  (e: 'release-queue'): void;
+  /** Forget one queued prompt. */
+  (e: 'unqueue', promptId: string): void;
   (e: 'abort'): void;
 }>();
 
@@ -30,7 +36,7 @@ const settingsStore = useSettingsStore();
 const conversationsStore = useConversationsStore();
 const { slashCommands } = useClaudeChat();
 
-const { isLoading, hasMessages } = storeToRefs(chatStore);
+const { isLoading, hasMessages, queuedPrompts } = storeToRefs(chatStore);
 const { hasAuth, executionMode } = storeToRefs(settingsStore);
 const { hasWorkingDirectory } = storeToRefs(filesStore);
 const { currentModeMismatch } = storeToRefs(conversationsStore);
@@ -114,13 +120,30 @@ async function toggleDictation(): Promise<void> {
   await speech.start();
 }
 
-const canSend = computed(() => {
+/**
+ * Whether the written prompt can go anywhere at all.
+ *
+ * Deliberately no longer includes `!isLoading`. A running turn used to make
+ * this false, which meant Enter did nothing and the Send button was replaced
+ * by Stop: the only way to say the next thing was to abort the turn, killing
+ * the run and every agent in it. A turn in flight now changes where the prompt
+ * goes — the queue instead of the wire — not whether it is accepted.
+ *
+ * The other conditions are real blocks and stay: without auth or a working
+ * directory the prompt cannot be sent later either, and a mode mismatch means
+ * the SDK could not resume this conversation at all.
+ */
+const canSubmit = computed(() => {
   return message.value.trim().length > 0
     && hasAuth.value
     && hasWorkingDirectory.value
-    && !isLoading.value
     && !currentModeMismatch.value;
 });
+
+/** A submission now would be held rather than sent. */
+const willQueue = computed(() => isLoading.value);
+
+const hasQueuedPrompts = computed(() => queuedPrompts.value.length > 0);
 
 const placeholder = computed(() => {
   if (!hasAuth.value) {
@@ -155,13 +178,18 @@ const showAutocomplete = computed(() => {
 });
 
 function handleSubmit(): void {
-  if (canSend.value) {
-    emit('send', message.value.trim());
-    message.value = '';
-    // Reset textarea height
-    if (inputRef.value) {
-      inputRef.value.style.height = 'auto';
-    }
+  if (!canSubmit.value) return;
+
+  const prompt = message.value.trim();
+  if (willQueue.value) {
+    emit('queue', prompt);
+  } else {
+    emit('send', prompt);
+  }
+  message.value = '';
+  // Reset textarea height
+  if (inputRef.value) {
+    inputRef.value.style.height = 'auto';
   }
 }
 
@@ -210,6 +238,63 @@ function handleInput(event: Event) {
 
 <template>
   <div class="border-t border-surface-200 dark:border-surface-700 p-4 bg-white dark:bg-surface-800">
+    <!--
+      Prompts written during a turn, waiting for it to finish.
+
+      Shown because a queue the user cannot see is worse than no queue: they
+      would have no way to tell whether Enter did anything, what is about to be
+      sent, or in what order. Each entry can be removed, and when nothing is
+      running there is a button to send them now — the case that needs it is
+      Stop, which honours the abort and so leaves the queue with no turn ending
+      later to release it.
+    -->
+    <div
+      v-if="hasQueuedPrompts"
+      class="mb-3 rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/40"
+    >
+      <div class="flex items-center justify-between px-3 py-2 border-b border-surface-200 dark:border-surface-700">
+        <span class="flex items-center gap-1.5 text-xs font-medium text-surface-600 dark:text-surface-300">
+          <Icon
+            name="history"
+            size="xs"
+          />
+          {{ queuedPrompts.length }} queued
+          <span class="font-normal text-surface-400 dark:text-surface-500">
+            {{ isLoading ? '· sent when this turn finishes' : '· waiting to be sent' }}
+          </span>
+        </span>
+        <Button
+          v-if="!isLoading"
+          variant="ghost"
+          size="sm"
+          title="Send the queued prompts now"
+          @click="emit('release-queue')"
+        >
+          Send now
+        </Button>
+      </div>
+      <ul class="divide-y divide-surface-200 dark:divide-surface-700">
+        <li
+          v-for="prompt in queuedPrompts"
+          :key="prompt.id"
+          class="flex items-start gap-2 px-3 py-2"
+        >
+          <span class="flex-1 min-w-0 text-xs text-surface-700 dark:text-surface-200 whitespace-pre-wrap break-words line-clamp-3">{{ prompt.content }}</span>
+          <button
+            type="button"
+            class="shrink-0 p-1 rounded text-surface-400 hover:text-surface-700 dark:hover:text-surface-200 hover:bg-surface-200 dark:hover:bg-surface-700"
+            :title="`Remove this queued prompt`"
+            @click="emit('unqueue', prompt.id)"
+          >
+            <Icon
+              name="close"
+              size="xs"
+            />
+          </button>
+        </li>
+      </ul>
+    </div>
+
     <div class="flex gap-3 items-start">
       <div class="flex-1">
         <div class="relative">
@@ -258,6 +343,7 @@ function handleInput(event: Event) {
             v-else-if="speech.error.value"
             class="text-amber-600 dark:text-amber-400"
           >{{ speech.error.value }}</span>
+          <span v-else-if="willQueue">Press Enter to queue for after this turn, Shift+Enter for new line</span>
           <span v-else>Press Enter to send, Shift+Enter for new line</span>
           <div class="flex items-center gap-2">
             <span
@@ -287,10 +373,14 @@ function handleInput(event: Event) {
           />
         </Button>
 
+        <!-- Stop sits ALONGSIDE the submit button during a turn rather than
+             replacing it. Replacing it was the whole problem: the only control
+             available mid-turn was the one that kills the run. -->
         <Button
           v-if="isLoading"
           variant="danger"
           size="md"
+          title="Stop this turn, ending the run and any agents in it"
           @click="handleAbort"
         >
           <Icon
@@ -302,18 +392,22 @@ function handleInput(event: Event) {
         </Button>
 
         <Button
-          v-else
           variant="primary"
           size="md"
-          :disabled="!canSend"
+          :disabled="!canSubmit"
+          :title="willQueue
+            ? 'Queue this prompt — it is sent when the current turn finishes'
+            : 'Send this prompt'"
           @click="handleSubmit"
         >
+          <!-- `history` is the clock glyph; there is no separate clock icon,
+               and adding one would duplicate the same path. -->
           <Icon
-            name="send"
+            :name="willQueue ? 'history' : 'send'"
             size="sm"
             class="mr-1"
           />
-          Send
+          {{ willQueue ? 'Queue' : 'Send' }}
         </Button>
       </div>
     </div>
