@@ -700,6 +700,27 @@ export class ClaudeCodeService {
           // previous states." Without it rewindFiles has nothing to restore
           // from and refuses, which is why /rewind did nothing at all.
           enableFileCheckpointing: true,
+          // Stop means "stop this turn", not "kill everything running".
+          //
+          // The SDK documents this as the switch: "When declared, an interrupt
+          // on an open-input (interactive stream-json) session spares running
+          // background agents/workflows — Stop only aborts the current turn,
+          // and tasks are stopped one at a time through the consumer's own
+          // affordance." And it "fails closed on absence: without the
+          // declaration, an interrupt kills background tasks, because a spared
+          // runaway task would otherwise be unstoppable from this consumer
+          // short of ending the session."
+          //
+          // That fail-closed default is what made Stop take the agents and
+          // background tasks down with the turn. Declaring it is a promise we
+          // actually keep: the background-task detail modal has a per-task
+          // stop wired to `stopTask` below, and the Stop button offers
+          // "stop everything" for killing the lot deliberately.
+          //
+          // Only valid on this lane — `prompt` here is an async input channel,
+          // so the session is open-input. The CLI takes the declaration from
+          // the first client to attach, so it belongs at session start.
+          perTaskStopAffordance: true,
           ...(effort ? { effort } : {}),
           // Always pass the selection, including on resume. `--model` is
           // documented as "Model for the current session" with no resume

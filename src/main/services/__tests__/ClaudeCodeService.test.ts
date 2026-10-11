@@ -285,6 +285,36 @@ describe('ClaudeCodeService', () => {
       );
     });
 
+    it('declares the per-task stop affordance, so Stop spares background tasks', async () => {
+      // The CLI fails closed on absence: without this declaration an
+      // interrupt kills running background tasks and agents, which made Stop
+      // an all-or-nothing control. The whole of "Stop stops the turn only"
+      // rests on this one option being passed, and nothing else in the app
+      // would show its absence — so it is asserted directly.
+      mockQuery.mockReturnValue(createMockQueryIterator([]));
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello Claude', '/home/user/project');
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.objectContaining({
+          options: expect.objectContaining({ perTaskStopAffordance: true }),
+        })
+      );
+    });
+
+    it('declares it on an open-input session, which is what the SDK requires', async () => {
+      // The declaration only has an effect on an interactive stream-json
+      // session. Were the prompt ever changed to a plain string, the option
+      // would be accepted and quietly do nothing.
+      mockQuery.mockReturnValue(createMockQueryIterator([]));
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello Claude', '/home/user/project');
+
+      const call = mockQuery.mock.calls[0][0];
+      expect(call.options.perTaskStopAffordance).toBe(true);
+      expect(typeof call.prompt[Symbol.asyncIterator]).toBe('function');
+    });
+
     // The turn MUST end from the renderer's point of view. The spinner is only
     // cleared by CLAUDE_DONE, so any realistic message sequence that fails to
     // produce one leaves it spinning forever with no way back.

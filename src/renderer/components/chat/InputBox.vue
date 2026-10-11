@@ -16,6 +16,7 @@ import { useConversationsStore } from '../../stores/conversations';
 import { useFilesStore } from '../../stores/files';
 import { useSettingsStore } from '../../stores/settings';
 import Button from '../shared/Button.vue';
+import ContextMenu, { type ContextMenuItem } from '../shared/ContextMenu.vue';
 import Icon from '../shared/Icon.vue';
 import CommandAutocomplete from './CommandAutocomplete.vue';
 
@@ -28,6 +29,8 @@ const emit = defineEmits<{
   /** Forget one queued prompt. */
   (e: 'unqueue', promptId: string): void;
   (e: 'abort'): void;
+  /** Stop the turn and every background task it left running. */
+  (e: 'abort-everything'): void;
 }>();
 
 const chatStore = useChatStore();
@@ -36,7 +39,13 @@ const settingsStore = useSettingsStore();
 const conversationsStore = useConversationsStore();
 const { slashCommands } = useClaudeChat();
 
-const { isLoading, hasMessages, queuedPrompts } = storeToRefs(chatStore);
+const {
+  isLoading,
+  hasMessages,
+  queuedPrompts,
+  hasRunningBackgroundTasks,
+  runningBackgroundTasksList,
+} = storeToRefs(chatStore);
 const { hasAuth, executionMode } = storeToRefs(settingsStore);
 const { hasWorkingDirectory } = storeToRefs(filesStore);
 const { currentModeMismatch } = storeToRefs(conversationsStore);
@@ -228,6 +237,44 @@ function handleAbort() {
   emit('abort');
 }
 
+/**
+ * The extra options on Stop.
+ *
+ * Stop on its own means "stop this turn" and leaves background agents and
+ * workflows running, which is the behaviour worth having by default — a turn
+ * is usually interrupted to redirect it, not to abandon the work it started.
+ * Taking everything down is still wanted sometimes, so it is one click away
+ * rather than the only thing on offer.
+ *
+ * The caret only appears when there is actually something else running, so the
+ * common case stays a single button and the menu never offers a choice between
+ * two identical outcomes.
+ */
+const stopMenuOpen = ref(false);
+const stopMenuAt = ref({ x: 0, y: 0 });
+
+const stopMenuItems = computed((): ContextMenuItem[] => [
+  {
+    label: 'Stop this turn only',
+    onSelect: () => emit('abort'),
+  },
+  {
+    label: `Stop this turn and ${runningBackgroundTasksList.value.length} background ${
+      runningBackgroundTasksList.value.length === 1 ? 'task' : 'tasks'
+    }`,
+    onSelect: () => emit('abort-everything'),
+  },
+]);
+
+function openStopMenu(event: MouseEvent): void {
+  const button = event.currentTarget as HTMLElement;
+  const box = button.getBoundingClientRect();
+  // Anchored to the button's top-left so the menu opens over the input rather
+  // than off the bottom of the window; ContextMenu clamps it to the viewport.
+  stopMenuAt.value = { x: box.left, y: box.top };
+  stopMenuOpen.value = true;
+}
+
 // Auto-resize textarea
 function handleInput(event: Event) {
   const textarea = event.target as HTMLTextAreaElement;
@@ -376,20 +423,40 @@ function handleInput(event: Event) {
         <!-- Stop sits ALONGSIDE the submit button during a turn rather than
              replacing it. Replacing it was the whole problem: the only control
              available mid-turn was the one that kills the run. -->
-        <Button
+        <div
           v-if="isLoading"
-          variant="danger"
-          size="md"
-          title="Stop this turn, ending the run and any agents in it"
-          @click="handleAbort"
+          class="flex items-center gap-1"
         >
-          <Icon
-            name="close"
-            size="sm"
-            class="mr-1"
-          />
-          Stop
-        </Button>
+          <Button
+            variant="danger"
+            size="md"
+            title="Stop this turn. Background tasks and agents keep running."
+            @click="handleAbort"
+          >
+            <Icon
+              name="close"
+              size="sm"
+              class="mr-1"
+            />
+            Stop
+          </Button>
+
+          <!-- Only when there is something a plain Stop would now leave
+               running; otherwise the menu's two items mean the same thing. -->
+          <Button
+            v-if="hasRunningBackgroundTasks"
+            variant="danger"
+            size="md"
+            class="px-2"
+            title="More ways to stop"
+            @click="openStopMenu"
+          >
+            <Icon
+              name="chevron-up"
+              size="sm"
+            />
+          </Button>
+        </div>
 
         <Button
           variant="primary"
@@ -411,5 +478,13 @@ function handleInput(event: Event) {
         </Button>
       </div>
     </div>
+
+    <ContextMenu
+      :open="stopMenuOpen"
+      :x="stopMenuAt.x"
+      :y="stopMenuAt.y"
+      :items="stopMenuItems"
+      @close="stopMenuOpen = false"
+    />
   </div>
 </template>

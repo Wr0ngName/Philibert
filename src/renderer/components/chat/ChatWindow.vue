@@ -161,6 +161,26 @@ function handleAbort() {
   abort();
 }
 
+/**
+ * Stop the turn AND every background task it left running.
+ *
+ * Interrupting the turn deliberately spares background agents and workflows
+ * now (`perTaskStopAffordance` in ClaudeCodeService), which is what makes Stop
+ * usable — but it also means there has to be a way to take the lot down on
+ * purpose. This is it.
+ *
+ * Tasks first, then the turn: the session survives an interrupt either way,
+ * but stopping a task needs the session, so doing it in this order means a
+ * failure in the interrupt cannot leave tasks running that the user asked to
+ * kill. Each is requested independently, so one refusal does not spare the
+ * rest.
+ */
+async function handleAbortEverything() {
+  const tasks = [...chatStore.runningBackgroundTasksList];
+  await Promise.allSettled(tasks.map((task) => stopTask(task.id)));
+  abort();
+}
+
 function handleApprove(actionId: string, alwaysAllow?: boolean, chosenScope?: PermissionScope) {
   approveAction(actionId, alwaysAllow, chosenScope);
 }
@@ -205,18 +225,30 @@ function closeTaskDetail() {
  * Writing 'stopped' here would show success even when the request failed.
  */
 async function stopTaskFromDetail(taskId: string) {
-  const conversationId = conversationsStore.currentConversationId;
-  if (!conversationId) return;
-
   stoppingTask.value = true;
   stopTaskError.value = null;
   try {
-    await window.electron.claude.stopTask(conversationId, taskId);
+    await stopTask(taskId);
   } catch (error) {
     stopTaskError.value = error instanceof Error ? error.message : 'Failed to stop task';
   } finally {
     stoppingTask.value = false;
   }
+}
+
+/**
+ * Request that one background task stop.
+ *
+ * The single place that request is made, so the modal's stop button and the
+ * Stop button's "stop everything" cannot drift apart. Throws rather than
+ * swallowing, because the two callers want different things from a failure:
+ * the modal shows it against the task, while stopping everything carries on
+ * with the others.
+ */
+async function stopTask(taskId: string): Promise<void> {
+  const conversationId = conversationsStore.currentConversationId;
+  if (!conversationId) return;
+  await window.electron.claude.stopTask(conversationId, taskId);
 }
 
 function openToolDetail(id: string) {
@@ -393,6 +425,7 @@ function closeToolDetail() {
       @release-queue="handleReleaseQueue"
       @unqueue="handleUnqueue"
       @abort="handleAbort"
+      @abort-everything="handleAbortEverything"
     />
   </div>
 </template>
