@@ -10,6 +10,7 @@ import type { BackgroundTask, ToolUseInfo } from '@shared/types';
 
 import type { ActivityRow } from '../../utils/message-tree';
 import { formatModelId } from '../../utils/model';
+import { parseTaskOutput } from '../../utils/task-output';
 import { formatToolInput, type InputParam } from '../../utils/tool-input';
 import Button from '../shared/Button.vue';
 import Icon from '../shared/Icon.vue';
@@ -64,6 +65,15 @@ const emit = defineEmits<{
 function openToolDetail(toolUse: ToolUseInfo | undefined): void {
   if (toolUse) emit('open-tool-detail', toolUse);
 }
+
+/**
+ * The output file, read as what it actually is.
+ *
+ * An agent's file is a JSONL transcript (measured: 55,597 bytes for a
+ * one-word answer); a shell task's is the command's own output. See
+ * parseTaskOutput.
+ */
+const parsedOutput = computed(() => parseTaskOutput(outputContent.value));
 
 // Output file content (lazy-loaded when modal opens)
 const outputContent = ref<string | null>(null);
@@ -355,11 +365,62 @@ const statusDisplay = computed(() => {
         >
           Failed to load output: {{ outputError }}
         </div>
+        <!-- An agent's output file is its transcript, one JSON object per
+             line, so showing the file verbatim meant tens of kilobytes of raw
+             JSON. Rendered as the activity it describes instead; a command's
+             output is still shown as the text it is. -->
         <div
-          v-else-if="outputContent !== null"
+          v-else-if="parsedOutput.kind === 'transcript'"
+          class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 max-h-80 overflow-y-auto space-y-2"
+        >
+          <div
+            v-for="(step, index) in parsedOutput.steps"
+            :key="index"
+            class="text-xs"
+          >
+            <div
+              v-if="step.toolName"
+              class="flex items-start gap-1.5 text-surface-600 dark:text-surface-300"
+            >
+              <Icon
+                name="terminal"
+                size="xs"
+                class="mt-0.5 shrink-0"
+              />
+              <span class="font-medium">{{ step.toolName }}</span>
+              <span
+                v-if="step.toolInput"
+                class="font-mono text-surface-500 dark:text-surface-400 truncate"
+              >{{ step.toolInput }}</span>
+            </div>
+            <div v-else>
+              <span
+                class="font-medium"
+                :class="step.role === 'user'
+                  ? 'text-surface-500 dark:text-surface-400'
+                  : 'text-primary-600 dark:text-primary-400'"
+              >{{ step.role === 'user' ? 'Prompt' : 'Agent' }}</span>
+              <span class="text-surface-800 dark:text-surface-200 whitespace-pre-wrap">
+                {{ step.text }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Said rather than silently dropped: a transcript is mostly
+               machinery, and claiming to show it all would be a lie. -->
+          <div
+            v-if="parsedOutput.skipped > 0"
+            class="text-[11px] text-surface-400 dark:text-surface-500 italic pt-1"
+          >
+            {{ parsedOutput.skipped }} setup
+            {{ parsedOutput.skipped === 1 ? 'entry' : 'entries' }} not shown
+          </div>
+        </div>
+        <div
+          v-else-if="parsedOutput.kind === 'text'"
           class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 max-h-80 overflow-y-auto"
         >
-          <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono">{{ outputContent }}</pre>
+          <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono">{{ parsedOutput.text }}</pre>
         </div>
       </div>
 
