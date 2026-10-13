@@ -361,6 +361,45 @@ describe('queueing prompts during a turn', () => {
     expect(chat.getConversationState(CONV).queuedPrompts).toHaveLength(0);
   });
 
+  it('sends the queue when the turn-end event never arrives', async () => {
+    // The literal report: "nothing happen when end of turn". A turn can end
+    // without the handler hearing about it — a CLAUDE_DONE that is missed or
+    // attributed to the wrong conversation leaves the loading flag set, which
+    // is the very reason the active-queries set exists as an authoritative
+    // correction. The queue used to wait only on the turn-end event, so when
+    // that was what went missing, nothing was left to release it.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'waiting on a turn that never reports');
+
+    // No CLAUDE_DONE. The main process reports the authoritative set instead,
+    // and this conversation is not in it.
+    emitIpc(IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES, 0, 5, 0, []);
+    await settle();
+
+    expect(sentPrompts()).toEqual(['waiting on a turn that never reports']);
+  });
+
+  it('sends the queue when the turn end is attributed to another conversation', async () => {
+    // The misattribution case, which looks identical to the user: the turn
+    // really has ended, but the event named someone else.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'queued here');
+
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, 'conv-somewhere-else');
+    await settle();
+    // Still held, correctly: as far as this conversation knows, it is busy.
+    expect(sentPrompts()).toEqual([]);
+
+    emitIpc(IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES, 0, 5, 0, []);
+    await settle();
+
+    expect(sentPrompts()).toEqual(['queued here']);
+  });
+
   it('does not release the queue by itself after the user stops a turn', async () => {
     // The re-check watches the loading flag, which an abort also clears — so
     // without an explicit hold, stopping a turn would immediately start the
@@ -375,6 +414,23 @@ describe('queueing prompts during a turn', () => {
 
     expect(sentPrompts()).toEqual([]);
     expect(chat.queuedPrompts).toHaveLength(1);
+  });
+
+  it('says why a held queue is not moving', async () => {
+    // A held queue will not move however long the user waits, which is
+    // indistinguishable from the queue being broken unless it says so.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'queued behind a stop');
+
+    expect(wrapper.text()).toContain('sent when this turn finishes');
+
+    await wrapper.findAll('button').find((b) => b.text().includes('Stop'))!.trigger('click');
+    await settle();
+
+    expect(wrapper.text()).toContain('paused');
+    expect(wrapper.text()).toContain('Send now');
   });
 
   it('does not release the queue by itself after a turn fails', async () => {

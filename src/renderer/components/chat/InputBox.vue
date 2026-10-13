@@ -45,6 +45,7 @@ const {
   isLoading,
   hasMessages,
   queuedPrompts,
+  queueHeld,
   hasRunningBackgroundTasks,
   runningBackgroundTasksList,
 } = storeToRefs(chatStore);
@@ -155,6 +156,21 @@ const canSubmit = computed(() => {
 const willQueue = computed(() => isLoading.value);
 
 const hasQueuedPrompts = computed(() => queuedPrompts.value.length > 0);
+
+/**
+ * Why the queue is sitting there.
+ *
+ * "Waiting to be sent" was true of both of the cases where nothing is
+ * happening, and useless in the one that needs explaining. A queue held
+ * because the user stopped a turn, or because one failed, will not move on its
+ * own however long they wait — which looks exactly like the queue being broken
+ * unless it says so and points at the button.
+ */
+const queueStatus = computed(() => {
+  if (isLoading.value) return '· sent when this turn finishes';
+  if (queueHeld.value) return '· paused — use Send now';
+  return '· waiting to be sent';
+});
 
 const placeholder = computed(() => {
   if (!hasAuth.value) {
@@ -309,7 +325,7 @@ function handleInput(event: Event) {
           />
           {{ queuedPrompts.length }} queued
           <span class="font-normal text-surface-400 dark:text-surface-500">
-            {{ isLoading ? '· sent when this turn finishes' : '· waiting to be sent' }}
+            {{ queueStatus }}
           </span>
         </span>
         <Button
