@@ -70,6 +70,53 @@ export function isHumanOriginatedResult(message: { origin?: { kind?: string } })
 }
 
 /**
+ * Whether a `result` message ends the turn WE started — by the CLI's own join
+ * key rather than by guessing.
+ *
+ * Every user message we push carries a `uuid`, and the CLI echoes it on the
+ * result for the turn that message started: `user_message_uuid`, plus
+ * `user_message_uuids` listing every send folded into one turn when several
+ * were coalesced. A background agent's result carries neither. So an exact
+ * answer is available and this is it.
+ *
+ * Measured against the real CLI (2.1.278), one session, one background task:
+ *
+ *   result @3.6s   user_message_uuid = <the uuid we sent>   → our turn
+ *   result @24.7s  user_message_uuid absent,
+ *                  origin {kind:'task-notification'}        → not our turn
+ *
+ * The origin classification below it was the only signal before, and it is a
+ * guess in both directions: `origin` is a nine-member union of which two
+ * members (`coordinator`, `unclassified`) the SDK does not document at all, so
+ * neither an allow-list nor a deny-list of kinds can be right about them, and
+ * a kind added later lands on whichever side the list defaults to. It stays as
+ * the fallback for a CLI that echoes no uuid at all, which is the only case
+ * where there is nothing better to go on.
+ *
+ * Note this cannot be fixed by a backstop either: `session_state_changed`,
+ * which the code below treats as the authoritative turn-over signal, was never
+ * emitted once in 111 seconds of real session across both probes.
+ */
+export function resultEndsOurTurn(
+  message: {
+    origin?: { kind?: string };
+    user_message_uuid?: string;
+    user_message_uuids?: string[];
+  },
+  ourTurnUuid: string | null,
+): boolean {
+  const echoed = message.user_message_uuid;
+  const echoedAll = message.user_message_uuids;
+  const carriesEcho = echoed !== undefined || echoedAll !== undefined;
+
+  if (ourTurnUuid && carriesEcho) {
+    return echoed === ourTurnUuid || (echoedAll ?? []).includes(ourTurnUuid);
+  }
+
+  return isHumanOriginatedResult(message);
+}
+
+/**
  * Callbacks for emitting events to the renderer
  */
 export interface MessageHandlerCallbacks {

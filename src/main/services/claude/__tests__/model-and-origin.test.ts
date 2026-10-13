@@ -18,6 +18,7 @@ vi.mock('../../../utils/logger', () => ({
 import {
   SDKMessageHandler,
   isHumanOriginatedResult,
+  resultEndsOurTurn,
   type MessageHandlerCallbacks,
 } from '../SDKMessageHandler';
 
@@ -175,7 +176,74 @@ describe('SDKMessageHandler — model substitution notices', () => {
   });
 });
 
-describe('isHumanOriginatedResult — unknown origins must not strand the spinner', () => {
+/**
+ * The primary turn-end signal: the CLI echoes the uuid of the send whose turn
+ * this result ends. Origin classification below is now only the fallback for a
+ * CLI that echoes nothing.
+ *
+ * The two payload shapes asserted here were recorded from a real session (CLI
+ * 2.1.278) running one turn that launched one background task, rather than
+ * invented: the turn's own result echoed the uuid that was sent and carried no
+ * origin at all, and the background task's result echoed nothing and carried
+ * origin {kind:'task-notification'}.
+ */
+describe('resultEndsOurTurn', () => {
+  const OURS = '95b5f48b-8099-4cb3-ad24-0f6dccd2b5bb';
+
+  it('accepts the result that echoes the uuid we sent', () => {
+    // Recorded shape: no origin at all, but an exact echo.
+    expect(resultEndsOurTurn({ user_message_uuid: OURS }, OURS)).toBe(true);
+  });
+
+  it('rejects a result that echoes a different send', () => {
+    expect(resultEndsOurTurn({ user_message_uuid: 'some-other-send' }, OURS)).toBe(false);
+  });
+
+  it('accepts a coalesced turn that folded our send in with others', () => {
+    // Several sends close together run as one turn, whose result lists them
+    // all and names the LAST in user_message_uuid.
+    expect(
+      resultEndsOurTurn(
+        { user_message_uuid: 'the-last-one', user_message_uuids: ['earlier', OURS, 'the-last-one'] },
+        OURS,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a background task s result, which echoes nothing', () => {
+    // Recorded shape: no echo, origin task-notification. The echo being absent
+    // while we are waiting on a turn is itself the answer — but the origin
+    // fallback agrees here, so this holds either way.
+    expect(
+      resultEndsOurTurn({ origin: { kind: 'task-notification' } }, OURS),
+    ).toBe(false);
+  });
+
+  it('falls back to origin when the CLI echoes no uuid at all', () => {
+    // An older CLI sends neither field. There is nothing better to go on, so
+    // behaviour is exactly what it was before the echo existed.
+    expect(resultEndsOurTurn({}, OURS)).toBe(true);
+    expect(resultEndsOurTurn({ origin: { kind: 'observer' } }, OURS)).toBe(false);
+  });
+
+  it('falls back to origin between turns, when we are waiting on nothing', () => {
+    expect(resultEndsOurTurn({ user_message_uuid: 'someone-elses' }, null)).toBe(true);
+    expect(resultEndsOurTurn({ origin: { kind: 'auto-continuation' } }, null)).toBe(false);
+  });
+
+  it('does not treat an undocumented origin as ours when the echo disagrees', () => {
+    // `coordinator` and `unclassified` are members of the SDK's origin union
+    // with no documentation, so no list of kinds can be right about them. With
+    // an echo present and not ours, the kind no longer has to be guessed.
+    for (const kind of ['coordinator', 'unclassified']) {
+      expect(resultEndsOurTurn({ origin: { kind }, user_message_uuid: 'not-ours' }, OURS)).toBe(
+        false,
+      );
+    }
+  });
+});
+
+describe('isHumanOriginatedResult — the fallback, for a CLI that echoes no uuid', () => {
   // Regression: this was an allowlist of 'human', so any origin the SDK
   // reported that wasn't literally 'human' suppressed turn completion and
   // left the UI spinning with no turn running. The SDK notes origin is absent

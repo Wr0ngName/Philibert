@@ -23,6 +23,7 @@
 
 import * as fs from 'fs';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -84,7 +85,7 @@ import {
   ErrorHandler,
   SessionPermissionCache,
 } from './claude';
-import { isHumanOriginatedResult, resolveResultError } from './claude/SDKMessageHandler';
+import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
 import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
 
 /**
@@ -138,6 +139,15 @@ interface SessionInstance {
   sessionModel: string;
   /** Whether this session was started with --resume (for error recovery) */
   isResumeAttempt: boolean;
+  /**
+   * `uuid` of the user message whose turn we are waiting on, or null between
+   * turns.
+   *
+   * The CLI echoes this on the `result` that ends that turn, which is what
+   * lets a turn be identified exactly instead of inferred from `origin` — see
+   * resultEndsOurTurn.
+   */
+  pendingTurnUuid: string | null;
   /** The model the user selected when this session was started ('' = CLI default). */
   requestedModel: string;
   /**
@@ -464,8 +474,12 @@ export class ClaudeCodeService {
       return;
     }
 
-    // Push user message to the channel
+    // Push user message to the channel. The uuid is the join key the CLI
+    // echoes back on this turn's result.
+    const turnUuid = randomUUID();
+    session.pendingTurnUuid = turnUuid;
     const userMessage: SDKUserMessage = {
+      uuid: turnUuid,
       type: 'user',
       message: { role: 'user', content: message },
       parent_tool_use_id: null,
@@ -672,6 +686,11 @@ export class ClaudeCodeService {
       // Create the async channel for multi-turn input
       const inputChannel = new AsyncChannel<SDKUserMessage>();
 
+      // Minted before the session exists because both the session record and
+      // the first pushed message need it: it is the key the CLI echoes on this
+      // turn's result, which is how that result is known to be ours.
+      const firstTurnUuid = randomUUID();
+
       // Set by a conversation-scope rewind: the session resumes at that user
       // message, so everything after it leaves the transcript. Consumed here so
       // it applies once, to the session the rewind asked for, rather than to
@@ -754,6 +773,7 @@ export class ClaudeCodeService {
         resolveSessionReady,
         sessionModel: shouldResume ? '' : selectedModel,
         isResumeAttempt: shouldResume,
+        pendingTurnUuid: firstTurnUuid,
         requestedModel: selectedModel,
         announcedModels: new Set<string>(),
       };
@@ -802,6 +822,7 @@ export class ClaudeCodeService {
       // For the first message, use resumeSessionId if available, or empty string.
       // The SDK assigns/validates the session_id server-side regardless.
       const userMessage: SDKUserMessage = {
+        uuid: firstTurnUuid,
         type: 'user',
         message: { role: 'user', content: message },
         parent_tool_use_id: null,
@@ -850,11 +871,16 @@ export class ClaudeCodeService {
         // After each result message, emit done to signal turn completion.
         // Only for turns the user actually started — a background agent's
         // completion is delivered as its own `result` and must not end the
-        // main turn (see isHumanOriginatedResult).
+        // main turn (see resultEndsOurTurn).
         if (sdkMessage.type === 'result') {
           const resultSubtype = (sdkMessage as { subtype?: string }).subtype;
-          const endsUserTurn = isHumanOriginatedResult(
-            sdkMessage as { origin?: { kind?: string } },
+          const endsUserTurn = resultEndsOurTurn(
+            sdkMessage as {
+              origin?: { kind?: string };
+              user_message_uuid?: string;
+              user_message_uuids?: string[];
+            },
+            session?.pendingTurnUuid ?? null,
           );
 
           // Detect resume failure from result message (before the thrown error path)
@@ -921,6 +947,9 @@ export class ClaudeCodeService {
             continue;
           }
 
+          // The turn this uuid identified is over. Cleared so a later result
+          // cannot match it, which would end a turn that has not started.
+          if (session) session.pendingTurnUuid = null;
           this.emitDone(conversationId);
         }
       }

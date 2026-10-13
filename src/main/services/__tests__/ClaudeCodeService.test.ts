@@ -302,6 +302,57 @@ describe('ClaudeCodeService', () => {
       );
     });
 
+    it('stamps a uuid on the user message, which is the turn s join key', async () => {
+      // The CLI echoes this on the result that ends THIS turn, which is how a
+      // result is known to be ours rather than a background agent's. Without
+      // it the only signal is the origin heuristic.
+      let pushed: Record<string, unknown> | null = null;
+      mockQuery.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+        // Read the first message the service pushes into the input channel.
+        void (async () => {
+          for await (const message of prompt) {
+            pushed = message as Record<string, unknown>;
+            break;
+          }
+        })();
+        return createMockQueryIterator([]);
+      });
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello Claude', '/home/user/project');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(pushed).not.toBeNull();
+      expect(typeof pushed!.uuid).toBe('string');
+      expect(pushed!.uuid as string).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+    });
+
+    it('gives two conversations different join keys', async () => {
+      // Two conversations run as two sessions, so a result on one stream must
+      // never be able to match the other's send. Verified against the real
+      // CLI with two concurrent sessions; pinned here so it stays true.
+      const pushedBy: Record<string, string> = {};
+      mockQuery.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+        void (async () => {
+          for await (const message of prompt) {
+            const m = message as { uuid?: string; message?: { content?: string } };
+            if (m.uuid && m.message?.content) pushedBy[m.message.content] = m.uuid;
+            break;
+          }
+        })();
+        return createMockQueryIterator([]);
+      });
+
+      await service.sendMessage('conv-one', 'first', '/home/user/project');
+      await service.sendMessage('conv-two', 'second', '/home/user/project');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(pushedBy.first).toBeDefined();
+      expect(pushedBy.second).toBeDefined();
+      expect(pushedBy.first).not.toBe(pushedBy.second);
+    });
+
     it('declares it on an open-input session, which is what the SDK requires', async () => {
       // The declaration only has an effect on an interactive stream-json
       // session. Were the prompt ever changed to a plain string, the option
