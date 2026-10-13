@@ -543,15 +543,22 @@ export const useConversationsStore = defineStore('conversations', () => {
       });
     }
 
-    // Clear current chat messages
-    chatStore.clearMessages();
-
     // Generate new conversation ID
     const id = generateId(ID_PREFIXES.CONVERSATION);
 
-    // Update both stores
+    // Switch BEFORE clearing, not after.
+    //
+    // Clearing while the outgoing conversation was still the current one gave
+    // it an empty on-screen list to call its own: a turn still collecting in
+    // its buffer shares that array while the conversation is in view, so the
+    // clear took its history with it and the rest of the turn appended to
+    // nothing. Switching first detaches that buffer with the history intact,
+    // and the clear then applies to the new conversation, which has none.
     currentConversationId.value = id;
     chatStore.setCurrentConversation(id);
+
+    // Clear current chat messages
+    chatStore.clearMessages();
 
     persistLastConversationId(id);
 

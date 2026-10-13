@@ -103,6 +103,27 @@ describe('background buffer and the on-screen list', () => {
     expect(store.getBufferedMessages(A)).toHaveLength(5);
   });
 
+  it('does not keep cleared messages alive in the buffer', () => {
+    // Side-effect of keeping an off-screen conversation's buffer: it can now
+    // still be live when the on-screen list is replaced by something other
+    // than `loadMessages`. `clearMessages` assigns a new array without
+    // re-pointing the buffer, so the buffer would go on holding the cleared
+    // messages — and `loadConversation` prefers the buffer to the saved file,
+    // which would resurrect them on the next visit.
+    startTurnInA();
+    switchToB();
+    // Back to A, the way loadConversation does it: the buffer re-points at the
+    // list now on screen and stays live.
+    store.setCurrentConversation(A);
+    store.loadMessages(JSON.parse(JSON.stringify(store.getBufferedMessages(A))));
+    expect(store.messages.length).toBeGreaterThan(0);
+
+    store.clearMessages();
+
+    expect(store.messages).toHaveLength(0);
+    expect(store.getBufferedMessages(A) ?? []).toHaveLength(0);
+  });
+
   it('releases the buffer when the turn ends', () => {
     startTurnInA();
     store.endMessageBuffer(A);

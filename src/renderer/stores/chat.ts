@@ -723,7 +723,26 @@ export const useChatStore = defineStore('chat', () => {
 
   function clearMessages(): void {
     messages.value = [];
+    repointBufferToScreen();
     // Don't clear conversation state here - that's separate
+  }
+
+  /**
+   * Point a live buffer at the list now on screen.
+   *
+   * Everything that replaces `messages` wholesale has to call this. While a
+   * conversation is in view its buffer IS the on-screen array (see
+   * `bufferTarget`), so assigning a new array leaves the buffer holding the
+   * previous one — and because `loadConversation` prefers the buffer to the
+   * saved file, a stale buffer resurrects whatever was replaced. `/clear`
+   * demonstrated it: the cleared messages stayed in the buffer and came back
+   * on the next visit.
+   */
+  function repointBufferToScreen(): void {
+    const current = currentConversationId.value;
+    if (!current) return;
+    const state = conversationStates.value.get(current);
+    if (state?.bufferingMessages) state.bufferedMessages = messages.value;
   }
 
   function loadMessages(loadedMessages: ChatMessage[]): void {
@@ -741,11 +760,7 @@ export const useChatStore = defineStore('chat', () => {
     // this replaces `messages` with a fresh array — so without re-pointing,
     // the buffer would be left referring to the array from before the switch
     // and would start diverging again the moment anything was added.
-    const current = currentConversationId.value;
-    if (current) {
-      const state = conversationStates.value.get(current);
-      if (state?.bufferingMessages) state.bufferedMessages = messages.value;
-    }
+    repointBufferToScreen();
   }
 
   // ============================================

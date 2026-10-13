@@ -455,6 +455,55 @@ describe('a conversation through the real persistence stack', () => {
     expect((onDisk(id)?.messages ?? []).some((m) => m.isStreaming)).toBe(false);
   });
 
+  it('refuses a write that would drop messages already on disk', async () => {
+    // The guard at the point of destruction, exercised through the real
+    // service. The renderer prefers its in-memory buffer to this file and
+    // writes that buffer when a turn ends, and a buffer missing the start of
+    // a transcript has twice been written over a complete one. The renderer
+    // causes are fixed; this makes the file safe regardless.
+    const wrapper = mountApp();
+    const id = conversations.createNewConversation();
+    await settle();
+
+    await send(wrapper, 'first question');
+    streamAssistant(id, 'first answer');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
+    await settle();
+
+    const complete = onDisk(id);
+    expect(complete?.messages.length).toBe(2);
+
+    // A fragment: the same conversation, but missing its opening messages.
+    const fragment = {
+      ...complete!,
+      messages: [{ id: 'msg-from-nowhere', role: 'assistant', content: 'orphan', timestamp: 1 }],
+    } as Conversation;
+
+    await expect(conversationService.save(fragment)).rejects.toThrow(/diverges/);
+
+    // And the file still has everything.
+    expect(diskContents(id)).toEqual(['first question', 'first answer']);
+  });
+
+  it('still allows a rewind, which truncates from the end', async () => {
+    // The guard must not block the one legitimate way a transcript shrinks.
+    const wrapper = mountApp();
+    const id = conversations.createNewConversation();
+    await settle();
+
+    await send(wrapper, 'first question');
+    streamAssistant(id, 'first answer');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
+    await settle();
+
+    const complete = onDisk(id)!;
+    const truncated = { ...complete, messages: complete.messages.slice(0, 1) } as Conversation;
+
+    await conversationService.save(truncated);
+
+    expect(diskContents(id)).toEqual(['first question']);
+  });
+
   it('keeps two conversations apart on disk', async () => {
     const wrapper = mountApp();
     const first = conversations.createNewConversation();
