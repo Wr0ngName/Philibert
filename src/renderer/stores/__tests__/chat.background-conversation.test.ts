@@ -208,16 +208,40 @@ describe('tool use while another conversation is viewed', () => {
     expect(found?.toolUse?.input).toEqual({ command: 'ls -la' });
   });
 
-  it('stops buffering once released', () => {
+  it('keeps the buffer of a conversation off screen, so later updates land', () => {
+    // This asserted the opposite, and said so: that after release "further
+    // updates have nowhere to go rather than resurrecting it". That nowhere
+    // was the defect. With no sink, `messageSink` returns null and
+    // `appendChunk` silently updates nothing — streamed text stops appearing
+    // mid-message while the turn runs on, which is not a spinner problem and
+    // was never addressed by any of the turn-lifecycle work.
+    //
+    // Output after a turn ends is ordinary, not exceptional: a background
+    // task's poll can escalate into real model work, and the release happens
+    // the instant the turn ends. So a conversation off screen keeps its buffer
+    // until it is next viewed.
     const store = useChatStore();
     startThenSwitchAway(store);
     store.addAutoToolUseMessage(RUNNING, capture());
 
     store.endMessageBuffer(RUNNING);
 
-    expect(store.getBufferedMessages(RUNNING)).toBeNull();
-    // And further updates have nowhere to go rather than resurrecting it.
+    expect(store.getBufferedMessages(RUNNING)).not.toBeNull();
+
     store.addAutoToolUseMessage(RUNNING, capture({ toolUseBlockId: 'toolu_2' }));
+    const buffered = store.getBufferedMessages(RUNNING) ?? [];
+    expect(buffered.some((m) => m.toolUse?.toolUseBlockId === 'toolu_2')).toBe(true);
+  });
+
+  it('releases the buffer of the conversation on screen, which has the live list', () => {
+    // Here releasing costs nothing: the sink is `messages` itself, so updates
+    // still have somewhere to go.
+    const store = useChatStore();
+    store.setCurrentConversation(RUNNING);
+    store.beginMessageBuffer(RUNNING);
+
+    store.endMessageBuffer(RUNNING);
+
     expect(store.getBufferedMessages(RUNNING)).toBeNull();
   });
 });

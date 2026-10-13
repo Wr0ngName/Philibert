@@ -476,10 +476,32 @@ export const useChatStore = defineStore('chat', () => {
     return ids;
   }
 
-  /** Stop buffering and release the buffer. */
+  /**
+   * Release the buffer — but only for the conversation on screen, which has
+   * the live list to fall back on.
+   *
+   * Releasing it for a conversation that is NOT on screen takes away the only
+   * place its content can go: `messageSink` then returns null, and
+   * `appendChunk` silently updates nothing. Text really does stop appearing
+   * mid-message while the turn runs on, which is not a spinner problem and was
+   * never one — the turn-lifecycle work was all about the UI failing to notice
+   * a turn had ENDED.
+   *
+   * Output arriving after a turn ends is normal, not exceptional: a background
+   * task's poll can escalate into real model work (the case `appendChunk`'s own
+   * comment describes), and this is called the moment a turn ends. So a
+   * conversation off screen keeps its buffer until it is next viewed, at which
+   * point `loadMessages` re-points it at the live list.
+   *
+   * Keeping it is also safe against the conversely dangerous outcome: the
+   * buffer was seeded from the full on-screen history while the conversation
+   * was in view, so it stays a complete transcript and cannot overwrite the
+   * saved file with a fragment.
+   */
   function endMessageBuffer(conversationId: string): void {
     const state = conversationStates.value.get(conversationId);
     if (!state) return;
+    if (conversationId !== currentConversationId.value) return;
     state.bufferedMessages = [];
     state.bufferingMessages = false;
   }
@@ -604,7 +626,22 @@ export const useChatStore = defineStore('chat', () => {
     // Track streaming state for this conversation
     const state = getConversationState(conversationId);
     state.currentStreamingContent = '';
-    state.streamingMessageId = message.id;
+    // Only name a streaming target that actually exists. Recording the id of a
+    // message that was never added left the store believing it was streaming
+    // into it, and every later chunk then updated nothing at all — the text
+    // stopped appearing with no error anywhere. `endMessageBuffer` no longer
+    // takes the sink away from a conversation off screen, so this should not
+    // happen; it is said out loud rather than trusted, because the failure it
+    // guards is invisible.
+    if (sink) {
+      state.streamingMessageId = message.id;
+    } else {
+      state.streamingMessageId = null;
+      logger.error('Streaming started for a conversation with nowhere to put it', {
+        conversationId,
+        isCurrent: conversationId === currentConversationId.value,
+      });
+    }
 
     return message;
   }
