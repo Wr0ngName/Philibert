@@ -392,7 +392,60 @@ export const useConversationsStore = defineStore('conversations', () => {
    * Save the current conversation
    * Returns true if save was successful, false otherwise
    */
-  async function saveCurrentConversation(): Promise<boolean> {
+  /**
+   * The save currently writing, and at most one follow-up behind it.
+   *
+   * A save requested while another was in flight used to return immediately
+   * having done nothing, and nothing retried it. That is not merely a skipped
+   * duplicate: `buildConversationPayload` clones the message array
+   * synchronously, so the write already running carries the conversation as it
+   * was when IT started and can never include anything newer. Dropping the
+   * second request leaves everything since that snapshot in memory only — and
+   * `switchConversation` awaits the save and then replaces the message list,
+   * so the loss became permanent at exactly the moment the user navigated
+   * away. Saves run at the end of every turn and immediately before a switch,
+   * so "already saving" is the normal state at that moment.
+   *
+   * One follow-up is enough however many requests arrive: each save snapshots
+   * when it runs, so a single later write covers everything, which is what the
+   * old guard was reaching for. The difference is that this one actually
+   * happens, and its promise does not resolve until the write has.
+   */
+  let saveWriting: Promise<boolean> | null = null;
+  let saveQueued: Promise<boolean> | null = null;
+
+  function saveCurrentConversation(): Promise<boolean> {
+    if (!saveWriting) {
+      saveWriting = performCurrentSave().finally(() => {
+        saveWriting = null;
+        // Still "saving" from the UI's point of view while a follow-up waits.
+        isSaving.value = saveQueued !== null;
+      });
+      return saveWriting;
+    }
+
+    if (!saveQueued) {
+      saveQueued = saveWriting
+        // A failed write must not wedge the queue: every later save would be
+        // dropped for the rest of the session.
+        .catch(() => false)
+        .then(() => {
+          saveQueued = null;
+          return saveCurrentConversation();
+        });
+    }
+    return saveQueued;
+  }
+
+  /**
+   * One save of the current conversation.
+   *
+   * Every check lives here rather than in the caller because a queued save
+   * runs later: whether there is anything to save, and what to save, are
+   * questions about the moment the write happens, not the moment it was asked
+   * for.
+   */
+  async function performCurrentSave(): Promise<boolean> {
     if (!currentConversationId.value) {
       logger.debug('No current conversation ID, skipping save');
       return false;
@@ -413,12 +466,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       return false;
     }
 
-    // Prevent concurrent saves
-    if (isSaving.value) {
-      logger.debug('Save already in progress, skipping duplicate save');
-      return false;
-    }
-
+    // Concurrency is handled by the caller's queue, not by refusing to save.
     isSaving.value = true;
     error.value = null;
 
@@ -440,9 +488,9 @@ export const useConversationsStore = defineStore('conversations', () => {
       });
       error.value = `Failed to save conversation: ${errorMessage}`;
       return false;
-    } finally {
-      isSaving.value = false;
     }
+    // isSaving is cleared by the queue, which knows whether a follow-up save
+    // is still waiting behind this one.
   }
 
   /**

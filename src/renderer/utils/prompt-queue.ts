@@ -32,8 +32,11 @@ export interface FlushConditions {
   isLoading: boolean;
   /** Whether the concurrent-run cap is already reached. */
   atResourceLimit: boolean;
-  /** Whether the turn ended in an error rather than completing. */
-  errored: boolean;
+  /**
+   * Whether the queue is waiting on the user rather than on a turn — they
+   * stopped one, or one failed.
+   */
+  held: boolean;
 }
 
 /** Why a queued prompt was not released. */
@@ -42,7 +45,7 @@ export type HoldReason =
   | 'not-current'
   | 'busy'
   | 'at-limit'
-  | 'errored';
+  | 'held';
 
 export type FlushDecision =
   | { kind: 'send'; prompt: QueuedPrompt }
@@ -63,14 +66,13 @@ export type FlushDecision =
  *  - the concurrent-run cap is reached, which `sendMessage` would refuse with
  *    an error written into the transcript. Better to keep holding and release
  *    when room appears;
- *  - the turn ended in an error. The queue is kept, deliberately not sent: the
- *    next prompt was written in the expectation that the turn before it had
- *    worked, and feeding it into a failed state is more likely to compound the
- *    problem than to recover from it. The user can see the queue and decide.
+ *  - the queue is held for the user: they stopped a turn, or one failed.
  *
- * An explicit abort is handled by the caller clearing nothing and simply not
- * asking: stopping a turn is a request for the app to stop working, so it must
- * not immediately start the next prompt.
+ * Every one of these except the last clears on its own, because the caller
+ * re-asks whenever the conditions change rather than only when a turn ends.
+ * That matters: a turn ending is the only event the first version waited for,
+ * so a queue held for any other reason — the user had switched away, the run
+ * cap was full — stayed held forever, with no event left to release it.
  */
 export function nextFlush(conditions: FlushConditions): FlushDecision {
   const { queue, conversationId, currentConversationId, isLoading } = conditions;
@@ -80,7 +82,7 @@ export function nextFlush(conditions: FlushConditions): FlushDecision {
     return { kind: 'hold', reason: 'not-current' };
   }
   if (isLoading) return { kind: 'hold', reason: 'busy' };
-  if (conditions.errored) return { kind: 'hold', reason: 'errored' };
+  if (conditions.held) return { kind: 'hold', reason: 'held' };
   if (conditions.atResourceLimit) return { kind: 'hold', reason: 'at-limit' };
 
   return { kind: 'send', prompt: queue[0] };

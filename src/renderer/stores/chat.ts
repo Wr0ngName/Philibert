@@ -35,6 +35,20 @@ export interface ConversationState {
    * (the turn it was waiting on is long over).
    */
   queuedPrompts: QueuedPrompt[];
+  /**
+   * The queue is waiting for the user, not for a turn.
+   *
+   * Set when the user stops a turn and when one ends in an error: both mean
+   * the next prompt should not go out by itself, the first because stopping is
+   * a request for the app to stop working and the second because the prompt
+   * was written expecting the turn before it to have succeeded.
+   *
+   * It has to be remembered rather than inferred from the event, because the
+   * queue is re-examined whenever the conditions change — returning to the
+   * conversation, room appearing under the run cap — and by then the event is
+   * long gone. Cleared when a new turn starts or the user releases the queue.
+   */
+  queueHeld: boolean;
   /** Background tasks for this conversation */
   backgroundTasks: Map<string, BackgroundTask>;
   /** Model's todo list — reconstructed from TaskCreate/TaskUpdate/TaskList tool
@@ -84,6 +98,7 @@ function createConversationState(): ConversationState {
     streamingMessageId: null,
     pendingActions: [],
     queuedPrompts: [],
+    queueHeld: false,
     backgroundTasks: new Map(),
     taskListItems: new Map(),
     sessionUsage: null,
@@ -210,6 +225,9 @@ export const useChatStore = defineStore('chat', () => {
     const state = getCurrentState();
     return state?.queuedPrompts ?? [];
   });
+
+  /** Whether the current conversation's queue is waiting on the user. */
+  const queueHeld = computed(() => getCurrentState()?.queueHeld ?? false);
 
   // Current conversation's background tasks
   const backgroundTasks = computed(() => {
@@ -1519,6 +1537,21 @@ export const useChatStore = defineStore('chat', () => {
     getConversationState(conversationId).queuedPrompts.unshift(prompt);
   }
 
+  /** Stop releasing queued prompts by themselves until the user says so. */
+  function holdQueuedPrompts(conversationId: string): void {
+    getConversationState(conversationId).queueHeld = true;
+  }
+
+  /** Resume releasing queued prompts automatically. */
+  function releaseQueueHold(conversationId: string): void {
+    const state = conversationStates.value.get(conversationId);
+    if (state) state.queueHeld = false;
+  }
+
+  function isQueueHeld(conversationId: string): boolean {
+    return conversationStates.value.get(conversationId)?.queueHeld ?? false;
+  }
+
   // ============================================
   // Cleanup Actions
   // ============================================
@@ -1670,6 +1703,10 @@ export const useChatStore = defineStore('chat', () => {
     removeQueuedPrompt,
     clearQueuedPrompts,
     restoreQueuedPrompt,
+    holdQueuedPrompts,
+    releaseQueueHold,
+    isQueueHeld,
+    queueHeld,
 
     // Cleanup
     clearConversationState,

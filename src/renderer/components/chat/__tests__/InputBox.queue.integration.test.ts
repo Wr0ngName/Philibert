@@ -259,14 +259,32 @@ describe('queueing prompts during a turn', () => {
     expect(chat.queuedPrompts).toHaveLength(1);
   });
 
-  it('sends the queue on request once nothing is running', async () => {
+  it('releases the queue as soon as nothing is running', async () => {
+    // No button required and no event either: the conditions changed, so the
+    // queue is re-examined. This is what stops a prompt stranding when the
+    // turn it was waiting on ended somewhere the handler could not see.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'send this when you can');
+
+    chat.setLoading(CONV, false);
+    await settle();
+
+    expect(sentPrompts()).toEqual(['send this when you can']);
+  });
+
+  it('sends a held queue on request', async () => {
+    // The one case that does need the button: the user stopped the turn, so
+    // nothing will release the queue on its own.
     const wrapper = mountHost();
     chat.setLoading(CONV, true);
     await settle();
     await submit(wrapper, 'send this when I say');
 
-    chat.setLoading(CONV, false);
+    await wrapper.findAll('button').find((b) => b.text().includes('Stop'))!.trigger('click');
     await settle();
+    expect(sentPrompts()).toEqual([]);
 
     const sendNow = wrapper.findAll('button').find((b) => b.text().includes('Send now'));
     expect(sendNow).toBeDefined();
@@ -312,6 +330,105 @@ describe('queueing prompts during a turn', () => {
     emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
     await settle();
     expect(sentPrompts()).toEqual([]);
+  });
+
+  it('sends the queue when the user comes back to the conversation', async () => {
+    // Reported as the queue never emptying: "messages stay persisted there
+    // forever, nothing happen when end of turn". A turn ending was the only
+    // thing that released a prompt, so a queue held for any other reason
+    // stayed held — and switching away is enough to cause that. The turn then
+    // ends while the user is elsewhere, and returning is not an event the
+    // turn-end handler ever sees, so nothing was left to release it.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'for the first conversation');
+
+    // Away, turn ends there, then back.
+    chat.currentConversationId = 'conv-elsewhere';
+    useConversationsStore().currentConversationId = 'conv-elsewhere';
+    await settle();
+
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+    await settle();
+    expect(sentPrompts()).toEqual([]);
+
+    chat.currentConversationId = CONV;
+    useConversationsStore().currentConversationId = CONV;
+    await settle();
+
+    expect(sentPrompts()).toEqual(['for the first conversation']);
+    expect(chat.getConversationState(CONV).queuedPrompts).toHaveLength(0);
+  });
+
+  it('does not release the queue by itself after the user stops a turn', async () => {
+    // The re-check watches the loading flag, which an abort also clears — so
+    // without an explicit hold, stopping a turn would immediately start the
+    // next queued prompt, which is the opposite of what Stop means.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'after you stop');
+
+    await wrapper.findAll('button').find((b) => b.text().includes('Stop'))!.trigger('click');
+    await settle();
+
+    expect(sentPrompts()).toEqual([]);
+    expect(chat.queuedPrompts).toHaveLength(1);
+  });
+
+  it('does not release the queue by itself after a turn fails', async () => {
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'next step');
+
+    emitIpc(IPC_CHANNELS.CLAUDE_ERROR, CONV, 'something broke');
+    await settle();
+
+    expect(sentPrompts()).toEqual([]);
+    expect(chat.queuedPrompts).toHaveLength(1);
+  });
+
+  it('resumes automatic release once the user starts new work', async () => {
+    // A hold is about the turn they stopped, not about the conversation
+    // forever. Sending something new means they have moved on, so the prompts
+    // behind it should follow the next turn's end as usual.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'queued behind the stop');
+
+    emitIpc(IPC_CHANNELS.CLAUDE_ERROR, CONV, 'something broke');
+    await settle();
+    expect(sentPrompts()).toEqual([]);
+
+    // New work, sent directly because nothing is running.
+    await submit(wrapper, 'a fresh start');
+    await settle();
+    expect(sentPrompts()).toEqual(['a fresh start']);
+
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+    await settle();
+
+    expect(sentPrompts()).toEqual(['a fresh start', 'queued behind the stop']);
+  });
+
+  it('sends one prompt, not two, when the turn end and the re-check coincide', async () => {
+    // Both the turn-end handler and the condition watcher ask at once when a
+    // turn finishes. Each taking a prompt would start two turns at the same
+    // time in one conversation.
+    const wrapper = mountHost();
+    chat.setLoading(CONV, true);
+    await settle();
+    await submit(wrapper, 'first');
+    await submit(wrapper, 'second');
+
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+    await settle();
+
+    expect(sentPrompts()).toEqual(['first']);
+    expect(chat.queuedPrompts.map((p) => p.content)).toEqual(['second']);
   });
 
   it('holds a queue belonging to a conversation the user has left', async () => {

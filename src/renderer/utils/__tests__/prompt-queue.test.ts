@@ -22,7 +22,7 @@ function conditions(overrides: Partial<FlushConditions> = {}): FlushConditions {
     queue: [prompt('q1'), prompt('q2')],
     isLoading: false,
     atResourceLimit: false,
-    errored: false,
+    held: false,
     ...overrides,
   };
 }
@@ -55,12 +55,12 @@ describe('nextFlush', () => {
     });
   });
 
-  it('holds when the turn ended in an error', () => {
-    // The queued prompt was written expecting the turn before it to have
-    // worked. Feeding it into a failed state compounds the problem.
-    expect(nextFlush(conditions({ errored: true }))).toEqual({
+  it('holds when the queue is waiting on the user', () => {
+    // They stopped a turn, or one failed. Either way the next prompt was
+    // written expecting the previous turn to have run, so it waits for them.
+    expect(nextFlush(conditions({ held: true }))).toEqual({
       kind: 'hold',
-      reason: 'errored',
+      reason: 'held',
     });
   });
 
@@ -72,10 +72,10 @@ describe('nextFlush', () => {
     });
   });
 
-  it('reports being busy before reporting an error', () => {
-    // Both true means a turn is running after a previous one failed. Busy is
-    // the more specific reason and the one that will resolve by itself.
-    expect(nextFlush(conditions({ isLoading: true, errored: true }))).toEqual({
+  it('reports being busy before reporting a hold', () => {
+    // Both means a turn is running after the user stopped an earlier one.
+    // Busy is the more specific reason and resolves by itself.
+    expect(nextFlush(conditions({ isLoading: true, held: true }))).toEqual({
       kind: 'hold',
       reason: 'busy',
     });

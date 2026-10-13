@@ -8,7 +8,7 @@
  * for proper routing to per-conversation state.
  */
 
-import { onMounted, onUnmounted, shallowRef } from 'vue';
+import { effectScope, onMounted, onUnmounted, shallowRef, watch, type EffectScope } from 'vue';
 
 import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, PermissionScope } from '@shared/types';
 
@@ -25,6 +25,10 @@ import { useSlashCommands } from './useSlashCommands';
 // This prevents duplicate listener registration when multiple components use this composable
 let listenersRegistered = false;
 let listenerRefCount = 0;
+/** Scope holding the queue re-check watcher, shared like the listeners. */
+let queueScope: EffectScope | null = null;
+/** Conversations with a flush in progress, so two cannot both send. */
+const flushing = new Set<string>();
 let cleanupChunk: (() => void) | null = null;
 let cleanupToolUse: (() => void) | null = null;
 let cleanupError: (() => void) | null = null;
@@ -194,6 +198,9 @@ export function useClaudeChat() {
 
       // Send message via IPC with conversationId and optional resume session ID
       await window.electron.claude.send(currentConvId, content, effectiveCwd, resumeSessionId);
+      // New work means the user has moved past whatever stopped the queue, so
+      // queued prompts go back to releasing on their own.
+      chatStore.releaseQueueHold(currentConvId);
       return 'started';
     } catch (err) {
       logger.error('Failed to send message', err);
@@ -232,7 +239,14 @@ export function useClaudeChat() {
    * until the user happened to run another query. Each pass removes an entry,
    * so it ends — on a started turn, on a hold, or on an empty queue.
    */
-  async function flushQueuedPrompts(conversationId: string, errored: boolean): Promise<void> {
+  async function flushQueuedPrompts(conversationId: string): Promise<void> {
+    // One flush per conversation at a time. The queue is re-examined from
+    // several places now — a turn ending, and a watcher on the conditions
+    // that gate it — and two of them landing together would each take a
+    // prompt and start a turn with it.
+    if (flushing.has(conversationId)) return;
+    flushing.add(conversationId);
+    try {
     for (;;) {
       const state = chatStore.getConversationState(conversationId);
       const decision = nextFlush({
@@ -241,7 +255,7 @@ export function useClaudeChat() {
         queue: state.queuedPrompts,
         isLoading: chatStore.isConversationLoading(conversationId),
         atResourceLimit: chatStore.isAtResourceLimit,
-        errored,
+        held: state.queueHeld,
       });
 
       if (decision.kind === 'hold') {
@@ -276,6 +290,9 @@ export function useClaudeChat() {
       // A turn is now running; the rest of the queue waits for it to finish.
       if (outcome === 'started') return;
     }
+    } finally {
+      flushing.delete(conversationId);
+    }
   }
 
   /**
@@ -290,7 +307,10 @@ export function useClaudeChat() {
   async function releaseQueuedPrompts(): Promise<void> {
     const currentConvId = conversationsStore.currentConversationId;
     if (!currentConvId) return;
-    await flushQueuedPrompts(currentConvId, false);
+    // The explicit ask is what clears a hold; nothing else does, apart from
+    // starting a new turn.
+    chatStore.releaseQueueHold(currentConvId);
+    await flushQueuedPrompts(currentConvId);
   }
 
   /**
@@ -388,6 +408,11 @@ export function useClaudeChat() {
       return;
     }
 
+    // Stopping is a request for the app to stop working, so the queue must
+    // not release by itself afterwards. Set before the abort, so the loading
+    // flag dropping cannot race the re-check into sending something.
+    chatStore.holdQueuedPrompts(currentConvId);
+
     try {
       await window.electron.claude.abort(currentConvId);
       chatStore.setLoading(currentConvId, false);
@@ -401,6 +426,7 @@ export function useClaudeChat() {
    * Abort a specific conversation's request
    */
   async function abortConversation(conversationId: string) {
+    chatStore.holdQueuedPrompts(conversationId);
     try {
       await window.electron.claude.abort(conversationId);
       chatStore.setLoading(conversationId, false);
@@ -447,6 +473,37 @@ export function useClaudeChat() {
     logger.info('Registering IPC listeners for Claude chat (multi-conversation)');
     listenersRegistered = true;
 
+    // Re-examine the queue whenever the conditions that gate it change.
+    //
+    // Without this the only thing that released a queued prompt was a turn
+    // ending, so every other hold was permanent: a queue belonging to a
+    // conversation the user had switched away from stayed held when they came
+    // back, because returning is not an event the turn-end handler ever sees,
+    // and the same went for room appearing under the concurrent-run cap. The
+    // prompts sat there forever with nothing to release them.
+    //
+    // In a detached scope, not the calling component's: the listeners it
+    // belongs with are a singleton shared by every instance, so binding this
+    // to whichever component happened to register them would stop it the
+    // moment that one unmounted while the others carried on.
+    queueScope = effectScope(true);
+    queueScope.run(() => {
+      watch(
+        () => {
+          const id = conversationsStore.currentConversationId;
+          return [
+            id,
+            id ? chatStore.isConversationLoading(id) : false,
+            chatStore.isAtResourceLimit,
+          ] as const;
+        },
+        () => {
+          const id = conversationsStore.currentConversationId;
+          if (id) void flushQueuedPrompts(id);
+        },
+      );
+    });
+
     // Handle streaming chunks - route to correct conversation
     cleanupChunk = window.electron.claude.onChunk((conversationId, chunk) => {
       // appendChunk writes to the on-screen list or the background buffer as
@@ -470,11 +527,12 @@ export function useClaudeChat() {
       chatStore.finishStreaming(conversationId);
       chatStore.completeToolUseMessages(conversationId);
 
-      // Deliberately not flushed: a queued prompt was written expecting the
-      // turn before it to have worked. `nextFlush` holds on `errored`, and
-      // this call is here so that decision is made in one place and the
-      // "held, N waiting" log appears for a failed turn too.
-      void flushQueuedPrompts(conversationId, true);
+      // A queued prompt was written expecting the turn before it to have
+      // worked, so it is held for the user rather than sent into a failed
+      // state. Recorded on the conversation rather than passed to the flush,
+      // because the queue is re-examined later from places that no longer know
+      // this turn failed.
+      chatStore.holdQueuedPrompts(conversationId);
     });
 
     // Handle completion - route to correct conversation
@@ -539,7 +597,7 @@ export function useClaudeChat() {
 
       // Anything the user wrote during the turn goes now — after the save, so
       // the finished turn is on disk before the next one starts changing it.
-      await flushQueuedPrompts(conversationId, false);
+      await flushQueuedPrompts(conversationId);
     });
 
     // The main-loop model the CLI reports. Registered once here and held in
@@ -692,6 +750,9 @@ export function useClaudeChat() {
 
     logger.info('Cleaning up IPC listeners for Claude chat');
     listenersRegistered = false;
+
+    queueScope?.stop();
+    queueScope = null;
 
     if (cleanupChunk) {
       cleanupChunk();
