@@ -324,6 +324,63 @@ describe('background tasks across a conversation switch', () => {
     ]);
   });
 
+  it('does not pick one of two identically described tasks to retire', async () => {
+    // Two tasks can easily share a description — the same command run twice,
+    // or the same agent prompt. The description match took the FIRST running
+    // task with a matching description, so an unknown completion retired one
+    // of the two arbitrarily and a task still working left the panel.
+    const wrapper = mountApp();
+    const { withTask } = await twoConversationsWithATaskInTheFirst(wrapper);
+
+    // A second task described exactly like the first.
+    emitIpc(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, withTask, {
+      taskId: 'task-2',
+      status: 'running',
+      description: 'task task-1',
+    });
+    await settle();
+    expect(chat.runningBackgroundTasksList).toHaveLength(2);
+
+    emitIpc(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, withTask, {
+      taskId: 'some-id-we-never-saw',
+      status: 'completed',
+      description: 'task task-1',
+      summary: 'done',
+    });
+    await settle();
+
+    expect(chat.runningBackgroundTasksList.map((t) => t.id).sort()).toEqual([
+      'task-1',
+      'task-2',
+    ]);
+  });
+
+  it('matches by description when exactly one running task has it', async () => {
+    // The case the description match exists for: task_started used the
+    // tool_use id, the completion uses the SDK's id, and the description is
+    // the only field they share. One match is evidence, not a guess.
+    const wrapper = mountApp();
+    const { withTask } = await twoConversationsWithATaskInTheFirst(wrapper);
+
+    emitIpc(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, withTask, {
+      taskId: 'task-2',
+      status: 'running',
+      description: 'a different description',
+    });
+    await settle();
+
+    emitIpc(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, withTask, {
+      taskId: 'sdk-side-id',
+      status: 'completed',
+      description: 'a different description',
+      summary: 'done',
+    });
+    await settle();
+
+    // Only the one it actually described is retired.
+    expect(chat.runningBackgroundTasksList.map((t) => t.id)).toEqual(['task-1']);
+  });
+
   it('still retires the one running task when an unknown completion arrives', async () => {
     // The case the fallback exists for: the id remapping did not reach the
     // renderer, so the completion names a task we never saw. With exactly one

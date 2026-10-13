@@ -1141,16 +1141,26 @@ export const useChatStore = defineStore('chat', () => {
       }
     }
 
-    // If no direct match, try to match a running task by description.
-    // This handles the case where task_started used the tool_use_id but
-    // task_notification uses a different SDK-generated task_id.
+    // If no direct match, match a running task by description — but only when
+    // exactly one has it.
+    //
+    // This covers task_started having used the tool_use id while the
+    // completion uses the SDK's own, where the description is the only field
+    // the two share. It used to take the FIRST running task with a matching
+    // description, which is a guess as soon as two tasks share one — the same
+    // command run twice, or the same agent prompt — and it retired one of them
+    // arbitrarily while it was still working.
+    //
+    // One match is evidence. More than one is not, and `background_tasks_changed`
+    // retires whatever really ended, so declining to guess costs only
+    // timeliness.
     if (!existingTask && notification.status !== 'running' && notification.description) {
-      for (const [id, task] of state.backgroundTasks.entries()) {
-        if (task.status === 'running' && task.description === notification.description) {
-          existingTask = task;
-          existingTaskId = id;
-          break;
-        }
+      const described = [...state.backgroundTasks.entries()].filter(
+        ([, task]) =>
+          task.status === 'running' && task.description === notification.description,
+      );
+      if (described.length === 1) {
+        [existingTaskId, existingTask] = described[0];
       }
     }
 
