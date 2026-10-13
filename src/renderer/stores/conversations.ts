@@ -530,6 +530,19 @@ export const useConversationsStore = defineStore('conversations', () => {
    * Create a new conversation and make it current
    */
   function createNewConversation(): string {
+    // Save what is on screen before discarding it.
+    //
+    // This cleared the message list outright, so anything added since the last
+    // completed save was gone — and unlike a conversation switch, nothing here
+    // saved first. Not awaited, and it does not need to be: the save snapshots
+    // the message array synchronously, before its first await, so the clear
+    // below cannot race it. The write itself finishes through the save queue.
+    if (currentConversationId.value && chatStore.messages.length > 0) {
+      void saveCurrentConversation().catch((err) => {
+        logger.error('Failed to save conversation before starting a new one', err);
+      });
+    }
+
     // Clear current chat messages
     chatStore.clearMessages();
 
