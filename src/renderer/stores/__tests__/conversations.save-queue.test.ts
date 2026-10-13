@@ -245,3 +245,96 @@ describe('concurrent saves', () => {
     expect(saves).toHaveLength(0);
   });
 });
+
+describe('closing the app with a turn running out of sight', () => {
+  let store: ReturnType<typeof useConversationsStore>;
+  let chatStore: ReturnType<typeof useChatStore>;
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    saves.length = 0;
+
+    mockElectron.conversation.list.mockResolvedValue([]);
+    mockElectron.conversation.get.mockResolvedValue(null);
+    mockElectron.config.get.mockResolvedValue({ workingDirectory: '/home/user/project' });
+    mockElectron.config.set.mockResolvedValue(undefined);
+    // Resolve straight away here: these tests are about which conversations
+    // get written, not about overlapping writes.
+    mockElectron.conversation.save.mockImplementation((conversation: Conversation) => {
+      saves.push({ conversation, release: () => {} });
+      return Promise.resolve();
+    });
+
+    store = useConversationsStore();
+    chatStore = useChatStore();
+  });
+
+  /** A turn running in `other` while the user looks at `CONV`. */
+  function backgroundTurnElsewhere(): void {
+    chatStore.setCurrentConversation('conv-background');
+    chatStore.messages.push(message('bg1'));
+    chatStore.beginMessageBuffer('conv-background');
+    chatStore.setCurrentConversation(CONV);
+    chatStore.loadMessages([message('seen1')]);
+    store.currentConversationId = CONV;
+    // More of the background turn, after the switch.
+    chatStore.startAssistantMessage('conv-background');
+  }
+
+  it('writes the background turn as well as the one on screen', async () => {
+    // Only the conversation on screen used to be saved here, so a turn
+    // running elsewhere lost everything since its last save: its buffer is
+    // written when the turn ends, and closing the app means that never
+    // happens.
+    backgroundTurnElsewhere();
+
+    await store.cleanup();
+
+    const saved = Object.fromEntries(
+      saves.map((s) => [s.conversation.id, s.conversation.messages.length]),
+    );
+    expect(saved[CONV]).toBe(1);
+    expect(saved['conv-background']).toBe(2);
+  });
+
+  it('does not write the conversation on screen twice', async () => {
+    backgroundTurnElsewhere();
+
+    await store.cleanup();
+
+    expect(saves.filter((s) => s.conversation.id === CONV)).toHaveLength(1);
+  });
+
+  it('writes nothing for a conversation whose buffer is empty', async () => {
+    chatStore.setCurrentConversation(CONV);
+    chatStore.messages.push(message('seen1'));
+    store.currentConversationId = CONV;
+    chatStore.beginMessageBuffer('conv-empty');
+
+    await store.cleanup();
+
+    expect(saves.map((s) => s.conversation.id)).toEqual([CONV]);
+  });
+
+  it('saves the remaining conversations when one of them fails', async () => {
+    backgroundTurnElsewhere();
+    chatStore.setCurrentConversation('conv-second-bg');
+    chatStore.messages.push(message('bg2'));
+    chatStore.beginMessageBuffer('conv-second-bg');
+    chatStore.setCurrentConversation(CONV);
+    chatStore.loadMessages([message('seen1')]);
+
+    mockElectron.conversation.save.mockImplementationOnce(() =>
+      Promise.reject(new Error('disk full')),
+    );
+
+    await store.cleanup();
+
+    // The first write fails; both background conversations must still be
+    // attempted.
+    const ids = saves.map((s) => s.conversation.id);
+    expect(ids).toContain('conv-background');
+    expect(ids).toContain('conv-second-bg');
+  });
+});

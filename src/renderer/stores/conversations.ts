@@ -800,6 +800,24 @@ export const useConversationsStore = defineStore('conversations', () => {
       logger.error('Failed to save conversation during cleanup', err);
     }
 
+    // And every conversation still collecting a turn out of sight.
+    //
+    // Only the conversation on screen was saved here, so a turn running in
+    // another one lost everything since its last save: its buffer is written
+    // to disk when the turn ends, and closing the app means that never
+    // happens. Saved one at a time, and independently, so one failure does
+    // not take the others down with it.
+    for (const id of chatStore.bufferingConversationIds()) {
+      if (id === currentConversationId.value) continue;
+      const buffered = chatStore.getBufferedMessages(id);
+      if (!buffered || buffered.length === 0) continue;
+      try {
+        await saveConversation(id, buffered);
+      } catch (err) {
+        logger.error('Failed to save background conversation during cleanup', { id, err });
+      }
+    }
+
     // Disable auto-save watchers after save completes
     isInitialized.value = false;
   }

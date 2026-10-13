@@ -321,7 +321,35 @@ export const useChatStore = defineStore('chat', () => {
    * Set the currently active conversation
    */
   function setCurrentConversation(conversationId: string | null): void {
+    const leaving = currentConversationId.value;
+    if (leaving && leaving !== conversationId) detachMessageBuffer(leaving);
     currentConversationId.value = conversationId;
+  }
+
+  /**
+   * Give a conversation leaving the screen its own copy of the history it was
+   * sharing with the on-screen list.
+   *
+   * While a conversation is in view its buffer IS the on-screen list, so that
+   * the two cannot diverge (see `bufferTarget`). The moment it leaves, the
+   * sharing has to stop or the background turn would write into whatever the
+   * user is now looking at.
+   *
+   * Done here rather than relying on `loadMessages` replacing the array,
+   * because that would make the invariant depend on the caller making two
+   * calls in the right order — and `setCurrentConversation` is a public action
+   * that can be called on its own.
+   *
+   * A shallow copy: the message objects stay shared, which is what keeps a
+   * streaming message's accumulated content correct in both places, while new
+   * messages go only to the buffer.
+   */
+  function detachMessageBuffer(conversationId: string): void {
+    const state = conversationStates.value.get(conversationId);
+    if (!state?.bufferingMessages) return;
+    if (state.bufferedMessages === messages.value) {
+      state.bufferedMessages = [...messages.value];
+    }
   }
 
   /**
@@ -392,8 +420,39 @@ export const useChatStore = defineStore('chat', () => {
    */
   function beginMessageBuffer(conversationId: string): void {
     const state = getConversationState(conversationId);
-    state.bufferedMessages = [...messages.value];
+    state.bufferedMessages = bufferTarget(conversationId);
     state.bufferingMessages = true;
+  }
+
+  /**
+   * The array a conversation's buffer should be.
+   *
+   * For the conversation on screen this is the on-screen list ITSELF, not a
+   * copy. The buffer used to be seeded as a copy at turn start, and from then
+   * on `messageSink` wrote to the on-screen list for as long as the
+   * conversation stayed in view — so everything the first half of a turn
+   * produced went into one array and the buffer kept the stale snapshot.
+   *
+   * That was not a cosmetic difference. The buffer is authoritative twice:
+   * `loadConversation` prefers it to the saved file when the user switches
+   * back ("they're more up-to-date than the saved file"), and the turn's
+   * completion saves it over that file. So a buffer missing the first half of
+   * a turn made those messages vanish on switching back, and then deleted
+   * them from disk.
+   *
+   * Sharing the array removes the divergence rather than trying to keep two
+   * copies in step. It detaches by itself at exactly the right moment:
+   * `loadMessages` assigns a NEW array to `messages` when another conversation
+   * comes on screen, leaving the buffer holding the complete history of the
+   * one that left — which is what the background path then appends to.
+   */
+  function bufferTarget(conversationId: string): ChatMessage[] {
+    if (conversationId === currentConversationId.value) return messages.value;
+    // A conversation that is not on screen has no list to share; it starts
+    // from whatever it already had. Not expected — a turn starts in the
+    // conversation the user is looking at — but it must not silently adopt
+    // another conversation's messages.
+    return conversationStates.value.get(conversationId)?.bufferedMessages ?? [];
   }
 
   /** Buffered messages for a conversation, or null when it is not buffering. */
@@ -401,6 +460,20 @@ export const useChatStore = defineStore('chat', () => {
     const state = conversationStates.value.get(conversationId);
     if (!state || !state.bufferingMessages) return null;
     return state.bufferedMessages;
+  }
+
+  /**
+   * Conversations collecting a turn in the background.
+   *
+   * For flushing them to disk when the app is closing: their buffers hold
+   * everything since the last save, and nothing else would write it.
+   */
+  function bufferingConversationIds(): string[] {
+    const ids: string[] = [];
+    for (const [id, state] of conversationStates.value.entries()) {
+      if (state.bufferingMessages && state.bufferedMessages.length > 0) ids.push(id);
+    }
+    return ids;
   }
 
   /** Stop buffering and release the buffer. */
@@ -623,6 +696,19 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = loadedMessages.map((m) =>
       m.isStreaming ? { ...m, isStreaming: false } : m,
     );
+
+    // Re-point a running turn's buffer at the list that is now on screen.
+    //
+    // This is the other half of sharing the array (see `bufferTarget`). When
+    // the user switches back into a conversation whose turn is still running,
+    // this replaces `messages` with a fresh array — so without re-pointing,
+    // the buffer would be left referring to the array from before the switch
+    // and would start diverging again the moment anything was added.
+    const current = currentConversationId.value;
+    if (current) {
+      const state = conversationStates.value.get(current);
+      if (state?.bufferingMessages) state.bufferedMessages = messages.value;
+    }
   }
 
   // ============================================
@@ -1671,6 +1757,7 @@ export const useChatStore = defineStore('chat', () => {
     updateBackgroundTaskMessage,
     beginMessageBuffer,
     getBufferedMessages,
+    bufferingConversationIds,
     endMessageBuffer,
     reconcileBackgroundTasks,
     completeRunningTasks,
