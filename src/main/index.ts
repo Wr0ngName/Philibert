@@ -65,7 +65,7 @@ async function main(): Promise<void> {
   debugLog('Importing logger...');
   const { default: logger } = await import('./utils/logger');
   debugLog('Importing window...');
-  const { createWindow, getMainWindow } = await import('./window');
+  const { createWindow, getMainWindow, installCloseGuard } = await import('./window');
   debugLog('Importing splash...');
   const { createSplashWindow, updateSplashStatus, updateSplashVersion, closeSplashWindow } =
     await import('./splash');
@@ -175,6 +175,11 @@ async function main(): Promise<void> {
       const config = await configService.getConfig();
       const mainWindow = await createWindow({ logLevel: config.logLevel });
       debugLog(`Window created: ${mainWindow ? 'success' : 'null'}`);
+
+      // Confirm before quitting while a turn or a background task is in
+      // flight. Wired here because this is where the window and the service
+      // that knows what is running are both in scope.
+      installCloseGuard(mainWindow, () => claudeService.getRunningWork());
 
       // Close splash once main window is visible
       if (mainWindow.isVisible()) {

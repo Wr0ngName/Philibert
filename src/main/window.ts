@@ -5,7 +5,7 @@
 import * as fs from 'node:fs';
 import path from 'node:path';
 
-import { BrowserWindow, Menu, shell, type MenuItemConstructorOptions, type WebContents } from 'electron';
+import { BrowserWindow, Menu, dialog, shell, type MenuItemConstructorOptions, type WebContents } from 'electron';
 
 import type { LogLevel } from '../shared/types';
 
@@ -202,6 +202,79 @@ export function installEditingContextMenu(webContents: WebContents): void {
 /**
  * Get the main window instance
  */
+/**
+ * How to describe work that quitting would abandon, or null when there is
+ * none.
+ *
+ * Separated from the dialog so the wording and the decision can be asserted
+ * without Electron: whether to warn at all is the part that matters, and it
+ * must be silent when nothing is running.
+ */
+export function describeRunningWork(work: { turns: number; tasks: number }): string | null {
+  const parts: string[] = [];
+  if (work.turns > 0) {
+    parts.push(`${work.turns} conversation${work.turns === 1 ? '' : 's'} still working`);
+  }
+  if (work.tasks > 0) {
+    parts.push(`${work.tasks} background task${work.tasks === 1 ? '' : 's'} still running`);
+  }
+  return parts.length > 0 ? parts.join(' and ') : null;
+}
+
+/**
+ * Ask before closing while work is in flight.
+ *
+ * Quitting ends the SDK sessions, so a turn mid-answer and any background task
+ * it started are lost with no way to resume them — and nothing previously said
+ * so. The prompt only appears when there is something to lose, so the ordinary
+ * close stays a single click.
+ *
+ * `close` is emitted again after the user confirms, which is why the decision
+ * is latched: without that the dialog would reappear forever.
+ */
+export function installCloseGuard(
+  window: BrowserWindow,
+  getRunningWork: () => { turns: number; tasks: number },
+): void {
+  let confirmed = false;
+
+  window.on('close', (event) => {
+    if (confirmed) return;
+
+    let summary: string | null;
+    try {
+      summary = describeRunningWork(getRunningWork());
+    } catch (error) {
+      // Never trap the user in the app because the check itself failed.
+      logger.warn('Could not determine running work on close', { error });
+      return;
+    }
+    if (!summary) return;
+
+    event.preventDefault();
+    logger.info('Close blocked pending confirmation', { summary });
+
+    void dialog
+      .showMessageBox(window, {
+        type: 'warning',
+        buttons: ['Keep working', 'Quit anyway'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Work still in progress',
+        message: 'Quit Philibert?',
+        detail: `${summary}. Quitting stops ${summary.includes(' and ') ? 'them' : 'it'}.`,
+      })
+      .then(({ response }) => {
+        if (response !== 1) return;
+        confirmed = true;
+        window.close();
+      })
+      .catch((error) => {
+        logger.error('Close confirmation dialog failed', { error });
+      });
+  });
+}
+
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow;
 }

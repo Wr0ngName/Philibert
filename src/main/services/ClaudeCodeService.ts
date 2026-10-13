@@ -169,6 +169,16 @@ export class ClaudeCodeService {
   private activeSessions: Map<string, SessionInstance> = new Map();
   // Conversations currently processing a query (subset of activeSessions keys)
   private processingSessions: Set<string> = new Set();
+  /**
+   * The SDK's latest live-task set per conversation.
+   *
+   * Already arrives with REPLACE semantics and is already forwarded to the
+   * renderer; kept here as well so the main process can answer "is anything
+   * still running" on its own. Asking the renderer at shutdown would mean a
+   * round-trip while it is being torn down, and the renderer's own map is
+   * reconstructed from notifications rather than being the authority.
+   */
+  private liveBackgroundTasks: Map<string, LiveBackgroundTask[]> = new Map();
   private maxConcurrentQueries: number = MAX_CONCURRENT_QUERIES;
 
   // Bound sender function for DRY IPC communication
@@ -248,6 +258,25 @@ export class ClaudeCodeService {
    */
   getProcessingQueryCount(): number {
     return this.processingSessions.size;
+  }
+
+  /**
+   * Work that would be abandoned by quitting now.
+   *
+   * `turns` counts conversations mid-turn; `tasks` counts live background
+   * tasks, excluding ambient ones — watchers and the like, which the SDK asks
+   * hosts to keep out of activity indicators and which nobody would consider
+   * work in progress.
+   */
+  getRunningWork(): { turns: number; tasks: number } {
+    let tasks = 0;
+    for (const [conversationId, live] of this.liveBackgroundTasks) {
+      // A session that has gone cannot still be running tasks; a stale set
+      // left behind by one would otherwise warn about nothing.
+      if (!this.activeSessions.has(conversationId)) continue;
+      tasks += live.filter((task) => !task.ambient).length;
+    }
+    return { turns: this.processingSessions.size, tasks };
   }
 
   /**
@@ -539,6 +568,7 @@ export class ClaudeCodeService {
         this.emitTaskNotification(conversationId, notification);
       },
       onLiveBackgroundTasks: (tasks: LiveBackgroundTask[]) => {
+        this.liveBackgroundTasks.set(conversationId, tasks);
         this.send(IPC_CHANNELS.CLAUDE_BACKGROUND_TASKS_CHANGED, conversationId, tasks);
       },
       onUsageUpdate: async (usage: SessionUsage) => {
@@ -1216,6 +1246,10 @@ export class ClaudeCodeService {
     if (!instance) {
       return;
     }
+
+    // Its live-task set goes with it: a session that is gone cannot be
+    // running anything.
+    this.liveBackgroundTasks.delete(conversationId);
 
     // Close the input channel (stops the SDK from waiting for more input)
     instance.inputChannel.close();

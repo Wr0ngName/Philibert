@@ -885,6 +885,94 @@ describe('ClaudeCodeService', () => {
   // ===========================================================================
   // Abort Functionality
   // ===========================================================================
+  describe('getRunningWork', () => {
+    beforeEach(async () => {
+      await configService.setOAuthToken(
+        'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements'
+      );
+    });
+
+    it('reports nothing when nothing is running', () => {
+      // What the close guard checks before deciding to warn: a quiet app must
+      // not put a dialog in front of an ordinary close.
+      expect(service.getRunningWork()).toEqual({ turns: 0, tasks: 0 });
+    });
+
+    it('counts a conversation that is mid-turn', async () => {
+      let resolveIterator: (() => void) | undefined;
+      let started = false;
+      mockQuery.mockReturnValue({
+        // eslint-disable-next-line require-yield
+        [Symbol.asyncIterator]: async function* () {
+          started = true;
+          await new Promise<void>((resolve) => {
+            resolveIterator = resolve;
+          });
+        },
+        interrupt: vi.fn(() => resolveIterator?.()),
+        supportedCommands: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      });
+
+      const pending = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+      while (!started) await new Promise((resolve) => setImmediate(resolve));
+
+      expect(service.getRunningWork().turns).toBe(1);
+
+      await service.abort(TEST_CONV_ID);
+      await pending;
+    });
+
+    it('ignores ambient tasks, which are not work the user started', async () => {
+      // Watchers and the like. The SDK asks hosts to keep them out of activity
+      // indicators, so warning about them would block every close with
+      // something the user never asked for.
+      let capturedOptions: { canUseTool?: unknown } | undefined;
+      let resolveIterator: (() => void) | undefined;
+      let started = false;
+      mockQuery.mockImplementation((args: { options: Record<string, unknown> }) => {
+        capturedOptions = args.options;
+        return {
+          // eslint-disable-next-line require-yield
+          [Symbol.asyncIterator]: async function* () {
+            started = true;
+            await new Promise<void>((resolve) => {
+              resolveIterator = resolve;
+            });
+          },
+          interrupt: vi.fn(() => resolveIterator?.()),
+          supportedCommands: vi.fn().mockResolvedValue([]),
+          close: vi.fn(),
+        };
+      });
+
+      const pending = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+      while (!started) await new Promise((resolve) => setImmediate(resolve));
+      expect(capturedOptions).toBeDefined();
+
+      // Deliver a live-task set the way the SDK does, through the handler the
+      // service installed.
+      const handler = (service as unknown as {
+        activeSessions: Map<string, { messageHandler: { handleMessage: (m: unknown) => Promise<void> } }>;
+      }).activeSessions.get(TEST_CONV_ID)?.messageHandler;
+      expect(handler).toBeDefined();
+
+      await handler!.handleMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [
+          { task_id: 't1', task_type: 'shell', description: 'real work', ambient: false },
+          { task_id: 't2', task_type: 'monitor', description: 'a watcher', ambient: true },
+        ],
+      } as never);
+
+      expect(service.getRunningWork().tasks).toBe(1);
+
+      await service.abort(TEST_CONV_ID);
+      await pending;
+    });
+  });
+
   describe('abort', () => {
     it('should abort the current query', async () => {
       const mockInterrupt = vi.fn();
