@@ -5,9 +5,9 @@
 import * as fs from 'node:fs';
 import path from 'node:path';
 
-import { BrowserWindow, Menu, dialog, shell, type MenuItemConstructorOptions, type WebContents } from 'electron';
+import { BrowserWindow, Menu, dialog, ipcMain, shell, type MenuItemConstructorOptions, type WebContents } from 'electron';
 
-import type { LogLevel } from '../shared/types';
+import { IPC_CHANNELS, type LogLevel } from '../shared/types';
 
 import { MAIN_CONSTANTS } from './constants/app';
 import { debugLog as debugLogBase } from './utils/debugLog';
@@ -235,11 +235,12 @@ export function describeRunningWork(work: { turns: number; tasks: number }): str
 export function installCloseGuard(
   window: BrowserWindow,
   getRunningWork: () => { turns: number; tasks: number },
+  flushRenderer: () => Promise<void>,
 ): void {
-  let confirmed = false;
+  let closing = false;
 
   window.on('close', (event) => {
-    if (confirmed) return;
+    if (closing) return;
 
     let summary: string | null;
     try {
@@ -247,11 +248,30 @@ export function installCloseGuard(
     } catch (error) {
       // Never trap the user in the app because the check itself failed.
       logger.warn('Could not determine running work on close', { error });
+      summary = null;
+    }
+
+    // Held open either way: with work running the user is asked first, and
+    // with none there is still unsaved state to persist.
+    event.preventDefault();
+
+    const proceed = async () => {
+      closing = true;
+      try {
+        await flushRenderer();
+      } catch (error) {
+        // A renderer that cannot save must not become a window that cannot
+        // close. The reason is logged; the close goes ahead.
+        logger.error('Pre-close flush failed; closing anyway', { error });
+      }
+      window.close();
+    };
+
+    if (!summary) {
+      void proceed();
       return;
     }
-    if (!summary) return;
 
-    event.preventDefault();
     logger.info('Close blocked pending confirmation', { summary });
 
     void dialog
@@ -266,12 +286,49 @@ export function installCloseGuard(
       })
       .then(({ response }) => {
         if (response !== 1) return;
-        confirmed = true;
-        window.close();
+        void proceed();
       })
       .catch((error) => {
         logger.error('Close confirmation dialog failed', { error });
       });
+  });
+}
+
+/**
+ * Ask the renderer to persist everything, and wait — but not forever.
+ *
+ * The renderer saves from `onUnmounted`, which is not a reliable hook for a
+ * window closing: the close is not held open for it, so a save still in
+ * flight is simply abandoned. Requesting it explicitly and holding the close
+ * until the renderer answers is the difference between hoping and knowing.
+ *
+ * Bounded, because a renderer that never answers — a crash, a breakpoint, a
+ * save wedged on a slow disk — must not leave a window that cannot be closed.
+ * Giving up loses at most what that save would have written, which is the
+ * situation before this existed.
+ */
+export function requestRendererFlush(
+  window: BrowserWindow,
+  timeoutMs: number = MAIN_CONSTANTS.WINDOW.CLOSE_FLUSH_TIMEOUT_MS,
+): Promise<void> {
+  if (window.isDestroyed() || window.webContents.isDestroyed()) return Promise.resolve();
+
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = (reason: string) => {
+      if (settled) return;
+      settled = true;
+      ipcMain.removeListener(IPC_CHANNELS.WINDOW_FLUSH_COMPLETE, onComplete);
+      clearTimeout(timer);
+      logger.info('Pre-close flush finished', { reason });
+      resolve();
+    };
+
+    const onComplete = () => finish('renderer reported done');
+    const timer = setTimeout(() => finish('timed out waiting for the renderer'), timeoutMs);
+
+    ipcMain.once(IPC_CHANNELS.WINDOW_FLUSH_COMPLETE, onComplete);
+    window.webContents.send(IPC_CHANNELS.WINDOW_FLUSH_BEFORE_CLOSE);
   });
 }
 

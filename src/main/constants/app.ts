@@ -107,6 +107,15 @@ export const MAIN_CONSTANTS = {
     MIN_HEIGHT: 600,
     /** Timeout for showing window if ready-to-show doesn't fire - 5 seconds */
     SHOW_TIMEOUT_MS: 5000,
+    /**
+     * How long a close waits for the renderer to persist what it has.
+     *
+     * Long enough for a conversation save to complete, including the queued
+     * follow-up a save in flight can have behind it; short enough that a
+     * renderer which never answers does not leave a window that cannot be
+     * closed.
+     */
+    CLOSE_FLUSH_TIMEOUT_MS: 5000,
   },
   CHANNEL: {
     /** PTY terminal columns */

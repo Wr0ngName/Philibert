@@ -10,6 +10,7 @@ import { useSettingsStore } from './stores/settings';
 import { useFilesStore } from './stores/files';
 import { useConversationsStore } from './stores/conversations';
 import { useUiStore } from './stores/ui';
+import { logger } from './utils/logger';
 import ChatWindow from './components/chat/ChatWindow.vue';
 import ConversationSearch from './components/chat/ConversationSearch.vue';
 import RewindModal from './components/chat/RewindModal.vue';
@@ -43,11 +44,34 @@ const showWizard = ref(false);
 const sidebarWidth = ref(280);
 const historyWidth = ref(240);
 
+/** Stops listening for the pre-close flush request. */
+let stopFlushListener: (() => void) | null = null;
+
 // Initialize stores on mount
 onMounted(() => {
   settingsStore.initialize();
   filesStore.initialize();
   conversationsStore.initialize();
+
+  // Persist on the way out, when asked.
+  //
+  // The `onUnmounted` hook below is not a reliable hook for a window actually
+  // closing: nothing holds the close open for it, so a save still in flight is
+  // abandoned. The main process now holds the close and asks here instead.
+  //
+  // It must always answer, including when saving throws — the main process
+  // waits, and only a bounded timeout stops a silent failure here becoming a
+  // window that will not close.
+  stopFlushListener = window.electron.window.onFlushBeforeClose(() => {
+    void conversationsStore
+      .cleanup()
+      .catch((error) => {
+        logger.error('Failed to persist before close', error);
+      })
+      .finally(() => {
+        window.electron.window.flushComplete();
+      });
+  });
 });
 
 // Show wizard ONLY on initial app load when setup is needed
@@ -65,8 +89,11 @@ watch(
   { immediate: true }
 );
 
-// Cleanup on unmount
+// Cleanup on unmount. Still here for the cases that really are an unmount
+// (a reload, a teardown in tests); the close path is handled above.
 onUnmounted(() => {
+  stopFlushListener?.();
+  stopFlushListener = null;
   settingsStore.cleanup();
   filesStore.cleanup();
   conversationsStore.cleanup();

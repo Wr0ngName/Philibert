@@ -452,6 +452,20 @@ const electronAPI: ElectronAPI = {
     maximize: () => ipcRenderer.send(IPC_CHANNELS.WINDOW_MAXIMIZE),
 
     close: () => ipcRenderer.send(IPC_CHANNELS.WINDOW_CLOSE),
+
+    /**
+     * Called when the window is closing, so the renderer can persist
+     * anything unsaved. The close is held open until `flushComplete` is
+     * called (or the main process gives up waiting), so this must always
+     * answer.
+     */
+    onFlushBeforeClose: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on(IPC_CHANNELS.WINDOW_FLUSH_BEFORE_CLOSE, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.WINDOW_FLUSH_BEFORE_CLOSE, handler);
+    },
+
+    flushComplete: () => ipcRenderer.send(IPC_CHANNELS.WINDOW_FLUSH_COMPLETE),
   },
 
   // Platform info

@@ -1546,6 +1546,16 @@ export const IPC_CHANNELS = {
   WINDOW_MAXIMIZE: 'window:maximize',
   /** Close application window */
   WINDOW_CLOSE: 'window:close',
+  /**
+   * Main → renderer: the window is closing; persist anything unsaved now.
+   *
+   * The renderer's own save-on-teardown hangs off `onUnmounted`, which is not
+   * a reliable hook for a window actually closing, so the close is held open
+   * for this instead of hoping.
+   */
+  WINDOW_FLUSH_BEFORE_CLOSE: 'window:flush-before-close',
+  /** Renderer → main: finished persisting; the close may proceed. */
+  WINDOW_FLUSH_COMPLETE: 'window:flush-complete',
 } as const;
 
 /**

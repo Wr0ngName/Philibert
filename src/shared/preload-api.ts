@@ -299,6 +299,10 @@ export interface ElectronAPI {
     minimize: () => void;
     maximize: () => void;
     close: () => void;
+    /** Register for the pre-close flush request; returns an unsubscribe. */
+    onFlushBeforeClose: (callback: () => void) => () => void;
+    /** Tell the main process the pre-close flush has finished. */
+    flushComplete: () => void;
   };
 
   // Platform info
