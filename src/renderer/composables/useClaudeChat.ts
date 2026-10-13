@@ -562,8 +562,11 @@ export function useClaudeChat() {
         });
       }
 
-      // Note: do NOT call completeRunningTasks here — background tasks may still be
-      // running on the server. They will be updated via task_notification on session resume.
+      // A turn ending does NOT end the background tasks it started: they keep
+      // running on the server, and their outcome arrives as task
+      // notifications, or as the authoritative live set in
+      // background_tasks_changed. Marking them finished here would show the
+      // user work as done that is still going.
 
       // Save the conversation
       // If this is the current conversation, use normal save

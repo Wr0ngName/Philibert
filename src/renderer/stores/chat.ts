@@ -1154,21 +1154,28 @@ export const useChatStore = defineStore('chat', () => {
       }
     }
 
-    // Fallback: if no match found and this is a completion notification,
-    // match against the oldest running task. This handles cases where the
-    // tool_use ID → background task ID remapping didn't propagate to the renderer.
+    // Fallback: a completion for an id we do not track, with exactly one task
+    // running, is that task.
+    //
+    // It covers a real case — the tool_use id → task id remapping not reaching
+    // the renderer, which would otherwise leave the task 'running' forever.
+    // But it used to pick the OLDEST running task whenever there was more than
+    // one, which is a guess with nothing behind it: with two tasks going, an
+    // unknown completion retired whichever had started first, and a task still
+    // working disappeared from the panel. Reported as the list of background
+    // tasks sometimes losing entries.
+    //
+    // With more than one running there is no evidence to choose, so nothing is
+    // retired here. That is safe now in a way it may not have been when this
+    // was written: `background_tasks_changed` carries the authoritative live
+    // set with REPLACE semantics, so a task that really ended is retired by
+    // `reconcileBackgroundTasks` — late rather than wrongly.
     if (!existingTask && notification.status !== 'running') {
-      let oldestEntry: [string, BackgroundTask] | null = null;
-      for (const entry of state.backgroundTasks.entries()) {
-        if (entry[1].status === 'running') {
-          if (!oldestEntry || entry[1].startedAt < oldestEntry[1].startedAt) {
-            oldestEntry = entry;
-          }
-        }
-      }
-      if (oldestEntry) {
-        existingTask = oldestEntry[1];
-        existingTaskId = oldestEntry[0];
+      const running = [...state.backgroundTasks.entries()].filter(
+        ([, task]) => task.status === 'running',
+      );
+      if (running.length === 1) {
+        [existingTaskId, existingTask] = running[0];
       }
     }
 
@@ -1303,18 +1310,6 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  function completeRunningTasks(conversationId: string): void {
-    const state = conversationStates.value.get(conversationId);
-    if (!state) {
-      return;
-    }
-    const now = Date.now();
-    for (const [id, task] of state.backgroundTasks.entries()) {
-      if (task.status === 'running') {
-        state.backgroundTasks.set(id, { ...task, status: 'completed', completedAt: now });
-      }
-    }
-  }
 
   /**
    * Mark all in-flight tool use messages as 'executed'.
@@ -1760,7 +1755,6 @@ export const useChatStore = defineStore('chat', () => {
     bufferingConversationIds,
     endMessageBuffer,
     reconcileBackgroundTasks,
-    completeRunningTasks,
     completeToolUseMessages,
 
     // Session usage actions
