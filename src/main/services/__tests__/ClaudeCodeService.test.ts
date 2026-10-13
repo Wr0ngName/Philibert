@@ -285,6 +285,50 @@ describe('ClaudeCodeService', () => {
       );
     });
 
+    it('asks for the task-list tools the CLI no longer offers by default', async () => {
+      // The todo panel is built from TaskCreate/TaskUpdate calls, and those
+      // tools left the CLI's base set: measured at 32 tools including them on
+      // 2.1.220, and 28 without them on 2.1.280, which this app bundles.
+      // Naming them in allowedTools is what adds them back.
+      mockQuery.mockReturnValue(createMockQueryIterator([]));
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello Claude', '/home/user/project');
+
+      const allowed = mockQuery.mock.calls[0][0].options.allowedTools as string[];
+      expect(allowed).toEqual(
+        expect.arrayContaining(['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet']),
+      );
+    });
+
+    it('does not auto-approve file-reading tools by the same route', async () => {
+      // Grep and Glob are missing from the base set too and restorable the
+      // same way, but a bare allowedTools entry auto-approves the tool before
+      // canUseTool is consulted — the SDK warns about it. Reinstating file
+      // access by a route that bypasses the permission prompt is a separate
+      // decision, and this asserts it has not been made by accident.
+      mockQuery.mockReturnValue(createMockQueryIterator([]));
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello Claude', '/home/user/project');
+
+      const allowed = mockQuery.mock.calls[0][0].options.allowedTools as string[];
+      expect(allowed).not.toContain('Grep');
+      expect(allowed).not.toContain('Glob');
+      expect(allowed).not.toContain('Bash');
+    });
+
+    it('extends the tool set rather than replacing it', async () => {
+      // `tools` would replace the base set — the same list passed there left
+      // the session with 14 tools and no Bash or Read. The permission
+      // callback must also still be installed.
+      mockQuery.mockReturnValue(createMockQueryIterator([]));
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello Claude', '/home/user/project');
+
+      const options = mockQuery.mock.calls[0][0].options;
+      expect(options.tools).toBeUndefined();
+      expect(options.canUseTool).toEqual(expect.any(Function));
+    });
+
     it('declares the per-task stop affordance, so Stop spares background tasks', async () => {
       // The CLI fails closed on absence: without this declaration an
       // interrupt kills running background tasks and agents, which made Stop

@@ -111,6 +111,37 @@ interface CatalogEntry {
 const HUMAN_ORIGIN = { kind: 'human' } as const;
 
 /**
+ * The task-list tools, named explicitly because the CLI no longer offers them.
+ *
+ * The todo panel is built from TaskCreate and TaskUpdate calls, and it stopped
+ * being able to show anything because those tools left the CLI's base tool
+ * set. Measured across CLI versions, same SDK, same options:
+ *
+ *   2.1.220  32 tools  Task, TaskCreate, TaskGet, TaskList, TaskOutput, TaskStop, TaskUpdate
+ *   2.1.278  28 tools  Task, TaskStop
+ *   2.1.280  28 tools  Task, TaskStop   ← the version this app bundles
+ *
+ * Naming them in `allowedTools` adds them back (28 → 34 in the same probe).
+ * NOT `tools`, which replaces the base set rather than extending it and left
+ * the session with 14 tools, no Bash or Read among them.
+ *
+ * Two deliberate exclusions:
+ *
+ *  - Grep and Glob are also missing from the base set and also restorable
+ *    this way, but a bare `allowedTools` entry auto-approves that tool before
+ *    `canUseTool` is consulted — the SDK warns about exactly this. Restoring
+ *    file-reading tools by a route that bypasses the permission prompt is a
+ *    different decision from fixing the todo panel, and is not made here.
+ *  - TodoWrite and TaskOutput are gone from 2.1.280 altogether; naming them
+ *    restores nothing.
+ *
+ * Auto-approval is the right behaviour for the four that remain: they keep
+ * the model's checklist and touch neither the filesystem nor the shell, and
+ * prompting to approve "add a todo item" would be absurd.
+ */
+const TASK_LIST_TOOLS = ['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'] as const;
+
+/**
  * Represents a persistent SDK session for a specific conversation.
  *
  * Unlike the old single-turn QueryInstance, this keeps the SDK process alive
@@ -749,6 +780,8 @@ export class ClaudeCodeService {
           // previous states." Without it rewindFiles has nothing to restore
           // from and refuses, which is why /rewind did nothing at all.
           enableFileCheckpointing: true,
+          // Restores the task-list tools the CLI dropped; see TASK_LIST_TOOLS.
+          allowedTools: [...TASK_LIST_TOOLS],
           // Stop means "stop this turn", not "kill everything running".
           //
           // The SDK documents this as the switch: "When declared, an interrupt
