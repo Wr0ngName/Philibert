@@ -468,6 +468,11 @@ const electronAPI: ElectronAPI = {
     flushComplete: () => ipcRenderer.send(IPC_CHANNELS.WINDOW_FLUSH_COMPLETE),
   },
 
+  clipboard: {
+    writeText: (text: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLIPBOARD_WRITE_TEXT, text),
+  },
+
   // Platform info
   platform: process.platform,
 };

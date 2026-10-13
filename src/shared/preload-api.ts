@@ -305,6 +305,18 @@ export interface ElectronAPI {
     flushComplete: () => void;
   };
 
+  /**
+   * System clipboard, written from the main process.
+   *
+   * Not `navigator.clipboard`: that write is subject to Chromium's permission
+   * and focus gates, and this window's permission handler denies everything
+   * except media — so a refusal is indistinguishable from a control that does
+   * nothing.
+   */
+  clipboard: {
+    writeText: (text: string) => Promise<void>;
+  };
+
   // Platform info
   platform: string;
 }

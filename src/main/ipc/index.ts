@@ -95,6 +95,7 @@ const REGISTERED_CHANNELS = {
     IPC_CHANNELS.SPEECH_GET_AVAILABILITY,
     IPC_CHANNELS.SPEECH_TRANSCRIBE,
     IPC_CHANNELS.ABOUT_GET_INFO,
+    IPC_CHANNELS.CLIPBOARD_WRITE_TEXT,
   ] as const,
   // Listeners (ipcMain.on) - use removeAllListeners on specific channel
   listeners: [

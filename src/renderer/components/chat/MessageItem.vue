@@ -14,6 +14,7 @@ import { computed, ref } from 'vue';
 import type { ChatMessage } from '@shared/types';
 
 import { formatTime } from '../../utils/date';
+import { logger } from '../../utils/logger';
 import { renderMarkdown, renderUserMarkdown } from '../../utils/markdown';
 import { selectionWithin } from '../../utils/selection';
 import BackgroundTaskMessage from './BackgroundTaskMessage.vue';
@@ -105,9 +106,15 @@ async function copyContent(): Promise<void> {
   // reply, with no way to copy a part of it.
   const text = selectionAtOpen.value ?? props.message.content;
   try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    // Clipboard access can be denied in some test/secure contexts; silent.
+    // Through the main process, not `navigator.clipboard`: that write is
+    // subject to Chromium's permission and focus gates, and this window denies
+    // every permission except media. Reported as "copy selection does
+    // nothing", which a refused write and an unwired menu item look identical
+    // from the outside.
+    await window.electron.clipboard.writeText(text);
+  } catch (error) {
+    // Swallowing this is what made the failure invisible.
+    logger.error('Failed to copy to the clipboard', error);
   }
 }
 

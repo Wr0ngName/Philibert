@@ -1556,6 +1556,17 @@ export const IPC_CHANNELS = {
   WINDOW_FLUSH_BEFORE_CLOSE: 'window:flush-before-close',
   /** Renderer → main: finished persisting; the close may proceed. */
   WINDOW_FLUSH_COMPLETE: 'window:flush-complete',
+
+  // Clipboard
+  /**
+   * Write text to the system clipboard through the main process.
+   *
+   * Not `navigator.clipboard`: in the renderer that write sits behind
+   * Chromium's permission and focus gates, and this window denies every
+   * permission except media, so a refusal there is indistinguishable from a
+   * button that does nothing. Electron's own clipboard has no such gates.
+   */
+  CLIPBOARD_WRITE_TEXT: 'clipboard:write-text',
 } as const;
 
 /**

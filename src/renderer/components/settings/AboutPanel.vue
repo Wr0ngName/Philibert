@@ -143,11 +143,13 @@ async function copyAll(): Promise<void> {
   if (i.license) lines.push(`License: ${i.license}`);
 
   try {
-    await navigator.clipboard.writeText(lines.join('\n'));
+    // Through the main process; see MessageItem.copyContent for why.
+    await window.electron.clipboard.writeText(lines.join('\n'));
     copied.value = true;
-  } catch {
-    // Clipboard access can be denied; leave the button state alone rather
-    // than claiming success.
+  } catch (error) {
+    // Leave the button state alone rather than claiming success, and say why
+    // rather than failing silently.
+    logger.error('Failed to copy the about information', error);
   }
 }
 </script>

@@ -2,7 +2,7 @@
  * IPC handlers for window operations
  */
 
-import { ipcMain } from 'electron';
+import { clipboard, ipcMain } from 'electron';
 
 import { IPC_CHANNELS } from '../../shared/types';
 import logger from '../utils/logger';
@@ -37,6 +37,17 @@ export function setupWindowIPC(): void {
       logger.error('Failed to close window', { error });
       // Don't throw for window operations as they use ipcMain.on (not handle)
     }
+  });
+
+  // Clipboard writes go through here rather than `navigator.clipboard`: that
+  // one is subject to Chromium's permission and focus gates, and this window's
+  // permission handler denies everything except media — so a refused write
+  // looked exactly like a menu item that does nothing, which is how it was
+  // reported. `handle` rather than `on`, so a failure can reach the caller
+  // instead of vanishing.
+  ipcMain.handle(IPC_CHANNELS.CLIPBOARD_WRITE_TEXT, (_event, text: string) => {
+    logger.debug('IPC: clipboard:write-text', { length: text?.length ?? 0 });
+    clipboard.writeText(typeof text === 'string' ? text : String(text));
   });
 
   logger.info('Window IPC handlers registered');
