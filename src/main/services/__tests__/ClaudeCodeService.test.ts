@@ -2169,6 +2169,212 @@ describe('ClaudeCodeService', () => {
       expect(mystery!.displayName).toBe('Claude Mystery 9.9');
     });
   });
+
+  // ===========================================================================
+  // A login that happens while conversations are already open
+  // ===========================================================================
+  describe('invalidateSessionAuth', () => {
+    /**
+     * Credentials reach the CLI as environment variables of its subprocess,
+     * read once when that process is spawned. Nothing outside a process can
+     * change its environment, so a conversation that was already open went on
+     * using the account it started with — for the rest of the app's run,
+     * because sessions are deliberately long-lived. Reported as discussions
+     * keeping the old login after signing in.
+     */
+    const OLD_TOKEN =
+      'sk-ant-oat01-valid-token-that-is-long-enough-to-pass-validation-requirements';
+    const NEW_TOKEN =
+      'sk-ant-oat01-the-new-accounts-token-also-long-enough-to-pass-validation';
+
+    /**
+     * A persistent session, driven the way the real one is: it announces its
+     * session id, then stays open between turns while the test decides when
+     * each turn ends. An iterator that simply ends makes the service tear the
+     * session down, and one that never announces an id makes the second
+     * message wait on `sessionReady` for ever — so neither can show any of
+     * this.
+     */
+    function openSession(sdkSessionId = 'sdk-session-1') {
+      const queue: unknown[] = [
+        { type: 'system', subtype: 'init', session_id: sdkSessionId },
+      ];
+      let wake: (() => void) | null = null;
+      let done = false;
+
+      const api = {
+        iterator: {
+          [Symbol.asyncIterator]: async function* () {
+            while (!done) {
+              if (queue.length === 0) {
+                await new Promise<void>((resolve) => { wake = resolve; });
+                continue;
+              }
+              yield queue.shift();
+            }
+          },
+          interrupt: vi.fn(),
+          supportedCommands: vi.fn().mockResolvedValue([]),
+          supportedModels: vi.fn().mockResolvedValue([]),
+          setModel: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn(),
+        },
+        push(message: unknown) {
+          queue.push(message);
+          const w = wake;
+          wake = null;
+          w?.();
+        },
+        /** End the current turn the way the CLI does, with a human-origin result. */
+        endTurn() {
+          api.push({
+            type: 'result', subtype: 'success', session_id: sdkSessionId,
+            origin: { kind: 'human' }, num_turns: 1, duration_ms: 10,
+          });
+        },
+        close() {
+          done = true;
+          const w = wake;
+          wake = null;
+          w?.();
+        },
+      };
+      return api;
+    }
+
+    /** Send a message, let the turn finish, and wait until it has. */
+    async function sendAndSettle(
+      session: ReturnType<typeof openSession>,
+      conversationId: string,
+      text: string,
+      resumeSessionId?: string,
+    ): Promise<void> {
+      // The renderer passes the conversation's stored SDK session id on every
+      // send (useClaudeChat reads it from the conversations store), which is
+      // what lets a replaced session carry on where it left off.
+      const sent = service.sendMessage(
+        conversationId, text, '/home/user/project', resumeSessionId,
+      );
+      await vi.waitFor(() => {
+        expect(service.isConversationActive(conversationId)).toBe(true);
+      });
+      session.endTurn();
+      await sent;
+      await vi.waitFor(() => {
+        expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_DONE, conversationId);
+      });
+    }
+
+    beforeEach(async () => {
+      await configService.setOAuthToken(OLD_TOKEN);
+    });
+
+    it('reuses a session while the login has not changed', async () => {
+      // The behaviour the fix must not break: replacing a live session costs
+      // a process start, and an unchanged login is no reason to.
+      const session = openSession();
+      mockQuery.mockReturnValue(session.iterator);
+
+      await sendAndSettle(session, TEST_CONV_ID, 'first');
+      await sendAndSettle(session, TEST_CONV_ID, 'second');
+
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      session.close();
+    });
+
+    it('ends an idle session straight away', async () => {
+      const session = openSession();
+      mockQuery.mockReturnValue(session.iterator);
+      await sendAndSettle(session, TEST_CONV_ID, 'first');
+
+      const result = service.invalidateSessionAuth('login');
+
+      expect(result).toEqual({ ended: 1, deferred: 0 });
+      expect(service.isConversationActive(TEST_CONV_ID)).toBe(false);
+      session.close();
+    });
+
+    it('starts a new CLI process for the next message, carrying the new credentials', async () => {
+      const first = openSession('sdk-session-old');
+      mockQuery.mockReturnValue(first.iterator);
+      await sendAndSettle(first, TEST_CONV_ID, 'before logging in');
+
+      service.invalidateSessionAuth('login');
+      await configService.setOAuthToken(NEW_TOKEN);
+
+      const second = openSession('sdk-session-old');
+      mockQuery.mockReturnValue(second.iterator);
+      await sendAndSettle(second, TEST_CONV_ID, 'after logging in', 'sdk-session-old');
+
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      const env = mockQuery.mock.calls[1][0].options.env as Record<string, string>;
+      // Either auth route is acceptable — a token in the environment, or a
+      // config dir whose credentials file was just rewritten. What must not
+      // happen is this process carrying the first one's token.
+      expect(env['CLAUDE_CODE_OAUTH_TOKEN'] ?? env['CLAUDE_CONFIG_DIR']).toBeTruthy();
+      expect(env['CLAUDE_CODE_OAUTH_TOKEN']).not.toBe(OLD_TOKEN);
+      // And it resumes the conversation rather than starting it over, so
+      // nothing of the context is lost by the swap.
+      expect(mockQuery.mock.calls[1][0].options.resume).toBe('sdk-session-old');
+      first.close();
+      second.close();
+    });
+
+    it('leaves a session alone while it is mid-turn, and replaces it afterwards', async () => {
+      // Killing it would abort whatever the user is running, background
+      // agents included, to deliver a credential change that can wait a turn.
+      // That turn finishes on the old login — unavoidable, its environment is
+      // already set.
+      // Declared the way the other pending-iterator tests do: onReady runs
+      // synchronously inside the Promise constructor, so it is assigned by
+      // the time the test calls it.
+      let release: () => void;
+      mockQuery.mockReturnValue(createPendingIterator((resolve) => { release = resolve; }));
+
+      const inFlight = service.sendMessage(TEST_CONV_ID, 'working', '/home/user/project');
+      await vi.waitFor(() => {
+        expect(service.isConversationActive(TEST_CONV_ID)).toBe(true);
+      });
+
+      const result = service.invalidateSessionAuth('login');
+      expect(result).toEqual({ ended: 0, deferred: 1 });
+      expect(service.isConversationActive(TEST_CONV_ID)).toBe(true);
+
+      release!();
+      await inFlight;
+
+      const next = openSession('sdk-busy');
+      mockQuery.mockReturnValue(next.iterator);
+      await sendAndSettle(next, TEST_CONV_ID, 'next turn', 'sdk-busy');
+
+      // Two processes: the one that was busy, and its replacement, which
+      // resumes rather than starting over.
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(mockQuery.mock.calls[1][0].options.resume).toBe('sdk-busy');
+      next.close();
+    });
+
+    it('invalidates every open conversation, not just the one on screen', async () => {
+      const one = openSession('sdk-one');
+      mockQuery.mockReturnValue(one.iterator);
+      await sendAndSettle(one, 'conv-one', 'hello');
+      const two = openSession('sdk-two');
+      mockQuery.mockReturnValue(two.iterator);
+      await sendAndSettle(two, 'conv-two', 'hello');
+
+      const result = service.invalidateSessionAuth('logout');
+
+      expect(result).toEqual({ ended: 2, deferred: 0 });
+      expect(service.isConversationActive('conv-one')).toBe(false);
+      expect(service.isConversationActive('conv-two')).toBe(false);
+      one.close();
+      two.close();
+    });
+
+    it('is harmless when nothing is open', () => {
+      expect(service.invalidateSessionAuth('logout')).toEqual({ ended: 0, deferred: 0 });
+    });
+  });
 });
 
 // ===========================================================================

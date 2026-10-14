@@ -10,6 +10,7 @@ import { IPC_CHANNELS, AuthStatus } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { AuthenticationError, ERROR_CODES } from '../errors';
 import AuthService from '../services/AuthService';
+import type { ClaudeCodeService } from '../services/ClaudeCodeService';
 import ConfigService from '../services/ConfigService';
 import { validateString, sendToRenderer, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
@@ -18,7 +19,8 @@ import { getClaudeConfigDir } from '../utils/resourcePaths';
 export function setupAuthHandlers(
   authService: AuthService,
   configService: ConfigService,
-  getMainWindow: () => BrowserWindow | null
+  getMainWindow: () => BrowserWindow | null,
+  claudeService: ClaudeCodeService
 ): void {
   // Get current authentication status
   ipcMain.handle(IPC_CHANNELS.AUTH_GET_STATUS, async (): Promise<AuthStatus> => {
@@ -189,6 +191,13 @@ export function setupAuthHandlers(
           // Auto-clear callback after 10s to avoid stale references
           setTimeout(() => { authService.onLateCredentials = null; }, 10000);
 
+          // Conversations that are already open run their own CLI
+          // subprocess, each holding the credentials it was spawned with.
+          // Without this they would go on using the previous login for the
+          // rest of the session — the new token would only ever reach
+          // conversations started after this point.
+          claudeService.invalidateSessionAuth('login');
+
           // Notify renderer of config change so UI updates
           sendToRenderer(getMainWindow, IPC_CHANNELS.CONFIG_CHANGED, configUpdate);
 
@@ -235,6 +244,12 @@ export function setupAuthHandlers(
       } catch (err) {
         logger.debug('Failed to clean up credentials file', { error: err });
       }
+
+      // Same reason as on login, and more pressing: a session left running
+      // keeps a working token for an account the user has just signed out of.
+      // An idle one is ended here; one mid-turn is replaced when that turn
+      // ends. See invalidateSessionAuth.
+      claudeService.invalidateSessionAuth('logout');
 
       // Notify renderer of config change so UI updates
       sendToRenderer(getMainWindow, IPC_CHANNELS.CONFIG_CHANGED, configUpdate);

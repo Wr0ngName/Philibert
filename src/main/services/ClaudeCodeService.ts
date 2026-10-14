@@ -187,6 +187,18 @@ interface SessionInstance {
    * once per assistant frame.
    */
   announcedModels: Set<string>;
+  /**
+   * The login this session's subprocess was spawned with.
+   *
+   * Credentials reach the CLI as environment variables, and a process's
+   * environment cannot be changed from outside — so a session started before
+   * the user logged in keeps using the account it was started with, for as
+   * long as it lives. Sessions are deliberately long-lived, so "as long as it
+   * lives" was the rest of the app's run. Compared against
+   * `authGeneration` when a session is about to be reused; a mismatch means
+   * the session is replaced rather than reused.
+   */
+  authGeneration: number;
 }
 
 export class ClaudeCodeService {
@@ -210,6 +222,14 @@ export class ClaudeCodeService {
    * reconstructed from notifications rather than being the authority.
    */
   private liveBackgroundTasks: Map<string, LiveBackgroundTask[]> = new Map();
+  /**
+   * Which login the credentials currently in config belong to.
+   *
+   * Bumped by `invalidateSessionAuth` whenever the user logs in or out. A
+   * session records the value it was spawned with, and one holding an older
+   * value is not reused. See `SessionInstance.authGeneration`.
+   */
+  private authGeneration: number = 0;
   private maxConcurrentQueries: number = MAX_CONCURRENT_QUERIES;
 
   // Bound sender function for DRY IPC communication
@@ -464,6 +484,28 @@ export class ClaudeCodeService {
 
     // Check for existing persistent session
     const existingSession = this.activeSessions.get(conversationId);
+
+    // A session spawned under a different login cannot be reused: its
+    // credentials are environment variables of a process that is already
+    // running. Replacing it is not a loss — the conversation resumes by its
+    // SDK session id, the same way it does after the app restarts — and it is
+    // the only way a conversation that was already open follows the user to
+    // the account they just logged into.
+    if (existingSession && existingSession.authGeneration !== this.authGeneration) {
+      logger.info('Replacing session started under a previous login', {
+        conversationId,
+        sessionGeneration: existingSession.authGeneration,
+        currentGeneration: this.authGeneration,
+        willResumeSdkSession: existingSession.sdkSessionId ?? '(none yet)',
+      });
+      const resumeFrom = resumeSessionId ?? existingSession.sdkSessionId ?? undefined;
+      this.cleanupSession(conversationId);
+      await this.startNewSession(
+        conversationId, message, workingDirectory, isSlashCommand, resumeFrom,
+      );
+      return;
+    }
+
     if (existingSession && !existingSession.inputChannel.isClosed()) {
       // If the model changed, use SDK's setModel() to switch mid-session
       // (no need to kill the session — context is preserved)
@@ -839,6 +881,9 @@ export class ClaudeCodeService {
         pendingTurnUuid: firstTurnUuid,
         requestedModel: selectedModel,
         announcedModels: new Set<string>(),
+        // Recorded now, because `authEnv` above was read now. See
+        // invalidateSessionAuth.
+        authGeneration: this.authGeneration,
       };
       this.activeSessions.set(conversationId, session);
       this.emitActiveQueryCount();
@@ -1274,6 +1319,62 @@ export class ClaudeCodeService {
   /**
    * Clean up a persistent session
    */
+  /**
+   * The login changed — stop any session from going on using the old one.
+   *
+   * Credentials are environment variables of the CLI subprocess, set when that
+   * process is spawned, and nothing outside a process can change its
+   * environment. So logging in did nothing at all to conversations that were
+   * already open: they kept talking to the account they were started with, and
+   * since sessions are deliberately long-lived, that lasted the rest of the
+   * run. Logging out was the same, which is worse — a session kept a working
+   * token after the user had signed out of it.
+   *
+   * Two cases, because a session with a turn in flight cannot simply be
+   * killed:
+   *
+   *  - idle: ended here and now. Nothing is lost; the conversation resumes by
+   *    its SDK session id on its next message, exactly as it does after a
+   *    restart, and that new process gets the new credentials. Ending it also
+   *    means no process is left holding a token the user has just signed out
+   *    of.
+   *  - busy: left alone, and marked by the generation bump. Its current turn
+   *    finishes under the old login — unavoidable, the environment is already
+   *    set — and the mismatch makes the next message replace it rather than
+   *    reuse it. Killing it instead would abort whatever the user is running,
+   *    including background agents, to deliver a credential change they can
+   *    wait a turn for.
+   *
+   * @returns how many sessions were ended immediately, and how many were left
+   *          to be replaced after their current turn.
+   */
+  invalidateSessionAuth(reason: 'login' | 'logout'): { ended: number; deferred: number } {
+    this.authGeneration += 1;
+
+    const idle: string[] = [];
+    let deferred = 0;
+    for (const conversationId of this.activeSessions.keys()) {
+      if (this.processingSessions.has(conversationId)) {
+        deferred += 1;
+      } else {
+        idle.push(conversationId);
+      }
+    }
+
+    for (const conversationId of idle) {
+      this.cleanupSession(conversationId);
+    }
+
+    logger.info('Auth changed — sessions invalidated', {
+      reason,
+      generation: this.authGeneration,
+      ended: idle.length,
+      deferredUntilTurnEnds: deferred,
+    });
+
+    return { ended: idle.length, deferred };
+  }
+
   private cleanupSession(conversationId: string): void {
     const instance = this.activeSessions.get(conversationId);
     if (!instance) {

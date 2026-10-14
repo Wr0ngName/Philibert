@@ -86,6 +86,14 @@ const mockAuthService = {
   cleanupOAuthFlow: vi.fn(),
 };
 
+/**
+ * The one thing these handlers need from the Claude service: telling it the
+ * login changed, so sessions already running under the old one are not reused.
+ */
+const mockClaudeService = {
+  invalidateSessionAuth: vi.fn(() => ({ ended: 0, deferred: 0 })),
+};
+
 const mockMainWindow = {
   webContents: { send: vi.fn() },
   isDestroyed: vi.fn().mockReturnValue(false),
@@ -135,7 +143,8 @@ describe('Auth IPC handlers', () => {
     setupAuthHandlers(
       mockAuthService as any,
       configService,
-      mockGetMainWindow as any
+      mockGetMainWindow as any,
+      mockClaudeService as any
     );
   });
 
@@ -220,7 +229,7 @@ describe('Auth IPC handlers', () => {
 
     it('should throw when auth service is not initialized', async () => {
       handlers.clear();
-      setupAuthHandlers(null as any, configService, mockGetMainWindow as any);
+      setupAuthHandlers(null as any, configService, mockGetMainWindow as any, mockClaudeService as any);
       const nullHandler = handlers.get(IPC_CHANNELS.AUTH_GET_STATUS)!;
 
       await expect(nullHandler({})).rejects.toThrow(AuthenticationError);
@@ -228,7 +237,7 @@ describe('Auth IPC handlers', () => {
 
     it('should throw when config service is not initialized', async () => {
       handlers.clear();
-      setupAuthHandlers(mockAuthService as any, null as any, mockGetMainWindow as any);
+      setupAuthHandlers(mockAuthService as any, null as any, mockGetMainWindow as any, mockClaudeService as any);
       const nullHandler = handlers.get(IPC_CHANNELS.AUTH_GET_STATUS)!;
 
       await expect(nullHandler({})).rejects.toThrow(AuthenticationError);
@@ -464,7 +473,7 @@ describe('Auth IPC handlers', () => {
 
     it('should throw when auth service is not initialized', async () => {
       handlers.clear();
-      setupAuthHandlers(null as any, configService, mockGetMainWindow as any);
+      setupAuthHandlers(null as any, configService, mockGetMainWindow as any, mockClaudeService as any);
       const nullHandler = handlers.get(IPC_CHANNELS.AUTH_LOGOUT)!;
 
       await expect(nullHandler({})).rejects.toThrow(AuthenticationError);
@@ -472,7 +481,7 @@ describe('Auth IPC handlers', () => {
 
     it('should throw when config service is not initialized', async () => {
       handlers.clear();
-      setupAuthHandlers(mockAuthService as any, null as any, mockGetMainWindow as any);
+      setupAuthHandlers(mockAuthService as any, null as any, mockGetMainWindow as any, mockClaudeService as any);
       const nullHandler = handlers.get(IPC_CHANNELS.AUTH_LOGOUT)!;
 
       await expect(nullHandler({})).rejects.toThrow(AuthenticationError);
@@ -482,6 +491,75 @@ describe('Auth IPC handlers', () => {
   // ===========================================================================
   // Window Notification Edge Cases
   // ===========================================================================
+  /**
+   * A login has to reach conversations that are already open.
+   *
+   * Each one runs its own CLI subprocess holding the credentials it was
+   * spawned with, and a process's environment cannot be changed from outside,
+   * so without this the new token only ever reached conversations started
+   * afterwards — reported as discussions carrying on under the old login.
+   */
+  describe('telling the Claude service the login changed', () => {
+    it('invalidates sessions after a successful login', async () => {
+      const handler = handlers.get(IPC_CHANNELS.AUTH_COMPLETE_OAUTH)!;
+
+      await handler({}, 'valid_oauth_code_12345');
+
+      expect(mockClaudeService.invalidateSessionAuth).toHaveBeenCalledWith('login');
+    });
+
+    it('invalidates sessions on logout', async () => {
+      // More pressing than login: a session left running holds a working
+      // token for an account the user has just signed out of.
+      const handler = handlers.get(IPC_CHANNELS.AUTH_LOGOUT)!;
+
+      await handler({});
+
+      expect(mockClaudeService.invalidateSessionAuth).toHaveBeenCalledWith('logout');
+    });
+
+    it('does not invalidate sessions when the login failed', async () => {
+      mockAuthService.completeOAuthFlow.mockResolvedValue({
+        success: false,
+        error: 'bad code',
+      });
+      const handler = handlers.get(IPC_CHANNELS.AUTH_COMPLETE_OAUTH)!;
+
+      await handler({}, 'valid_oauth_code_12345');
+
+      expect(mockClaudeService.invalidateSessionAuth).not.toHaveBeenCalled();
+    });
+
+    it('does not invalidate sessions when the token has the wrong format', async () => {
+      // Nothing was stored, so nothing about the live sessions is wrong yet.
+      mockAuthService.completeOAuthFlow.mockResolvedValue({
+        success: true,
+        token: 'bad-prefix-token',
+      });
+      const handler = handlers.get(IPC_CHANNELS.AUTH_COMPLETE_OAUTH)!;
+
+      await handler({}, 'valid_oauth_code_12345');
+
+      expect(mockClaudeService.invalidateSessionAuth).not.toHaveBeenCalled();
+    });
+
+    it('invalidates before telling the renderer, so no turn can start on the old login', async () => {
+      const order: string[] = [];
+      mockClaudeService.invalidateSessionAuth.mockImplementation(() => {
+        order.push('invalidate');
+        return { ended: 0, deferred: 0 };
+      });
+      mockMainWindow.webContents.send.mockImplementation((channel: string) => {
+        if (channel === IPC_CHANNELS.CONFIG_CHANGED) order.push('config-changed');
+      });
+      const handler = handlers.get(IPC_CHANNELS.AUTH_COMPLETE_OAUTH)!;
+
+      await handler({}, 'valid_oauth_code_12345');
+
+      expect(order).toEqual(['invalidate', 'config-changed']);
+    });
+  });
+
   describe('window notification edge cases', () => {
     it('should handle null main window gracefully', async () => {
       mockGetMainWindow.mockReturnValue(null as any);

@@ -197,7 +197,7 @@ export function setupIPC(
       throw new ValidationError('getMainWindow must be a function', 'getMainWindow', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
     }
 
-    setupAuthHandlers(authService, configService, getMainWindow);
+    setupAuthHandlers(authService, configService, getMainWindow, claudeService);
     setupClaudeIPC(claudeService);
     setupFilesIPC(fileWatcher, configService, getMainWindow);
     setupGitIPC(gitService, configService, fileWatcher, getMainWindow);
