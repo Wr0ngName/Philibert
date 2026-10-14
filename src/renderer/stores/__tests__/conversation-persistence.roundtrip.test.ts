@@ -286,6 +286,55 @@ describe('a conversation through the real persistence stack', () => {
     expect(diskContents(id)).toEqual(['first question', 'the answer']);
   });
 
+  it('saves the conversation the save was asked for, not whichever is current later', async () => {
+    // Reported on a build that has every earlier fix: talk in one of two
+    // conversations, the model answers, switch away, come back — prompt and
+    // answer gone, older messages intact.
+    //
+    // The save queue defers the question of WHAT to save until the write
+    // runs. So a save requested for one conversation, queued behind a write
+    // in flight, and then overtaken by a switch, writes the conversation that
+    // is current by then — and the turn it was asked to save is never
+    // written at all.
+    const wrapper = mountApp();
+
+    const other = conversations.createNewConversation();
+    await send(wrapper, 'elsewhere');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, other);
+    await settle();
+
+    const subject = conversations.createNewConversation();
+    await send(wrapper, 'an earlier question');
+    streamAssistant(subject, 'an earlier answer');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, subject);
+    await settle();
+
+    // From here the disk is slow, so the next save is still writing when the
+    // turn after it asks to be saved.
+    disk.holdWrites = true;
+
+    await send(wrapper, 'the question that disappears');
+    streamAssistant(subject, 'the answer that disappears');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, subject);
+    await settle();
+
+    // The user switches while that save is still queued.
+    const switching = conversations.switchConversation(other);
+    await releaseWrites();
+    await switching;
+    await settle();
+
+    await conversations.switchConversation(subject);
+    await settle();
+
+    expect(diskContents(subject)).toEqual([
+      'an earlier question',
+      'an earlier answer',
+      'the question that disappears',
+      'the answer that disappears',
+    ]);
+  });
+
   it('keeps both turns when two conversations run at once and overlap', async () => {
     // "Two discussions going on in parallel": a turn can END while the user
     // is in the OTHER conversation, which takes the background save path
@@ -581,38 +630,65 @@ describe('a conversation through the real persistence stack', () => {
     expect((onDisk(id)?.messages ?? []).some((m) => m.isStreaming)).toBe(false);
   });
 
-  it('refuses a write that would drop messages already on disk', async () => {
-    // The guard at the point of destruction, exercised through the real
-    // service. The renderer prefers its in-memory buffer to this file and
-    // writes that buffer when a turn ends, and a buffer missing the start of
-    // a transcript has twice been written over a complete one. The renderer
-    // causes are fixed; this makes the file safe regardless.
+  it('keeps saving after a REAL rewind followed by new turns', async () => {
+    // The test that was missing, and the reason a write-blocking guard shipped
+    // for three releases without anyone noticing.
+    //
+    // Rewind and the save guard were each tested alone. Nothing drove a real
+    // rewind and then kept talking, which is the only way to produce the shape
+    // that broke: a history that keeps its opening, diverges in the middle,
+    // and ends up LONGER than what is stored. Modelled as a pure truncation —
+    // which is how the guard's own tests modelled it — it looks safe.
     const wrapper = mountApp();
     const id = conversations.createNewConversation();
     await settle();
 
-    await send(wrapper, 'first question');
-    streamAssistant(id, 'first answer');
+    await send(wrapper, 'the question kept by the rewind');
+    // The CLI's id for that turn, which is what a rewind targets.
+    emitIpc(IPC_CHANNELS.CLAUDE_USER_TURN_UUID, id, 'turn-uuid-1');
+    streamAssistant(id, 'an answer that will be rewound away');
     emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
     await settle();
 
-    const complete = onDisk(id);
-    expect(complete?.messages.length).toBe(2);
+    await send(wrapper, 'a second question, also rewound away');
+    streamAssistant(id, 'and its answer');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
+    await settle();
+    expect(diskContents(id)).toHaveLength(4);
 
-    // A fragment: the same conversation, but missing its opening messages.
-    const fragment = {
-      ...complete!,
-      messages: [{ id: 'msg-from-nowhere', role: 'assistant', content: 'orphan', timestamp: 1 }],
-    } as Conversation;
+    // Rewind to the first turn, through the store action the modal calls.
+    chat.truncateAfterUserTurn(id, 'turn-uuid-1');
+    await settle();
+    expect(chat.messages).toHaveLength(0);
 
-    await expect(conversationService.save(fragment)).rejects.toThrow(/diverges/);
+    // Then carry on talking, which is what makes the next save diverge from
+    // the file mid-list rather than simply truncating it.
+    await send(wrapper, 'asked again after the rewind');
+    streamAssistant(id, 'a different answer');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
+    await settle();
 
-    // And the file still has everything.
-    expect(diskContents(id)).toEqual(['first question', 'first answer']);
+    expect(diskContents(id)).toEqual([
+      'asked again after the rewind',
+      'a different answer',
+    ]);
   });
 
-  it('still allows a rewind, which truncates from the end', async () => {
-    // The guard must not block the one legitimate way a transcript shrinks.
+  it('writes a transcript that diverges mid-list, such as after a rewind', async () => {
+    // This used to be refused. A guard compared the incoming transcript with
+    // the stored one and rejected anything that was not an extension or a
+    // truncation, to stop a fragment overwriting a full history.
+    //
+    // It caused the loss it was meant to prevent. From the reported log, on a
+    // real conversation:
+    //
+    //   storedCount: 11745, incomingCount: 12180
+    //   storedFirstId === incomingFirstId
+    //
+    // An extension of 435 messages, same opening — diverging in the middle,
+    // which is what a rewind followed by new turns produces. Every save was
+    // refused, retried three times and abandoned, so the file kept the old
+    // content and everything since vanished.
     const wrapper = mountApp();
     const id = conversations.createNewConversation();
     await settle();
@@ -622,12 +698,21 @@ describe('a conversation through the real persistence stack', () => {
     emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
     await settle();
 
-    const complete = onDisk(id)!;
-    const truncated = { ...complete, messages: complete.messages.slice(0, 1) } as Conversation;
+    const stored = onDisk(id)!;
+    // A history that keeps the opening, drops what followed, and adds more —
+    // the shape a rewind-and-continue leaves behind.
+    const diverged = {
+      ...stored,
+      messages: [
+        stored.messages[0],
+        { id: 'msg-after-rewind-1', role: 'assistant', content: 'a different answer', timestamp: 2 },
+        { id: 'msg-after-rewind-2', role: 'user', content: 'and more', timestamp: 3 },
+      ],
+    } as Conversation;
 
-    await conversationService.save(truncated);
+    await conversationService.save(diverged);
 
-    expect(diskContents(id)).toEqual(['first question']);
+    expect(diskContents(id)).toEqual(['first question', 'a different answer', 'and more']);
   });
 
   it('keeps two conversations apart on disk', async () => {

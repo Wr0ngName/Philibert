@@ -90,6 +90,27 @@ async function tick(times = 4): Promise<void> {
   for (let i = 0; i < times; i += 1) await Promise.resolve();
 }
 
+/**
+ * Release held writes until `promise` settles.
+ *
+ * A save's promise now covers everything queued behind it, not just its own
+ * write — a caller that awaits it knows the whole queue is on disk, which is
+ * what `switchConversation` needs before it replaces the message list. So the
+ * writes have to be let through as they appear rather than one at a time
+ * around an await.
+ */
+async function drain<T>(promise: Promise<T>): Promise<T> {
+  let settled = false;
+  const result = promise.then((value) => { settled = true; return value; });
+  for (let i = 0; i < 20 && !settled; i += 1) {
+    // Released, not removed: `saves` is also the record the assertions read,
+    // and resolving an already-resolved write is a no-op.
+    for (const save of saves) save.release();
+    await tick(4);
+  }
+  return result;
+}
+
 describe('concurrent saves', () => {
   let store: ReturnType<typeof useConversationsStore>;
   let chatStore: ReturnType<typeof useChatStore>;
@@ -130,16 +151,10 @@ describe('concurrent saves', () => {
     // Arrives while the first save is still in flight. The snapshot above
     // cannot contain it — it was cloned before this existed.
     chatStore.messages.push(message('m2'));
-
     const second = store.saveCurrentConversation();
-    await tick();
 
-    saves[0].release();
-    await first;
-    await tick();
-    saves.at(-1)?.release();
-    await second;
-    await tick();
+    await drain(first);
+    await drain(second);
 
     // The defect: the second request returned false without writing, so m2
     // was never persisted by anything.
@@ -154,14 +169,9 @@ describe('concurrent saves', () => {
     chatStore.messages.push(message('m2'));
     chatStore.messages.push(message('m3'));
     const second = store.saveCurrentConversation();
-    await tick();
 
-    saves[0].release();
-    await first;
-    await tick();
-    saves.at(-1)?.release();
-    await second;
-    await tick();
+    await drain(first);
+    await drain(second);
 
     // Whatever the last write was, it must describe the conversation as it
     // actually stands. A save that persists a prefix is the data loss.
@@ -175,6 +185,7 @@ describe('concurrent saves', () => {
     chatStore.messages.push(message('m1'));
     const first = store.saveCurrentConversation();
     await tick();
+    const writtenFirst = saves.length;
 
     chatStore.messages.push(message('m2'));
     const burst = [
@@ -182,16 +193,15 @@ describe('concurrent saves', () => {
       store.saveCurrentConversation(),
       store.saveCurrentConversation(),
     ];
-    await tick();
 
-    saves[0].release();
-    await first;
-    await tick();
-    saves.at(-1)?.release();
-    await Promise.all(burst);
-    await tick();
+    await drain(first);
+    await drain(Promise.all(burst));
 
-    expect(saves).toHaveLength(2);
+    // One write for the snapshot in flight, and one covering the burst —
+    // not one per request. Keyed per conversation, so the newest snapshot
+    // replaces the older ones for the same conversation.
+    expect(writtenFirst).toBe(1);
+    expect(persistedIds()).toHaveLength(2);
     expect(persistedIds().at(-1)).toEqual(['m1', 'm2']);
   });
 
@@ -213,12 +223,17 @@ describe('concurrent saves', () => {
 
     expect(secondSettled).toBe(false);
 
+    // Letting the first write through is not enough: the promise covers the
+    // queue behind it, so it stays pending until the second snapshot is
+    // written too. That is the property `switchConversation` relies on.
     saves[0].release();
-    await first;
-    await tick();
+    await tick(8);
     expect(saves).toHaveLength(2);
+    expect(secondSettled).toBe(false);
+
     saves[1].release();
-    await second;
+    await drain(second);
+    await drain(first);
 
     expect(secondSettled).toBe(true);
   });

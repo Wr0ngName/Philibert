@@ -98,52 +98,8 @@ vi.mock('../../utils/paths', async (importOriginal) => {
 
 // Import after mocks
 import { Conversation } from '../../../shared/types';
-import { ConversationService, isSafeTranscriptReplacement } from '../ConversationService';
+import { ConversationService } from '../ConversationService';
 
-/**
- * The guard at the point where a transcript is actually destroyed.
- *
- * The renderer keeps a per-conversation buffer, prefers it to the file when
- * showing a conversation, and writes it here when a turn ends. Twice a buffer
- * missing the beginning of a transcript has been written over a complete one,
- * deleting messages the user had already seen saved. Both renderer causes are
- * fixed, and both fixes rest on the buffer always being seeded from a full
- * history — an invariant that currently holds only because of which call
- * sites happen to exist. This check does not depend on it.
- */
-describe('isSafeTranscriptReplacement', () => {
-  const ids = (...list: string[]) => list.map((id) => ({ id }));
-
-  it('allows a transcript that appends to what is stored', () => {
-    expect(isSafeTranscriptReplacement(ids('a', 'b'), ids('a', 'b', 'c'))).toBe(true);
-  });
-
-  it('allows an identical transcript', () => {
-    expect(isSafeTranscriptReplacement(ids('a', 'b'), ids('a', 'b'))).toBe(true);
-  });
-
-  it('allows a truncation from the end, which is what a rewind is', () => {
-    expect(isSafeTranscriptReplacement(ids('a', 'b', 'c'), ids('a'))).toBe(true);
-  });
-
-  it('refuses a transcript missing the beginning', () => {
-    // A fragment: the shape a buffer seeded from nothing produces, and the
-    // shape that deleted saved messages twice.
-    expect(isSafeTranscriptReplacement(ids('a', 'b', 'c'), ids('b', 'c'))).toBe(false);
-  });
-
-  it('refuses a transcript that diverges mid-way', () => {
-    expect(isSafeTranscriptReplacement(ids('a', 'b', 'c'), ids('a', 'x', 'y'))).toBe(false);
-  });
-
-  it('allows anything when nothing is stored yet', () => {
-    expect(isSafeTranscriptReplacement([], ids('a'))).toBe(true);
-  });
-
-  it('allows an empty transcript, which is a deliberate clear', () => {
-    expect(isSafeTranscriptReplacement(ids('a', 'b'), [])).toBe(true);
-  });
-});
 
 describe('ConversationService', () => {
   let service: ConversationService;

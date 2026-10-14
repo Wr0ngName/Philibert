@@ -412,85 +412,91 @@ export const useConversationsStore = defineStore('conversations', () => {
    * happens, and its promise does not resolve until the write has.
    */
   let saveWriting: Promise<boolean> | null = null;
-  let saveQueued: Promise<boolean> | null = null;
-
-  function saveCurrentConversation(): Promise<boolean> {
-    if (!saveWriting) {
-      saveWriting = performCurrentSave().finally(() => {
-        saveWriting = null;
-        // Still "saving" from the UI's point of view while a follow-up waits.
-        isSaving.value = saveQueued !== null;
-      });
-      return saveWriting;
-    }
-
-    if (!saveQueued) {
-      saveQueued = saveWriting
-        // A failed write must not wedge the queue: every later save would be
-        // dropped for the rest of the session.
-        .catch(() => false)
-        .then(() => {
-          saveQueued = null;
-          return saveCurrentConversation();
-        });
-    }
-    return saveQueued;
-  }
+  /** Snapshots waiting to be written, newest per conversation, in order. */
+  const saveQueue = new Map<string, Conversation>();
 
   /**
-   * One save of the current conversation.
+   * Save the conversation on screen — bound to THAT conversation, now.
    *
-   * Every check lives here rather than in the caller because a queued save
-   * runs later: whether there is anything to save, and what to save, are
-   * questions about the moment the write happens, not the moment it was asked
-   * for.
+   * The payload is built synchronously, before anything can be awaited. The
+   * first version of this queue deferred the question and resolved both the
+   * conversation id and its messages when the write finally ran, with a
+   * comment claiming that was the right moment to ask. It is the right moment
+   * to ask whether there is anything to save; it is the wrong moment to ask
+   * WHICH conversation, because by then the user may be in another one. A save
+   * requested for the conversation they were reading would then write the one
+   * they had moved to, and the turn it was asked to save was never written at
+   * all — which is a message-loss bug of exactly the kind this queue was added
+   * to fix.
+   *
+   * Keyed by conversation, so a newer snapshot replaces an older one for the
+   * same conversation (the newer is a superset) while a save for a different
+   * conversation still happens rather than being coalesced away.
    */
-  async function performCurrentSave(): Promise<boolean> {
-    if (!currentConversationId.value) {
+  function saveCurrentConversation(): Promise<boolean> {
+    const conversationId = currentConversationId.value;
+    if (!conversationId) {
       logger.debug('No current conversation ID, skipping save');
-      return false;
+      return Promise.resolve(false);
+    }
+    if (chatStore.messages.length === 0) {
+      logger.debug('No messages to save');
+      return Promise.resolve(false);
     }
 
     const settingsStore = useSettingsStore();
-
-    // Don't save if no messages
-    if (chatStore.messages.length === 0) {
-      logger.debug('No messages to save');
-      return false;
-    }
-
-    // Validate workingDirectory is set
     if (!settingsStore.workingDirectory) {
       logger.warn('Cannot save conversation: working directory not set');
       error.value = 'Cannot save conversation: working directory not set';
-      return false;
+      return Promise.resolve(false);
     }
 
-    // Concurrency is handled by the caller's queue, not by refusing to save.
-    isSaving.value = true;
-    error.value = null;
+    saveQueue.set(
+      conversationId,
+      buildConversationPayload(conversationId, chatStore.messages, settingsStore.workingDirectory),
+    );
+    return drainSaveQueue();
+  }
 
-    try {
-      const conversation = buildConversationPayload(
-        currentConversationId.value,
-        chatStore.messages,
-        settingsStore.workingDirectory
-      );
+  /**
+   * Write everything queued, one at a time.
+   *
+   * Serialised so two writes to the same file cannot interleave, and so a
+   * caller awaiting a save knows the bytes are down before it continues —
+   * `switchConversation` replaces the message list immediately afterwards.
+   */
+  function drainSaveQueue(): Promise<boolean> {
+    if (saveWriting) return saveWriting;
 
-      await executeSave(conversation, { useTimeout: true, logPrefix: '' });
-      logger.info('Conversation saved successfully', { id: conversation.id });
-      return true;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      logger.error('Failed to save conversation', {
-        error: errorMessage,
-        conversationId: currentConversationId.value,
-      });
-      error.value = `Failed to save conversation: ${errorMessage}`;
-      return false;
-    }
-    // isSaving is cleared by the queue, which knows whether a follow-up save
-    // is still waiting behind this one.
+    saveWriting = (async () => {
+      let ok = true;
+      isSaving.value = true;
+      error.value = null;
+      try {
+        while (saveQueue.size > 0) {
+          const [id, conversation] = saveQueue.entries().next().value as [string, Conversation];
+          saveQueue.delete(id);
+          try {
+            await executeSave(conversation, { useTimeout: true, logPrefix: '' });
+            logger.info('Conversation saved successfully', {
+              id: conversation.id,
+              messageCount: conversation.messages.length,
+            });
+          } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            logger.error('Failed to save conversation', { error: errorMessage, conversationId: id });
+            error.value = `Failed to save conversation: ${errorMessage}`;
+            ok = false;
+          }
+        }
+      } finally {
+        isSaving.value = false;
+        saveWriting = null;
+      }
+      return ok;
+    })();
+
+    return saveWriting;
   }
 
   /**
@@ -511,19 +517,16 @@ export const useConversationsStore = defineStore('conversations', () => {
       return false;
     }
 
-    try {
-      const conversation = buildConversationPayload(
-        conversationId,
-        messages,
-        settingsStore.workingDirectory
-      );
-
-      await executeSave(conversation, { useTimeout: false, logPrefix: ' (background)' });
-      return true;
-    } catch (err) {
-      logger.error('Failed to save conversation (background)', { conversationId, error: err });
-      return false;
-    }
+    // Through the same queue as the on-screen save. Both can target the same
+    // file — a turn ending just as the user arrives in that conversation —
+    // and two interleaved writes to one JSON file is not a race worth
+    // leaving open. Snapshotted here, for this conversation, for the same
+    // reason the other one is.
+    saveQueue.set(
+      conversationId,
+      buildConversationPayload(conversationId, messages, settingsStore.workingDirectory),
+    );
+    return drainSaveQueue();
   }
 
   /**

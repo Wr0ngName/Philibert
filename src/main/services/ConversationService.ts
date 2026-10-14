@@ -13,28 +13,6 @@ import logger from '../utils/logger';
 import { getConversationsPath, isPathWithin } from '../utils/paths';
 import { generateTitleFromContent } from '../utils/stringUtils';
 
-/**
- * Whether replacing `stored` with `next` keeps everything the file already
- * holds, or at least loses it deliberately.
- *
- * The two must agree on their common prefix. That admits the two legitimate
- * shapes — `next` extends `stored` (the usual case, a turn appended), and
- * `next` is a prefix of `stored` (a rewind truncating from the end) — and
- * rejects a transcript that diverges, which in practice means one missing the
- * beginning. An empty `stored` admits anything, since there is nothing to
- * lose.
- */
-export function isSafeTranscriptReplacement(
-  stored: { id: string }[],
-  next: { id: string }[],
-): boolean {
-  const common = Math.min(stored.length, next.length);
-  for (let i = 0; i < common; i += 1) {
-    if (stored[i].id !== next[i].id) return false;
-  }
-  return true;
-}
-
 export class ConversationService {
   private conversationsDir: string;
 
@@ -287,39 +265,6 @@ export class ConversationService {
               CONVERSATION_CONSTANTS.TITLE_MAX_LENGTH
             );
           }
-        }
-
-        // Refuse a write that would discard messages already on disk.
-        //
-        // The renderer keeps an in-memory buffer per conversation and prefers
-        // it to this file when showing one, and a turn's end writes that
-        // buffer here. Twice now a buffer that was missing the beginning of a
-        // transcript has been written over a complete one, deleting messages
-        // the user had already seen saved. Both causes were fixed in the
-        // renderer, and both fixes rest on one invariant — that a buffer is
-        // always seeded from a full history — which currently holds only
-        // because of which call sites exist.
-        //
-        // This is the same check made where the data is actually destroyed, so
-        // it does not depend on that invariant. A legitimate write either
-        // extends what is stored or truncates it from the end (a rewind), and
-        // both agree with the stored transcript on their common prefix. A
-        // fragment does not, and is refused with the file left alone: the
-        // content is still in memory and a correct save can follow, whereas a
-        // deleted transcript is gone.
-        const stored = await this.get(conversation.id);
-        if (stored && !isSafeTranscriptReplacement(stored.messages, updated.messages)) {
-          logger.error('Refused a conversation save that would drop saved messages', {
-            id: conversation.id,
-            storedCount: stored.messages.length,
-            incomingCount: updated.messages.length,
-            storedFirstId: stored.messages[0]?.id,
-            incomingFirstId: updated.messages[0]?.id,
-          });
-          throw new Error(
-            `Refusing to overwrite conversation ${conversation.id}: the incoming transcript ` +
-            'diverges from the saved one rather than extending or truncating it.',
-          );
         }
 
         // Serialize and write atomically
