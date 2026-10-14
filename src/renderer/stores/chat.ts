@@ -455,6 +455,44 @@ export const useChatStore = defineStore('chat', () => {
     return conversationStates.value.get(conversationId)?.bufferedMessages ?? [];
   }
 
+  /**
+   * Keep a conversation's history reachable after its save did not land.
+   *
+   * The on-screen array is the only copy of anything written since the last
+   * successful write, and `switchConversation` replaces it the moment the
+   * save it awaited comes back — without looking at whether that save
+   * succeeded. So a write that failed used to destroy exactly the messages it
+   * failed to persist: the next visit read the file, which still held the
+   * older history, and the newest turn was gone. That is the reported loss,
+   * and the refused writes were only one way to get there — a full disk, a
+   * locked file, a timeout or antivirus holding the handle on Windows all end
+   * the same way.
+   *
+   * Retaining through the buffer rather than a second store of unsaved
+   * messages means the rest of the machinery already handles it:
+   * `loadConversation` prefers the buffer to the saved file, so switching
+   * back shows the messages; `detachMessageBuffer` gives it its own copy when
+   * the conversation leaves the screen; and `cleanup` flushes every buffering
+   * conversation on close, so the write gets another chance.
+   *
+   * A turn already collecting in the background owns the buffer and its list
+   * is newer than any snapshot — it is left alone. Otherwise the live
+   * on-screen array wins over the snapshot that failed, since it can only be
+   * more complete.
+   */
+  function retainUnsavedMessages(conversationId: string, snapshot: ChatMessage[]): void {
+    const state = getConversationState(conversationId);
+    if (state.bufferingMessages) return;
+
+    const retained = conversationId === currentConversationId.value
+      ? messages.value
+      : snapshot;
+    if (retained.length === 0) return;
+
+    state.bufferedMessages = retained;
+    state.bufferingMessages = true;
+  }
+
   /** Buffered messages for a conversation, or null when it is not buffering. */
   function getBufferedMessages(conversationId: string): ChatMessage[] | null {
     const state = conversationStates.value.get(conversationId);
@@ -1815,6 +1853,7 @@ export const useChatStore = defineStore('chat', () => {
     beginMessageBuffer,
     getBufferedMessages,
     bufferingConversationIds,
+    retainUnsavedMessages,
     endMessageBuffer,
     reconcileBackgroundTasks,
     completeToolUseMessages,

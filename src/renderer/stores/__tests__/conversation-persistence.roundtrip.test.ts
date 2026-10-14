@@ -49,7 +49,20 @@ const { ipcListeners, exposed, files, disk } = vi.hoisted(() => ({
    * the next one to be requested while it is still going, and that is exactly
    * when messages were lost — so the disk has to be able to be slow.
    */
-  disk: { holdWrites: false, waiting: [] as (() => void)[] },
+  disk: {
+    holdWrites: false,
+    waiting: [] as (() => void)[],
+    /**
+     * Writes reject while this is set.
+     *
+     * Not a hypothetical: the reported loss came from the app's own refusal to
+     * write, and a locked file, a full disk, a timeout or antivirus holding
+     * the handle on Windows arrive at the renderer identically. What the
+     * renderer does with the messages it failed to persist is the thing worth
+     * testing, and it cannot be tested while every write succeeds.
+     */
+    failWrites: false,
+  },
 }));
 
 /** An in-memory filesystem, standing in for the only truly external thing. */
@@ -79,6 +92,11 @@ vi.mock('node:fs', () => {
       writeFile: async (p: string, content: string) => {
         if (disk.holdWrites) {
           await new Promise<void>((resolve) => disk.waiting.push(resolve));
+        }
+        if (disk.failWrites) {
+          const err = new Error(`EBUSY: resource busy or locked, open '${p}'`) as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
         }
         files.set(p, content);
       },
@@ -233,6 +251,7 @@ describe('a conversation through the real persistence stack', () => {
     files.clear();
     ipcListeners.clear();
     disk.holdWrites = false;
+    disk.failWrites = false;
     disk.waiting.length = 0;
 
     if (!exposed.api) throw new Error('preload did not expose its API');
@@ -733,5 +752,182 @@ describe('a conversation through the real persistence stack', () => {
 
     expect(diskContents(first)).toEqual(['in the first', 'answer one']);
     expect(diskContents(second)).toEqual(['in the second', 'answer two']);
+  });
+
+  /**
+   * What happens to a turn the disk would not take.
+   *
+   * This is the mechanism behind the reported loss, and it outlives the cause
+   * that exposed it. The app's own save guard refused three writes in a row,
+   * so the file kept an older history — but the renderer treats a failed save
+   * as nothing at all: `switchConversation` awaited it, ignored the result,
+   * and replaced the message list, which was the only copy of everything
+   * since the last successful write. Coming back read the file. Prompt and
+   * answer gone, older messages intact, exactly as reported.
+   *
+   * The guard is gone, and a locked file, a full disk, a save timeout or
+   * antivirus holding the handle produce the same failure. So the renderer
+   * has to stop discarding what it could not persist.
+   */
+  describe('a save the disk refused', () => {
+    /**
+     * Wait out the turn-end handler.
+     *
+     * It is an async IPC listener and nothing returns its promise, so the
+     * number of ticks it needs is not something a caller can know — and it
+     * now awaits the whole save queue before releasing the buffer. Asserting
+     * on the buffer too early reads it mid-flight, which looks exactly like
+     * the defect under test.
+     */
+    async function afterTurn(): Promise<void> {
+      await settle(40);
+    }
+
+    /** Long enough for the service's three attempts (100ms + 200ms backoff). */
+    async function afterRetries(): Promise<void> {
+      await new Promise<void>((resolve) => setTimeout(resolve, 450));
+      await afterTurn();
+    }
+
+    it('keeps the turn reachable when the user switches away and back', async () => {
+      const wrapper = mountApp();
+      const first = conversations.createNewConversation();
+      await settle();
+      await send(wrapper, 'older question');
+      streamAssistant(first, 'older answer');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, first);
+      await afterTurn();
+
+      const second = conversations.createNewConversation();
+      await settle();
+      await send(wrapper, 'in the other one');
+      streamAssistant(second, 'other answer');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, second);
+      await afterTurn();
+
+      await conversations.switchConversation(first);
+      await settle();
+      expect(diskContents(first)).toEqual(['older question', 'older answer']);
+
+      // From here the disk will not take a write.
+      disk.failWrites = true;
+      await send(wrapper, 'new question');
+      streamAssistant(first, 'new answer');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, first);
+      await afterRetries();
+
+      // The file is unchanged — that part is the disk's doing, not ours.
+      expect(diskContents(first)).toEqual(['older question', 'older answer']);
+
+      // The user switches away, then comes back. This is where the messages
+      // used to disappear: the list was replaced, and the file is older.
+      await conversations.switchConversation(second);
+      await afterRetries();
+      await conversations.switchConversation(first);
+      await settle();
+
+      expect(chat.messages.map((m) => m.content)).toEqual([
+        'older question',
+        'older answer',
+        'new question',
+        'new answer',
+      ]);
+    });
+
+    it('writes the kept turn once the disk takes writes again', async () => {
+      // Retained is not persisted. The messages have to reach disk on the
+      // next opportunity, or they are still lost — just later.
+      const wrapper = mountApp();
+      const id = conversations.createNewConversation();
+      await settle();
+      await send(wrapper, 'older question');
+      streamAssistant(id, 'older answer');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
+      await afterTurn();
+
+      disk.failWrites = true;
+      await send(wrapper, 'new question');
+      streamAssistant(id, 'new answer');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
+      await afterRetries();
+      expect(diskContents(id)).toEqual(['older question', 'older answer']);
+
+      // Off screen, so the on-screen list is no longer a copy of it: what is
+      // retained is all there is. Switching is also another failed save.
+      const elsewhere = conversations.createNewConversation();
+      await settle();
+      await send(wrapper, 'elsewhere');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, elsewhere);
+      await afterRetries();
+
+      disk.failWrites = false;
+      // Closing the app flushes what is held in memory, which now includes
+      // the turn that failed.
+      await conversations.cleanup();
+      await settle();
+
+      expect(diskContents(id)).toEqual([
+        'older question',
+        'older answer',
+        'new question',
+        'new answer',
+      ]);
+    });
+
+    it('stops keeping the turn once it is on disk', async () => {
+      // Retention makes the in-memory copy authoritative over the file, which
+      // is only safe for as long as the file is behind. Holding it after a
+      // successful write would be a stale buffer shadowing good data — the
+      // defect `repointBufferToScreen` exists for, arrived at from the other
+      // direction.
+      const wrapper = mountApp();
+      const first = conversations.createNewConversation();
+      await settle();
+      await send(wrapper, 'older question');
+      streamAssistant(first, 'older answer');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, first);
+      await afterTurn();
+      expect(chat.getBufferedMessages(first)).toBeNull();
+
+      disk.failWrites = true;
+      await send(wrapper, 'kept question');
+      streamAssistant(first, 'kept answer');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, first);
+      await afterRetries();
+      expect(chat.getBufferedMessages(first)).toHaveLength(4);
+
+      disk.failWrites = false;
+      await send(wrapper, 'last question');
+      streamAssistant(first, 'last answer');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, first);
+      await afterTurn();
+
+      expect(chat.getBufferedMessages(first)).toBeNull();
+      expect(diskContents(first)).toEqual([
+        'older question',
+        'older answer',
+        'kept question',
+        'kept answer',
+        'last question',
+        'last answer',
+      ]);
+
+      const second = conversations.createNewConversation();
+      await settle();
+      await send(wrapper, 'elsewhere');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, second);
+      await afterTurn();
+      await conversations.switchConversation(first);
+      await settle();
+
+      expect(chat.messages.map((m) => m.content)).toEqual([
+        'older question',
+        'older answer',
+        'kept question',
+        'kept answer',
+        'last question',
+        'last answer',
+      ]);
+    });
   });
 });

@@ -573,16 +573,20 @@ export function useClaudeChat() {
       // If user switched away, we need to reconstruct and save
       if (conversationId === conversationsStore.currentConversationId) {
         // Current conversation - save normally
-        await conversationsStore.saveCurrentConversation();
+        const saved = await conversationsStore.saveCurrentConversation();
         // Release the buffer here too, or a later switch away would read a
-        // stale snapshot from this finished turn.
-        chatStore.endMessageBuffer(conversationId);
+        // stale snapshot from this finished turn — but ONLY once the turn is
+        // actually on disk. A failed save retains the history in that same
+        // buffer (see retainUnsavedMessages), and releasing it here would
+        // throw away the only remaining copy a moment after keeping it.
+        if (saved) chatStore.endMessageBuffer(conversationId);
       } else {
         // User switched away - need to save this conversation in background
         logger.info('Saving completed conversation in background', { conversationId });
 
         const messages = chatStore.getBufferedMessages(conversationId);
 
+        let onDisk = true;
         if (messages && messages.length > 0) {
           // Clear any lingering streaming flag. The content itself is already
           // on each message — appendChunk writes into this buffer — so unlike
@@ -592,10 +596,14 @@ export function useClaudeChat() {
             lastMsg.isStreaming = false;
           }
 
-          await conversationsStore.saveConversation(conversationId, messages);
+          onDisk = await conversationsStore.saveConversation(conversationId, messages);
         }
 
-        chatStore.endMessageBuffer(conversationId);
+        // Same rule as the on-screen branch: a buffer that failed to reach
+        // disk is the last copy of this turn, so it stays. Queued prompts are
+        // flushed either way below — a failed save is not a reason to leave
+        // the user's next message stuck in the queue.
+        if (onDisk) chatStore.endMessageBuffer(conversationId);
       }
 
       // Anything the user wrote during the turn goes now — after the save, so

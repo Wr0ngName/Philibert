@@ -259,11 +259,27 @@ export const useConversationsStore = defineStore('conversations', () => {
       to: id,
     });
 
-    // Save current conversation before switching (if it has messages)
-    if (currentConversationId.value && chatStore.messages.length > 0) {
-      await saveCurrentConversation().catch((err) => {
+    // Save current conversation before switching (if it has messages).
+    //
+    // What follows replaces the message list, so this save is the last chance
+    // for anything since the previous one. It is allowed to fail — the disk
+    // is not ours to command — but it is not allowed to fail silently: a save
+    // that did not land leaves its history retained in the conversation's
+    // buffer (see retainUnsavedMessages), which is what the next visit reads
+    // in preference to the older file.
+    const leaving = currentConversationId.value;
+    if (leaving && chatStore.messages.length > 0) {
+      const saved = await saveCurrentConversation().catch((err) => {
         logger.error('Failed to save conversation before switch', err);
+        return false;
       });
+      if (!saved) {
+        logger.error('Switching away from a conversation that was not saved', {
+          id: leaving,
+          messageCount: chatStore.messages.length,
+          retained: chatStore.getBufferedMessages(leaving)?.length ?? 0,
+        });
+      }
     }
 
     // Load the target conversation
@@ -448,6 +464,9 @@ export const useConversationsStore = defineStore('conversations', () => {
     if (!settingsStore.workingDirectory) {
       logger.warn('Cannot save conversation: working directory not set');
       error.value = 'Cannot save conversation: working directory not set';
+      // Nothing was written, so the same rule applies as to a failed write:
+      // do not let the switch that is about to follow drop the only copy.
+      chatStore.retainUnsavedMessages(conversationId, chatStore.messages);
       return Promise.resolve(false);
     }
 
@@ -486,6 +505,10 @@ export const useConversationsStore = defineStore('conversations', () => {
             const errorMessage = err instanceof Error ? err.message : String(err);
             logger.error('Failed to save conversation', { error: errorMessage, conversationId: id });
             error.value = `Failed to save conversation: ${errorMessage}`;
+            // These messages are now in memory only, and the caller that
+            // awaited this save is very often about to replace the list
+            // holding them. Keep them reachable; see retainUnsavedMessages.
+            chatStore.retainUnsavedMessages(id, conversation.messages);
             ok = false;
           }
         }
@@ -514,6 +537,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     // Validate workingDirectory is set
     if (!settingsStore.workingDirectory) {
       logger.warn('Cannot save conversation: working directory not set');
+      chatStore.retainUnsavedMessages(conversationId, messages);
       return false;
     }
 
