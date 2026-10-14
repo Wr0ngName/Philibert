@@ -149,3 +149,68 @@ describe('reconcileBackgroundTasks', () => {
     expect(taskMap(store).get('task-3')?.status).toBe('stopped');
   });
 });
+
+/**
+ * `completedAt` is what a duration is measured to, so a task that is running
+ * must not have one. Reported as the runtime timer sometimes not
+ * incrementing: a task that reported a terminal status and then went on
+ * reporting progress kept the stamp from that moment, and sat in the panel
+ * listed as running with its duration frozen there.
+ */
+describe('completedAt tracks the status in both directions', () => {
+  it('is not set while a task is running', () => {
+    const store = useChatStore();
+    seedRunning(store, 'task-1', 'one');
+
+    expect(taskMap(store).get('task-1')?.completedAt).toBeUndefined();
+  });
+
+  it('is set when a task finishes', () => {
+    const store = useChatStore();
+    seedRunning(store, 'task-1', 'one');
+
+    store.handleTaskNotification(CONV, { taskId: 'task-1', status: 'completed', summary: 'done' });
+
+    expect(taskMap(store).get('task-1')?.completedAt).toBeTypeOf('number');
+  });
+
+  it('is cleared again when the task turns out to still be running', () => {
+    // A misattributed completion — the single-running fallback can still
+    // produce one — followed by the task's own progress.
+    const store = useChatStore();
+    seedRunning(store, 'task-1', 'one');
+    store.handleTaskNotification(CONV, { taskId: 'task-1', status: 'completed', summary: 'done' });
+    expect(taskMap(store).get('task-1')?.completedAt).toBeTypeOf('number');
+
+    store.handleTaskNotification(CONV, { taskId: 'task-1', status: 'running', description: 'one' });
+
+    const task = taskMap(store).get('task-1');
+    expect(task?.status).toBe('running');
+    expect(task?.completedAt).toBeUndefined();
+  });
+
+  it('keeps the first completion stamp when a terminal status repeats', () => {
+    const store = useChatStore();
+    seedRunning(store, 'task-1', 'one');
+    store.handleTaskNotification(CONV, { taskId: 'task-1', status: 'completed', summary: 'done' });
+    const first = taskMap(store).get('task-1')?.completedAt;
+
+    store.handleTaskNotification(CONV, { taskId: 'task-1', status: 'completed', summary: 'done again' });
+
+    // Re-stamping is acceptable; losing it is not. The duration must still be
+    // measured to a completion, not to the live clock.
+    expect(taskMap(store).get('task-1')?.completedAt).toBeTypeOf('number');
+    expect(taskMap(store).get('task-1')?.completedAt).toBeGreaterThanOrEqual(first as number);
+  });
+
+  it('does not carry a completion stamp across a re-key', () => {
+    // Adoption re-keys a task from its tool_use id to the SDK's task id.
+    const store = useChatStore();
+    seedRunning(store, 'toolu_abc', 'one');
+    store.handleTaskNotification(CONV, { taskId: 'toolu_abc', status: 'completed', summary: 'done' });
+
+    store.handleTaskNotification(CONV, { taskId: 'task-real', status: 'running', description: 'one' });
+
+    expect(taskMap(store).get('task-real')?.completedAt).toBeUndefined();
+  });
+});

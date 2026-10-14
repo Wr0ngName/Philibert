@@ -1291,8 +1291,20 @@ export const useChatStore = defineStore('chat', () => {
         ...(notification.summary && { summary: notification.summary }),
         ...(notification.error && { error: notification.error }),
         ...(notification.outputFile && { outputFile: notification.outputFile }),
-        ...(notification.status !== 'running' && { completedAt: Date.now() }),
       };
+
+      // `completedAt` is what the duration is measured to, so it has to track
+      // the status in BOTH directions. Only ever setting it meant a task that
+      // reported a terminal status and then went on reporting progress — a
+      // misattributed completion, which the fallback above can still produce
+      // when it is the only running task — kept the stamp from that moment.
+      // It then sat in the panel listed as running with a duration frozen at
+      // the instant of the wrong notification.
+      if (notification.status === 'running') {
+        delete updatedTask.completedAt;
+      } else {
+        updatedTask.completedAt = Date.now();
+      }
 
       // Remove old key and set with the notification's task_id (canonical)
       if (existingTaskId !== notification.taskId) {

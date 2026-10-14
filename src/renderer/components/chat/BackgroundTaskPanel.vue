@@ -5,10 +5,12 @@
  * Clicking a task row opens the detail modal.
  */
 
-import { onBeforeUnmount, ref, watch } from 'vue';
+import { ref } from 'vue';
 
 import type { BackgroundTask } from '@shared/types';
 
+import { useNowTicker } from '../../composables/useNowTicker';
+import { formatTaskDuration } from '../../utils/task-duration';
 import Icon from '../shared/Icon.vue';
 import Spinner from '../shared/Spinner.vue';
 
@@ -23,37 +25,8 @@ const emit = defineEmits<{
   (e: 'open-detail', taskId: string): void;
 }>();
 
-// Reactive clock that ticks every second for live duration display
-const now = ref(Date.now());
-let tickTimer: ReturnType<typeof setInterval> | null = null;
-
-function startTick(): void {
-  if (!tickTimer) {
-    tickTimer = setInterval(() => { now.value = Date.now(); }, 1000);
-  }
-}
-
-function stopTick(): void {
-  if (tickTimer) {
-    clearInterval(tickTimer);
-    tickTimer = null;
-  }
-}
-
-// Only tick while there are tasks to display
-watch(
-  () => props.tasks.length,
-  (count) => {
-    if (count > 0) {
-      startTick();
-    } else {
-      stopTick();
-    }
-  },
-  { immediate: true },
-);
-
-onBeforeUnmount(() => stopTick());
+// A clock only while there are tasks to show a duration for.
+const now = useNowTicker(() => props.tasks.length > 0);
 
 const collapsed = ref(false);
 
@@ -62,16 +35,7 @@ function toggleCollapsed(): void {
 }
 
 function formatDuration(task: BackgroundTask): string {
-  const endTime = task.completedAt || now.value;
-  const durationMs = endTime - task.startedAt;
-  const seconds = Math.floor(durationMs / 1000);
-
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${minutes}m ${remainingSeconds}s`;
+  return formatTaskDuration(task, now.value);
 }
 </script>
 

@@ -8,8 +8,10 @@ import { ref, watch, computed } from 'vue';
 
 import type { BackgroundTask, ToolUseInfo } from '@shared/types';
 
+import { useNowTicker } from '../../composables/useNowTicker';
 import type { ActivityRow } from '../../utils/message-tree';
 import { formatModelId } from '../../utils/model';
+import { formatTaskDuration } from '../../utils/task-duration';
 import { parseTaskOutput } from '../../utils/task-output';
 import { formatToolInput, type InputParam } from '../../utils/tool-input';
 import Button from '../shared/Button.vue';
@@ -103,18 +105,21 @@ watch(
   { immediate: true },
 );
 
+/**
+ * Ticks only while this modal is open on a task that is still running. A
+ * finished task's duration comes from its own `completedAt` and does not
+ * move.
+ *
+ * This used to read `Date.now()` straight from the computed below, which is
+ * not a reactive dependency — so the computed cached its first result and the
+ * runtime shown here never changed, however long the modal stayed open on a
+ * live task.
+ */
+const now = useNowTicker(() => props.open && props.task?.status === 'running');
+
 const duration = computed(() => {
   if (!props.task) return '';
-  const endTime = props.task.completedAt || Date.now();
-  const ms = endTime - props.task.startedAt;
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return `${hours}h ${remainingMinutes}m`;
+  return formatTaskDuration(props.task, now.value);
 });
 
 /** The model this agent ran on, when the SDK attributed one to it. */
