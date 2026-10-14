@@ -13,8 +13,77 @@ import logger from '../utils/logger';
 import { getConversationsPath, isPathWithin } from '../utils/paths';
 import { generateTitleFromContent } from '../utils/stringUtils';
 
+/** How an incoming write differs from the one before it, when it does. */
+export interface WriteAnomaly {
+  reason: string;
+  /** Where the two transcripts stop agreeing, when that is what happened. */
+  divergedAt?: number;
+  previousCount: number;
+  incomingCount: number;
+}
+
+/**
+ * How a write differs from the last one, when the difference looks like lost
+ * history. Null when it looks like a conversation growing, which is almost
+ * always.
+ *
+ * It only ever reports. Its predecessor refused the write instead, and the
+ * refusal is what lost the messages: the save threw, the retry loop gave up,
+ * the file kept its previous content, and everything since the last
+ * successful save existed only in the renderer until the conversation was
+ * switched away from. The in-memory list is what the user is looking at —
+ * declining to write it cannot preserve anything, it can only lose it.
+ *
+ * It also stops short of calling a divergence corruption, because the app has
+ * two paths that legitimately remove a message from the middle of a history:
+ * `splitStreamingForTool` drops an empty streaming placeholder, and
+ * `removeBackgroundTaskMessageByToolUseId` drops a task message the tool_use
+ * indicator has taken over. The refusing version treated "agrees on the
+ * common prefix" as the definition of a safe write and so had no room for
+ * either of them.
+ *
+ * Compared against the ids this process last wrote rather than against the
+ * file: no per-save read, which on a twelve-thousand-message conversation was
+ * itself not free. The cost is that a fresh process has nothing to compare
+ * against until it has written once — right for something that only warns.
+ */
+export function describeSuspiciousWrite(
+  previous: string[] | undefined,
+  next: string[],
+): WriteAnomaly | null {
+  if (!previous || previous.length === 0) return null;
+
+  const common = Math.min(previous.length, next.length);
+  for (let i = 0; i < common; i += 1) {
+    if (previous[i] !== next[i]) {
+      return {
+        reason: `the history diverges at message ${i} (was ${previous[i]}, now ${next[i]})`,
+        divergedAt: i,
+        previousCount: previous.length,
+        incomingCount: next.length,
+      };
+    }
+  }
+
+  if (next.length < previous.length) {
+    return {
+      reason: `the history shrank from ${previous.length} to ${next.length} messages`,
+      previousCount: previous.length,
+      incomingCount: next.length,
+    };
+  }
+
+  return null;
+}
+
 export class ConversationService {
   private conversationsDir: string;
+  /**
+   * Message ids of the last successful write per conversation, for the check
+   * above. A long conversation costs a few hundred kilobytes here, against
+   * reading and parsing megabytes of JSON on every single save.
+   */
+  private lastWrittenIds: Map<string, string[]> = new Map();
 
   constructor() {
     this.conversationsDir = getConversationsPath();
@@ -267,9 +336,22 @@ export class ConversationService {
           }
         }
 
+        // Say something when a write looks like it loses history, and write it
+        // anyway. See describeSuspiciousWrite for why it cannot be a refusal:
+        // refusing is what lost messages.
+        const ids = updated.messages.map((m) => m.id);
+        const anomaly = describeSuspiciousWrite(this.lastWrittenIds.get(conversation.id), ids);
+        if (anomaly) {
+          logger.warn('Conversation write looks like it loses history — writing it anyway', {
+            id: conversation.id,
+            ...anomaly,
+          });
+        }
+
         // Serialize and write atomically
         const content = JSON.stringify(updated, null, 2);
         await fs.promises.writeFile(filePath, content, 'utf-8');
+        this.lastWrittenIds.set(conversation.id, ids);
 
         logger.debug('Conversation saved', { id: conversation.id, attempt });
         return; // Success, exit retry loop

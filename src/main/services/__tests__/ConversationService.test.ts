@@ -10,7 +10,7 @@
  * - Error handling and edge cases
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 
 // Use vi.hoisted to ensure mocks are available before vi.mock is called
 const { mockFs, mockFileSystem } = vi.hoisted(() => {
@@ -98,7 +98,10 @@ vi.mock('../../utils/paths', async (importOriginal) => {
 
 // Import after mocks
 import { Conversation } from '../../../shared/types';
+import realLogger from '../../utils/logger';
 import { ConversationService } from '../ConversationService';
+
+const logger = realLogger as unknown as Record<'debug' | 'info' | 'warn' | 'error', Mock>;
 
 
 describe('ConversationService', () => {
@@ -134,6 +137,10 @@ describe('ConversationService', () => {
 
     // Re-establish mock implementations after clearAllMocks
     // (clearAllMocks can affect mockImplementation in some cases)
+    // `access` included: a test that makes the directory unwritable otherwise
+    // leaves it unwritable for every test declared after it.
+    mockFs.promises.access.mockResolvedValue(undefined);
+
     mockFs.promises.readdir.mockImplementation(async (dir: string) => {
       const files: string[] = [];
       for (const key of mockFileSystem.keys()) {
@@ -829,6 +836,164 @@ describe('ConversationService', () => {
         (args: unknown[]) => String(args[0]).includes('conv_noprojects')
       );
       expect(convWriteCalls).toHaveLength(0);
+    });
+  });
+
+  // ===========================================================================
+  // Writes that look like they lose history
+  // ===========================================================================
+  describe('a write that looks like it loses history', () => {
+    /**
+     * This replaced a guard that REFUSED such a write, and the refusal is what
+     * lost the messages: the save threw, the retries gave up, the file kept
+     * its previous content, and everything since the last successful save
+     * existed only in the renderer's memory until the conversation was
+     * switched away from.
+     *
+     * So the contract is: say so, write it anyway. Every test here asserts the
+     * write landed as well as whether anything was said about it.
+     */
+
+    const withMessages = (id: string, ids: string[]): Conversation =>
+      createConversation({
+        id,
+        title: 'Kept',
+        messages: ids.map((messageId, index) => ({
+          id: messageId,
+          role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+          content: `content ${messageId}`,
+          timestamp: 1_700_000_000_000 + index,
+        })),
+      });
+
+    const storedIds = (id: string): string[] => {
+      const raw = mockFileSystem.get(`/app/conversations/${id}.json`);
+      if (!raw) return [];
+      return (JSON.parse(raw) as Conversation).messages.map((m) => m.id);
+    };
+
+    const warnings = (): unknown[][] =>
+      logger.warn.mock.calls.filter((args: unknown[]) =>
+        String(args[0]).includes('loses history'),
+      );
+
+    it('says nothing about a conversation simply growing', async () => {
+      // The shape the previous guard flagged: same first message, more of
+      // them. That is what every conversation in the app looks like, which is
+      // why the guard fired on healthy saves.
+      await service.save(withMessages('conv_growing', ['m1', 'm2']));
+      await service.save(withMessages('conv_growing', ['m1', 'm2', 'm3']));
+      await service.save(withMessages('conv_growing', ['m1', 'm2', 'm3', 'm4']));
+
+      expect(warnings()).toHaveLength(0);
+      expect(storedIds('conv_growing')).toEqual(['m1', 'm2', 'm3', 'm4']);
+    });
+
+    it('says nothing about the first write of a conversation', async () => {
+      // Nothing to compare against — including after a restart, since what
+      // was last written is only remembered in memory.
+      await service.save(withMessages('conv_first', ['m1', 'm2', 'm3']));
+
+      expect(warnings()).toHaveLength(0);
+      expect(storedIds('conv_first')).toEqual(['m1', 'm2', 'm3']);
+    });
+
+    it('reports a history that now starts with a different message', async () => {
+      await service.save(withMessages('conv_head', ['m1', 'm2', 'm3']));
+      await service.save(withMessages('conv_head', ['m9', 'm10']));
+
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0][1]).toMatchObject({
+        id: 'conv_head',
+        reason: 'the history diverges at message 0 (was m1, now m9)',
+        divergedAt: 0,
+        previousCount: 3,
+        incomingCount: 2,
+      });
+    });
+
+    it('reports where a longer history stops agreeing, and says how long', async () => {
+      // The reported case: 12,180 messages written over 11,745 with the same
+      // opening. Longer, so nothing about the length says anything is wrong —
+      // the index is the only thing that locates it, and the refusing version
+      // never logged one.
+      await service.save(withMessages('conv_middle', ['m1', 'm2', 'm3', 'm4']));
+      await service.save(withMessages('conv_middle', ['m1', 'm2', 'm9', 'm4', 'm5', 'm6']));
+
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0][1]).toMatchObject({
+        id: 'conv_middle',
+        divergedAt: 2,
+        previousCount: 4,
+        incomingCount: 6,
+      });
+    });
+
+    it('reports a history that shrank', async () => {
+      await service.save(withMessages('conv_shrank', ['m1', 'm2', 'm3']));
+      await service.save(withMessages('conv_shrank', ['m1', 'm2']));
+
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0][1]).toMatchObject({
+        id: 'conv_shrank',
+        reason: 'the history shrank from 3 to 2 messages',
+      });
+    });
+
+    it('writes the suspicious history rather than refusing it', async () => {
+      // The whole point. A refusal here is the data loss.
+      await service.save(withMessages('conv_written', ['m1', 'm2', 'm3']));
+      await expect(
+        service.save(withMessages('conv_written', ['m9', 'm10'])),
+      ).resolves.toBeUndefined();
+
+      expect(storedIds('conv_written')).toEqual(['m9', 'm10']);
+    });
+
+    it('does not report one conversation because of another', async () => {
+      await service.save(withMessages('conv_a', ['a1', 'a2', 'a3']));
+      await service.save(withMessages('conv_b', ['b1']));
+      await service.save(withMessages('conv_b', ['b1', 'b2']));
+
+      expect(warnings()).toHaveLength(0);
+      expect(storedIds('conv_a')).toEqual(['a1', 'a2', 'a3']);
+      expect(storedIds('conv_b')).toEqual(['b1', 'b2']);
+    });
+
+    it('compares against the last write that actually landed', async () => {
+      await service.save(withMessages('conv_failed', ['m1', 'm2']));
+
+      mockFs.promises.writeFile.mockRejectedValue(new Error('disk full'));
+      await expect(
+        service.save(withMessages('conv_failed', ['m1', 'm2', 'm3', 'm4'])),
+      ).rejects.toThrow('disk full');
+
+      mockFs.promises.writeFile.mockImplementation(
+        async (path: string, content: string) => {
+          mockFileSystem.set(path, content);
+        },
+      );
+      // Three messages is growth on what is on disk, and would look like a
+      // loss only if the failed four-message attempt had been recorded.
+      await service.save(withMessages('conv_failed', ['m1', 'm2', 'm3']));
+
+      expect(warnings()).toHaveLength(0);
+      expect(storedIds('conv_failed')).toEqual(['m1', 'm2', 'm3']);
+    });
+
+    it('says nothing when a conversation is emptied and refilled', async () => {
+      // `/clear` writes an empty transcript; the next turn writes a fresh
+      // head. Neither is a loss worth reporting — the empty write is the
+      // instruction, and it leaves nothing to be the previous head.
+      await service.save(withMessages('conv_cleared', ['m1', 'm2', 'm3']));
+      await service.save(withMessages('conv_cleared', []));
+      await service.save(withMessages('conv_cleared', ['n1']));
+
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0][1]).toMatchObject({
+        reason: 'the history shrank from 3 to 0 messages',
+      });
+      expect(storedIds('conv_cleared')).toEqual(['n1']);
     });
   });
 });
