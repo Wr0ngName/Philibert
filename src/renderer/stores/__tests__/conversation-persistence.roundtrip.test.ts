@@ -286,6 +286,132 @@ describe('a conversation through the real persistence stack', () => {
     expect(diskContents(id)).toEqual(['first question', 'the answer']);
   });
 
+  it('keeps both turns when two conversations run at once and overlap', async () => {
+    // "Two discussions going on in parallel": a turn can END while the user
+    // is in the OTHER conversation, which takes the background save path
+    // rather than the current-conversation one — a path the sequential tests
+    // never exercise.
+    const wrapper = mountApp();
+
+    const alpha = conversations.createNewConversation();
+    await send(wrapper, 'alpha question');
+    await settle();
+
+    // Switch away while alpha's turn is still running.
+    const bravo = conversations.createNewConversation();
+    await send(wrapper, 'bravo question');
+    await settle();
+
+    // Both answer, alpha's arriving while the user is looking at bravo.
+    streamAssistant(alpha, 'alpha answer');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, alpha);
+    await settle();
+    streamAssistant(bravo, 'bravo answer');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, bravo);
+    await settle();
+
+    // Back to alpha.
+    await conversations.switchConversation(alpha);
+    await settle();
+
+    expect(chat.messages.map((m) => m.content)).toEqual([
+      'alpha question',
+      'alpha answer',
+    ]);
+    expect(diskContents(alpha)).toEqual(['alpha question', 'alpha answer']);
+    expect(diskContents(bravo)).toEqual(['bravo question', 'bravo answer']);
+  });
+
+  it('keeps a second turn taken in a conversation returned to', async () => {
+    // The sequence continued: come back, talk again, leave, return. A stale
+    // buffer or a refused save would show up here rather than on the first
+    // round trip.
+    const wrapper = mountApp();
+
+    const alpha = conversations.createNewConversation();
+    await send(wrapper, 'first question');
+    streamAssistant(alpha, 'first answer');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, alpha);
+    await settle();
+
+    const bravo = conversations.createNewConversation();
+    await send(wrapper, 'elsewhere');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, bravo);
+    await settle();
+
+    await conversations.switchConversation(alpha);
+    await settle();
+
+    // A second turn, after the round trip.
+    await send(wrapper, 'second question');
+    streamAssistant(alpha, 'second answer');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, alpha);
+    await settle();
+
+    await conversations.switchConversation(bravo);
+    await settle();
+    await conversations.switchConversation(alpha);
+    await settle();
+
+    expect(chat.messages.map((m) => m.content)).toEqual([
+      'first question',
+      'first answer',
+      'second question',
+      'second answer',
+    ]);
+  });
+
+  it('keeps a COMPLETED turn when the user switches away and comes back', async () => {
+    // Reported: two conversations in parallel, talk in one, the model answers,
+    // switch away, come back — and both the prompt and the answer are gone
+    // while older messages survive.
+    //
+    // Distinct from the mid-turn case below: here the turn ENDS while the
+    // conversation is on screen, so its buffer is released and the switch
+    // back must come from the saved file.
+    const wrapper = mountApp();
+
+    const second = conversations.createNewConversation();
+    await send(wrapper, 'over here');
+    streamAssistant(second, 'fine');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, second);
+    await settle();
+
+    const first = conversations.createNewConversation();
+    await send(wrapper, 'an earlier question');
+    streamAssistant(first, 'an earlier answer');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, first);
+    await settle();
+
+    // The turn the report is about: asked and answered, with the conversation
+    // in view the whole time.
+    await send(wrapper, 'the question that disappears');
+    streamAssistant(first, 'the answer that disappears');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, first);
+    await settle();
+
+    expect(chat.messages).toHaveLength(4);
+
+    // Away, then back.
+    await conversations.switchConversation(second);
+    await settle();
+    await conversations.switchConversation(first);
+    await settle();
+
+    expect(chat.messages.map((m) => m.content)).toEqual([
+      'an earlier question',
+      'an earlier answer',
+      'the question that disappears',
+      'the answer that disappears',
+    ]);
+    expect(diskContents(first)).toEqual([
+      'an earlier question',
+      'an earlier answer',
+      'the question that disappears',
+      'the answer that disappears',
+    ]);
+  });
+
   it('keeps the whole turn when the user switches away mid-turn and back', async () => {
     // The defect this is really about: the background buffer was seeded as a
     // copy at turn start, so everything produced while the conversation was on
