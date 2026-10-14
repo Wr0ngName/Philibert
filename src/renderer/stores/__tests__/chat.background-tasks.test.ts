@@ -214,3 +214,172 @@ describe('completedAt tracks the status in both directions', () => {
     expect(taskMap(store).get('task-real')?.completedAt).toBeUndefined();
   });
 });
+
+/**
+ * Restoring the model's task list.
+ *
+ * Covered end to end through a real restart in the persistence round-trip
+ * suite; these pin the store's own rules, which that test cannot show: that a
+ * restore is exact, and that it never overwrites a list that is already live.
+ */
+describe('restoreTaskList', () => {
+  const items = [
+    {
+      id: 'task_a',
+      subject: 'Write the parser',
+      description: 'tokenise, then build the tree',
+      activeForm: 'Writing the parser',
+      status: 'completed' as const,
+      updatedAt: 1_700_000_000_000,
+    },
+    { id: 'task_b', subject: 'Cover it with tests', status: 'in_progress' as const, updatedAt: 1_700_000_000_001 },
+    { id: 'task_c', subject: 'Wire up the CLI', status: 'pending' as const, updatedAt: 1_700_000_000_002 },
+  ];
+
+  it('restores every field verbatim, in order', () => {
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+
+    expect(store.restoreTaskList(CONV, items)).toBe(true);
+
+    expect(store.taskListItems).toEqual(items);
+  });
+
+  it('keeps deleted items, which are how a later update resolves', () => {
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+    const withDeleted = [
+      ...items,
+      { id: 'task_d', subject: 'Abandoned', status: 'deleted' as const, updatedAt: 1_700_000_000_003 },
+    ];
+
+    store.restoreTaskList(CONV, withDeleted);
+
+    // Hidden from the panel…
+    expect(store.taskListItems.map((t) => t.id)).toEqual(['task_a', 'task_b', 'task_c']);
+    // …but still there to be updated.
+    expect(store.getTaskListItems(CONV).map((t) => t.id)).toContain('task_d');
+  });
+
+  it('does not overwrite a list that is already live', () => {
+    // A turn collecting in the background is ahead of anything on disk.
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+    store.restoreTaskList(CONV, [items[0]]);
+
+    expect(store.restoreTaskList(CONV, items)).toBe(true);
+
+    expect(store.getTaskListItems(CONV)).toEqual([items[0]]);
+  });
+
+  it('reports that there was nothing saved to restore', () => {
+    // What makes the caller fall back to replaying the transcript.
+    const store = useChatStore();
+    expect(store.restoreTaskList(CONV, undefined)).toBe(false);
+    expect(store.restoreTaskList(CONV, [])).toBe(false);
+  });
+
+  it('ignores an entry with no id rather than keying it on undefined', () => {
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+
+    store.restoreTaskList(CONV, [
+      items[0],
+      { subject: 'no id', status: 'pending', updatedAt: 1 } as never,
+    ]);
+
+    expect(store.getTaskListItems(CONV)).toEqual([items[0]]);
+  });
+
+  it('keeps one conversation out of another', () => {
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+    store.restoreTaskList(CONV, items);
+    store.restoreTaskList('conv-2', [items[2]]);
+
+    expect(store.getTaskListItems(CONV)).toHaveLength(3);
+    expect(store.getTaskListItems('conv-2')).toEqual([items[2]]);
+  });
+});
+
+describe('rebuildTaskList', () => {
+  /** A persisted tool-use message for a Task* call. */
+  function taskMessage(
+    blockId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    taskListId?: string,
+  ) {
+    return {
+      id: `msg-${blockId}`,
+      role: 'assistant' as const,
+      content: '',
+      timestamp: 1_700_000_000_000,
+      toolUse: {
+        actionId: blockId,
+        toolName,
+        description: toolName,
+        status: 'executed' as const,
+        toolUseBlockId: blockId,
+        input,
+        ...(taskListId ? { taskListId } : {}),
+      },
+    };
+  }
+
+  it('replays creates and the updates that match them', () => {
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+
+    store.rebuildTaskList(CONV, [
+      taskMessage('toolu_1', 'TaskCreate', { subject: 'one' }, 'task_1'),
+      taskMessage('toolu_2', 'TaskCreate', { subject: 'two' }, 'task_2'),
+      taskMessage('toolu_3', 'TaskUpdate', { taskId: 'task_1', status: 'completed' }),
+    ]);
+
+    expect(store.getTaskListItems(CONV).map((t) => [t.id, t.subject, t.status])).toEqual([
+      ['task_1', 'one', 'completed'],
+      ['task_2', 'two', 'pending'],
+    ]);
+  });
+
+  it('skips an update whose task was never recorded with its id', () => {
+    // Older history: the create carries no taskListId, so nothing links the
+    // two. The task keeps the status its create gave it.
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+
+    store.rebuildTaskList(CONV, [
+      taskMessage('toolu_1', 'TaskCreate', { subject: 'one' }),
+      taskMessage('toolu_2', 'TaskUpdate', { taskId: 'task_1', status: 'completed' }),
+    ]);
+
+    expect(store.getTaskListItems(CONV).map((t) => [t.subject, t.status])).toEqual([
+      ['one', 'pending'],
+    ]);
+  });
+
+  it('ignores every other tool', () => {
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+
+    store.rebuildTaskList(CONV, [
+      taskMessage('toolu_1', 'Bash', { command: 'ls' }),
+      taskMessage('toolu_2', 'Read', { file_path: '/tmp/x' }),
+    ]);
+
+    expect(store.getTaskListItems(CONV)).toEqual([]);
+  });
+
+  it('does not overwrite a list that is already live', () => {
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+    store.restoreTaskList(CONV, [
+      { id: 'task_live', subject: 'live', status: 'in_progress', updatedAt: 1 },
+    ]);
+
+    store.rebuildTaskList(CONV, [taskMessage('toolu_1', 'TaskCreate', { subject: 'one' }, 'task_1')]);
+
+    expect(store.getTaskListItems(CONV).map((t) => t.id)).toEqual(['task_live']);
+  });
+});

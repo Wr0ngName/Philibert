@@ -228,6 +228,15 @@ export const useConversationsStore = defineStore('conversations', () => {
         }
       }
 
+      // Put the model's task list back. The saved list is exact; replaying the
+      // Task* calls out of the transcript is the fallback for conversations
+      // saved before it was persisted, and is close rather than exact (see
+      // `rebuildTaskList`). Either way this is a no-op for a conversation
+      // whose list is already live in memory.
+      if (!chatStore.restoreTaskList(id, conversation.taskList)) {
+        chatStore.rebuildTaskList(id, chatStore.messages);
+      }
+
       // Update working directory if different
       const settingsStore = useSettingsStore();
       if (conversation.workingDirectory && conversation.workingDirectory !== settingsStore.workingDirectory) {
@@ -338,6 +347,14 @@ export const useConversationsStore = defineStore('conversations', () => {
       ? (JSON.parse(JSON.stringify(inMemoryPermissions)) as typeof inMemoryPermissions)
       : existingConv?.sessionPermissions;
 
+    // The model's task list, so a restart resumes on the same list rather
+    // than an empty panel. Falls back to whatever was saved before for the
+    // same reason as the two above: a conversation can be saved while its
+    // state is not loaded, and writing an empty list over a real one would
+    // destroy it.
+    const inMemoryTaskList = chatStore.getTaskListItems(conversationId);
+    const taskList = inMemoryTaskList.length > 0 ? inMemoryTaskList : existingConv?.taskList;
+
     return {
       id: conversationId,
       title,
@@ -360,6 +377,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       executionMode,
       ...(lastSessionUsage ? { lastSessionUsage } : {}),
       ...(sessionPermissions && sessionPermissions.length > 0 ? { sessionPermissions } : {}),
+      ...(taskList && taskList.length > 0 ? { taskList } : {}),
     };
   }
 

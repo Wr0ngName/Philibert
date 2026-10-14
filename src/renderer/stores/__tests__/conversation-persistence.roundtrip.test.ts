@@ -755,6 +755,201 @@ describe('a conversation through the real persistence stack', () => {
   });
 
   /**
+   * The model's task list across a restart.
+   *
+   * It lived only in the chat store, so closing the app emptied the panel
+   * while the work it described was half done — and because the model keeps
+   * its own copy, the next `TaskUpdate` named a task the app no longer knew
+   * and was dropped as unknown.
+   *
+   * Driven through the real capture and result events, so the list is built
+   * by the same code that builds it in the app, then read back after a real
+   * reload: new stores, same files, same service.
+   */
+  describe('the task list after a restart', () => {
+    /** The SDK capture for a Task* call, as the main process forwards it. */
+    function taskCall(id: string, blockId: string, toolName: string, input: Record<string, unknown>) {
+      emitIpc(IPC_CHANNELS.CLAUDE_TOOL_CAPTURE, id, {
+        toolUseBlockId: blockId,
+        toolName,
+        input,
+        description: toolName,
+      });
+    }
+
+    /** The result of a TaskCreate, carrying the SDK-assigned task id. */
+    function taskCreated(id: string, blockId: string, taskListId: string) {
+      emitIpc(IPC_CHANNELS.CLAUDE_TOOL_RESULT, id, {
+        toolUseBlockId: blockId,
+        outputFile: `/tmp/${blockId}.txt`,
+        taskListId,
+      });
+    }
+
+    /** Start a conversation and leave it holding a three-item task list. */
+    async function conversationWithTasks(wrapper: ReturnType<typeof mount>): Promise<string> {
+      const id = conversations.createNewConversation();
+      await settle();
+
+      await send(wrapper, 'plan the work');
+
+      taskCall(id, 'toolu_1', 'TaskCreate', {
+        subject: 'Write the parser',
+        description: 'tokenise, then build the tree',
+        activeForm: 'Writing the parser',
+      });
+      taskCreated(id, 'toolu_1', 'task_aaa');
+      taskCall(id, 'toolu_2', 'TaskCreate', { subject: 'Cover it with tests' });
+      taskCreated(id, 'toolu_2', 'task_bbb');
+      taskCall(id, 'toolu_3', 'TaskCreate', { subject: 'Wire up the CLI' });
+      taskCreated(id, 'toolu_3', 'task_ccc');
+
+      // Progress: one finished, one under way.
+      taskCall(id, 'toolu_4', 'TaskUpdate', { taskId: 'task_aaa', status: 'completed' });
+      taskCall(id, 'toolu_5', 'TaskUpdate', { taskId: 'task_bbb', status: 'in_progress' });
+
+      streamAssistant(id, 'starting on the tests');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
+      await settle(40);
+      return id;
+    }
+
+    /**
+     * A fresh renderer against the same files: new stores, the app mounted
+     * again so the real IPC handlers are in place, same service.
+     */
+    async function restart(id: string) {
+      mounted?.unmount();
+      mounted = null;
+      setActivePinia(createPinia());
+      conversations = useConversationsStore();
+      chat = useChatStore();
+      const settings = useSettingsStore();
+      settings.config.workingDirectory = '/home/user/project';
+      settings.config.apiKey = 'test-key';
+      await conversations.loadConversationList();
+      await settle();
+      const wrapper = mountApp();
+      await conversations.loadConversation(id);
+      await settle();
+      return wrapper;
+    }
+
+    it('comes back with every item, its status and its wording intact', async () => {
+      const wrapper = mountApp();
+      const id = await conversationWithTasks(wrapper);
+
+      const before = chat.taskListItems.map((t) => ({ ...t }));
+      expect(before.map((t) => [t.id, t.status])).toEqual([
+        ['task_aaa', 'completed'],
+        ['task_bbb', 'in_progress'],
+        ['task_ccc', 'pending'],
+      ]);
+      expect(before[0]).toMatchObject({
+        subject: 'Write the parser',
+        description: 'tokenise, then build the tree',
+        activeForm: 'Writing the parser',
+      });
+
+      await restart(id);
+
+      // Exactly what was there, not an approximation of it.
+      expect(chat.taskListItems).toEqual(before);
+    });
+
+    it('keeps the order the model created them in', async () => {
+      const wrapper = mountApp();
+      const id = await conversationWithTasks(wrapper);
+
+      await restart(id);
+
+      expect(chat.taskListItems.map((t) => t.subject)).toEqual([
+        'Write the parser',
+        'Cover it with tests',
+        'Wire up the CLI',
+      ]);
+    });
+
+    it('accepts an update for a task created before the restart', async () => {
+      // The point of persisting the ids. The model's own list survives in its
+      // session, so its next update names `task_ccc` — which used to be
+      // dropped with "update for unknown taskId", leaving the panel wrong for
+      // the rest of the conversation.
+      const wrapper = mountApp();
+      const id = await conversationWithTasks(wrapper);
+      await restart(id);
+
+      taskCall(id, 'toolu_6', 'TaskUpdate', { taskId: 'task_ccc', status: 'in_progress' });
+      await settle();
+
+      expect(chat.taskListItems.find((t) => t.id === 'task_ccc')?.status).toBe('in_progress');
+    });
+
+    it('writes the list into the conversation file', async () => {
+      const wrapper = mountApp();
+      const id = await conversationWithTasks(wrapper);
+
+      expect(onDisk(id)?.taskList?.map((t) => [t.id, t.status])).toEqual([
+        ['task_aaa', 'completed'],
+        ['task_bbb', 'in_progress'],
+        ['task_ccc', 'pending'],
+      ]);
+    });
+
+    it('does not lose the saved list when saving a conversation it has not loaded', async () => {
+      // A background save builds its payload from a state that may hold no
+      // task list at all; writing an empty one over a real one destroys it.
+      const wrapper = mountApp();
+      const id = await conversationWithTasks(wrapper);
+      const saved = onDisk(id)?.taskList;
+      expect(saved).toHaveLength(3);
+
+      // A different renderer state, as a restart that never opened this
+      // conversation would have.
+      await restart(id);
+      const other = conversations.createNewConversation();
+      await settle();
+
+      await conversations.saveConversation(other, [
+        { id: 'm-other', role: 'user', content: 'elsewhere', timestamp: Date.now() },
+      ]);
+      await settle();
+
+      expect(onDisk(id)?.taskList).toEqual(saved);
+    });
+
+    it('replays the Task* calls for a conversation saved before the list was', async () => {
+      // Migration. An older file has neither the list nor the task ids on its
+      // tool uses, so the transcript is the only evidence and a create cannot
+      // be matched to the updates that followed it. The items and their
+      // wording come back; their progress does not, which is the honest
+      // reading of what survived — and better than an empty panel.
+      const wrapper = mountApp();
+      const id = await conversationWithTasks(wrapper);
+
+      const stored = onDisk(id) as Conversation;
+      delete stored.taskList;
+      for (const message of stored.messages) {
+        if (message.toolUse) delete message.toolUse.taskListId;
+      }
+      files.set(`/conversations/${id}.json`, JSON.stringify(stored));
+
+      await restart(id);
+
+      expect(chat.taskListItems.map((t) => t.subject)).toEqual([
+        'Write the parser',
+        'Cover it with tests',
+        'Wire up the CLI',
+      ]);
+      expect(chat.taskListItems.map((t) => t.status)).toEqual([
+        'pending',
+        'pending',
+        'pending',
+      ]);
+    });
+  });
+
+  /**
    * What happens to a turn the disk would not take.
    *
    * This is the mechanism behind the reported loss, and it outlives the cause

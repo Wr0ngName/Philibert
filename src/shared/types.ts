@@ -108,6 +108,17 @@ export interface ToolUseInfo {
    *  Set on tool_use messages emitted from inside a sub-agent so the renderer
    *  can group them under the parent agent invocation. */
   parentToolUseId?: string;
+  /**
+   * SDK-assigned task id, on a TaskCreate call whose result has arrived.
+   *
+   * The task list the panel shows is reconstructed from these calls when a
+   * conversation is opened, and `TaskUpdate` refers to tasks by this id — it
+   * appears only in the TaskCreate *result*, so without stamping it onto the
+   * call the link between a create and its later updates does not survive a
+   * restart. Absent on tool uses saved before this field existed, and on a
+   * create whose result never came.
+   */
+  taskListId?: string;
 }
 
 /** Data emitted for every tool_use block in assistant messages */
@@ -813,6 +824,23 @@ export interface Conversation {
    * Seeded back into the main-process SessionPermissionCache on load.
    */
   sessionPermissions?: SessionPermissionEntry[];
+  /**
+   * The model's task list as the panel last showed it.
+   *
+   * Saved so a restart resumes on the same list — every item's status,
+   * wording and last change, in the same order — instead of an empty panel
+   * next to work that is half finished. It was renderer-only state, which
+   * also meant the model's next `TaskUpdate` referred to a task the app no
+   * longer knew and was dropped.
+   *
+   * Includes `deleted` items: the panel hides them, but their ids are how a
+   * later update resolves.
+   *
+   * Absent on conversations saved before this existed — those have their list
+   * replayed from the Task* calls in the transcript instead, which is close
+   * but not exact (see `rebuildTaskList`).
+   */
+  taskList?: TaskListItem[];
 }
 
 /**

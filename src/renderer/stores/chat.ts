@@ -946,6 +946,104 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * Rebuild a conversation's task list from the Task* calls in its history.
+   *
+   * The list used to live only in this store, so restarting the app emptied
+   * the panel while the work it described was still half done — and the model
+   * kept its own copy, so the next `TaskUpdate` referred to tasks the panel no
+   * longer knew and was dropped as unknown. Nothing wrote the list to disk,
+   * and nothing read it back.
+   *
+   * MIGRATION ONLY — `restoreTaskList` is the real path. This runs for a
+   * conversation saved before the list was persisted, where the Task* calls in
+   * the transcript are the only evidence left. It is deliberately not the
+   * primary mechanism, because it cannot promise the list back exactly: a
+   * `TaskList` snapshot is unreplayable (only a path to its result is kept on
+   * the message, not the content), and a create saved before `taskListId` was
+   * stamped onto it cannot be matched to the updates that followed, so those
+   * updates are skipped and the task keeps the status its create gave it.
+   * Better than an empty panel on old history; not good enough to rely on,
+   * which is why the list itself is now saved.
+   *
+   * Replayed rather than parsed: `handleTaskListCapture` is still the only
+   * code that interprets a Task* input, called here with the saved input.
+   *
+   * Only ever applied to an EMPTY list, so a turn collecting in the background
+   * — whose live items are ahead of anything saved — is never overwritten by
+   * its own history.
+   */
+  /**
+   * Put a saved task list back exactly as it was.
+   *
+   * The authoritative path, and the reason the list is saved at all: every
+   * field the panel shows comes back verbatim — id, subject, description,
+   * activeForm, status and the time it last changed — so a restart resumes on
+   * the same list, at the same point, rather than on something reconstructed
+   * that might differ. `deleted` items are kept too: they are invisible, but
+   * their ids are how a later `TaskUpdate` resolves.
+   *
+   * Order is preserved because the panel renders the list in insertion order.
+   *
+   * Only applied to an empty list, so a turn already collecting in the
+   * background — ahead of anything on disk — is never overwritten.
+   */
+  function restoreTaskList(conversationId: string, items: TaskListItem[] | undefined): boolean {
+    if (!items || items.length === 0) return false;
+    const state = getConversationState(conversationId);
+    if (state.taskListItems.size > 0) return true;
+
+    const restored = new Map<string, TaskListItem>();
+    for (const item of items) {
+      if (!item?.id) continue;
+      restored.set(item.id, { ...item });
+    }
+    state.taskListItems = restored;
+    logger.info('TaskList: restored from saved conversation', {
+      conversationId,
+      items: restored.size,
+    });
+    return true;
+  }
+
+  /** A conversation's task list as it stands, for saving. */
+  function getTaskListItems(conversationId: string): TaskListItem[] {
+    const state = conversationStates.value.get(conversationId);
+    if (!state) return [];
+    return Array.from(state.taskListItems.values()).map((item) => ({ ...item }));
+  }
+
+  function rebuildTaskList(conversationId: string, history: ChatMessage[]): void {
+    const state = getConversationState(conversationId);
+    if (state.taskListItems.size > 0) return;
+
+    let replayed = 0;
+    for (const message of history) {
+      const toolUse = message.toolUse;
+      if (!toolUse?.input) continue;
+      if (toolUse.toolName !== 'TaskCreate' && toolUse.toolName !== 'TaskUpdate') continue;
+
+      handleTaskListCapture(conversationId, {
+        // A create is keyed by its SDK task id where that was recorded, so the
+        // updates that follow find it. Without one it keeps the block id, as
+        // it does in the live path before the result arrives.
+        toolUseBlockId: toolUse.taskListId ?? toolUse.toolUseBlockId ?? toolUse.actionId,
+        toolName: toolUse.toolName,
+        input: toolUse.input,
+        description: toolUse.description,
+      });
+      replayed += 1;
+    }
+
+    if (replayed > 0) {
+      logger.info('TaskList: rebuilt from history', {
+        conversationId,
+        replayed,
+        items: state.taskListItems.size,
+      });
+    }
+  }
+
+  /**
    * Remap the pending TaskCreate entry (keyed by tool_use block ID) to the
    * SDK-assigned task ID, once the main process has extracted it from the
    * tool_result. Deterministic — no JSON scraping on this side.
@@ -1136,6 +1234,10 @@ export const useChatStore = defineStore('chat', () => {
           ...msg.toolUse,
           outputFile: result.outputFile,
           status: newStatus,
+          // Kept on the message because the message is what gets saved: the
+          // task list is rebuilt from these calls on load, and an update
+          // refers to its task by this id. See rebuildTaskList.
+          ...(result.taskListId ? { taskListId: result.taskListId } : {}),
         };
         if (newStatus === 'executed') {
           trackModificationsFor(conversationId, msg.toolUse);
@@ -1869,6 +1971,11 @@ export const useChatStore = defineStore('chat', () => {
     endMessageBuffer,
     reconcileBackgroundTasks,
     completeToolUseMessages,
+
+    // Task list actions
+    restoreTaskList,
+    rebuildTaskList,
+    getTaskListItems,
 
     // Session usage actions
     setActiveModel,
