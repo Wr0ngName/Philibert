@@ -122,6 +122,25 @@ const duration = computed(() => {
   return formatTaskDuration(props.task, now.value);
 });
 
+/**
+ * Why a task whose command had a timeout is still going long past it.
+ *
+ * A foreground Bash command that reaches its `timeout` is not killed: the CLI
+ * moves it to the background. So the timeout in the Input below is what put
+ * this task here, not a limit it is still under — and once backgrounded a
+ * command runs until it finishes or is stopped. Without saying so, the panel
+ * reads as a five-minute timeout being ignored for three hours.
+ */
+const autoBackgrounded = computed(() => {
+  const ms = props.task?.timedOutAfterMs;
+  if (typeof ms !== 'number' || ms <= 0) return null;
+  const seconds = Math.round(ms / 1000);
+  const spell = seconds < 60
+    ? `${seconds}s`
+    : `${Math.floor(seconds / 60)}m${seconds % 60 ? ` ${seconds % 60}s` : ''}`;
+  return `Moved to the background after reaching its ${spell} timeout — background tasks run until they finish or are stopped.`;
+});
+
 /** The model this agent ran on, when the SDK attributed one to it. */
 const agentModel = computed(() =>
   props.task?.model ? formatModelId(props.task.model) : null,
@@ -221,6 +240,16 @@ const statusDisplay = computed(() => {
               :title="tokenTitle"
             >{{ tokenSummary }}</span>
           </div>
+          <!-- The timeout in the Input below is what backgrounded this task,
+               not a limit it is still under. Said here because otherwise a
+               five-minute timeout next to a three-hour duration reads as a
+               bug. -->
+          <p
+            v-if="autoBackgrounded"
+            class="mt-1 text-xs text-amber-600 dark:text-amber-500"
+          >
+            {{ autoBackgrounded }}
+          </p>
         </div>
       </div>
 

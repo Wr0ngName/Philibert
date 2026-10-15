@@ -383,3 +383,73 @@ describe('rebuildTaskList', () => {
     expect(store.getTaskListItems(CONV).map((t) => t.id)).toEqual(['task_live']);
   });
 });
+
+/**
+ * Why a task whose command had a timeout is still running hours later.
+ *
+ * A foreground Bash command that reaches its `timeout` is not killed — the
+ * CLI moves it to the background (`timedOutAfterMs` on the Bash result). So
+ * the timeout is what put the task in the panel, not a limit it is under.
+ * Recorded on the task so the detail view can say so instead of showing
+ * "Timeout: 300000" beside a duration of 3h 09m.
+ */
+describe('a command auto-backgrounded by its own timeout', () => {
+  it('records the timeout it hit when the task is created', () => {
+    const store = useChatStore();
+
+    store.handleTaskNotification(CONV, {
+      taskId: 'task-1',
+      status: 'running',
+      description: 'Find the original French dungeons SWF',
+      timedOutAfterMs: 300_000,
+    });
+
+    expect(taskMap(store).get('task-1')?.timedOutAfterMs).toBe(300_000);
+  });
+
+  it('records it when the task is re-keyed to its real id', () => {
+    // The real path: the command is tracked under its tool_use id first, and
+    // the backgrounding arrives with the SDK's task id and previousTaskId.
+    const store = useChatStore();
+    seedRunning(store, 'toolu_abc', 'Find the original French dungeons SWF');
+
+    store.handleTaskNotification(CONV, {
+      taskId: 'bg-task-7',
+      status: 'running',
+      previousTaskId: 'toolu_abc',
+      timedOutAfterMs: 300_000,
+    });
+
+    const task = taskMap(store).get('bg-task-7');
+    expect(task?.timedOutAfterMs).toBe(300_000);
+    expect(task?.status).toBe('running');
+    expect(taskMap(store).has('toolu_abc')).toBe(false);
+  });
+
+  it('leaves it unset for a task that was always a background task', () => {
+    // run_in_background: true — no timeout was involved, so nothing is
+    // claimed about one.
+    const store = useChatStore();
+    seedRunning(store, 'task-2', 'npm run watch');
+
+    expect(taskMap(store).get('task-2')?.timedOutAfterMs).toBeUndefined();
+  });
+
+  it('keeps it across later notifications for the same task', () => {
+    const store = useChatStore();
+    store.handleTaskNotification(CONV, {
+      taskId: 'task-3',
+      status: 'running',
+      description: 'long find',
+      timedOutAfterMs: 300_000,
+    });
+
+    store.handleTaskNotification(CONV, {
+      taskId: 'task-3',
+      status: 'completed',
+      summary: 'no matches',
+    });
+
+    expect(taskMap(store).get('task-3')?.timedOutAfterMs).toBe(300_000);
+  });
+});

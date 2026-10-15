@@ -562,6 +562,15 @@ export class SDKMessageHandler {
     const toolResult = userMsg.tool_use_result as {
       backgroundTaskId?: string;
       backgroundedByUser?: boolean;
+      /**
+       * Set when a foreground command hit its `timeout` and the CLI moved it
+       * to the background rather than killing it — the timeout value in ms
+       * (BashOutput.timedOutAfterMs in the SDK's tool schema). This is how a
+       * command the model gave a five-minute timeout ends up in the panel
+       * hours later: the timeout is what backgrounded it, not a limit it is
+       * still under.
+       */
+      timedOutAfterMs?: number;
     } | undefined;
     if (toolResult?.backgroundTaskId) {
       const toolUseId = contentBlocks?.[0]?.tool_use_id;
@@ -571,6 +580,7 @@ export class SDKMessageHandler {
         logger.info('Background task ID mapping from user message', {
           toolUseId,
           backgroundTaskId,
+          autoBackgroundedAfterMs: toolResult.timedOutAfterMs,
         });
 
         // Store mapping for later task_notification matching
@@ -582,6 +592,9 @@ export class SDKMessageHandler {
           taskId: backgroundTaskId,
           status: 'running',
           previousTaskId: toolUseId,
+          ...(typeof toolResult.timedOutAfterMs === 'number'
+            ? { timedOutAfterMs: toolResult.timedOutAfterMs }
+            : {}),
         });
       }
     }

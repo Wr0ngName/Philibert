@@ -1393,6 +1393,12 @@ export const useChatStore = defineStore('chat', () => {
         ...(notification.summary && { summary: notification.summary }),
         ...(notification.error && { error: notification.error }),
         ...(notification.outputFile && { outputFile: notification.outputFile }),
+        // Why this task is in the panel at all, when its command had a
+        // timeout: the timeout is what backgrounded it. Kept so the detail
+        // view can say so.
+        ...(typeof notification.timedOutAfterMs === 'number'
+          ? { timedOutAfterMs: notification.timedOutAfterMs }
+          : {}),
       };
 
       // `completedAt` is what the duration is measured to, so it has to track
@@ -1434,6 +1440,9 @@ export const useChatStore = defineStore('chat', () => {
         sessionId: notification.sessionId,
         error: notification.error,
         ...(notification.toolUseId && { toolUseId: notification.toolUseId }),
+        ...(typeof notification.timedOutAfterMs === 'number'
+          ? { timedOutAfterMs: notification.timedOutAfterMs }
+          : {}),
         // Falls back to the task id, because a backgrounded tool's first
         // notification sends its tool_use block id as `taskId` and sets no
         // `toolUseId`. Keying only on toolUseId classified every background

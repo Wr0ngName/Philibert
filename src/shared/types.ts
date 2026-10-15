@@ -943,6 +943,16 @@ export interface BackgroundTask {
   sessionId?: string;
   /** Error message if task failed */
   error?: string;
+  /**
+   * The timeout, in ms, that this command hit before the CLI auto-backgrounded
+   * it (`timedOutAfterMs` on the Bash tool result).
+   *
+   * A foreground Bash command that reaches its `timeout` is not killed — the
+   * CLI moves it to the background, which is how a task with a five-minute
+   * timeout comes to be in this panel hours later. Recorded so the detail view
+   * can say that, instead of showing a timeout the task is visibly ignoring.
+   */
+  timedOutAfterMs?: number;
   /** SDK tool_use ID of the tool that spawned this task (e.g. the Task/Agent
    *  tool). When set, the inline tool_use indicator already represents this
    *  task in the chat — no separate inline backgroundTask entry is created. */
@@ -1011,6 +1021,11 @@ export interface TaskNotification {
   /** SDK tool_use ID of the tool that spawned this task (e.g. Task/Agent).
    *  Used by the renderer to deduplicate against the inline tool_use indicator. */
   toolUseId?: string;
+  /**
+   * Set when the CLI auto-backgrounded this command because it hit its
+   * timeout; the timeout value in ms. See BackgroundTask.timedOutAfterMs.
+   */
+  timedOutAfterMs?: number;
 }
 
 // Channel mode types
