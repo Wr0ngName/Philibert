@@ -497,5 +497,156 @@ describe('MessageList scrolling with real layout', () => {
     // and NOT the position the previous conversation happened to be at.
     expect(distanceFromBottom(container)).toBeLessThan(SETTLE_TOLERANCE_PX);
   });
-});
+  // ===========================================================================
+  // The window: history that is on disk but not in memory
+  // ===========================================================================
+  describe('a conversation held as a window', () => {
+    /**
+     * A conversation is opened as a window of its most recent messages — the
+     * list used to grow for as long as the app ran, ~1.8 KB a message — so
+     * there is history above the top of the list, and two new ways for the
+     * view to be yanked: putting a page in front of it, and dropping rows off
+     * the back of it after a save.
+     *
+     * Both are geometry, so both belong here rather than in the happy-dom
+     * suite where every row has a height of zero.
+     *
+     * `window.electron` is stood up for the earlier-page fetch because there
+     * is no IPC in a browser at all — Electron is the thing that is missing,
+     * not anything of ours. Everything else is real: the component, both
+     * stores, the virtual list, the scroll memory.
+     */
+    const OLDER_COUNT = 1000;
 
+    /** The pages that sit behind the window, as the file would hold them. */
+    function olderMessages() {
+      return messagesFor('older', OLDER_COUNT);
+    }
+
+    function installIpc(): void {
+      const older = olderMessages();
+      (window as unknown as { electron: unknown }).electron = {
+        conversation: {
+          getOlder: async (_id: string, beforeId: string, limit: number) => {
+            const at = older.findIndex((m) => m.id === beforeId);
+            const end = at === -1 ? older.length : at;
+            const start = Math.max(0, end - limit);
+            return { messages: older.slice(start, end), olderCount: start };
+          },
+        },
+        config: { get: async () => ({}), set: async () => undefined, onChange: () => () => {} },
+      };
+    }
+
+    /** A window whose history continues above it. */
+    async function seedWindowed() {
+      installIpc();
+      const store = useChatStore();
+      store.setCurrentConversation('conv-browser');
+      // The tail of the conversation, as `getWindow` would return it, with
+      // the page before it addressable by the id at the top.
+      const older = olderMessages();
+      store.loadMessages(messagesFor('msg'), OLDER_COUNT);
+      store.prependOlderMessages('conv-browser', [older[OLDER_COUNT - 1]], OLDER_COUNT - 1);
+      return mountList();
+    }
+
+    it('offers the way back into the rest of the conversation', async () => {
+      const { container } = await seedWindowed();
+
+      const button = container.querySelector('button');
+      expect(button?.textContent).toContain('Load earlier messages');
+    });
+
+    it('keeps the message being read in place when a page is prepended', async () => {
+      // The whole point of the correction: prepending grows the content above
+      // the viewport, which would otherwise push what the user is reading
+      // down the screen by the height of the entire page.
+      const { container, wrapper } = await seedWindowed();
+
+      // Read some history, away from the tail.
+      await wheelUp(container, 10, 120, 2);
+      const anchor = topRowElement(container);
+      if (!anchor) throw new Error('no row to anchor on');
+      const anchorId = anchor.dataset.messageId;
+      const offsetBefore = anchor.getBoundingClientRect().top
+        - container.getBoundingClientRect().top;
+
+      const button = wrapper.find('button');
+      await button.trigger('click');
+      await settle(20);
+
+      const held = useChatStore().messages.length;
+      expect(held).toBeGreaterThan(400);
+
+      const after = container.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
+      expect(after, 'the row being read is still rendered').not.toBeNull();
+      const offsetAfter = after!.getBoundingClientRect().top
+        - container.getBoundingClientRect().top;
+
+      // Within a row's worth of movement: the prepended rows are measured
+      // after they mount, so the correction settles rather than being exact.
+      expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThan(120);
+    });
+
+    it('does not move the view when the window is trimmed at the tail', async () => {
+      // Trimming happens after a save, at the end of every turn, and removes
+      // rows ABOVE the viewport. At the tail the browser clamps the scroll
+      // offset and nothing should appear to happen.
+      const { container } = await seedWindowed();
+      expect(distanceFromBottom(container)).toBeLessThan(SETTLE_TOLERANCE_PX);
+      const lastBefore = useChatStore().messages.at(-1)?.id;
+
+      const dropped = useChatStore().trimWindow('conv-browser', 200);
+      await settle(20);
+
+      expect(dropped).toBeGreaterThan(0);
+      expect(distanceFromBottom(container)).toBeLessThan(SETTLE_TOLERANCE_PX);
+      expect(useChatStore().messages.at(-1)?.id).toBe(lastBefore);
+    });
+
+    it('still follows the tail after a trim', async () => {
+      const { container } = await seedWindowed();
+      useChatStore().trimWindow('conv-browser', 200);
+      await settle(10);
+
+      useChatStore().addMessage({
+        id: 'after-trim',
+        role: 'assistant',
+        content: 'arrived after the trim',
+        timestamp: 999999,
+      });
+      await settle(10);
+
+      expect(distanceFromBottom(container)).toBeLessThan(SETTLE_TOLERANCE_PX);
+    });
+
+    it('tells the store when the view leaves the tail, and when it returns', async () => {
+      // This is the signal the trim is gated on: a conversation being read is
+      // left alone, because dropping rows above the viewport would yank the
+      // page forward. Measured here because only a real scroll can produce
+      // it.
+      const { container } = await seedWindowed();
+      const store = useChatStore();
+      expect(store.isTailPinned('conv-browser')).toBe(true);
+
+      await wheelUp(container, 6, 120, 2);
+      expect(store.isTailPinned('conv-browser')).toBe(false);
+
+      container.scrollTop = container.scrollHeight;
+      await settle(10);
+
+      expect(store.isTailPinned('conv-browser')).toBe(true);
+    });
+
+    it('scrolls a windowed conversation as freely as a whole one', async () => {
+      // The window must not change how the list scrolls: a wheel click still
+      // travels a wheel click.
+      const { container } = await seedWindowed();
+
+      const travelled = await wheelUp(container, 8, 120, 2);
+
+      expect(travelled).toBeGreaterThan(8 * 120 * 0.8);
+    });
+  });
+});

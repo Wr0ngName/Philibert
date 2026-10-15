@@ -515,10 +515,21 @@ export const useConversationsStore = defineStore('conversations', () => {
    * grows past WINDOW_MAX so a long turn is never trimmed mid-arrival.
    */
   function trimAfterSave(conversationId: string): void {
-    const held = conversationId === currentConversationId.value
+    const onScreen = conversationId === currentConversationId.value;
+    const held = onScreen
       ? chatStore.messages.length
       : chatStore.getBufferedMessages(conversationId)?.length ?? 0;
     if (held <= CONSTANTS.CONVERSATION.WINDOW_MAX) return;
+
+    // Trimming removes rows above the viewport. At the tail that is
+    // invisible; to someone scrolled back reading history it would yank the
+    // page forward by the height of everything dropped. So a conversation
+    // being read keeps its window until its view returns to the tail — which
+    // costs memory only while the user is actually looking at the past.
+    if (onScreen && !chatStore.isTailPinned(conversationId)) {
+      logger.debug('Not trimming: the view is reading history', { id: conversationId, held });
+      return;
+    }
 
     const dropped = chatStore.trimWindow(conversationId, CONSTANTS.CONVERSATION.WINDOW_SIZE);
     if (dropped > 0) {

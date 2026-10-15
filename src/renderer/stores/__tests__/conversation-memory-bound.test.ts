@@ -74,6 +74,7 @@ describe('a conversation that keeps growing', () => {
 
     store.currentConversationId = CONV;
     chatStore.setCurrentConversation(CONV);
+    sent = 0;
   });
 
   afterEach(() => {
@@ -88,18 +89,23 @@ describe('a conversation that keeps growing', () => {
    * Talk for `turns` turns, saving at the end of each, as the app does.
    * `perTurn` messages a turn, which is what a turn with tool calls looks
    * like.
+   *
+   * Numbering continues across calls, so a second stretch of talking adds new
+   * messages rather than re-sending the ids of the first — which an upsert
+   * would (correctly) treat as edits, leaving the file unchanged while memory
+   * grew. Returns the total sent so far.
    */
+  let sent = 0;
   async function talk(turns: number, perTurn = 20): Promise<number> {
-    let n = 0;
     for (let turn = 0; turn < turns; turn += 1) {
       for (let i = 0; i < perTurn; i += 1) {
-        chatStore.messages.push(message(n));
-        n += 1;
+        chatStore.messages.push(message(sent));
+        sent += 1;
       }
       await store.saveCurrentConversation();
       await settle();
     }
-    return n;
+    return sent;
   }
 
   it('stops growing in memory, while the file keeps everything', async () => {
@@ -154,6 +160,62 @@ describe('a conversation that keeps growing', () => {
     const ids = chatStore.messages.map((m) => m.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toEqual(Array.from({ length: total }, (_, i) => `msg_${i}`));
+  });
+
+  it('leaves the window alone while the user is reading history', async () => {
+    // Trimming removes rows above the viewport. At the tail that is invisible;
+    // to someone scrolled back it would yank the page forward by the height of
+    // everything dropped. The message list reports where the view is (asserted
+    // against real scrolling in the browser suite); this is the store acting
+    // on it.
+    await talk(120);
+    const held = chatStore.messages.length;
+
+    chatStore.setTailPinned(CONV, false);
+    await talk(20);
+
+    expect(chatStore.messages.length).toBeGreaterThan(held);
+    expect(chatStore.olderMessageCount + chatStore.messages.length)
+      .toBe(onDisk(CONV)?.messages.length);
+  });
+
+  it('trims again once the view returns to the tail', async () => {
+    await talk(120);
+    chatStore.setTailPinned(CONV, false);
+    await talk(40);
+    const whileReading = chatStore.messages.length;
+    expect(whileReading).toBeGreaterThan(WINDOW_MAX);
+
+    chatStore.setTailPinned(CONV, true);
+    await talk(1);
+
+    expect(chatStore.messages.length).toBeLessThanOrEqual(WINDOW_MAX);
+  });
+
+  it('trims a conversation that is not on screen regardless', async () => {
+    // Nothing is displaying it, so there is no view to disturb — and a
+    // background turn is exactly where an untrimmed window would otherwise
+    // sit forgotten.
+    await talk(60);
+    const buffered = [...chatStore.messages];
+    chatStore.beginMessageBuffer(CONV);
+    chatStore.setTailPinned(CONV, false);
+    // Leave it: the buffer becomes its own copy, and the screen shows another.
+    chatStore.setCurrentConversation('conv-elsewhere');
+    chatStore.loadMessages([]);
+    store.currentConversationId = 'conv-elsewhere';
+
+    // A background turn ends and is written.
+    const more = buffered.length;
+    for (let i = 0; i < 1200; i += 1) {
+      chatStore.getBufferedMessages(CONV)?.push(message(sent));
+      sent += 1;
+    }
+    await store.saveConversation(CONV, chatStore.getBufferedMessages(CONV) ?? []);
+    await settle();
+
+    expect(chatStore.getBufferedMessages(CONV)?.length ?? 0).toBeLessThanOrEqual(WINDOW_MAX);
+    expect(onDisk(CONV)?.messages.length).toBe(more + 1200);
   });
 
   it('does not trim away a turn that is still arriving', async () => {

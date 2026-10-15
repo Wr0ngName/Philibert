@@ -406,6 +406,31 @@ const PINNED_EPSILON_PX = 2;
 const wasPinnedToBottom = ref(true);
 
 /**
+ * Tell the store whether the view is following the tail.
+ *
+ * The window is trimmed from the store, after a save, and trimming removes
+ * rows above the viewport — invisible when the view is at the end, but a jump
+ * for someone scrolled back reading history.
+ *
+ * `isUserAtBottom` rather than `wasPinnedToBottom`: the latter is a 2px pin,
+ * meant for deciding whether to re-scroll during streaming, and a view
+ * resting a few pixels off the end is not reading history. Using the pin here
+ * made the trim almost never fire, since a freshly mounted list rarely sits
+ * at exactly zero.
+ *
+ * Watched rather than set at each assignment, so every path that moves the
+ * view is covered: scrolling, a jump to a search hit, restoring a remembered
+ * position.
+ */
+watch(
+  [isUserAtBottom, () => chatStore.currentConversationId],
+  ([atBottom, conversationId]) => {
+    if (conversationId) chatStore.setTailPinned(conversationId, atBottom);
+  },
+  { immediate: true },
+);
+
+/**
  * Scroll to bottom of container
  */
 function scrollToBottom(): void {

@@ -105,6 +105,20 @@ export interface ConversationState {
    * Cleared only once a write carrying it has succeeded.
    */
   pendingTruncation: { afterId: string | null } | null;
+  /**
+   * Whether the view of this conversation is sitting at the newest message.
+   *
+   * Kept here because the window is trimmed from the store and the viewport
+   * lives in the component. Trimming removes rows ABOVE what is on screen: at
+   * the bottom that is invisible, because the browser clamps the scroll offset
+   * and the newest message stays where it is — but to a user scrolled back
+   * reading history it would yank the page forward by the height of
+   * everything removed. So a conversation being read is left alone and trimmed
+   * the next time its view returns to the tail.
+   *
+   * True by default: a conversation that has just been opened is at its end.
+   */
+  tailPinned: boolean;
   bufferedMessages: ChatMessage[];
   /**
    * Whether {@link bufferedMessages} is live. Distinguishes "running in the
@@ -134,6 +148,7 @@ function createConversationState(): ConversationState {
     modifiedFilesInLastQuery: new Set(),
     olderCount: 0,
     pendingTruncation: null,
+    tailPinned: true,
     bufferedMessages: [],
     bufferingMessages: false,
   };
@@ -653,6 +668,19 @@ export const useChatStore = defineStore('chat', () => {
     getConversationState(conversationId).pendingTruncation = { afterId: survivor };
 
     sink.splice(index);
+  }
+
+  /**
+   * Record whether a conversation's view is at the newest message. Called by
+   * the message list as the user scrolls; see `tailPinned`.
+   */
+  function setTailPinned(conversationId: string, pinned: boolean): void {
+    getConversationState(conversationId).tailPinned = pinned;
+  }
+
+  /** Whether trimming this conversation's window would move what is on screen. */
+  function isTailPinned(conversationId: string): boolean {
+    return conversationStates.value.get(conversationId)?.tailPinned ?? true;
   }
 
   /** A removal of history not yet written, if there is one. */
@@ -2071,6 +2099,8 @@ export const useChatStore = defineStore('chat', () => {
     truncateAfterUserTurn,
     pendingTruncationFor,
     clearPendingTruncation,
+    setTailPinned,
+    isTailPinned,
     startAssistantMessage,
     appendChunk,
     appendToLastMessage, // Legacy
