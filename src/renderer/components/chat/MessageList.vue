@@ -46,26 +46,22 @@ const { loadingEarlier } = storeToRefs(conversationsStore);
 const { olderMessageCount } = storeToRefs(chatStore);
 
 /**
- * Fetch the page before the window and keep the view where it is.
+ * Fetch the page before the window.
  *
  * A conversation is opened as a window of its most recent messages, so there
  * is history above the top of the list that is on disk but not in memory.
- * Prepending grows the content above the viewport, which would otherwise
- * push what the user is reading down the screen — so the scroll offset is
- * moved by exactly as much as the content grew.
+ *
+ * Nothing here holds the view: the list does it, by remembering the row under
+ * the viewport and putting it back when the rows change
+ * (`scrollTopForAnchor`). This used to correct the scroll offset by the change
+ * in document height, which is the wrong quantity — the rows that arrive have
+ * never been measured, so they contribute a fixed estimate rather than their
+ * real height, and on a conversation with real answers in it those differ by
+ * an order of magnitude. Leaving it in would also compensate the same
+ * movement twice.
  */
 async function loadEarlier(): Promise<void> {
-  const el = listRef.value;
-  const heightBefore = el?.scrollHeight ?? 0;
-  const topBefore = el?.scrollTop ?? 0;
-
-  const loaded = await conversationsStore.loadEarlierMessages();
-  if (loaded === 0) return;
-
-  await nextTick();
-  const after = listRef.value;
-  if (!after) return;
-  after.scrollTop = topBefore + (after.scrollHeight - heightBefore);
+  await conversationsStore.loadEarlierMessages();
 }
 
 // Declared up here because useVirtualList reads it while the component sets

@@ -583,37 +583,38 @@ describe('MessageList scrolling with real layout', () => {
       expect(button?.textContent).toContain('Load earlier messages');
     });
 
-    it('keeps the message being read in place when a page is prepended', async () => {
-      // The whole point of the correction: prepending grows the content above
-      // the viewport, which would otherwise push what the user is reading
-      // down the screen by the height of the entire page.
-      const { container, wrapper } = await seedWindowed();
-      const heldBefore = useChatStore().messages.length;
+    it('keeps the message being read where it was when a page is prepended', async () => {
+      // The reason the list compensates for rows arriving at its front at
+      // all: prepending grows the content above the viewport, which would
+      // otherwise push what the reader is looking at down the screen by the
+      // height of the entire page.
+      //
+      // The page is prepended through the store rather than by pressing the
+      // control, because the control's handler is asynchronous and this is
+      // about the geometry, not the plumbing: the paging is covered by the
+      // store's own tests. An earlier version did press it and asserted
+      // "more than 400 messages are held" — which a 401-message window
+      // already satisfied, so it passed while loading nothing at all.
+      const { container } = await seedWindowed();
+      const store = useChatStore();
 
-      // Read some history, away from the tail.
       await wheelUp(container, 10, 120, 2);
-      const anchor = topRowElement(container);
-      if (!anchor) throw new Error('no row to anchor on');
-      const anchorId = anchor.dataset.messageId;
-      const offsetBefore = anchor.getBoundingClientRect().top
-        - container.getBoundingClientRect().top;
+      await settle(10);
+      const anchorId = topMessageId(container);
+      expect(anchorId).not.toBeNull();
+      const heldBefore = store.messages.length;
 
-      const button = wrapper.find('button');
-      await button.trigger('click');
-      await settle(20);
+      const older = olderMessages();
+      const firstHeld = store.messages[0].id;
+      const at = older.findIndex((m) => m.id === firstHeld);
+      const from = Math.max(0, at - 500);
+      store.prependOlderMessages('conv-browser', older.slice(from, at), from);
+      await settle(30);
 
-      // Against what was held before the click: "more than the window" is
-      // true without having loaded anything.
-      expect(useChatStore().messages.length).toBeGreaterThan(heldBefore + 400);
-
-      const after = container.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
-      expect(after, 'the row being read is still rendered').not.toBeNull();
-      const offsetAfter = after!.getBoundingClientRect().top
-        - container.getBoundingClientRect().top;
-
-      // Within a row's worth of movement: the prepended rows are measured
-      // after they mount, so the correction settles rather than being exact.
-      expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThan(120);
+      // A page really arrived, measured against what was held before.
+      expect(store.messages.length).toBeGreaterThan(heldBefore + 400);
+      // And the reader is still on the same message.
+      expect(topMessageId(container)).toBe(anchorId);
     });
 
     it('does not move the view when the window is trimmed at the tail', async () => {
