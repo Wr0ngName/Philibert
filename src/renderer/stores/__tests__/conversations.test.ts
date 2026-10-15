@@ -1,26 +1,56 @@
 /**
- * Comprehensive tests for the conversations store.
+ * The conversations store, against real persistence.
  *
- * Tests cover:
- * - Conversation lifecycle (create, load, save, delete)
- * - Conversation list management
- * - Integration with chat store (message loading/saving)
- * - Auto-save behavior (watcher triggers)
- * - Working directory synchronization
- * - Title generation from messages
- * - Error handling and recovery
- * - Edge cases (concurrent operations, large conversations)
+ * Covers the conversation lifecycle (create, load, save, delete), the list,
+ * the chat-store integration, titles, session ids, working directories, error
+ * handling and the edge cases around all of it.
+ *
+ * It used to run against a hand-written fake of `window.electron.conversation`
+ * and assert that the store had called it. That can only ever confirm the test
+ * calls its own fake: it cannot see whether a message was stored, whether a
+ * title reached the file, or whether a save shortened a conversation — and
+ * every data-loss defect this app has shipped lived in exactly those gaps.
+ *
+ * So here the store writes through the real preload into the real
+ * main-process ConversationService, and the assertions read the stored JSON.
+ * Only Electron and the filesystem are faked, both being outside this
+ * codebase; the fake disk can be made slow, unreadable or unwritable, which is
+ * what the error cases use. See support/real-stack.ts.
  */
 
-import { setActivePinia, createPinia } from 'pinia';
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import type { Conversation, ChatMessage, BashCommandAction } from '@shared/types';
 
+vi.mock('node:fs', async () => (await import('./support/real-stack')).fakeFsModule());
+vi.mock('electron', async () => (await import('./support/real-stack')).fakeElectronModule());
+vi.mock('../../../main/utils/paths', () => ({
+  getConversationsPath: () => '/conversations',
+  isPathWithin: () => true,
+}));
+vi.mock('../../../main/utils/logger', () => ({
+  default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  setLogLevel: vi.fn(),
+}));
+vi.mock('../../utils/logger', () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
+import { setupConversationIPC } from '../../../main/ipc/conversations';
+import { ConversationService } from '../../../main/services/ConversationService';
+import '../../../preload/preload';
 import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
+import { useSettingsStore } from '../settings';
 
-// Helper to create valid BashCommandAction
+import {
+  startRealStack, settle, onDisk, disk, files, releaseReads, releaseWrites,
+  storedConfig, unmountApp,
+} from './support/real-stack';
+
+const DIR = '/home/user/project';
+
+/** A valid BashCommandAction. */
 function createBashAction(overrides: Partial<BashCommandAction> & { id: string }): BashCommandAction {
   return {
     type: 'bash-command',
@@ -34,92 +64,44 @@ function createBashAction(overrides: Partial<BashCommandAction> & { id: string }
   };
 }
 
-// Mock logger
-vi.mock('../../utils/logger', () => ({
-  logger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+function message(id: string, content: string, role: ChatMessage['role'] = 'user'): ChatMessage {
+  return { id, role, content, timestamp: 1000 };
+}
 
-// Mock settings store - provides workingDirectory for save operations
-vi.mock('../settings', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../settings')>();
-  return {
-    ...actual,
-    useSettingsStore: () => ({
-      workingDirectory: '/home/user/project',
-      setWorkingDirectory: vi.fn(),
-    }),
+/** Write a conversation straight to the fake disk, as a previous run would. */
+function seed(conversation: Partial<Conversation> & { id: string }): Conversation {
+  const full: Conversation = {
+    title: 'Seeded',
+    workingDirectory: DIR,
+    messages: [],
+    createdAt: 1000,
+    updatedAt: 2000,
+    ...conversation,
   };
-});
-
-// Mock CONSTANTS
-vi.mock('../../constants/app', () => ({
-  CONSTANTS: {
-    CONVERSATION: {
-      TITLE_MAX_LENGTH: 50,
-      TITLE_TRUNCATE_LENGTH: 47,
-    },
-    MESSAGES: {
-      MAX_COUNT: 100,
-    },
-  },
-}));
-
-// Mock window.electron
-const mockElectron = {
-  conversation: {
-    list: vi.fn(),
-    get: vi.fn(),
-    save: vi.fn(),
-    delete: vi.fn(),
-  },
-  config: {
-    get: vi.fn(),
-    set: vi.fn(),
-    onChange: vi.fn(() => () => {}),
-  },
-};
-
-// Set up the mock before tests
-vi.stubGlobal('window', { electron: mockElectron });
+  files.set(`/conversations/${full.id}.json`, JSON.stringify(full));
+  return full;
+}
 
 describe('useConversationsStore', () => {
   let store: ReturnType<typeof useConversationsStore>;
   let chatStore: ReturnType<typeof useChatStore>;
 
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    vi.clearAllMocks();
-
-    // Setup default mock returns
-    mockElectron.conversation.list.mockResolvedValue([]);
-    mockElectron.conversation.get.mockResolvedValue(null);
-    mockElectron.conversation.save.mockResolvedValue(undefined);
-    mockElectron.conversation.delete.mockResolvedValue(undefined);
-    mockElectron.config.get.mockResolvedValue({
-      workingDirectory: '/home/user/project',
-      apiKey: '',
-      oauthToken: '',
-      authMethod: 'none',
-      recentProjects: [],
-      theme: 'system',
-      fontSize: 14,
-      autoApproveReads: true,
-      lastConversationId: '',
+  beforeEach(async () => {
+    await startRealStack({
+      ConversationService: ConversationService as unknown as new () => never,
+      setupConversationIPC: setupConversationIPC as unknown as (service: never) => void,
+      workingDirectory: DIR,
     });
-    mockElectron.config.set.mockResolvedValue(undefined);
 
-    // Initialize stores
     store = useConversationsStore();
     chatStore = useChatStore();
+    const settings = useSettingsStore();
+    settings.config.workingDirectory = DIR;
+    settings.config.apiKey = 'test-key';
   });
 
   afterEach(() => {
-    vi.clearAllMocks();
+    unmountApp();
   });
 
   // ===========================================================================
@@ -145,12 +127,6 @@ describe('useConversationsStore', () => {
     it('should have no error', () => {
       expect(store.error).toBeNull();
     });
-
-    it('should not be initialized', () => {
-      // Private state, but we can check behavior
-      // Before initialize(), auto-save watchers should not trigger
-      expect(store.currentConversationId).toBeNull();
-    });
   });
 
   // ===========================================================================
@@ -162,10 +138,10 @@ describe('useConversationsStore', () => {
         expect(store.hasConversations).toBe(false);
       });
 
-      it('should be true when conversations exist', () => {
-        store.conversations = [
-          { id: '1', title: 'Test', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 1000 },
-        ];
+      it('should be true when conversations exist', async () => {
+        seed({ id: '1', title: 'Test' });
+        await store.loadConversationList();
+
         expect(store.hasConversations).toBe(true);
       });
     });
@@ -175,45 +151,46 @@ describe('useConversationsStore', () => {
         expect(store.currentConversation).toBeNull();
       });
 
-      it('should return current conversation when ID matches', () => {
-        store.conversations = [
-          { id: '1', title: 'Test', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 1000 },
-          { id: '2', title: 'Another', workingDirectory: '', messages: [], createdAt: 2000, updatedAt: 2000 },
-        ];
+      it('should return current conversation when ID matches', async () => {
+        seed({ id: '1', title: 'Test', updatedAt: 1000 });
+        seed({ id: '2', title: 'Another', updatedAt: 2000 });
+        await store.loadConversationList();
+
         store.currentConversationId = '2';
+
         expect(store.currentConversation?.id).toBe('2');
         expect(store.currentConversation?.title).toBe('Another');
       });
 
-      it('should return null when ID does not match any conversation', () => {
-        store.conversations = [
-          { id: '1', title: 'Test', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 1000 },
-        ];
+      it('should return null when ID does not match any conversation', async () => {
+        seed({ id: '1', title: 'Test' });
+        await store.loadConversationList();
+
         store.currentConversationId = 'non-existent';
+
         expect(store.currentConversation).toBeNull();
       });
     });
 
     describe('sortedConversations', () => {
-      it('should sort by updatedAt descending (newest first)', () => {
-        store.conversations = [
-          { id: '1', title: 'Old', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 1000 },
-          { id: '2', title: 'New', workingDirectory: '', messages: [], createdAt: 2000, updatedAt: 3000 },
-          { id: '3', title: 'Mid', workingDirectory: '', messages: [], createdAt: 1500, updatedAt: 2000 },
-        ];
-        expect(store.sortedConversations[0].id).toBe('2');
-        expect(store.sortedConversations[1].id).toBe('3');
-        expect(store.sortedConversations[2].id).toBe('1');
+      it('should sort by updatedAt descending (newest first)', async () => {
+        seed({ id: '1', title: 'Old', updatedAt: 1000 });
+        seed({ id: '2', title: 'New', updatedAt: 3000 });
+        seed({ id: '3', title: 'Mid', updatedAt: 2000 });
+        await store.loadConversationList();
+
+        expect(store.sortedConversations.map((c) => c.id)).toEqual(['2', '3', '1']);
       });
 
-      it('should not mutate original array', () => {
-        store.conversations = [
-          { id: '1', title: 'Old', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 1000 },
-          { id: '2', title: 'New', workingDirectory: '', messages: [], createdAt: 2000, updatedAt: 3000 },
-        ];
-        const original = [...store.conversations];
+      it('should not mutate original array', async () => {
+        seed({ id: '1', title: 'Old', updatedAt: 1000 });
+        seed({ id: '2', title: 'New', updatedAt: 3000 });
+        await store.loadConversationList();
+
+        const firstBefore = store.conversations[0].id;
         const sorted = store.sortedConversations;
-        expect(store.conversations[0].id).toBe(original[0].id);
+
+        expect(store.conversations[0].id).toBe(firstBefore);
         expect(sorted).not.toBe(store.conversations);
       });
 
@@ -221,10 +198,10 @@ describe('useConversationsStore', () => {
         expect(store.sortedConversations).toEqual([]);
       });
 
-      it('should handle single conversation', () => {
-        store.conversations = [
-          { id: '1', title: 'Only', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 1000 },
-        ];
+      it('should handle single conversation', async () => {
+        seed({ id: '1', title: 'Only' });
+        await store.loadConversationList();
+
         expect(store.sortedConversations).toHaveLength(1);
         expect(store.sortedConversations[0].id).toBe('1');
       });
@@ -235,46 +212,47 @@ describe('useConversationsStore', () => {
   // loadConversationList
   // ===========================================================================
   describe('loadConversationList', () => {
-    it('should load conversations from API', async () => {
-      const conversations: Conversation[] = [
-        { id: 'conv_1', title: 'First', workingDirectory: '/home', messages: [], createdAt: 1000, updatedAt: 2000 },
-        { id: 'conv_2', title: 'Second', workingDirectory: '/home', messages: [], createdAt: 2000, updatedAt: 3000 },
-      ];
-      mockElectron.conversation.list.mockResolvedValue(conversations);
+    it('should load conversations from disk', async () => {
+      seed({ id: 'conv_1', title: 'First', updatedAt: 2000 });
+      seed({ id: 'conv_2', title: 'Second', updatedAt: 3000 });
 
       await store.loadConversationList();
 
-      expect(mockElectron.conversation.list).toHaveBeenCalled();
       expect(store.conversations).toHaveLength(2);
       expect(store.isLoading).toBe(false);
     });
 
     it('should set isLoading during operation', async () => {
-      let resolvePromise: () => void;
-      mockElectron.conversation.list.mockImplementation(() =>
-        new Promise((resolve) => { resolvePromise = () => resolve([]); })
-      );
+      seed({ id: 'conv_1', title: 'First' });
+      disk.holdReads = true;
 
       const loadPromise = store.loadConversationList();
+      await settle(2);
       expect(store.isLoading).toBe(true);
 
-      resolvePromise!();
+      await releaseReads();
       await loadPromise;
       expect(store.isLoading).toBe(false);
     });
 
-    it('should handle errors and set error state', async () => {
-      mockElectron.conversation.list.mockRejectedValue(new Error('Network error'));
+    it('shows an unreadable directory as no conversations, not as an error', async () => {
+      // Deliberate, and worth knowing: ConversationService.list() catches its
+      // own read failures and returns an empty array, so nothing downstream
+      // can tell "no conversations" from "the directory could not be read".
+      // Nothing is written on this path, so it cannot destroy anything — but
+      // it does mean a disk problem is reported as an empty history.
+      seed({ id: 'conv_1', title: 'Exists' });
+      disk.failReads = true;
 
       await store.loadConversationList();
 
-      expect(store.error).toBe('Failed to load conversations');
+      expect(store.conversations).toEqual([]);
+      expect(store.error).toBeNull();
       expect(store.isLoading).toBe(false);
     });
 
     it('should clear error on successful load', async () => {
       store.error = 'Previous error';
-      mockElectron.conversation.list.mockResolvedValue([]);
 
       await store.loadConversationList();
 
@@ -282,8 +260,6 @@ describe('useConversationsStore', () => {
     });
 
     it('should handle empty list', async () => {
-      mockElectron.conversation.list.mockResolvedValue([]);
-
       await store.loadConversationList();
 
       expect(store.conversations).toEqual([]);
@@ -291,18 +267,31 @@ describe('useConversationsStore', () => {
     });
 
     it('should replace existing conversations', async () => {
-      store.conversations = [
-        { id: 'old', title: 'Old', workingDirectory: '', messages: [], createdAt: 1, updatedAt: 1 },
-      ];
+      seed({ id: 'old', title: 'Old' });
+      await store.loadConversationList();
+      expect(store.conversations[0].id).toBe('old');
 
-      mockElectron.conversation.list.mockResolvedValue([
-        { id: 'new', title: 'New', workingDirectory: '', messages: [], createdAt: 2, updatedAt: 2 },
-      ]);
+      files.clear();
+      seed({ id: 'new', title: 'New' });
 
       await store.loadConversationList();
 
       expect(store.conversations).toHaveLength(1);
       expect(store.conversations[0].id).toBe('new');
+    });
+
+    it('should not carry messages in the list', async () => {
+      // The list is metadata only — holding every conversation's messages is
+      // exactly the memory growth the window exists to avoid.
+      seed({
+        id: 'conv_1',
+        title: 'With messages',
+        messages: [message('m1', 'hello'), message('m2', 'there')],
+      });
+
+      await store.loadConversationList();
+
+      expect(store.conversations[0].messages).toEqual([]);
     });
   });
 
@@ -311,31 +300,20 @@ describe('useConversationsStore', () => {
   // ===========================================================================
   describe('loadConversation', () => {
     it('should load a conversation and update chat store', async () => {
-      const conversation: Conversation = {
+      seed({
         id: 'conv_1',
         title: 'Test',
-        workingDirectory: '/home/user/project',
-        messages: [
-          { id: 'msg_1', role: 'user', content: 'Hello', timestamp: 1000 },
-          { id: 'msg_2', role: 'assistant', content: 'Hi there!', timestamp: 2000 },
-        ],
-        createdAt: 1000,
-        updatedAt: 2000,
-      };
-      mockElectron.conversation.get.mockResolvedValue(conversation);
+        messages: [message('msg_1', 'Hello'), message('msg_2', 'Hi there!', 'assistant')],
+      });
 
       const result = await store.loadConversation('conv_1');
 
       expect(result).toBe(true);
       expect(store.currentConversationId).toBe('conv_1');
-      expect(chatStore.messages).toHaveLength(2);
-      expect(chatStore.messages[0].content).toBe('Hello');
-      expect(chatStore.messages[1].content).toBe('Hi there!');
+      expect(chatStore.messages.map((m) => m.content)).toEqual(['Hello', 'Hi there!']);
     });
 
     it('should return false if conversation not found', async () => {
-      mockElectron.conversation.get.mockResolvedValue(null);
-
       const result = await store.loadConversation('nonexistent');
 
       expect(result).toBe(false);
@@ -343,16 +321,7 @@ describe('useConversationsStore', () => {
     });
 
     it('should add conversation to list if not present', async () => {
-      const conversation: Conversation = {
-        id: 'conv_new',
-        title: 'New',
-        workingDirectory: '/home',
-        messages: [],
-        createdAt: 1000,
-        updatedAt: 2000,
-      };
-      mockElectron.conversation.get.mockResolvedValue(conversation);
-
+      seed({ id: 'conv_new', title: 'New' });
       expect(store.conversations).toHaveLength(0);
 
       await store.loadConversation('conv_new');
@@ -362,19 +331,10 @@ describe('useConversationsStore', () => {
     });
 
     it('should update existing conversation in list', async () => {
-      store.conversations = [
-        { id: 'conv_1', title: 'Old Title', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 1000 },
-      ];
+      seed({ id: 'conv_1', title: 'Old Title' });
+      await store.loadConversationList();
 
-      const updatedConversation: Conversation = {
-        id: 'conv_1',
-        title: 'New Title',
-        workingDirectory: '/home',
-        messages: [{ id: 'msg', role: 'user', content: 'Test', timestamp: 1000 }],
-        createdAt: 1000,
-        updatedAt: 2000,
-      };
-      mockElectron.conversation.get.mockResolvedValue(updatedConversation);
+      seed({ id: 'conv_1', title: 'New Title', messages: [message('msg', 'Test')] });
 
       await store.loadConversation('conv_1');
 
@@ -383,21 +343,21 @@ describe('useConversationsStore', () => {
     });
 
     it('should set isLoading during operation', async () => {
-      let resolvePromise: (conv: Conversation) => void;
-      mockElectron.conversation.get.mockImplementation(() =>
-        new Promise((resolve) => { resolvePromise = resolve; })
-      );
+      seed({ id: 'conv_1', title: 'Test' });
+      disk.holdReads = true;
 
       const loadPromise = store.loadConversation('conv_1');
+      await settle(2);
       expect(store.isLoading).toBe(true);
 
-      resolvePromise!({ id: 'conv_1', title: 'Test', workingDirectory: '', messages: [], createdAt: 1, updatedAt: 1 });
+      await releaseReads();
       await loadPromise;
       expect(store.isLoading).toBe(false);
     });
 
-    it('should handle API errors', async () => {
-      mockElectron.conversation.get.mockRejectedValue(new Error('API Error'));
+    it('should handle read errors', async () => {
+      seed({ id: 'conv_1', title: 'Test' });
+      disk.failReads = true;
 
       const result = await store.loadConversation('conv_1');
 
@@ -406,42 +366,104 @@ describe('useConversationsStore', () => {
     });
 
     it('should persist the loaded conversation ID to config', async () => {
-      const conversation: Conversation = {
-        id: 'conv_persist',
-        title: 'Persist Test',
-        workingDirectory: '/home/user/project',
-        messages: [],
-        createdAt: 1000,
-        updatedAt: 2000,
-      };
-      mockElectron.conversation.get.mockResolvedValue(conversation);
+      seed({ id: 'conv_persist', title: 'Persist Test' });
 
       await store.loadConversation('conv_persist');
+      await settle();
 
-      expect(mockElectron.config.set).toHaveBeenCalledWith({ lastConversationId: 'conv_persist' });
+      expect(storedConfig.lastConversationId).toBe('conv_persist');
     });
 
-    it('should handle large conversation history', async () => {
-      const messages: ChatMessage[] = Array.from({ length: 50 }, (_, i) => ({
-        id: `msg_${i}`,
-        role: i % 2 === 0 ? 'user' as const : 'assistant' as const,
-        content: `Message ${i}`,
-        timestamp: i * 1000,
-      }));
-
-      const conversation: Conversation = {
-        id: 'conv_large',
-        title: 'Large',
-        workingDirectory: '/home',
-        messages,
-        createdAt: 1000,
-        updatedAt: 50000,
-      };
-      mockElectron.conversation.get.mockResolvedValue(conversation);
+    it('should load a long history as a window, not in full', async () => {
+      // The point of the window: 2,000 stored messages must not become 2,000
+      // messages in memory. ~1.8 KB each, so an unbounded list is tens of
+      // megabytes for one conversation and grows for as long as the app runs.
+      const messages = Array.from({ length: 2000 }, (_, i) =>
+        message(`msg_${i}`, `Message ${i}`, i % 2 === 0 ? 'user' : 'assistant'),
+      );
+      seed({ id: 'conv_large', title: 'Large', messages });
 
       await store.loadConversation('conv_large');
 
-      expect(chatStore.messages).toHaveLength(50);
+      expect(chatStore.messages).toHaveLength(500);
+      expect(chatStore.olderMessageCount).toBe(1500);
+      // The tail, which is what the user is looking at.
+      expect(chatStore.messages.at(-1)?.content).toBe('Message 1999');
+    });
+
+    it('should load a short history in full, with nothing older', async () => {
+      seed({
+        id: 'conv_short',
+        title: 'Short',
+        messages: [message('m1', 'one'), message('m2', 'two')],
+      });
+
+      await store.loadConversation('conv_short');
+
+      expect(chatStore.messages).toHaveLength(2);
+      expect(chatStore.olderMessageCount).toBe(0);
+    });
+  });
+
+  // ===========================================================================
+  // loadEarlierMessages
+  // ===========================================================================
+  describe('loadEarlierMessages', () => {
+    /** 1,200 stored messages: a window plus pages behind it. */
+    async function seedLong(): Promise<void> {
+      const messages = Array.from({ length: 1200 }, (_, i) => message(`msg_${i}`, `Message ${i}`));
+      seed({ id: 'conv_long', title: 'Long', messages });
+      await store.loadConversation('conv_long');
+    }
+
+    it('puts the previous page in front of the window', async () => {
+      await seedLong();
+      expect(chatStore.messages[0].content).toBe('Message 700');
+
+      const loaded = await store.loadEarlierMessages();
+
+      expect(loaded).toBe(500);
+      expect(chatStore.messages).toHaveLength(1000);
+      expect(chatStore.messages[0].content).toBe('Message 200');
+      expect(chatStore.olderMessageCount).toBe(200);
+    });
+
+    it('reaches the start of the conversation', async () => {
+      await seedLong();
+
+      await store.loadEarlierMessages();
+      await store.loadEarlierMessages();
+
+      expect(chatStore.messages).toHaveLength(1200);
+      expect(chatStore.messages[0].content).toBe('Message 0');
+      expect(chatStore.olderMessageCount).toBe(0);
+    });
+
+    it('does nothing when there is nothing older', async () => {
+      seed({ id: 'conv_short', title: 'Short', messages: [message('m1', 'one')] });
+      await store.loadConversation('conv_short');
+
+      expect(await store.loadEarlierMessages()).toBe(0);
+      expect(chatStore.messages).toHaveLength(1);
+    });
+
+    it('does not duplicate messages already held', async () => {
+      await seedLong();
+      await store.loadEarlierMessages();
+
+      const ids = chatStore.messages.map((m) => m.id);
+      expect(new Set(ids).size).toBe(ids.length);
+    });
+
+    it('reports a failure without losing what is on screen', async () => {
+      await seedLong();
+      const before = chatStore.messages.length;
+      disk.failReads = true;
+
+      expect(await store.loadEarlierMessages()).toBe(0);
+
+      expect(chatStore.messages).toHaveLength(before);
+      expect(store.error).toBe('Could not load earlier messages');
     });
   });
 
@@ -491,9 +513,25 @@ describe('useConversationsStore', () => {
       expect(id.length).toBeGreaterThan(0);
     });
 
-    it('should persist the new conversation ID to config', () => {
+    it('should persist the new conversation ID to config', async () => {
       const id = store.createNewConversation();
-      expect(mockElectron.config.set).toHaveBeenCalledWith({ lastConversationId: id });
+      await settle();
+
+      expect(storedConfig.lastConversationId).toBe(id);
+    });
+
+    it('should not lose the previous conversation it was looking at', async () => {
+      // Creating a conversation replaces the message list, so the one being
+      // left has to be written first.
+      store.currentConversationId = 'conv_leaving';
+      chatStore.setCurrentConversation('conv_leaving');
+      chatStore.addUserMessage('do not lose me');
+      await store.saveCurrentConversation();
+
+      store.createNewConversation();
+      await settle();
+
+      expect(onDisk('conv_leaving')?.messages.map((m) => m.content)).toEqual(['do not lose me']);
     });
   });
 
@@ -501,9 +539,12 @@ describe('useConversationsStore', () => {
   // saveCurrentConversation
   // ===========================================================================
   describe('saveCurrentConversation', () => {
-    it('should save conversation with current messages', async () => {
+    beforeEach(() => {
       store.currentConversationId = 'conv_1';
       chatStore.setCurrentConversation('conv_1');
+    });
+
+    it('should store the current messages', async () => {
       chatStore.addUserMessage('Hello');
       chatStore.startAssistantMessage('conv_1');
       chatStore.appendChunk('conv_1', 'Hi there!');
@@ -511,15 +552,12 @@ describe('useConversationsStore', () => {
 
       await store.saveCurrentConversation();
 
-      expect(mockElectron.conversation.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: 'conv_1',
-          messages: expect.arrayContaining([
-            expect.objectContaining({ role: 'user', content: 'Hello' }),
-            expect.objectContaining({ role: 'assistant', content: 'Hi there!' }),
-          ]),
-        })
-      );
+      const stored = onDisk('conv_1');
+      expect(stored?.id).toBe('conv_1');
+      expect(stored?.messages.map((m) => [m.role, m.content])).toEqual([
+        ['user', 'Hello'],
+        ['assistant', 'Hi there!'],
+      ]);
     });
 
     it('should not save if no current conversation', async () => {
@@ -528,66 +566,53 @@ describe('useConversationsStore', () => {
 
       await store.saveCurrentConversation();
 
-      expect(mockElectron.conversation.save).not.toHaveBeenCalled();
+      expect(disk.writes).toBe(0);
     });
 
     it('should not save if no messages', async () => {
-      store.currentConversationId = 'conv_1';
-
       await store.saveCurrentConversation();
 
-      expect(mockElectron.conversation.save).not.toHaveBeenCalled();
+      expect(disk.writes).toBe(0);
     });
 
     it('should set isSaving during operation', async () => {
-      store.currentConversationId = 'conv_1';
       chatStore.addUserMessage('Hello');
-
-      let resolvePromise: () => void;
-      mockElectron.conversation.save.mockImplementation(() =>
-        new Promise((resolve) => { resolvePromise = () => resolve(undefined); })
-      );
+      disk.holdWrites = true;
 
       const savePromise = store.saveCurrentConversation();
+      await settle(2);
       expect(store.isSaving).toBe(true);
 
-      resolvePromise!();
+      await releaseWrites();
       await savePromise;
       expect(store.isSaving).toBe(false);
     });
 
     it('should generate title from first user message', async () => {
-      store.currentConversationId = 'conv_1';
       chatStore.addUserMessage('How do I fix this bug?');
 
       await store.saveCurrentConversation();
 
-      expect(mockElectron.conversation.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: 'How do I fix this bug?',
-        })
-      );
+      expect(onDisk('conv_1')?.title).toBe('How do I fix this bug?');
     });
 
     it('should truncate long titles', async () => {
-      store.currentConversationId = 'conv_1';
-      const longMessage = 'This is a very long message that should be truncated because it exceeds the maximum title length';
-      chatStore.addUserMessage(longMessage);
+      chatStore.addUserMessage(
+        'This is a very long message that should be truncated because it exceeds the maximum title length',
+      );
 
       await store.saveCurrentConversation();
 
-      const savedConversation = mockElectron.conversation.save.mock.calls[0][0];
-      expect(savedConversation.title.length).toBeLessThanOrEqual(50);
-      expect(savedConversation.title).toContain('...');
+      const title = onDisk('conv_1')?.title ?? '';
+      expect(title.length).toBeLessThanOrEqual(50);
+      expect(title).toContain('...');
     });
 
     it('should update conversation in list', async () => {
-      store.conversations = [
-        { id: 'conv_1', title: 'Old', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 1000 },
-      ];
-      store.currentConversationId = 'conv_1';
-      chatStore.addUserMessage('New message');
+      seed({ id: 'conv_1', title: 'Old' });
+      await store.loadConversationList();
 
+      chatStore.addUserMessage('New message');
       await store.saveCurrentConversation();
 
       expect(store.conversations[0].title).toBe('New message');
@@ -595,23 +620,60 @@ describe('useConversationsStore', () => {
 
     it('should add conversation to list if not present', async () => {
       store.currentConversationId = 'conv_new';
+      chatStore.setCurrentConversation('conv_new');
       chatStore.addUserMessage('Hello');
 
       await store.saveCurrentConversation();
 
-      expect(store.conversations.some((c: { id: string }) => c.id === 'conv_new')).toBe(true);
+      expect(store.conversations.some((c) => c.id === 'conv_new')).toBe(true);
     });
 
     it('should handle save errors', async () => {
-      store.currentConversationId = 'conv_1';
       chatStore.addUserMessage('Hello');
-      mockElectron.conversation.save.mockRejectedValue(new Error('Save failed'));
+      disk.failWrites = true;
 
       await store.saveCurrentConversation();
 
-      // Error message now includes the actual error details for better debugging
-      expect(store.error).toBe('Failed to save conversation: Save failed');
+      expect(store.error).toMatch(/^Failed to save conversation: /);
       expect(store.isSaving).toBe(false);
+    });
+
+    it('does not replace a conversation it failed to read', async () => {
+      // The danger in a write that merges: it builds on what was read. A read
+      // error used to come back as "no such conversation", so an unreadable
+      // file was treated as new and the next write replaced a history it had
+      // only failed to read. It now fails instead, leaving the file alone.
+      seed({
+        id: 'conv_1',
+        title: 'Precious',
+        messages: [message('old_1', 'keep me'), message('old_2', 'and me')],
+      });
+      const before = files.get('/conversations/conv_1.json');
+
+      chatStore.addUserMessage('new message');
+      disk.failReads = true;
+
+      await store.saveCurrentConversation();
+
+      expect(store.error).toMatch(/^Failed to save conversation: /);
+      expect(files.get('/conversations/conv_1.json')).toBe(before);
+    });
+
+    it('should not shorten a stored conversation it only holds part of', async () => {
+      // The invariant the window rests on. A write carries the messages in
+      // memory, and memory may hold only the tail.
+      const messages = Array.from({ length: 700 }, (_, i) => message(`msg_${i}`, `Message ${i}`));
+      seed({ id: 'conv_windowed', title: 'Windowed', messages });
+      await store.loadConversation('conv_windowed');
+      expect(chatStore.messages).toHaveLength(500);
+
+      chatStore.addUserMessage('a new one');
+      await store.saveCurrentConversation();
+
+      const stored = onDisk('conv_windowed');
+      expect(stored?.messages).toHaveLength(701);
+      expect(stored?.messages[0].content).toBe('Message 0');
+      expect(stored?.messages.at(-1)?.content).toBe('a new one');
     });
   });
 
@@ -620,20 +682,18 @@ describe('useConversationsStore', () => {
   // ===========================================================================
   describe('deleteConversation', () => {
     it('should delete a conversation', async () => {
-      store.conversations = [
-        { id: 'conv_1', title: 'Test', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 2000 },
-      ];
+      seed({ id: 'conv_1', title: 'Test' });
+      await store.loadConversationList();
 
       await store.deleteConversation('conv_1');
 
-      expect(mockElectron.conversation.delete).toHaveBeenCalledWith('conv_1');
+      expect(onDisk('conv_1')).toBeNull();
       expect(store.conversations).toHaveLength(0);
     });
 
     it('should create new conversation if deleting current', async () => {
-      store.conversations = [
-        { id: 'conv_1', title: 'Test', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 2000 },
-      ];
+      seed({ id: 'conv_1', title: 'Test' });
+      await store.loadConversationList();
       store.currentConversationId = 'conv_1';
 
       await store.deleteConversation('conv_1');
@@ -643,39 +703,39 @@ describe('useConversationsStore', () => {
     });
 
     it('should not affect current conversation when deleting different one', async () => {
-      store.conversations = [
-        { id: 'conv_1', title: 'Current', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 2000 },
-        { id: 'conv_2', title: 'Other', workingDirectory: '', messages: [], createdAt: 2000, updatedAt: 3000 },
-      ];
+      seed({ id: 'conv_1', title: 'Current' });
+      seed({ id: 'conv_2', title: 'Other' });
+      await store.loadConversationList();
       store.currentConversationId = 'conv_1';
 
       await store.deleteConversation('conv_2');
 
       expect(store.currentConversationId).toBe('conv_1');
       expect(store.conversations).toHaveLength(1);
+      expect(onDisk('conv_1')).not.toBeNull();
     });
 
     it('should handle delete errors', async () => {
-      store.conversations = [
-        { id: 'conv_1', title: 'Test', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 2000 },
-      ];
-      mockElectron.conversation.delete.mockRejectedValue(new Error('Delete failed'));
+      seed({ id: 'conv_1', title: 'Test' });
+      await store.loadConversationList();
+      disk.failUnlink = true;
 
       await store.deleteConversation('conv_1');
 
       expect(store.error).toBe('Failed to delete conversation');
+      // And the conversation is still there, rather than being dropped from
+      // the list as though the delete had worked.
+      expect(onDisk('conv_1')).not.toBeNull();
     });
 
     it('should handle deleting non-existent conversation gracefully', async () => {
-      store.conversations = [
-        { id: 'conv_1', title: 'Test', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 2000 },
-      ];
+      seed({ id: 'conv_1', title: 'Test' });
+      await store.loadConversationList();
 
       await store.deleteConversation('non_existent');
 
-      // Should call API but not affect local list
-      expect(mockElectron.conversation.delete).toHaveBeenCalledWith('non_existent');
       expect(store.conversations).toHaveLength(1);
+      expect(store.error).toBeNull();
     });
   });
 
@@ -683,19 +743,15 @@ describe('useConversationsStore', () => {
   // initialize
   // ===========================================================================
   describe('initialize', () => {
-    it('should load conversation list', async () => {
-      mockElectron.conversation.list.mockResolvedValue([
-        { id: 'conv_1', title: 'Test', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 2000 },
-      ]);
+    it('should load the conversation list', async () => {
+      seed({ id: 'conv_1', title: 'Test' });
 
       await store.initialize();
 
-      expect(mockElectron.conversation.list).toHaveBeenCalled();
+      expect(store.conversations.some((c) => c.id === 'conv_1')).toBe(true);
     });
 
     it('should create initial conversation if none exists', async () => {
-      mockElectron.config.get.mockResolvedValue({ lastConversationId: '' });
-
       await store.initialize();
 
       expect(store.currentConversationId).toMatch(/^conv_/);
@@ -710,40 +766,30 @@ describe('useConversationsStore', () => {
     });
 
     it('should restore last active conversation on startup', async () => {
-      const savedConversation: Conversation = {
+      seed({
         id: 'conv_saved',
         title: 'Saved',
-        workingDirectory: '/home/user/project',
-        messages: [{ id: 'msg_1', role: 'user', content: 'Hello', timestamp: 1000 }],
-        createdAt: 1000,
-        updatedAt: 2000,
-      };
-      mockElectron.conversation.list.mockResolvedValue([
-        { id: 'conv_saved', title: 'Saved', workingDirectory: '/home/user/project', messages: [], createdAt: 1000, updatedAt: 2000 },
-      ]);
-      mockElectron.conversation.get.mockResolvedValue(savedConversation);
-      mockElectron.config.get.mockResolvedValue({ lastConversationId: 'conv_saved' });
+        messages: [message('msg_1', 'Hello')],
+      });
+      storedConfig.lastConversationId = 'conv_saved';
 
       await store.initialize();
 
       expect(store.currentConversationId).toBe('conv_saved');
-      expect(mockElectron.conversation.get).toHaveBeenCalledWith('conv_saved');
+      expect(chatStore.messages.map((m) => m.content)).toEqual(['Hello']);
     });
 
-    it('should create new conversation if last conversation not found in list', async () => {
-      mockElectron.conversation.list.mockResolvedValue([]);
-      mockElectron.config.get.mockResolvedValue({ lastConversationId: 'conv_missing' });
+    it('should create new conversation if last conversation not found', async () => {
+      storedConfig.lastConversationId = 'conv_missing';
 
       await store.initialize();
 
-      // Fallback: conversation not in list, so a new one is created
       expect(store.currentConversationId).toMatch(/^conv_/);
       expect(store.currentConversationId).not.toBe('conv_missing');
     });
 
-    it('should create new conversation if config.get fails', async () => {
-      mockElectron.conversation.list.mockResolvedValue([]);
-      mockElectron.config.get.mockRejectedValue(new Error('Config read error'));
+    it('should create new conversation if the list cannot be read', async () => {
+      disk.failReads = true;
 
       await store.initialize();
 
@@ -755,15 +801,16 @@ describe('useConversationsStore', () => {
   // cleanup
   // ===========================================================================
   describe('cleanup', () => {
-    it('should save current conversation on cleanup', async () => {
-      store.currentConversationId = 'conv_1';
+    it('should store the current conversation on cleanup', async () => {
+      await store.initialize();
+      const id = store.currentConversationId!;
+      chatStore.setCurrentConversation(id);
       chatStore.addUserMessage('Test message');
-      await store.initialize(); // Enable auto-save
 
-      store.cleanup();
+      await store.cleanup();
+      await settle();
 
-      // saveCurrentConversation is called
-      expect(mockElectron.conversation.save).toHaveBeenCalled();
+      expect(onDisk(id)?.messages.map((m) => m.content)).toEqual(['Test message']);
     });
   });
 
@@ -787,73 +834,53 @@ describe('useConversationsStore', () => {
   // Integration Scenarios
   // ===========================================================================
   describe('integration scenarios', () => {
-    it('should handle complete conversation workflow', async () => {
-      // 1. Initialize store
-      mockElectron.conversation.list.mockResolvedValue([]);
+    it('should handle a complete conversation workflow', async () => {
       await store.initialize();
-
       expect(store.currentConversationId).not.toBeNull();
       const convId = store.currentConversationId!;
 
-      // 2. Add messages
       chatStore.setCurrentConversation(convId);
       chatStore.addUserMessage('Hello');
       chatStore.startAssistantMessage(convId);
       chatStore.appendChunk(convId, 'Hi there!');
       chatStore.finishStreaming(convId);
 
-      // 3. Save conversation
       await store.saveCurrentConversation();
 
-      expect(mockElectron.conversation.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: convId,
-          messages: expect.arrayContaining([
-            expect.objectContaining({ content: 'Hello' }),
-            expect.objectContaining({ content: 'Hi there!' }),
-          ]),
-        })
-      );
+      expect(onDisk(convId)?.messages.map((m) => m.content)).toEqual(['Hello', 'Hi there!']);
     });
 
     it('should handle switching between conversations', async () => {
-      // Setup existing conversations
-      const conv1: Conversation = {
-        id: 'conv_1',
-        title: 'First',
-        workingDirectory: '/project1',
-        messages: [{ id: 'msg_1', role: 'user', content: 'First message', timestamp: 1000 }],
-        createdAt: 1000,
-        updatedAt: 2000,
-      };
-      const conv2: Conversation = {
-        id: 'conv_2',
-        title: 'Second',
-        workingDirectory: '/project2',
-        messages: [{ id: 'msg_2', role: 'user', content: 'Second message', timestamp: 2000 }],
-        createdAt: 2000,
-        updatedAt: 3000,
-      };
+      seed({ id: 'conv_1', title: 'First', messages: [message('msg_1', 'First message')] });
+      seed({ id: 'conv_2', title: 'Second', messages: [message('msg_2', 'Second message')] });
 
-      mockElectron.conversation.get.mockImplementation((id) =>
-        Promise.resolve(id === 'conv_1' ? conv1 : id === 'conv_2' ? conv2 : null)
-      );
-
-      // Load first conversation
       await store.loadConversation('conv_1');
       expect(chatStore.messages[0].content).toBe('First message');
 
-      // Switch to second conversation
       await store.loadConversation('conv_2');
       expect(chatStore.messages[0].content).toBe('Second message');
       expect(store.currentConversationId).toBe('conv_2');
     });
 
-    it('should handle creating new conversation while having existing ones', async () => {
-      store.conversations = [
-        { id: 'conv_1', title: 'Existing', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 2000 },
-      ];
+    it('should keep both conversations intact across a switch', async () => {
+      seed({ id: 'conv_1', title: 'First', messages: [message('msg_1', 'First message')] });
+      seed({ id: 'conv_2', title: 'Second', messages: [message('msg_2', 'Second message')] });
+
+      await store.loadConversation('conv_1');
+      chatStore.addUserMessage('added to the first');
+      await store.switchConversation('conv_2');
+      await settle();
+
+      expect(onDisk('conv_1')?.messages.map((m) => m.content))
+        .toEqual(['First message', 'added to the first']);
+      expect(onDisk('conv_2')?.messages.map((m) => m.content)).toEqual(['Second message']);
+    });
+
+    it('should handle creating a new conversation while having existing ones', async () => {
+      seed({ id: 'conv_1', title: 'Existing' });
+      await store.loadConversationList();
       store.currentConversationId = 'conv_1';
+      chatStore.setCurrentConversation('conv_1');
       chatStore.addUserMessage('Existing message');
 
       const newId = store.createNewConversation();
@@ -863,16 +890,10 @@ describe('useConversationsStore', () => {
       expect(chatStore.messages).toHaveLength(0);
     });
 
-    it('should handle rapid conversation operations', async () => {
-      // Create multiple conversations rapidly
-      const ids: string[] = [];
-      for (let i = 0; i < 5; i++) {
-        ids.push(store.createNewConversation());
-      }
+    it('should handle rapid conversation creation', () => {
+      const ids = Array.from({ length: 5 }, () => store.createNewConversation());
 
-      // All IDs should be unique
-      const uniqueIds = new Set(ids);
-      expect(uniqueIds.size).toBe(5);
+      expect(new Set(ids).size).toBe(5);
     });
   });
 
@@ -880,35 +901,30 @@ describe('useConversationsStore', () => {
   // Edge Cases
   // ===========================================================================
   describe('edge cases', () => {
-    it('should handle conversation with empty title', async () => {
+    beforeEach(() => {
       store.currentConversationId = 'conv_1';
       chatStore.setCurrentConversation('conv_1');
-      // Only assistant message, no user message for title
+    });
+
+    it('should handle a conversation with no user message to title it', async () => {
       chatStore.startAssistantMessage('conv_1');
       chatStore.appendChunk('conv_1', 'Response');
       chatStore.finishStreaming('conv_1');
 
       await store.saveCurrentConversation();
 
-      const savedConversation = mockElectron.conversation.save.mock.calls[0][0];
-      expect(savedConversation.title).toBe('New Conversation');
+      expect(onDisk('conv_1')?.title).toBe('New Conversation');
     });
 
-    it('should handle unicode in conversation title', async () => {
-      store.currentConversationId = 'conv_1';
+    it('should handle unicode in a conversation title', async () => {
       chatStore.addUserMessage('你好世界 🌍 How are you?');
 
       await store.saveCurrentConversation();
 
-      const savedConversation = mockElectron.conversation.save.mock.calls[0][0];
-      expect(savedConversation.title).toBe('你好世界 🌍 How are you?');
+      expect(onDisk('conv_1')?.title).toBe('你好世界 🌍 How are you?');
     });
 
-    it('should handle conversation with many messages', async () => {
-      store.currentConversationId = 'conv_1';
-      chatStore.setCurrentConversation('conv_1');
-
-      // Add 50 message pairs
+    it('should store a conversation with many messages', async () => {
       for (let i = 0; i < 50; i++) {
         chatStore.addUserMessage(`Question ${i}`);
         chatStore.startAssistantMessage('conv_1');
@@ -918,22 +934,19 @@ describe('useConversationsStore', () => {
 
       await store.saveCurrentConversation();
 
-      const savedConversation = mockElectron.conversation.save.mock.calls[0][0];
-      expect(savedConversation.messages.length).toBe(100);
+      expect(onDisk('conv_1')?.messages).toHaveLength(100);
     });
 
     it('should preserve conversation timestamps on update', async () => {
-      store.conversations = [
-        { id: 'conv_1', title: 'Test', workingDirectory: '', messages: [], createdAt: 1000, updatedAt: 2000 },
-      ];
-      store.currentConversationId = 'conv_1';
-      chatStore.addUserMessage('New message');
+      seed({ id: 'conv_1', title: 'Test', createdAt: 1000, updatedAt: 2000 });
+      await store.loadConversationList();
 
+      chatStore.addUserMessage('New message');
       await store.saveCurrentConversation();
 
-      const savedConversation = mockElectron.conversation.save.mock.calls[0][0];
-      expect(savedConversation.createdAt).toBe(1000); // Preserved
-      expect(savedConversation.updatedAt).toBeGreaterThan(2000); // Updated
+      const stored = onDisk('conv_1');
+      expect(stored?.createdAt).toBe(1000);
+      expect(stored?.updatedAt).toBeGreaterThan(2000);
     });
   });
 
@@ -1019,52 +1032,30 @@ describe('useConversationsStore', () => {
     });
 
     describe('loadConversation restores session ID', () => {
-      it('should restore sdkSessionId from persisted conversation data', async () => {
-        const conversation: Conversation = {
+      it('should restore sdkSessionId from the stored conversation', async () => {
+        seed({
           id: 'conv_with_session',
           title: 'Has Session',
-          workingDirectory: '/home/user/project',
-          messages: [{ id: 'msg_1', role: 'user', content: 'Hello', timestamp: 1000 }],
-          createdAt: 1000,
-          updatedAt: 2000,
+          messages: [message('msg_1', 'Hello')],
           sdkSessionId: 'persisted-session-id-12345',
-        };
-        mockElectron.conversation.get.mockResolvedValue(conversation);
+        });
 
         await store.loadConversation('conv_with_session');
 
         expect(store.getSdkSessionId('conv_with_session')).toBe('persisted-session-id-12345');
       });
 
-      it('should NOT set session ID when conversation has no sdkSessionId', async () => {
-        const conversation: Conversation = {
-          id: 'conv_no_session',
-          title: 'No Session',
-          workingDirectory: '/home/user/project',
-          messages: [],
-          createdAt: 1000,
-          updatedAt: 2000,
-        };
-        mockElectron.conversation.get.mockResolvedValue(conversation);
+      it('should NOT set session ID when the conversation has none', async () => {
+        seed({ id: 'conv_no_session', title: 'No Session' });
 
         await store.loadConversation('conv_no_session');
 
         expect(store.getSdkSessionId('conv_no_session')).toBeUndefined();
       });
 
-      it('should overwrite stale in-memory session ID when loading from disk', async () => {
+      it('should overwrite a stale in-memory session ID when loading', async () => {
         store.setSdkSessionId('conv_1', 'stale-session');
-
-        const conversation: Conversation = {
-          id: 'conv_1',
-          title: 'Updated',
-          workingDirectory: '/home/user/project',
-          messages: [],
-          createdAt: 1000,
-          updatedAt: 2000,
-          sdkSessionId: 'fresh-session-from-disk',
-        };
-        mockElectron.conversation.get.mockResolvedValue(conversation);
+        seed({ id: 'conv_1', title: 'Updated', sdkSessionId: 'fresh-session-from-disk' });
 
         await store.loadConversation('conv_1');
 
@@ -1073,81 +1064,45 @@ describe('useConversationsStore', () => {
     });
 
     describe('saveCurrentConversation includes session ID', () => {
-      it('should include sdkSessionId in saved payload when set', async () => {
+      it('should store sdkSessionId when set', async () => {
         store.currentConversationId = 'conv_1';
+        chatStore.setCurrentConversation('conv_1');
         chatStore.addUserMessage('Hello');
         store.setSdkSessionId('conv_1', 'save-me-session');
 
         await store.saveCurrentConversation();
 
-        expect(mockElectron.conversation.save).toHaveBeenCalledWith(
-          expect.objectContaining({
-            id: 'conv_1',
-            sdkSessionId: 'save-me-session',
-          })
-        );
+        expect(onDisk('conv_1')?.sdkSessionId).toBe('save-me-session');
       });
 
-      it('should save with undefined sdkSessionId when not set', async () => {
+      it('should store no sdkSessionId when none is set', async () => {
         store.currentConversationId = 'conv_1';
+        chatStore.setCurrentConversation('conv_1');
         chatStore.addUserMessage('Hello');
 
         await store.saveCurrentConversation();
 
-        const savedConversation = mockElectron.conversation.save.mock.calls[0][0];
-        expect(savedConversation.sdkSessionId).toBeUndefined();
+        expect(onDisk('conv_1')?.sdkSessionId).toBeUndefined();
       });
     });
 
     describe('conversation switching preserves session IDs', () => {
       it('should preserve session IDs when switching between conversations', async () => {
-        const conv1: Conversation = {
-          id: 'conv_1',
-          title: 'First',
-          workingDirectory: '/home/user/project',
-          messages: [{ id: 'msg_1', role: 'user', content: 'First message', timestamp: 1000 }],
-          createdAt: 1000,
-          updatedAt: 2000,
-          sdkSessionId: 'session-conv-1',
-        };
-        const conv2: Conversation = {
-          id: 'conv_2',
-          title: 'Second',
-          workingDirectory: '/home/user/project',
-          messages: [{ id: 'msg_2', role: 'user', content: 'Second message', timestamp: 2000 }],
-          createdAt: 2000,
-          updatedAt: 3000,
-          sdkSessionId: 'session-conv-2',
-        };
+        seed({ id: 'conv_1', title: 'First', sdkSessionId: 'session-conv-1' });
+        seed({ id: 'conv_2', title: 'Second', sdkSessionId: 'session-conv-2' });
 
-        mockElectron.conversation.get.mockImplementation((id: string) =>
-          Promise.resolve(id === 'conv_1' ? conv1 : id === 'conv_2' ? conv2 : null)
-        );
-
-        // Load first
         await store.loadConversation('conv_1');
         expect(store.getSdkSessionId('conv_1')).toBe('session-conv-1');
 
-        // Load second
         await store.loadConversation('conv_2');
         expect(store.getSdkSessionId('conv_2')).toBe('session-conv-2');
-
-        // First should still be preserved in memory
         expect(store.getSdkSessionId('conv_1')).toBe('session-conv-1');
       });
     });
 
     describe('getConversationWorkingDirectory', () => {
-      it('should return stored CWD for a loaded conversation', async () => {
-        const conversation: Conversation = {
-          id: 'conv_cwd',
-          title: 'CWD Test',
-          workingDirectory: '/home/user/projectA',
-          messages: [{ id: 'msg_1', role: 'user', content: 'Hello', timestamp: 1000 }],
-          createdAt: 1000,
-          updatedAt: 2000,
-        };
-        mockElectron.conversation.get.mockResolvedValue(conversation);
+      it('should return the stored CWD for a loaded conversation', async () => {
+        seed({ id: 'conv_cwd', title: 'CWD Test', workingDirectory: '/home/user/projectA' });
 
         await store.loadConversation('conv_cwd');
 
@@ -1158,27 +1113,9 @@ describe('useConversationsStore', () => {
         expect(store.getConversationWorkingDirectory('nonexistent')).toBeUndefined();
       });
 
-      it('should return each conversation\'s own CWD, not global', async () => {
-        const convA: Conversation = {
-          id: 'conv_a',
-          title: 'Project A',
-          workingDirectory: '/home/user/projectA',
-          messages: [{ id: 'msg_1', role: 'user', content: 'A', timestamp: 1000 }],
-          createdAt: 1000,
-          updatedAt: 2000,
-        };
-        const convB: Conversation = {
-          id: 'conv_b',
-          title: 'Project B',
-          workingDirectory: '/home/user/projectB',
-          messages: [{ id: 'msg_2', role: 'user', content: 'B', timestamp: 2000 }],
-          createdAt: 2000,
-          updatedAt: 3000,
-        };
-
-        mockElectron.conversation.get.mockImplementation((id: string) =>
-          Promise.resolve(id === 'conv_a' ? convA : id === 'conv_b' ? convB : null)
-        );
+      it("should return each conversation's own CWD, not a global one", async () => {
+        seed({ id: 'conv_a', title: 'Project A', workingDirectory: '/home/user/projectA' });
+        seed({ id: 'conv_b', title: 'Project B', workingDirectory: '/home/user/projectB' });
 
         await store.loadConversation('conv_a');
         await store.loadConversation('conv_b');
@@ -1188,49 +1125,37 @@ describe('useConversationsStore', () => {
       });
     });
 
-    describe('save preserves original conversation CWD', () => {
-      it('should keep original CWD when re-saving an existing conversation', async () => {
-        const conversation: Conversation = {
+    describe('save preserves the original conversation CWD', () => {
+      it('should keep the original CWD when re-saving a session-bound conversation', async () => {
+        seed({
           id: 'conv_preserve',
           title: 'Preserve CWD',
           workingDirectory: '/home/user/original-project',
-          messages: [{ id: 'msg_1', role: 'user', content: 'Hello', timestamp: 1000 }],
-          createdAt: 1000,
-          updatedAt: 2000,
+          messages: [message('msg_1', 'Hello')],
           sdkSessionId: 'session-preserve',
-        };
-        mockElectron.conversation.get.mockResolvedValue(conversation);
+        });
 
         await store.loadConversation('conv_preserve');
         chatStore.addUserMessage('Follow-up message');
-
         await store.saveCurrentConversation();
 
-        const savedConversation = mockElectron.conversation.save.mock.calls[0][0];
-        expect(savedConversation.workingDirectory).toBe('/home/user/original-project');
+        expect(onDisk('conv_preserve')?.workingDirectory).toBe('/home/user/original-project');
       });
     });
 
     describe('session ID round-trip (save then load)', () => {
-      it('should survive a save + load round-trip', async () => {
-        // 1. Set up a conversation with a session ID
+      it('should survive a save and a load', async () => {
         store.currentConversationId = 'conv_roundtrip';
+        chatStore.setCurrentConversation('conv_roundtrip');
         chatStore.addUserMessage('Test message');
         store.setSdkSessionId('conv_roundtrip', 'roundtrip-session');
 
-        // 2. Save — capture what was written
         await store.saveCurrentConversation();
+        expect(onDisk('conv_roundtrip')?.sdkSessionId).toBe('roundtrip-session');
 
-        const savedConversation = mockElectron.conversation.save.mock.calls[0][0];
-        expect(savedConversation.sdkSessionId).toBe('roundtrip-session');
-
-        // 3. Simulate loading from the saved data
         store.clearSdkSessionId('conv_roundtrip');
-        mockElectron.conversation.get.mockResolvedValue(savedConversation);
-
         await store.loadConversation('conv_roundtrip');
 
-        // 4. Session ID should be restored
         expect(store.getSdkSessionId('conv_roundtrip')).toBe('roundtrip-session');
       });
     });

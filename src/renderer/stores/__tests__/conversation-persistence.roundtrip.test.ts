@@ -30,7 +30,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { nextTick } from 'vue';
 
-import type { Conversation } from '@shared/types';
+import type { Conversation, ConversationUpdate } from '@shared/types';
 
 type IpcHandler = (event: unknown, ...args: unknown[]) => void;
 
@@ -176,6 +176,14 @@ async function route(channel: string, args: unknown[]): Promise<unknown> {
   switch (channel) {
     case IPC_CHANNELS.CONVERSATION_SAVE:
       return conversationService.save(args[0] as Conversation);
+    case IPC_CHANNELS.CONVERSATION_UPDATE:
+      return conversationService.update(args[0] as ConversationUpdate);
+    case IPC_CHANNELS.CONVERSATION_GET_WINDOW:
+      return conversationService.getWindow(args[0] as string, args[1] as number);
+    case IPC_CHANNELS.CONVERSATION_GET_OLDER:
+      return conversationService.getOlder(
+        args[0] as string, args[1] as string, args[2] as number,
+      );
     case IPC_CHANNELS.CONVERSATION_GET:
       return conversationService.get(args[0] as string);
     case IPC_CHANNELS.CONVERSATION_LIST:

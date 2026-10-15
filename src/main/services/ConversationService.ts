@@ -7,7 +7,7 @@ import path from 'node:path';
 
 import { CONVERSATION_CONSTANTS } from '../../shared/constants';
 import { generateId, ID_PREFIXES } from '../../shared/id';
-import { Conversation } from '../../shared/types';
+import { ChatMessage, Conversation, ConversationUpdate, ConversationWindow } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import logger from '../utils/logger';
 import { getConversationsPath, isPathWithin } from '../utils/paths';
@@ -299,10 +299,16 @@ export class ConversationService {
       const content = await fs.promises.readFile(filePath, 'utf-8');
       return JSON.parse(content) as Conversation;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logger.error('Failed to get conversation', { id, error });
-      }
-      return null;
+      // A conversation that is not there is an answer: null.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+
+      // Anything else is a failure, and must not be answered with "there is
+      // no such conversation". `update` builds on what this returns, so a
+      // swallowed read error meant an unreadable file was treated as a new
+      // conversation — and the next write would replace a history it had
+      // simply failed to read. Reported here, handled by the caller.
+      logger.error('Failed to read conversation', { id, error });
+      throw error;
     }
   }
 
@@ -386,6 +392,146 @@ export class ConversationService {
       error: lastError?.message,
     });
     throw lastError || new Error('Failed to save conversation');
+  }
+
+  /**
+   * Apply a change to a stored conversation — the renderer's only way to
+   * write one.
+   *
+   * See `ConversationUpdate` for why writes are changes rather than whole
+   * conversations. The short version: a write that carries the entire message
+   * list makes the file only as complete as the renderer's memory, so memory
+   * can never be bounded without risking the loss this app has already
+   * shipped once. Here the stored transcript can only grow, except where
+   * `truncateAfterId` or `truncateAll` says otherwise.
+   *
+   * Upsert is positional-stable: a message already stored is replaced where it
+   * is, so an edit cannot reorder history, and one that is new is appended in
+   * the order given.
+   *
+   * Everything else — the retry loop, the title fallback, the suspicious-write
+   * report — is shared with `save`, which does the writing.
+   */
+  async update(update: ConversationUpdate): Promise<void> {
+    const stored = await this.get(update.id);
+
+    const base: Conversation = stored ?? {
+      id: update.id,
+      title: update.title ?? '',
+      workingDirectory: update.workingDirectory,
+      messages: [],
+      createdAt: update.createdAt ?? Date.now(),
+      updatedAt: update.updatedAt,
+    };
+
+    let messages = update.truncateAll ? [] : [...base.messages];
+
+    if (!update.truncateAll && update.truncateAfterId) {
+      const cut = messages.findIndex((m) => m.id === update.truncateAfterId);
+      if (cut === -1) {
+        // The anchor is gone, so what "after" means cannot be known. Dropping
+        // nothing is the recoverable mistake; dropping everything is not.
+        logger.warn('Truncation anchor not found — keeping the stored history', {
+          id: update.id,
+          truncateAfterId: update.truncateAfterId,
+          storedCount: messages.length,
+        });
+      } else {
+        messages = messages.slice(0, cut + 1);
+      }
+    }
+
+    const indexById = new Map<string, number>();
+    messages.forEach((message, index) => indexById.set(message.id, index));
+
+    let added = 0;
+    let replaced = 0;
+    for (const message of update.upsert) {
+      const at = indexById.get(message.id);
+      if (at === undefined) {
+        indexById.set(message.id, messages.length);
+        messages.push(message);
+        added += 1;
+      } else {
+        messages[at] = message;
+        replaced += 1;
+      }
+    }
+
+    const merged: Conversation = {
+      ...base,
+      messages,
+      workingDirectory: update.workingDirectory || base.workingDirectory,
+      updatedAt: update.updatedAt,
+      ...(update.title !== undefined ? { title: update.title } : {}),
+      ...(update.customTitle !== undefined ? { customTitle: update.customTitle } : {}),
+      ...(update.createdAt !== undefined ? { createdAt: base.createdAt || update.createdAt } : {}),
+      ...(update.sdkSessionId !== undefined ? { sdkSessionId: update.sdkSessionId } : {}),
+      ...(update.executionMode !== undefined ? { executionMode: update.executionMode } : {}),
+      ...(update.lastSessionUsage !== undefined ? { lastSessionUsage: update.lastSessionUsage } : {}),
+      ...(update.sessionPermissions !== undefined ? { sessionPermissions: update.sessionPermissions } : {}),
+      ...(update.taskList !== undefined ? { taskList: update.taskList } : {}),
+    };
+
+    logger.info('Applying conversation update', {
+      id: update.id,
+      storedCount: base.messages.length,
+      added,
+      replaced,
+      truncated: update.truncateAll ? 'all' : update.truncateAfterId ?? 'none',
+      resultCount: messages.length,
+    });
+
+    await this.save(merged);
+  }
+
+  /**
+   * A conversation's most recent `limit` messages, and how many are older.
+   *
+   * Opening a conversation reads this rather than the whole file, so the
+   * renderer holds a window instead of a history that grows without bound.
+   * The file is still parsed in full here — it is one JSON document — but
+   * that is a transient cost in this process rather than a permanent one in
+   * the renderer.
+   */
+  async getWindow(id: string, limit: number): Promise<ConversationWindow | null> {
+    const conversation = await this.get(id);
+    if (!conversation) return null;
+
+    const all = conversation.messages ?? [];
+    const take = Math.max(0, limit);
+    const start = Math.max(0, all.length - take);
+
+    return {
+      conversation: { ...conversation, messages: all.slice(start) },
+      olderCount: start,
+    };
+  }
+
+  /**
+   * The `limit` messages stored immediately before `beforeId`.
+   *
+   * What "Load earlier messages" asks for. Keyed by the id the renderer
+   * currently holds at the top of its window rather than by an index, so a
+   * conversation that grew in between cannot shift the page under it.
+   */
+  async getOlder(
+    id: string,
+    beforeId: string,
+    limit: number,
+  ): Promise<{ messages: ChatMessage[]; olderCount: number } | null> {
+    const conversation = await this.get(id);
+    if (!conversation) return null;
+
+    const all = conversation.messages ?? [];
+    const at = all.findIndex((m) => m.id === beforeId);
+    if (at === -1) {
+      logger.warn('Asked for messages before an id that is not stored', { id, beforeId });
+      return { messages: [], olderCount: 0 };
+    }
+
+    const start = Math.max(0, at - Math.max(0, limit));
+    return { messages: all.slice(start, at), olderCount: start };
   }
 
   /**

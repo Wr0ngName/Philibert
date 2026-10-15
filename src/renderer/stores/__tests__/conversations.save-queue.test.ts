@@ -3,189 +3,140 @@
  *
  * Reported as messages disappearing, "like if they are not persisted". They
  * were not: a save requested while another was in flight returned straight
- * away and did nothing, and nothing ever retried it.
- *
- * What makes that lossy rather than merely redundant is that the payload is
- * snapshotted synchronously — `buildConversationPayload` deep-clones the
- * message array through JSON — so the save already running carries the
- * messages as they were when IT started and can never include anything newer.
- * Drop the second request and everything written since the first snapshot
- * exists only in memory, until the message list is replaced by a conversation
- * switch or the window closes.
+ * away and did nothing, and nothing ever retried it. The payload is
+ * snapshotted synchronously, so the save already running carries the messages
+ * as they were when IT started and can never include anything newer — drop
+ * the second request and everything since that snapshot exists only in
+ * memory, until a conversation switch replaces the list or the window closes.
  *
  * Saves run at the end of every turn and immediately before a switch, so "a
  * save is already in flight" is the normal state at exactly the moment the
  * list is about to be replaced.
+ *
+ * Every assertion here is about what reached the disk, through the real store,
+ * the real preload and the real main-process ConversationService. It used to
+ * assert against a hand-written fake of `window.electron.conversation`, which
+ * could only confirm that the store called the function the test had written
+ * — never that a message was stored. The disk is slow on demand
+ * (`disk.holdWrites`) because an instant write cannot overlap, and overlapping
+ * is the whole subject.
  */
 
-import { setActivePinia, createPinia } from 'pinia';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import type { ChatMessage, Conversation } from '@shared/types';
+import type { ChatMessage } from '@shared/types';
 
-import { useChatStore } from '../chat';
-import { useConversationsStore } from '../conversations';
-
+vi.mock('node:fs', async () => (await import('./support/real-stack')).fakeFsModule());
+vi.mock('electron', async () => (await import('./support/real-stack')).fakeElectronModule());
+vi.mock('../../../main/utils/paths', () => ({
+  getConversationsPath: () => '/conversations',
+  isPathWithin: () => true,
+}));
+vi.mock('../../../main/utils/logger', () => ({
+  default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  setLogLevel: vi.fn(),
+}));
 vi.mock('../../utils/logger', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock('../settings', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../settings')>();
-  return {
-    ...actual,
-    useSettingsStore: () => ({
-      workingDirectory: '/home/user/project',
-      executionMode: 'sdk',
-      setWorkingDirectory: vi.fn(),
-    }),
-  };
-});
+import { ConversationService } from '../../../main/services/ConversationService';
+import '../../../preload/preload';
+import { useChatStore } from '../chat';
+import { useConversationsStore } from '../conversations';
+import { useSettingsStore } from '../settings';
 
-vi.mock('../../constants/app', () => ({
-  CONSTANTS: {
-    CONVERSATION: {
-      TITLE_MAX_LENGTH: 50,
-      TITLE_TRUNCATE_LENGTH: 47,
-      SAVE_TIMEOUT_MS: 10_000,
-    },
-    MESSAGES: { MAX_COUNT: 100 },
-  },
-}));
+import {
+  startRealStack, settle, onDisk, disk, releaseWrites, unmountApp,
+} from './support/real-stack';
 
 const CONV = 'conv-save-queue';
-
-/** Saves captured at the boundary, with the deferred control over each one. */
-interface CapturedSave {
-  conversation: Conversation;
-  release: () => void;
-}
-
-const saves: CapturedSave[] = [];
-
-const mockElectron = {
-  conversation: {
-    list: vi.fn(),
-    get: vi.fn(),
-    save: vi.fn(),
-    delete: vi.fn(),
-  },
-  config: { get: vi.fn(), set: vi.fn(), onChange: vi.fn(() => () => {}) },
-  claude: { clearSessionPermissions: vi.fn() },
-};
-
-vi.stubGlobal('window', { electron: mockElectron });
-
-/** Every message id persisted by any save, in the order the saves landed. */
-function persistedIds(): string[][] {
-  return saves.map((save) => save.conversation.messages.map((m) => m.id));
-}
 
 function message(id: string): ChatMessage {
   return { id, role: 'user', content: `content ${id}`, timestamp: Date.now() };
 }
 
-/** Let promise callbacks run without advancing to a save completing. */
-async function tick(times = 4): Promise<void> {
-  for (let i = 0; i < times; i += 1) await Promise.resolve();
-}
-
-/**
- * Release held writes until `promise` settles.
- *
- * A save's promise now covers everything queued behind it, not just its own
- * write — a caller that awaits it knows the whole queue is on disk, which is
- * what `switchConversation` needs before it replaces the message list. So the
- * writes have to be let through as they appear rather than one at a time
- * around an await.
- */
-async function drain<T>(promise: Promise<T>): Promise<T> {
-  let settled = false;
-  const result = promise.then((value) => { settled = true; return value; });
-  for (let i = 0; i < 20 && !settled; i += 1) {
-    // Released, not removed: `saves` is also the record the assertions read,
-    // and resolving an already-resolved write is a no-op.
-    for (const save of saves) save.release();
-    await tick(4);
-  }
-  return result;
+/** Message ids as they stand on disk. */
+function storedIds(id = CONV): string[] {
+  return (onDisk(id)?.messages ?? []).map((m) => m.id);
 }
 
 describe('concurrent saves', () => {
   let store: ReturnType<typeof useConversationsStore>;
   let chatStore: ReturnType<typeof useChatStore>;
 
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    vi.clearAllMocks();
-    saves.length = 0;
-
-    mockElectron.conversation.list.mockResolvedValue([]);
-    mockElectron.conversation.get.mockResolvedValue(null);
-    mockElectron.conversation.delete.mockResolvedValue(undefined);
-    mockElectron.config.get.mockResolvedValue({ workingDirectory: '/home/user/project' });
-    mockElectron.config.set.mockResolvedValue(undefined);
-
-    // Each save hangs until the test releases it, so "a save is in flight"
-    // is something the test controls rather than races.
-    mockElectron.conversation.save.mockImplementation((conversation: Conversation) => {
-      return new Promise<void>((resolve) => {
-        saves.push({ conversation, release: () => resolve() });
-      });
+  beforeEach(async () => {
+    await startRealStack({
+      ConversationService: ConversationService as unknown as new () => never,
     });
 
     store = useConversationsStore();
     chatStore = useChatStore();
+    const settings = useSettingsStore();
+    settings.config.workingDirectory = '/home/user/project';
+    settings.config.apiKey = 'test-key';
+
+    await store.loadConversationList();
+    await settle();
 
     store.currentConversationId = CONV;
-    chatStore.currentConversationId = CONV;
+    chatStore.setCurrentConversation(CONV);
+  });
+
+  afterEach(() => {
+    unmountApp();
   });
 
   it('persists messages added while an earlier save was in flight', async () => {
+    disk.holdWrites = true;
+
     chatStore.messages.push(message('m1'));
     const first = store.saveCurrentConversation();
-    await tick();
-    expect(saves).toHaveLength(1);
-    expect(saves[0].conversation.messages.map((m) => m.id)).toEqual(['m1']);
+    await settle();
 
-    // Arrives while the first save is still in flight. The snapshot above
-    // cannot contain it — it was cloned before this existed.
+    // Arrives while the first write is still hanging. The snapshot already in
+    // flight cannot contain it — it was cloned before this existed.
     chatStore.messages.push(message('m2'));
     const second = store.saveCurrentConversation();
 
-    await drain(first);
-    await drain(second);
+    await releaseWrites();
+    expect(await first).toBe(true);
+    expect(await second).toBe(true);
 
     // The defect: the second request returned false without writing, so m2
     // was never persisted by anything.
-    expect(persistedIds().some((ids) => ids.includes('m2'))).toBe(true);
+    expect(storedIds()).toContain('m2');
   });
 
   it('persists the newest state, not a stale snapshot', async () => {
+    disk.holdWrites = true;
+
     chatStore.messages.push(message('m1'));
     const first = store.saveCurrentConversation();
-    await tick();
+    await settle();
 
     chatStore.messages.push(message('m2'));
     chatStore.messages.push(message('m3'));
     const second = store.saveCurrentConversation();
 
-    await drain(first);
-    await drain(second);
+    await releaseWrites();
+    await first;
+    await second;
 
-    // Whatever the last write was, it must describe the conversation as it
-    // actually stands. A save that persists a prefix is the data loss.
-    expect(persistedIds().at(-1)).toEqual(['m1', 'm2', 'm3']);
+    // Whatever the last write was, the file must describe the conversation as
+    // it actually stands. A save that persists a prefix is the data loss.
+    expect(storedIds()).toEqual(['m1', 'm2', 'm3']);
   });
 
   it('coalesces a burst of requests rather than writing once per request', async () => {
     // Turn end, autosave and a switch can all ask within the same tick. They
-    // must not each queue a write — one write covering the final state is both
-    // correct and what the previous guard was trying to achieve.
+    // must not each cost a write — one covering the final state is both
+    // correct and what the old "already saving" guard was reaching for.
+    disk.holdWrites = true;
+
     chatStore.messages.push(message('m1'));
     const first = store.saveCurrentConversation();
-    await tick();
-    const writtenFirst = saves.length;
+    await settle();
 
     chatStore.messages.push(message('m2'));
     const burst = [
@@ -194,24 +145,24 @@ describe('concurrent saves', () => {
       store.saveCurrentConversation(),
     ];
 
-    await drain(first);
-    await drain(Promise.all(burst));
+    await releaseWrites();
+    await first;
+    await Promise.all(burst);
 
-    // One write for the snapshot in flight, and one covering the burst —
-    // not one per request. Keyed per conversation, so the newest snapshot
-    // replaces the older ones for the same conversation.
-    expect(writtenFirst).toBe(1);
-    expect(persistedIds()).toHaveLength(2);
-    expect(persistedIds().at(-1)).toEqual(['m1', 'm2']);
+    // One write for the snapshot in flight, one covering the burst.
+    expect(disk.writes).toBe(2);
+    expect(storedIds()).toEqual(['m1', 'm2']);
   });
 
   it('does not resolve a queued save before it has been written', async () => {
-    // `switchConversation` awaits the save and then replaces the message list.
-    // If the promise resolves early, the switch discards the messages before
-    // they reach disk — which is the loss this is all about.
+    // `switchConversation` awaits the save and then replaces the message
+    // list. If the promise resolves early, the switch discards messages
+    // before they reach disk — which is the loss this is all about.
+    disk.holdWrites = true;
+
     chatStore.messages.push(message('m1'));
     const first = store.saveCurrentConversation();
-    await tick();
+    await settle();
 
     chatStore.messages.push(message('m2'));
     let secondSettled = false;
@@ -219,45 +170,51 @@ describe('concurrent saves', () => {
       secondSettled = true;
       return result;
     });
-    await tick();
+    await settle();
 
     expect(secondSettled).toBe(false);
+    expect(storedIds()).toEqual([]);
 
-    // Letting the first write through is not enough: the promise covers the
-    // queue behind it, so it stays pending until the second snapshot is
-    // written too. That is the property `switchConversation` relies on.
-    saves[0].release();
-    await tick(8);
-    expect(saves).toHaveLength(2);
-    expect(secondSettled).toBe(false);
-
-    saves[1].release();
-    await drain(second);
-    await drain(first);
+    await releaseWrites();
+    await second;
+    await first;
 
     expect(secondSettled).toBe(true);
+    expect(storedIds()).toEqual(['m1', 'm2']);
   });
 
   it('keeps saving after one save fails', async () => {
-    // A rejected write must not leave the queue wedged, or every later save
-    // is silently dropped for the rest of the session.
-    mockElectron.conversation.save.mockRejectedValueOnce(new Error('disk full'));
+    // A failed write must not leave the queue wedged, or every later save is
+    // silently dropped for the rest of the session.
+    disk.failNext = 3; // the service retries three times before giving up
 
     chatStore.messages.push(message('m1'));
     expect(await store.saveCurrentConversation()).toBe(false);
 
     chatStore.messages.push(message('m2'));
-    const next = store.saveCurrentConversation();
-    await tick();
-    saves.at(-1)?.release();
+    expect(await store.saveCurrentConversation()).toBe(true);
 
-    expect(await next).toBe(true);
-    expect(persistedIds().at(-1)).toEqual(['m1', 'm2']);
+    expect(storedIds()).toEqual(['m1', 'm2']);
   });
 
   it('still refuses to save with nothing to save', async () => {
     expect(await store.saveCurrentConversation()).toBe(false);
-    expect(saves).toHaveLength(0);
+    expect(disk.writes).toBe(0);
+  });
+
+  it('does not shorten a stored conversation when memory holds less of it', async () => {
+    // The property the window depends on: a write carries what the renderer
+    // has, and the renderer may have only the tail. Before writes became
+    // upserts this stored exactly what was passed, which is why trimming
+    // memory would have erased history.
+    await store.saveConversation(CONV, [message('m1'), message('m2'), message('m3')]);
+    await settle();
+    expect(storedIds()).toEqual(['m1', 'm2', 'm3']);
+
+    await store.saveConversation(CONV, [message('m4')]);
+    await settle();
+
+    expect(storedIds()).toEqual(['m1', 'm2', 'm3', 'm4']);
   });
 });
 
@@ -265,27 +222,24 @@ describe('closing the app with a turn running out of sight', () => {
   let store: ReturnType<typeof useConversationsStore>;
   let chatStore: ReturnType<typeof useChatStore>;
 
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    vi.clearAllMocks();
-    saves.length = 0;
-
-    mockElectron.conversation.list.mockResolvedValue([]);
-    mockElectron.conversation.get.mockResolvedValue(null);
-    mockElectron.config.get.mockResolvedValue({ workingDirectory: '/home/user/project' });
-    mockElectron.config.set.mockResolvedValue(undefined);
-    // Resolve straight away here: these tests are about which conversations
-    // get written, not about overlapping writes.
-    mockElectron.conversation.save.mockImplementation((conversation: Conversation) => {
-      saves.push({ conversation, release: () => {} });
-      return Promise.resolve();
+  beforeEach(async () => {
+    await startRealStack({
+      ConversationService: ConversationService as unknown as new () => never,
     });
-
     store = useConversationsStore();
     chatStore = useChatStore();
+    const settings = useSettingsStore();
+    settings.config.workingDirectory = '/home/user/project';
+    settings.config.apiKey = 'test-key';
+    await store.loadConversationList();
+    await settle();
   });
 
-  /** A turn running in `other` while the user looks at `CONV`. */
+  afterEach(() => {
+    unmountApp();
+  });
+
+  /** A turn running in another conversation while the user looks at CONV. */
   function backgroundTurnElsewhere(): void {
     chatStore.setCurrentConversation('conv-background');
     chatStore.messages.push(message('bg1'));
@@ -305,20 +259,20 @@ describe('closing the app with a turn running out of sight', () => {
     backgroundTurnElsewhere();
 
     await store.cleanup();
+    await settle();
 
-    const saved = Object.fromEntries(
-      saves.map((s) => [s.conversation.id, s.conversation.messages.length]),
-    );
-    expect(saved[CONV]).toBe(1);
-    expect(saved['conv-background']).toBe(2);
+    expect(storedIds(CONV)).toEqual(['seen1']);
+    expect(storedIds('conv-background')).toHaveLength(2);
   });
 
   it('does not write the conversation on screen twice', async () => {
     backgroundTurnElsewhere();
 
     await store.cleanup();
+    await settle();
 
-    expect(saves.filter((s) => s.conversation.id === CONV)).toHaveLength(1);
+    // Two conversations, one write each.
+    expect(disk.writes).toBe(2);
   });
 
   it('writes nothing for a conversation whose buffer is empty', async () => {
@@ -328,8 +282,10 @@ describe('closing the app with a turn running out of sight', () => {
     chatStore.beginMessageBuffer('conv-empty');
 
     await store.cleanup();
+    await settle();
 
-    expect(saves.map((s) => s.conversation.id)).toEqual([CONV]);
+    expect(onDisk('conv-empty')).toBeNull();
+    expect(storedIds(CONV)).toEqual(['seen1']);
   });
 
   it('saves the remaining conversations when one of them fails', async () => {
@@ -340,16 +296,14 @@ describe('closing the app with a turn running out of sight', () => {
     chatStore.setCurrentConversation(CONV);
     chatStore.loadMessages([message('seen1')]);
 
-    mockElectron.conversation.save.mockImplementationOnce(() =>
-      Promise.reject(new Error('disk full')),
-    );
+    // The first write fails all its retries; the rest must still happen.
+    disk.failNext = 3;
 
     await store.cleanup();
+    await settle();
 
-    // The first write fails; both background conversations must still be
-    // attempted.
-    const ids = saves.map((s) => s.conversation.id);
-    expect(ids).toContain('conv-background');
-    expect(ids).toContain('conv-second-bg');
+    const stored = ['conv-background', 'conv-second-bg', CONV]
+      .filter((id) => onDisk(id) !== null);
+    expect(stored.length).toBeGreaterThanOrEqual(2);
   });
 });

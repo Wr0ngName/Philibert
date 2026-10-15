@@ -380,6 +380,15 @@ const electronAPI: ElectronAPI = {
     save: (conversation) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SAVE, conversation),
 
+    update: (update) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE, update),
+
+    getWindow: (id: string, limit: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET_WINDOW, id, limit),
+
+    getOlder: (id: string, beforeId: string, limit: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET_OLDER, id, beforeId, limit),
+
     rename: (id: string, newTitle: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_RENAME, id, newTitle),
 

@@ -319,13 +319,37 @@ describe('ConversationService', () => {
       expect(result).toBeNull();
     });
 
-    it('should return null for invalid JSON', async () => {
-      // Set invalid JSON that will cause JSON.parse to fail
+    it('fails on a corrupt file rather than reporting it as missing', async () => {
+      // It used to return null, which is the same answer as "there is no such
+      // conversation" — and `update` builds on what this returns, so a
+      // corrupt file was treated as a new conversation and the next write
+      // replaced whatever was still in it. Failing leaves the file alone for
+      // recovery and tells the user the truth.
       mockFileSystem.set('/app/conversations/invalid.json', 'invalid json {{{');
 
-      const result = await service.get('invalid');
+      await expect(service.get('invalid')).rejects.toThrow();
 
-      expect(result).toBeNull();
+      // And the file is untouched.
+      expect(mockFileSystem.get('/app/conversations/invalid.json')).toBe('invalid json {{{');
+    });
+
+    it('still reports a conversation that is simply absent as null', async () => {
+      // The distinction the change rests on: absent is an answer, unreadable
+      // is a failure.
+      await expect(service.get('never-existed')).resolves.toBeNull();
+    });
+
+    it('does not let one corrupt file break the list', async () => {
+      // The sidebar has to keep working: `list` skips what it cannot parse.
+      mockFileSystem.set('/app/conversations/invalid.json', 'invalid json {{{');
+      mockFileSystem.set(
+        '/app/conversations/good.json',
+        JSON.stringify(createConversation({ id: 'good', title: 'Readable' })),
+      );
+
+      const list = await service.list();
+
+      expect(list.map((c) => c.id)).toEqual(['good']);
     });
   });
 
@@ -836,6 +860,213 @@ describe('ConversationService', () => {
         (args: unknown[]) => String(args[0]).includes('conv_noprojects')
       );
       expect(convWriteCalls).toHaveLength(0);
+    });
+  });
+
+  // ===========================================================================
+  // update() — the renderer's only write path
+  // ===========================================================================
+  describe('update()', () => {
+    /**
+     * A write is a change, not a whole conversation. The renderer holds a
+     * window of a long conversation, so a write that carried "the messages"
+     * would store only the window — which is how trimming memory would have
+     * erased history. See ConversationUpdate.
+     */
+    const stored = (id: string) => {
+      const raw = mockFileSystem.get(`/app/conversations/${id}.json`);
+      return raw ? (JSON.parse(raw) as Conversation) : null;
+    };
+    const ids = (id: string) => (stored(id)?.messages ?? []).map((m) => m.id);
+
+    const msg = (id: string, content = `content ${id}`): Conversation['messages'][number] => ({
+      id, role: 'user', content, timestamp: 1_700_000_000_000,
+    });
+
+    async function seed(id: string, messageIds: string[]): Promise<void> {
+      await service.save(createConversation({
+        id,
+        title: 'Seeded',
+        messages: messageIds.map((m) => msg(m)),
+      }));
+    }
+
+    const base = (id: string) => ({
+      id, upsert: [], workingDirectory: '/home/user/project', updatedAt: Date.now(),
+    });
+
+    it('appends messages it has not seen', async () => {
+      await seed('c1', ['m1', 'm2']);
+
+      await service.update({ ...base('c1'), upsert: [msg('m3')] });
+
+      expect(ids('c1')).toEqual(['m1', 'm2', 'm3']);
+    });
+
+    it('replaces a message it already has, where it already is', async () => {
+      // Edits legitimately reach stored messages: a streaming flag cleared
+      // when a turn ends, a tool result arriving late. Appending a second
+      // copy, or moving it to the end, would both corrupt the transcript.
+      await seed('c2', ['m1', 'm2', 'm3']);
+
+      await service.update({ ...base('c2'), upsert: [msg('m2', 'edited')] });
+
+      expect(ids('c2')).toEqual(['m1', 'm2', 'm3']);
+      expect(stored('c2')?.messages[1].content).toBe('edited');
+    });
+
+    it('creates the conversation when there is none', async () => {
+      await service.update({ ...base('c3'), upsert: [msg('m1')], title: 'Fresh' });
+
+      expect(ids('c3')).toEqual(['m1']);
+      expect(stored('c3')?.title).toBe('Fresh');
+    });
+
+    it('cannot shorten a conversation on its own', async () => {
+      // The property everything else rests on.
+      await seed('c4', ['m1', 'm2', 'm3', 'm4']);
+
+      await service.update({ ...base('c4'), upsert: [msg('m4')] });
+
+      expect(ids('c4')).toEqual(['m1', 'm2', 'm3', 'm4']);
+    });
+
+    it('truncates after a message when asked to', async () => {
+      // What a rewind does: the turns after that point really are gone.
+      await seed('c5', ['m1', 'm2', 'm3', 'm4']);
+
+      await service.update({ ...base('c5'), truncateAfterId: 'm2' });
+
+      expect(ids('c5')).toEqual(['m1', 'm2']);
+    });
+
+    it('truncates and then appends in one write', async () => {
+      // The rewind writes the turns that follow it in the same save.
+      await seed('c6', ['m1', 'm2', 'm3']);
+
+      await service.update({
+        ...base('c6'), truncateAfterId: 'm1', upsert: [msg('m9')],
+      });
+
+      expect(ids('c6')).toEqual(['m1', 'm9']);
+    });
+
+    it('keeps the history when the truncation anchor is gone', async () => {
+      // "After" cannot be known without the anchor. Dropping nothing is the
+      // recoverable mistake; dropping everything is not.
+      await seed('c7', ['m1', 'm2', 'm3']);
+
+      await service.update({ ...base('c7'), truncateAfterId: 'does-not-exist' });
+
+      expect(ids('c7')).toEqual(['m1', 'm2', 'm3']);
+    });
+
+    it('clears every message when asked to', async () => {
+      await seed('c8', ['m1', 'm2']);
+
+      await service.update({ ...base('c8'), truncateAll: true });
+
+      expect(ids('c8')).toEqual([]);
+    });
+
+    it('keeps metadata it was not given', async () => {
+      await service.save(createConversation({
+        id: 'c9', title: 'Kept', sdkSessionId: 'session-1', messages: [msg('m1')],
+      }));
+
+      await service.update({ ...base('c9'), upsert: [msg('m2')] });
+
+      expect(stored('c9')?.sdkSessionId).toBe('session-1');
+      expect(stored('c9')?.title).toBe('Kept');
+    });
+
+    it('applies the metadata it was given', async () => {
+      await seed('c10', ['m1']);
+
+      await service.update({
+        ...base('c10'), title: 'Renamed', customTitle: true, sdkSessionId: 'session-2',
+      });
+
+      expect(stored('c10')?.title).toBe('Renamed');
+      expect(stored('c10')?.customTitle).toBe(true);
+      expect(stored('c10')?.sdkSessionId).toBe('session-2');
+    });
+
+    it('keeps the original createdAt', async () => {
+      await service.save(createConversation({ id: 'c11', createdAt: 111, messages: [msg('m1')] }));
+
+      await service.update({ ...base('c11'), upsert: [msg('m2')], createdAt: 999 });
+
+      expect(stored('c11')?.createdAt).toBe(111);
+    });
+
+    it('is idempotent, so a retried write cannot duplicate anything', async () => {
+      await seed('c12', ['m1']);
+
+      await service.update({ ...base('c12'), upsert: [msg('m2')] });
+      await service.update({ ...base('c12'), upsert: [msg('m2')] });
+
+      expect(ids('c12')).toEqual(['m1', 'm2']);
+    });
+  });
+
+  // ===========================================================================
+  // getWindow() / getOlder() — reading a long conversation in pieces
+  // ===========================================================================
+  describe('reading a conversation as a window', () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => ({
+      id: `m${i}`, role: 'user' as const, content: `message ${i}`, timestamp: 1000 + i,
+    }));
+
+    beforeEach(async () => {
+      await service.save(createConversation({ id: 'long', title: 'Long', messages: many(1000) }));
+    });
+
+    it('returns the most recent messages and counts the rest', async () => {
+      const window = await service.getWindow('long', 100);
+
+      expect(window?.conversation.messages).toHaveLength(100);
+      expect(window?.conversation.messages[0].id).toBe('m900');
+      expect(window?.olderCount).toBe(900);
+    });
+
+    it('returns everything when the limit exceeds the conversation', async () => {
+      const window = await service.getWindow('long', 5000);
+
+      expect(window?.conversation.messages).toHaveLength(1000);
+      expect(window?.olderCount).toBe(0);
+    });
+
+    it('is null for a conversation that does not exist', async () => {
+      expect(await service.getWindow('nope', 10)).toBeNull();
+    });
+
+    it('returns the page before a given message', async () => {
+      const page = await service.getOlder('long', 'm900', 100);
+
+      expect(page?.messages).toHaveLength(100);
+      expect(page?.messages[0].id).toBe('m800');
+      expect(page?.messages.at(-1)?.id).toBe('m899');
+      expect(page?.olderCount).toBe(800);
+    });
+
+    it('stops at the beginning rather than wrapping', async () => {
+      const page = await service.getOlder('long', 'm10', 100);
+
+      expect(page?.messages.map((m) => m.id)).toEqual(
+        Array.from({ length: 10 }, (_, i) => `m${i}`),
+      );
+      expect(page?.olderCount).toBe(0);
+    });
+
+    it('answers emptily for an id it does not hold', async () => {
+      // Keyed by id rather than by index precisely so a conversation that
+      // grew in between cannot shift a page; an unknown id is then the
+      // honest "nothing to give you".
+      const page = await service.getOlder('long', 'not-a-message', 100);
+
+      expect(page?.messages).toEqual([]);
+      expect(page?.olderCount).toBe(0);
     });
   });
 

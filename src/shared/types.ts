@@ -844,6 +844,73 @@ export interface Conversation {
 }
 
 /**
+ * A change to a stored conversation, expressed as a change rather than as the
+ * whole thing.
+ *
+ * The renderer used to save by sending the entire message list, which made
+ * every write cost the whole conversation twice over — a JSON round-trip to
+ * strip Vue reactivity, then another copy across IPC. Measured on a realistic
+ * mix, a 12,000-message conversation is ~21 MB in memory and the save alone
+ * allocated ~42 MB more, at the end of every turn.
+ *
+ * Worse than the cost: it made the file only as complete as the renderer's
+ * memory. Anything the renderer did not hold was erased on the next save, so
+ * memory could never be bounded without risking exactly the data loss this
+ * app has already shipped once.
+ *
+ * So writes are now expressed as this: metadata, messages to add or update
+ * keyed by id, and an explicit truncation when — and only when — the user
+ * really did remove history. A conversation on disk can then only grow,
+ * except where something deliberately shortens it.
+ */
+export interface ConversationUpdate {
+  id: string;
+  /**
+   * Messages to add, or to replace in place when their id is already stored.
+   *
+   * Upsert rather than append, because edits legitimately reach messages that
+   * are already saved: a streaming flag cleared when a turn ends, a tool
+   * result arriving after the message that requested it, an inline task
+   * indicator being enriched. Pure appending would silently keep the stale
+   * copy of each.
+   */
+  upsert: ChatMessage[];
+  /**
+   * Drop every stored message after this id, inclusive of nothing else.
+   *
+   * The only way history is removed. Set by a rewind, which really does
+   * discard the turns after a point; absent on every ordinary write, so no
+   * ordinary write can shorten the file.
+   */
+  truncateAfterId?: string;
+  /** Remove every message. Set by a conversation being cleared. */
+  truncateAll?: boolean;
+  workingDirectory: string;
+  updatedAt: number;
+  title?: string;
+  customTitle?: boolean;
+  createdAt?: number;
+  sdkSessionId?: string;
+  executionMode?: ExecutionMode;
+  lastSessionUsage?: SessionUsage;
+  sessionPermissions?: SessionPermissionEntry[];
+  taskList?: TaskListItem[];
+}
+
+/**
+ * A conversation's recent messages plus what was left behind.
+ *
+ * Opening a conversation reads only its tail, so a long one costs the window
+ * rather than its whole history. `olderCount` is what the renderer shows as
+ * "earlier messages" and asks for a page at a time.
+ */
+export interface ConversationWindow {
+  conversation: Conversation;
+  /** Messages stored before the ones in `conversation.messages`. */
+  olderCount: number;
+}
+
+/**
  * One hit returned by conversation:search — already truncated server-side
  * so the renderer doesn't ship entire messages around.
  */
@@ -1549,6 +1616,12 @@ export const IPC_CHANNELS = {
   CONVERSATION_GET: 'conversation:get',
   /** Save a conversation */
   CONVERSATION_SAVE: 'conversation:save',
+  /** Apply a ConversationUpdate — the renderer's only way to write. */
+  CONVERSATION_UPDATE: 'conversation:update',
+  /** Read a conversation's tail plus how much is older. */
+  CONVERSATION_GET_WINDOW: 'conversation:get-window',
+  /** Read a page of messages older than the ones already held. */
+  CONVERSATION_GET_OLDER: 'conversation:get-older',
   /** Rename a conversation */
   CONVERSATION_RENAME: 'conversation:rename',
   /** Delete a conversation */

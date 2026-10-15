@@ -4,6 +4,7 @@
 
 import type { ModelDownloadProgress } from './speech';
 import type {
+  ChatMessage,
   AboutInfo,
   ActionResponse,
   AppConfig,
@@ -37,6 +38,8 @@ import type {
   UpdateInfo,
   UpdateProgress,
   WhisperModelId,
+  ConversationUpdate,
+  ConversationWindow,
 } from './types';
 
 /** Active query status info */
@@ -255,7 +258,21 @@ export interface ElectronAPI {
   conversation: {
     list: () => Promise<Conversation[]>;
     get: (id: string) => Promise<Conversation | null>;
+    /**
+     * Full write. Kept for the main process's own writes; the renderer uses
+     * `update`, which cannot shorten a stored conversation.
+     */
     save: (conversation: Conversation) => Promise<void>;
+    /** Apply a change — add or replace messages by id, and metadata. */
+    update: (update: ConversationUpdate) => Promise<void>;
+    /** A conversation's last `limit` messages, plus how many are older. */
+    getWindow: (id: string, limit: number) => Promise<ConversationWindow | null>;
+    /** The `limit` messages stored immediately before `beforeId`. */
+    getOlder: (
+      id: string,
+      beforeId: string,
+      limit: number,
+    ) => Promise<{ messages: ChatMessage[]; olderCount: number } | null>;
     rename: (id: string, newTitle: string) => Promise<void>;
     delete: (id: string) => Promise<void>;
     search: (

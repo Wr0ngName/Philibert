@@ -18,6 +18,7 @@ import type { ChatMessage } from '@shared/types';
 
 import { useVirtualList } from '../../composables/useVirtualList';
 import { useChatStore } from '../../stores/chat';
+import { useConversationsStore } from '../../stores/conversations';
 import { formatTime } from '../../utils/date';
 import {
   childrenByParent as buildChildrenByParent,
@@ -40,6 +41,32 @@ const emit = defineEmits<{
 
 const chatStore = useChatStore();
 const { messages, hasMessages, currentStreamingContent, isLoading } = storeToRefs(chatStore);
+const conversationsStore = useConversationsStore();
+const { loadingEarlier } = storeToRefs(conversationsStore);
+const { olderMessageCount } = storeToRefs(chatStore);
+
+/**
+ * Fetch the page before the window and keep the view where it is.
+ *
+ * A conversation is opened as a window of its most recent messages, so there
+ * is history above the top of the list that is on disk but not in memory.
+ * Prepending grows the content above the viewport, which would otherwise
+ * push what the user is reading down the screen — so the scroll offset is
+ * moved by exactly as much as the content grew.
+ */
+async function loadEarlier(): Promise<void> {
+  const el = listRef.value;
+  const heightBefore = el?.scrollHeight ?? 0;
+  const topBefore = el?.scrollTop ?? 0;
+
+  const loaded = await conversationsStore.loadEarlierMessages();
+  if (loaded === 0) return;
+
+  await nextTick();
+  const after = listRef.value;
+  if (!after) return;
+  after.scrollTop = topBefore + (after.scrollHeight - heightBefore);
+}
 
 // Declared up here because useVirtualList reads it while the component sets
 // up, which is before the scrolling section further down would have run.
@@ -717,8 +744,35 @@ onUnmounted(() => {
         path either way, so a short conversation and a long one render
         identically.
       -->
+      <!--
+        What is on disk but not in memory.
+
+        A conversation opens as a window of its most recent messages, so a long
+        one does not sit in memory in full. This is the way back into the rest
+        of it, a page at a time. Outside the virtualised spacer below, because
+        its height is not part of the measured row geometry.
+      -->
       <div
-        v-else
+        v-if="hasMessages && olderMessageCount > 0"
+        class="flex justify-center pb-3"
+      >
+        <button
+          type="button"
+          class="text-xs px-3 py-1.5 rounded-full border border-surface-200 dark:border-surface-700 text-surface-600 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-700/50 transition-colors disabled:opacity-60"
+          :disabled="loadingEarlier"
+          @click="loadEarlier"
+        >
+          <Spinner
+            v-if="loadingEarlier"
+            size="xs"
+            class="inline-block mr-1 align-[-2px]"
+          />
+          {{ loadingEarlier ? 'Loading…' : `Load earlier messages (${olderMessageCount})` }}
+        </button>
+      </div>
+
+      <div
+        v-if="hasMessages"
         :style="virtual.enabled.value
           ? { height: virtualWindow.totalHeight + 'px', position: 'relative' }
           : undefined"

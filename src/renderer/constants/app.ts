@@ -24,6 +24,23 @@ export const CONSTANTS = {
     TITLE_TRUNCATE_LENGTH: CONVERSATION_CONSTANTS.TITLE_TRUNCATE_LENGTH,
     /** Timeout for save operations - 30 seconds */
     SAVE_TIMEOUT_MS: 30000,
+    /**
+     * Messages held in memory when a conversation is opened, and fetched per
+     * page when the user scrolls back for more.
+     *
+     * A conversation used to be loaded whole and never trimmed, so memory
+     * grew for as long as the app ran: measured at ~1.8 KB a message on a
+     * realistic mix, which is ~21 MB for a 12,000-message conversation, plus
+     * twice that again allocated by every save. 500 messages is far more than
+     * fits on a screen and costs under a megabyte.
+     */
+    WINDOW_SIZE: 500,
+    /**
+     * The window is trimmed back to WINDOW_SIZE once it grows past this, and
+     * only after a save has landed. The slack means a long turn is never
+     * trimmed while it is still arriving.
+     */
+    WINDOW_MAX: 1500,
   },
   /** File system constants (from shared constants) */
   FILES: {

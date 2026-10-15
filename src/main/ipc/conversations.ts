@@ -7,7 +7,7 @@ import * as path from 'node:path';
 
 import { app, ipcMain } from 'electron';
 
-import { Conversation, IPC_CHANNELS } from '../../shared/types';
+import { Conversation, ConversationUpdate, IPC_CHANNELS } from '../../shared/types';
 import { ConfigurationError, ValidationError, ERROR_CODES } from '../errors';
 import ConversationService from '../services/ConversationService';
 import { validateString, validateObject, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
@@ -122,6 +122,107 @@ export function setupConversationIPC(conversationService: ConversationService): 
       );
     }
   });
+
+  // Apply a change to a conversation — the renderer's only write path.
+  //
+  // Validated on the same fields as the full save it replaced, minus the ones
+  // an update does not carry. `upsert` must be an array even when empty: a
+  // write that only changes metadata (a session id, the task list) is
+  // legitimate.
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE, async (_event, update: ConversationUpdate) => {
+    try {
+      ensureService(conversationService, 'ConversationService');
+      validateObject(update, 'Conversation update');
+
+      if (typeof update.id !== 'string' || !update.id.trim()) {
+        throw new ValidationError('Conversation ID is required and must be a non-empty string', 'id', ERROR_CODES.VALIDATION_REQUIRED);
+      }
+      if (!Array.isArray(update.upsert)) {
+        throw new ValidationError('Conversation update upsert must be an array', 'upsert', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+      }
+      if (typeof update.workingDirectory !== 'string') {
+        throw new ValidationError('Conversation workingDirectory must be a string', 'workingDirectory', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+      }
+      if (typeof update.updatedAt !== 'number' || update.updatedAt <= 0) {
+        throw new ValidationError('Conversation updatedAt must be a positive timestamp', 'updatedAt', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+      }
+
+      logger.info('IPC: conversation:update called', {
+        id: update.id,
+        upsertCount: update.upsert.length,
+        truncateAfterId: update.truncateAfterId,
+        truncateAll: update.truncateAll === true,
+      });
+
+      await conversationService.update(update);
+    } catch (error) {
+      const errorMessage = error instanceof ValidationError
+        ? `Validation error: ${error.message} (field: ${error.field})`
+        : error instanceof Error ? error.message : String(error);
+      logger.error('Failed to update conversation', { error: errorMessage, id: update?.id });
+      throw new ConfigurationError(
+        `Failed to update conversation: ${errorMessage}`,
+        ERROR_CODES.CONVERSATION_SAVE_FAILED,
+        error,
+      );
+    }
+  });
+
+  // A conversation's tail, plus how many messages are older than it.
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET_WINDOW, async (_event, id: string, limit: number) => {
+    try {
+      ensureService(conversationService, 'ConversationService');
+      validateString(id, 'Conversation ID');
+      if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) {
+        throw new ValidationError('Window limit must be a positive number', 'limit', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+      }
+
+      // Null means there is no such conversation, which is an answer rather
+      // than a failure — the renderer says so, and keeps "failed to load" for
+      // a read that actually broke. Conflating the two told the user their
+      // disk had failed when they had simply opened something deleted, and
+      // vice versa.
+      const window = await conversationService.getWindow(id, Math.floor(limit));
+      if (!window) {
+        logger.debug('IPC: conversation:get-window — no such conversation', { id });
+        return null;
+      }
+      logger.debug('IPC: conversation:get-window', {
+        id, returned: window.conversation.messages.length, olderCount: window.olderCount,
+      });
+      return window;
+    } catch (error) {
+      logger.error('Failed to get conversation window', { error, id });
+      throw new ConfigurationError(formatErrorMessage('Failed to get conversation window', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
+    }
+  });
+
+  // A page of messages older than the one the renderer holds at its top.
+  ipcMain.handle(
+    IPC_CHANNELS.CONVERSATION_GET_OLDER,
+    async (_event, id: string, beforeId: string, limit: number) => {
+      try {
+        ensureService(conversationService, 'ConversationService');
+        validateString(id, 'Conversation ID');
+        validateString(beforeId, 'Message ID');
+        if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) {
+          throw new ValidationError('Page limit must be a positive number', 'limit', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+        }
+
+        const page = await conversationService.getOlder(id, beforeId, Math.floor(limit));
+        if (!page) {
+          throw new ConfigurationError(`Conversation not found: ${id}`, ERROR_CODES.CONVERSATION_NOT_FOUND);
+        }
+        logger.debug('IPC: conversation:get-older', {
+          id, beforeId, returned: page.messages.length, olderCount: page.olderCount,
+        });
+        return page;
+      } catch (error) {
+        logger.error('Failed to get older messages', { error, id, beforeId });
+        throw new ConfigurationError(formatErrorMessage('Failed to get older messages', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
+      }
+    },
+  );
 
   // Rename a conversation
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_RENAME, async (_event, id: string, newTitle: string) => {

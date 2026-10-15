@@ -6,7 +6,7 @@
 import { defineStore, storeToRefs } from 'pinia';
 import { ref, computed, watch } from 'vue';
 
-import type { ChatMessage, Conversation } from '@shared/types';
+import type { ChatMessage, Conversation, ConversationUpdate } from '@shared/types';
 
 import { getInMemoryMessages } from '../composables/useClaudeChat';
 import { CONSTANTS } from '../constants/app';
@@ -127,11 +127,19 @@ export const useConversationsStore = defineStore('conversations', () => {
     error.value = null;
 
     try {
-      const conversation = await window.electron.conversation.get(id);
-      if (!conversation) {
+      // Only the tail, plus how much is older. A conversation is not read
+      // whole: nothing bounded the loaded list before, so a long one sat in
+      // memory in full for as long as the app ran.
+      const window_ = await window.electron.conversation.getWindow(
+        id,
+        CONSTANTS.CONVERSATION.WINDOW_SIZE,
+      );
+      if (!window_) {
         error.value = 'Conversation not found';
         return false;
       }
+      const conversation = window_.conversation;
+      const olderCount = window_.olderCount;
 
       // Same migration as loadConversationList: stamp current mode onto
       // pre-existing conversations missing the field.
@@ -211,10 +219,12 @@ export const useConversationsStore = defineStore('conversations', () => {
           }
         }
 
-        chatStore.loadMessages(messages);
+        // A buffer is a complete history for its conversation — it was
+        // seeded from one — so nothing precedes it.
+        chatStore.loadMessages(messages, state.olderCount);
       } else {
         // Load messages from saved file
-        chatStore.loadMessages(conversation.messages);
+        chatStore.loadMessages(conversation.messages, olderCount);
 
         // If this conversation was streaming, check for buffered content
         if (state.streamingMessageId && state.currentStreamingContent) {
@@ -296,22 +306,40 @@ export const useConversationsStore = defineStore('conversations', () => {
   }
 
   /**
-   * Build a conversation object ready for saving.
-   * Centralizes title generation, message cloning, and metadata handling.
+   * Build the write for a conversation: its metadata, and the messages the
+   * renderer holds, to be added or replaced by id.
+   *
+   * The messages are the WINDOW, not the conversation — so this cannot be a
+   * full write. See ConversationUpdate: a write carrying the whole list makes
+   * the file only as complete as memory, which is what made bounding memory
+   * unsafe.
+   *
+   * The title is only ever sent when the window is the whole conversation.
+   * Generated from the first user message, and with a window the first
+   * message in memory is not the conversation's first — the main process
+   * keeps the stored title, and fills an empty one from the merged history.
    */
-  function buildConversationPayload(
+  function buildConversationUpdate(
     conversationId: string,
     messages: ChatMessage[],
-    workingDirectory: string
-  ): Conversation {
+    workingDirectory: string,
+  ): ConversationUpdate {
+    // A rewind removed turns on screen; a write has to say so or they stay in
+    // the file. Read here, cleared only once the write has landed.
+    const truncation = chatStore.pendingTruncationFor(conversationId);
+    const options = truncation
+      ? (truncation.afterId === null
+        ? { truncateAll: true as const }
+        : { truncateAfterId: truncation.afterId })
+      : {};
     // Deep clone messages to strip ALL Vue reactivity (including nested objects)
     // Vue proxies can't be cloned across IPC - use JSON round-trip for complete deproxification
     const rawMessages: ChatMessage[] = JSON.parse(JSON.stringify(messages));
     const existingConv = conversations.value.find((c: Conversation) => c.id === conversationId);
 
-    // Preserve existing custom title if it was explicitly set via rename
-    const generatedTitle = generateTitle(messages);
-    // Use the customTitle flag to determine if the title was manually set
+    // Only when the window is the whole conversation; see above.
+    const holdsWholeHistory = chatStore.getConversationState(conversationId).olderCount === 0;
+    const generatedTitle = holdsWholeHistory ? generateTitle(messages) : undefined;
     const title = existingConv?.customTitle ? existingConv.title : generatedTitle;
 
     // Get SDK session ID from in-memory map (for persistence)
@@ -357,8 +385,8 @@ export const useConversationsStore = defineStore('conversations', () => {
 
     return {
       id: conversationId,
-      title,
-      customTitle: existingConv?.customTitle,
+      ...(title !== undefined ? { title } : {}),
+      ...(existingConv?.customTitle !== undefined ? { customTitle: existingConv.customTitle } : {}),
       // A conversation is pinned to the directory its session was created in:
       // the CLI keys session files by a CWD-derived path
       // (~/.claude/projects/<slugified-cwd>/<session-id>.jsonl), so resuming
@@ -370,7 +398,11 @@ export const useConversationsStore = defineStore('conversations', () => {
       workingDirectory: sdkSessionId
         ? (existingConv?.workingDirectory || workingDirectory)
         : workingDirectory,
-      messages: rawMessages,
+      upsert: rawMessages,
+      ...('truncateAfterId' in options && options.truncateAfterId
+        ? { truncateAfterId: options.truncateAfterId }
+        : {}),
+      ...('truncateAll' in options && options.truncateAll ? { truncateAll: true } : {}),
       createdAt: existingConv?.createdAt || Date.now(),
       updatedAt: lastMessageAt,
       sdkSessionId,
@@ -384,10 +416,38 @@ export const useConversationsStore = defineStore('conversations', () => {
   /**
    * Update the conversations list after a successful save.
    */
-  function updateConversationList(conversation: Conversation): void {
-    const index = conversations.value.findIndex((c: Conversation) => c.id === conversation.id);
-    // Store without messages for list view (saves memory)
-    const listEntry = { ...conversation, messages: [] };
+  /**
+   * Reflect a write in the sidebar list.
+   *
+   * Built from the update rather than from a whole conversation, because a
+   * write no longer carries one. The list only ever shows metadata — it has
+   * always been stored with `messages: []` — so nothing is lost by that; an
+   * entry that already exists keeps the fields this update did not mention.
+   */
+  function updateConversationList(update: ConversationUpdate): void {
+    const index = conversations.value.findIndex((c: Conversation) => c.id === update.id);
+    const existing = index !== -1 ? conversations.value[index] : undefined;
+
+    const listEntry: Conversation = {
+      ...(existing ?? {
+        id: update.id,
+        title: '',
+        workingDirectory: update.workingDirectory,
+        createdAt: update.createdAt ?? Date.now(),
+      } as Conversation),
+      id: update.id,
+      messages: [],
+      workingDirectory: update.workingDirectory || existing?.workingDirectory || '',
+      updatedAt: update.updatedAt,
+      ...(update.title !== undefined ? { title: update.title } : {}),
+      ...(update.customTitle !== undefined ? { customTitle: update.customTitle } : {}),
+      ...(update.sdkSessionId !== undefined ? { sdkSessionId: update.sdkSessionId } : {}),
+      ...(update.executionMode !== undefined ? { executionMode: update.executionMode } : {}),
+      ...(update.lastSessionUsage !== undefined ? { lastSessionUsage: update.lastSessionUsage } : {}),
+      ...(update.sessionPermissions !== undefined ? { sessionPermissions: update.sessionPermissions } : {}),
+      ...(update.taskList !== undefined ? { taskList: update.taskList } : {}),
+    };
+
     if (index !== -1) {
       conversations.value[index] = listEntry;
     } else {
@@ -399,27 +459,28 @@ export const useConversationsStore = defineStore('conversations', () => {
    * Core save implementation used by both saveCurrentConversation and saveConversation.
    */
   async function executeSave(
-    conversation: Conversation,
+    update: ConversationUpdate,
     options: { useTimeout: boolean; logPrefix: string }
   ): Promise<void> {
     logger.info(`Saving conversation${options.logPrefix}`, {
-      id: conversation.id,
-      messageCount: conversation.messages.length,
-      title: conversation.title?.slice(0, 30),
+      id: update.id,
+      upsertCount: update.upsert.length,
+      truncating: update.truncateAll ? 'all' : update.truncateAfterId ?? 'none',
+      title: update.title?.slice(0, 30),
     });
 
     if (options.useTimeout) {
-      const savePromise = window.electron.conversation.save(conversation);
+      const savePromise = window.electron.conversation.update(update);
       const timeoutMs = CONSTANTS.CONVERSATION.SAVE_TIMEOUT_MS;
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error(`Save operation timed out after ${timeoutMs / 1000} seconds`)), timeoutMs);
       });
       await Promise.race([savePromise, timeoutPromise]);
     } else {
-      await window.electron.conversation.save(conversation);
+      await window.electron.conversation.update(update);
     }
 
-    updateConversationList(conversation);
+    updateConversationList(update);
   }
 
   /**
@@ -431,7 +492,7 @@ export const useConversationsStore = defineStore('conversations', () => {
    *
    * A save requested while another was in flight used to return immediately
    * having done nothing, and nothing retried it. That is not merely a skipped
-   * duplicate: `buildConversationPayload` clones the message array
+   * duplicate: `buildConversationUpdate` clones the message array
    * synchronously, so the write already running carries the conversation as it
    * was when IT started and can never include anything newer. Dropping the
    * second request leaves everything since that snapshot in memory only — and
@@ -445,9 +506,35 @@ export const useConversationsStore = defineStore('conversations', () => {
    * old guard was reaching for. The difference is that this one actually
    * happens, and its promise does not resolve until the write has.
    */
+  /**
+   * Forget the oldest messages of a conversation whose write has landed.
+   *
+   * The only safe moment to trim: what is being dropped is on disk, and a
+   * write can no longer shorten the file (see ConversationUpdate), so the
+   * window is free to be smaller than the conversation. Left alone until it
+   * grows past WINDOW_MAX so a long turn is never trimmed mid-arrival.
+   */
+  function trimAfterSave(conversationId: string): void {
+    const held = conversationId === currentConversationId.value
+      ? chatStore.messages.length
+      : chatStore.getBufferedMessages(conversationId)?.length ?? 0;
+    if (held <= CONSTANTS.CONVERSATION.WINDOW_MAX) return;
+
+    const dropped = chatStore.trimWindow(conversationId, CONSTANTS.CONVERSATION.WINDOW_SIZE);
+    if (dropped > 0) {
+      logger.info('Trimmed saved messages out of memory', {
+        id: conversationId,
+        dropped,
+        held: held - dropped,
+      });
+    }
+  }
+
   let saveWriting: Promise<boolean> | null = null;
-  /** Snapshots waiting to be written, newest per conversation, in order. */
-  const saveQueue = new Map<string, Conversation>();
+  /** Writes waiting to go out, newest per conversation, in order. */
+  const saveQueue = new Map<string, ConversationUpdate>();
+  /** True while a page of earlier messages is being fetched. */
+  const loadingEarlier = ref(false);
 
   /**
    * Save the conversation on screen — bound to THAT conversation, now.
@@ -490,7 +577,7 @@ export const useConversationsStore = defineStore('conversations', () => {
 
     saveQueue.set(
       conversationId,
-      buildConversationPayload(conversationId, chatStore.messages, settingsStore.workingDirectory),
+      buildConversationUpdate(conversationId, chatStore.messages, settingsStore.workingDirectory),
     );
     return drainSaveQueue();
   }
@@ -511,14 +598,22 @@ export const useConversationsStore = defineStore('conversations', () => {
       error.value = null;
       try {
         while (saveQueue.size > 0) {
-          const [id, conversation] = saveQueue.entries().next().value as [string, Conversation];
+          const [id, conversation] = saveQueue.entries().next().value as [string, ConversationUpdate];
           saveQueue.delete(id);
           try {
             await executeSave(conversation, { useTimeout: true, logPrefix: '' });
             logger.info('Conversation saved successfully', {
               id: conversation.id,
-              messageCount: conversation.messages.length,
+              upsertCount: conversation.upsert.length,
             });
+            // The write landed: a removal it carried has reached the file,
+            // and everything written is now on disk, so the window may be
+            // trimmed back — the only moment at which forgetting part of a
+            // conversation is safe.
+            if (conversation.truncateAfterId || conversation.truncateAll) {
+              chatStore.clearPendingTruncation(id);
+            }
+            trimAfterSave(id);
           } catch (err) {
             const errorMessage = err instanceof Error ? err.message : String(err);
             logger.error('Failed to save conversation', { error: errorMessage, conversationId: id });
@@ -526,7 +621,7 @@ export const useConversationsStore = defineStore('conversations', () => {
             // These messages are now in memory only, and the caller that
             // awaited this save is very often about to replace the list
             // holding them. Keep them reachable; see retainUnsavedMessages.
-            chatStore.retainUnsavedMessages(id, conversation.messages);
+            chatStore.retainUnsavedMessages(id, conversation.upsert);
             ok = false;
           }
         }
@@ -566,7 +661,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     // reason the other one is.
     saveQueue.set(
       conversationId,
-      buildConversationPayload(conversationId, messages, settingsStore.workingDirectory),
+      buildConversationUpdate(conversationId, messages, settingsStore.workingDirectory),
     );
     return drainSaveQueue();
   }
@@ -609,6 +704,52 @@ export const useConversationsStore = defineStore('conversations', () => {
 
     logger.info('Created new conversation', { id });
     return id;
+  }
+
+  /**
+   * Fetch the page of messages before the window and put it on screen.
+   *
+   * Keyed by the id currently at the top rather than by an offset, so a turn
+   * landing in between cannot shift the page. Returns how many messages
+   * arrived — 0 when there was nothing older, or when the request failed and
+   * the user can try again.
+   */
+  async function loadEarlierMessages(): Promise<number> {
+    const id = currentConversationId.value;
+    if (!id) return 0;
+    if (chatStore.olderMessageCount === 0) return 0;
+
+    const top = chatStore.messages[0];
+    if (!top) return 0;
+
+    if (loadingEarlier.value) return 0;
+    loadingEarlier.value = true;
+    try {
+      const page = await window.electron.conversation.getOlder(
+        id,
+        top.id,
+        CONSTANTS.CONVERSATION.WINDOW_SIZE,
+      );
+      if (!page) return 0;
+
+      // The conversation may have been switched away from while this was in
+      // flight; those messages belong to a list that is no longer on screen.
+      if (currentConversationId.value !== id) return 0;
+
+      chatStore.prependOlderMessages(id, page.messages, page.olderCount);
+      logger.info('Loaded earlier messages', {
+        id,
+        loaded: page.messages.length,
+        stillOlder: page.olderCount,
+      });
+      return page.messages.length;
+    } catch (err) {
+      logger.error('Failed to load earlier messages', { id, err });
+      error.value = 'Could not load earlier messages';
+      return 0;
+    } finally {
+      loadingEarlier.value = false;
+    }
   }
 
   /**
@@ -906,6 +1047,8 @@ export const useConversationsStore = defineStore('conversations', () => {
     loadConversation,
     switchConversation,
     saveCurrentConversation,
+    loadEarlierMessages,
+    loadingEarlier,
     saveConversation,
     createNewConversation,
     renameConversation,

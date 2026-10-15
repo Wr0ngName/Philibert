@@ -79,6 +79,32 @@ export interface ConversationState {
    * function returned early and its history came back with no tool uses in it
    * at all. This is where they go instead until the view comes back.
    */
+  /**
+   * How many of this conversation's stored messages are older than the ones
+   * held in memory.
+   *
+   * A conversation is loaded as a window of its most recent messages, not in
+   * full: nothing capped the list before, so a long one grew in memory for as
+   * long as the app ran (measured at ~1.8 KB a message — a 12,000-message
+   * conversation is ~21 MB, and every save allocated twice that again). This
+   * is what the renderer shows as "earlier messages", and what it asks for a
+   * page of.
+   *
+   * It is also why a write must never carry the whole list: the window is not
+   * the conversation. See ConversationUpdate.
+   */
+  olderCount: number;
+  /**
+   * A removal of history that has happened on screen and has yet to reach
+   * disk.
+   *
+   * Writes are upserts — they add and replace, never shorten (see
+   * ConversationUpdate) — so a rewind has to say so explicitly or the turns
+   * it dropped would stay in the file and come back on the next visit.
+   * `afterId` is the last message that survives; null means none did.
+   * Cleared only once a write carrying it has succeeded.
+   */
+  pendingTruncation: { afterId: string | null } | null;
   bufferedMessages: ChatMessage[];
   /**
    * Whether {@link bufferedMessages} is live. Distinguishes "running in the
@@ -106,6 +132,8 @@ function createConversationState(): ConversationState {
     error: null,
     sessionPermissions: [],
     modifiedFilesInLastQuery: new Set(),
+    olderCount: 0,
+    pendingTruncation: null,
     bufferedMessages: [],
     bufferingMessages: false,
   };
@@ -618,7 +646,31 @@ export const useChatStore = defineStore('chat', () => {
     );
     if (index === -1) return;
 
+    // Record what the file has to lose. A write cannot shorten a stored
+    // conversation on its own, so without this the dropped turns would
+    // survive on disk and reappear on the next visit.
+    const survivor = index > 0 ? sink[index - 1].id : null;
+    getConversationState(conversationId).pendingTruncation = { afterId: survivor };
+
     sink.splice(index);
+  }
+
+  /** A removal of history not yet written, if there is one. */
+  function pendingTruncationFor(
+    conversationId: string,
+  ): { afterId: string | null } | null {
+    return conversationStates.value.get(conversationId)?.pendingTruncation ?? null;
+  }
+
+  /**
+   * Forget a removal once a write carrying it has landed.
+   *
+   * Kept until then on purpose: a failed write must not quietly turn a rewind
+   * into something the file never hears about.
+   */
+  function clearPendingTruncation(conversationId: string): void {
+    const state = conversationStates.value.get(conversationId);
+    if (state) state.pendingTruncation = null;
   }
 
   function addSystemMessage(content: string): ChatMessage {
@@ -783,13 +835,24 @@ export const useChatStore = defineStore('chat', () => {
     if (state?.bufferingMessages) state.bufferedMessages = messages.value;
   }
 
-  function loadMessages(loadedMessages: ChatMessage[]): void {
+  /**
+   * Put a conversation's messages on screen.
+   *
+   * `olderCount` is how many stored messages precede them — a window rather
+   * than the whole conversation. It defaults to 0 for the callers that really
+   * do hold everything (a newly created conversation, a buffer that was
+   * seeded from a full history).
+   */
+  function loadMessages(loadedMessages: ChatMessage[], olderCount = 0): void {
     // Nothing is streaming at load time. A message persisted mid-turn keeps
     // isStreaming: true, and restoring it verbatim shows a spinner for a turn
     // that ended long ago — possibly in a previous run of the app.
     messages.value = loadedMessages.map((m) =>
       m.isStreaming ? { ...m, isStreaming: false } : m,
     );
+
+    const current = currentConversationId.value;
+    if (current) getConversationState(current).olderCount = olderCount;
 
     // Re-point a running turn's buffer at the list that is now on screen.
     //
@@ -800,6 +863,66 @@ export const useChatStore = defineStore('chat', () => {
     // and would start diverging again the moment anything was added.
     repointBufferToScreen();
   }
+
+  /**
+   * Put a page of earlier messages in front of the window.
+   *
+   * The messages the user scrolled back to. `olderCount` is what is left
+   * behind them, as the main process counted it — taken from the answer
+   * rather than decremented here, so a miscount cannot accumulate.
+   */
+  function prependOlderMessages(
+    conversationId: string,
+    older: ChatMessage[],
+    olderCount: number,
+  ): void {
+    const state = getConversationState(conversationId);
+    state.olderCount = olderCount;
+    if (older.length === 0) return;
+
+    const sink = messageSink(conversationId);
+    if (!sink) return;
+
+    // Skip anything already held: a page can overlap after a turn landed in
+    // between, and a duplicated message is worse than a missing one.
+    const held = new Set(sink.map((m) => m.id));
+    const fresh = older.filter((m) => !held.has(m.id));
+    if (fresh.length === 0) return;
+
+    sink.unshift(...fresh.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)));
+  }
+
+  /**
+   * Drop the oldest messages from the window, keeping the newest `keep`.
+   *
+   * Called once a save has landed, so everything dropped is on disk. That is
+   * the whole reason writes are upserts: the window is not the conversation,
+   * and forgetting part of it must not shorten the file.
+   *
+   * Returns how many were dropped.
+   */
+  function trimWindow(conversationId: string, keep: number): number {
+    const state = conversationStates.value.get(conversationId);
+    if (!state || keep <= 0) return 0;
+
+    const sink = messageSink(conversationId);
+    if (!sink || sink.length <= keep) return 0;
+
+    const drop = sink.length - keep;
+    // A message still streaming has content arriving into it; dropping it
+    // would strand that content. Never trim into the live tail.
+    if (sink.slice(0, drop).some((m) => m.isStreaming)) return 0;
+
+    sink.splice(0, drop);
+    state.olderCount += drop;
+    return drop;
+  }
+
+  /** How many stored messages precede the window on screen. */
+  const olderMessageCount = computed(() => {
+    const state = getCurrentState();
+    return state?.olderCount ?? 0;
+  });
 
   // ============================================
   // Loading State Actions
@@ -1914,6 +2037,7 @@ export const useChatStore = defineStore('chat', () => {
     hasRunningBackgroundTasks,
     taskListItems,
     hasTaskListItems,
+    olderMessageCount,
     hasSessionUsage,
     activeModel,
     totalTokensUsed,
@@ -1945,6 +2069,8 @@ export const useChatStore = defineStore('chat', () => {
     addSystemMessage,
     recordUserTurnUuid,
     truncateAfterUserTurn,
+    pendingTruncationFor,
+    clearPendingTruncation,
     startAssistantMessage,
     appendChunk,
     appendToLastMessage, // Legacy
@@ -1980,6 +2106,10 @@ export const useChatStore = defineStore('chat', () => {
     endMessageBuffer,
     reconcileBackgroundTasks,
     completeToolUseMessages,
+
+    // Message window actions
+    prependOlderMessages,
+    trimWindow,
 
     // Task list actions
     restoreTaskList,
