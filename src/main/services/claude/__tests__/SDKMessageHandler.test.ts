@@ -429,6 +429,74 @@ describe('SDKMessageHandler', () => {
         expect(streamed()).toBe('first paragraph\n\nsecond paragraph');
       });
 
+      /** A non-text block between two text blocks, as thinking or a tool is. */
+      async function block(type: string): Promise<void> {
+        await handler.handleMessage({
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 0, content_block: { type } },
+        } as never);
+      }
+
+      it('separates two finished sentences split across blocks by thinking', async () => {
+        // The case a separator exists for: nothing splits the message at a
+        // thinking block, so without one these read as
+        // "I'm about to check.It printed "hi"." — which is what the app looked
+        // like before any separator, and what removing it outright brought
+        // back.
+        await textBlock("I'm about to check.");
+        await block('thinking');
+        await textBlock('It printed "hi".');
+
+        expect(streamed()).toBe('I\'m about to check.\n\nIt printed "hi".');
+      });
+
+      it('does not separate blocks split by a tool call', async () => {
+        // The renderer starts a new message at a tool use, so these are
+        // already two messages on screen; a separator would only put a blank
+        // line at the top of the second.
+        await textBlock("I'm about to check.");
+        await block('tool_use');
+        await textBlock('It printed "hi".');
+
+        expect(streamed()).toBe('I\'m about to check.It printed "hi".');
+      });
+
+      it('does not separate when the model already ended the paragraph', async () => {
+        await textBlock('First paragraph.\n\n');
+        await block('thinking');
+        await textBlock('Second paragraph.');
+
+        expect(streamed()).toBe('First paragraph.\n\nSecond paragraph.');
+      });
+
+      it('does not separate mid-clause, even after thinking', async () => {
+        // "…and will" is the model carrying on, not starting again. This is
+        // the shape the report showed, with the break landing mid-sentence.
+        await textBlock('another test run and will');
+        await block('thinking');
+        await textBlock(' continue when it finishes.');
+
+        expect(streamed()).toBe('another test run and will continue when it finishes.');
+      });
+
+      it('does not separate mid-word, even after thinking', async () => {
+        await textBlock('The chat bat');
+        await block('thinking');
+        await textBlock('ch has started another test run');
+
+        expect(streamed()).toBe('The chat batch has started another test run');
+      });
+
+      it('starts each turn with no separator owed', async () => {
+        // State from the previous turn must not make the next one open with a
+        // blank line.
+        await textBlock('Done.');
+        handler.reset();
+        await textBlock('Next answer.');
+
+        expect(streamed()).toBe('Done.Next answer.');
+      });
+
       it('still suppresses the result text once anything has streamed', async () => {
         // The flag the separator used is also what stops the final result
         // being appended on top of the streamed reply.

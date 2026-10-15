@@ -234,6 +234,13 @@ export class SDKMessageHandler {
   private lastMessageWasSlashCommand = false;
   /** Tracks if content was streamed via content_block_delta events */
   private hasStreamedContent = false;
+  /**
+   * Type of the last content block seen in the stream, and the tail of the
+   * text streamed so far. Both feed `needsBlockSeparator` — see
+   * processStreamEvent.
+   */
+  private lastStreamedBlockType: string | null = null;
+  private streamedTail = '';
   /** Maps tool_use IDs to background task IDs (from SDK user messages with tool results) */
   private toolUseToTaskId = new Map<string, string>();
   /** Maps tool_use IDs to their tool name so tool_result handlers know which
@@ -255,6 +262,8 @@ export class SDKMessageHandler {
     this.querySucceeded = false;
     this.lastMessageWasSlashCommand = false;
     this.hasStreamedContent = false;
+    this.lastStreamedBlockType = null;
+    this.streamedTail = '';
   }
 
   /**
@@ -718,35 +727,68 @@ export class SDKMessageHandler {
 
     const event = partial.event;
 
-    // Nothing is inserted between content blocks.
+    // A separator between text blocks — but only where one belongs.
     //
-    // This used to emit '\n\n' on every text `content_block_start` once
-    // anything had streamed, "so responses don't run together". A text content
-    // block is not a paragraph: it is a transport unit, and the server is free
-    // to end one anywhere — including in the middle of a word. So a reply came
-    // out as
+    // This used to emit '\n\n' on EVERY text `content_block_start` once
+    // anything had streamed, "so responses don't run together". That broke
+    // replies apart at arbitrary points, reported as line breaks everywhere,
+    // even inside words:
     //
     //     The chat bat
     //
     //     ch has started another test run
     //
-    // with a blank line wherever a block happened to end. Reported as line
-    // breaks everywhere, even in the middle of words.
+    // Removing it outright was wrong too, which only captured CLI output
+    // showed (see the fixtures in __tests__/fixtures, taken from 2.1.280 with
+    // --include-partial-messages):
     //
-    // The model's own paragraph breaks are already in the deltas, so
-    // concatenating them verbatim reproduces exactly what it wrote. Where a
-    // break genuinely belongs — text, a tool call, then more text — the
-    // renderer already starts a new message at the tool
-    // (`splitStreamingForTool`), which separates them far more clearly than a
-    // blank line would.
+    //  - a plain three-paragraph answer arrives as ONE text block whose own
+    //    '\n\n' are inside the deltas. Inserting anything here is the bug
+    //    above;
+    //  - a turn that talks, runs a tool, talks, runs another, talks arrives as
+    //    three text blocks, NONE starting with a newline. Concatenated
+    //    verbatim that reads "I'm about to check.It printed "hi"." — the
+    //    running-together this separator was added for.
     //
-    // `hasStreamedContent` is still needed: it is what stops the final result
-    // text being appended on top of content that already streamed.
+    // What distinguishes them is what the renderer does. At a tool use it
+    // starts a new message (`splitStreamingForTool`), so those three blocks
+    // are already three separate messages on screen and a separator would
+    // only put a blank line at the top of one. Blocks split by anything else
+    // — thinking, most often — stay in the same message, and there a
+    // separator is the only thing keeping them apart.
+    //
+    // So: separate consecutive text in one message, and only when the text so
+    // far has actually finished a sentence. A block boundary that falls
+    // mid-word or mid-clause is the model carrying on, and nothing may be
+    // inserted into it.
+    if (event?.type === 'content_block_start') {
+      const blockType = event.content_block?.type;
+      if (blockType === 'text' && this.hasStreamedContent && this.needsBlockSeparator()) {
+        this.callbacks.onChunk('\n\n');
+      }
+      this.lastStreamedBlockType = blockType ?? null;
+    }
 
     if (event?.type === 'content_block_delta' && event?.delta?.type === 'text_delta') {
+      const text = event.delta.text || '';
       this.hasStreamedContent = true;
-      this.callbacks.onChunk(event.delta.text || '');
+      // Only the tail matters, and only for the check above.
+      if (text) this.streamedTail = (this.streamedTail + text).slice(-8);
+      this.callbacks.onChunk(text);
     }
+  }
+
+  /**
+   * Whether a text block starting now should be separated from the text
+   * before it. See processStreamEvent for why each condition is here.
+   */
+  private needsBlockSeparator(): boolean {
+    // The renderer already started a new message at the tool call.
+    if (this.lastStreamedBlockType === 'tool_use') return false;
+    // Already separated by the model's own newline.
+    if (/\n\s*$/.test(this.streamedTail)) return false;
+    // Mid-word or mid-clause: the model is continuing, not starting again.
+    return /[.!?:;)\]}"'”’]\s*$/.test(this.streamedTail);
   }
 
   /**
