@@ -538,11 +538,46 @@ function handleScrollToBottom(): void {
   unreadCount.value = 0;
 }
 
+/**
+ * The message the list ended with, last time it changed.
+ *
+ * "How many arrived" cannot be a length delta any more. The list is a window
+ * of a long conversation, so it grows at the FRONT too — loading earlier
+ * history added 500 to its length, and counted as 500 new messages — and it
+ * shrinks at the front when the window is trimmed. Only growth past the
+ * previous last message is new.
+ */
+let lastTailId: string | null = messages.value.at(-1)?.id ?? null;
+
+/**
+ * How many messages appeared after the one the list previously ended with.
+ *
+ * Zero when there was no previous last message: with nothing to compare
+ * against there is no basis for calling anything an arrival, and the
+ * alternative — treating the length change as the count — announced a whole
+ * page of loaded history as new. (That is not hypothetical: it is what the
+ * browser test caught, "500 new messages", on the first length change after
+ * mounting.)
+ */
+function appendedSince(previousTailId: string | null): number {
+  const list = messages.value;
+  const tail = list.at(-1)?.id ?? null;
+  if (tail === previousTailId) return 0;
+  if (previousTailId === null) return 0;
+
+  const previousIndex = list.findIndex((m) => m.id === previousTailId);
+  // Gone entirely — a replaced list, or a rewind — so a count of arrivals is
+  // meaningless and 0 is the honest answer.
+  if (previousIndex === -1) return 0;
+  return list.length - 1 - previousIndex;
+}
+
 // Auto-scroll to bottom when new messages arrive (if user is at bottom)
 watch(
   () => messages.value.length,
-  (newLen, oldLen) => {
-    const added = newLen - (oldLen ?? 0);
+  () => {
+    const added = appendedSince(lastTailId);
+    lastTailId = messages.value.at(-1)?.id ?? null;
     if (added > 0 && !isUserAtBottom.value) {
       unreadCount.value += added;
     }
@@ -659,6 +694,9 @@ watch(
     isUserAtBottom.value = target.kind === 'bottom';
     wasPinnedToBottom.value = target.kind === 'bottom';
     unreadCount.value = 0;
+    // A different conversation's last message is not something anything
+    // arrived after.
+    lastTailId = messages.value.at(-1)?.id ?? null;
 
     nextTick(() => {
       const el = listRef.value;

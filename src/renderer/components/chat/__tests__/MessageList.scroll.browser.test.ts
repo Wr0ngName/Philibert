@@ -27,6 +27,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { commands } from 'vitest/browser';
 
 import { useChatStore } from '../../../stores/chat';
+import { useConversationsStore } from '../../../stores/conversations';
 import MessageList from '../MessageList.vue';
 
 /** Enough rows to be well past the virtualisation threshold. */
@@ -62,6 +63,59 @@ function messagesFor(prefix: string, count = MESSAGE_COUNT) {
       timestamp: index,
     };
   });
+}
+
+/** How much history sits behind the window in the windowed tests. */
+const OLDER_COUNT = 1000;
+
+/** The pages that sit behind the window, as the file would hold them. */
+function olderMessages() {
+  return messagesFor('older', OLDER_COUNT);
+}
+
+/**
+ * Seed a conversation held as a window, with its history addressable behind
+ * it.
+ *
+ * Sets the current id on BOTH stores. The earlier-page fetch reads it from
+ * the conversations store, so leaving that unset makes the fetch a no-op —
+ * which is how two tests here first passed while loading nothing at all, on
+ * an assertion ("more than 400 messages") that the window already satisfied.
+ */
+function seedWindowedConversation(): void {
+  installWindowIpc();
+  const chat = useChatStore();
+  const conversations = useConversationsStore();
+  const older = olderMessages();
+  chat.setCurrentConversation('conv-browser');
+  conversations.currentConversationId = 'conv-browser';
+  chat.loadMessages(messagesFor('msg'), OLDER_COUNT);
+  // The row at the top is the last of the page behind it, so a page request
+  // has something to key on.
+  chat.prependOlderMessages('conv-browser', [older[OLDER_COUNT - 1]], OLDER_COUNT - 1);
+}
+
+/**
+ * Stand in for Electron's IPC, which does not exist in a browser at all.
+ *
+ * Electron is the thing that is missing here, not anything of ours: the
+ * component, both stores, the virtual list and the scroll memory are all
+ * real, and this answers the earlier-page request the way the main process
+ * would, out of the same fixture the window was cut from.
+ */
+function installWindowIpc(): void {
+  const older = olderMessages();
+  (window as unknown as { electron: unknown }).electron = {
+    conversation: {
+      getOlder: async (_id: string, beforeId: string, limit: number) => {
+        const at = older.findIndex((m) => m.id === beforeId);
+        const end = at === -1 ? older.length : at;
+        const start = Math.max(0, end - limit);
+        return { messages: older.slice(start, end), olderCount: start };
+      },
+    },
+    config: { get: async () => ({}), set: async () => undefined, onChange: () => () => {} },
+  };
 }
 
 function seedConversation(): void {
@@ -516,38 +570,9 @@ describe('MessageList scrolling with real layout', () => {
      * not anything of ours. Everything else is real: the component, both
      * stores, the virtual list, the scroll memory.
      */
-    const OLDER_COUNT = 1000;
-
-    /** The pages that sit behind the window, as the file would hold them. */
-    function olderMessages() {
-      return messagesFor('older', OLDER_COUNT);
-    }
-
-    function installIpc(): void {
-      const older = olderMessages();
-      (window as unknown as { electron: unknown }).electron = {
-        conversation: {
-          getOlder: async (_id: string, beforeId: string, limit: number) => {
-            const at = older.findIndex((m) => m.id === beforeId);
-            const end = at === -1 ? older.length : at;
-            const start = Math.max(0, end - limit);
-            return { messages: older.slice(start, end), olderCount: start };
-          },
-        },
-        config: { get: async () => ({}), set: async () => undefined, onChange: () => () => {} },
-      };
-    }
-
     /** A window whose history continues above it. */
     async function seedWindowed() {
-      installIpc();
-      const store = useChatStore();
-      store.setCurrentConversation('conv-browser');
-      // The tail of the conversation, as `getWindow` would return it, with
-      // the page before it addressable by the id at the top.
-      const older = olderMessages();
-      store.loadMessages(messagesFor('msg'), OLDER_COUNT);
-      store.prependOlderMessages('conv-browser', [older[OLDER_COUNT - 1]], OLDER_COUNT - 1);
+      seedWindowedConversation();
       return mountList();
     }
 
@@ -563,6 +588,7 @@ describe('MessageList scrolling with real layout', () => {
       // the viewport, which would otherwise push what the user is reading
       // down the screen by the height of the entire page.
       const { container, wrapper } = await seedWindowed();
+      const heldBefore = useChatStore().messages.length;
 
       // Read some history, away from the tail.
       await wheelUp(container, 10, 120, 2);
@@ -576,8 +602,9 @@ describe('MessageList scrolling with real layout', () => {
       await button.trigger('click');
       await settle(20);
 
-      const held = useChatStore().messages.length;
-      expect(held).toBeGreaterThan(400);
+      // Against what was held before the click: "more than the window" is
+      // true without having loaded anything.
+      expect(useChatStore().messages.length).toBeGreaterThan(heldBefore + 400);
 
       const after = container.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
       expect(after, 'the row being read is still rendered').not.toBeNull();
@@ -647,6 +674,177 @@ describe('MessageList scrolling with real layout', () => {
       const travelled = await wheelUp(container, 8, 120, 2);
 
       expect(travelled).toBeGreaterThan(8 * 120 * 0.8);
+    });
+  });
+  // =========================================================================
+  // A message arriving while the user is reading history
+  // =========================================================================
+  describe('a message arriving while scrolled away', () => {
+    /**
+     * The case to get right: someone is reading back through a conversation
+     * and a turn lands. Their place must not move, they must be told, and
+     * they must be able to get back to the end — and none of that may be
+     * disturbed by the window being a window.
+     */
+
+    /**
+     * The badge offering the way back to the newest message.
+     *
+     * Selected by its own colour class: the "Load earlier messages" control is
+     * also a pill-shaped button, and a looser selector matched that instead —
+     * which is how this test first reported the badge saying "Load earlier
+     * messages (999)".
+     */
+    function badge(container: HTMLElement): HTMLElement | null {
+      const root = container.closest('.relative') ?? container.parentElement;
+      return root?.querySelector<HTMLElement>('button.bg-primary-500') ?? null;
+    }
+
+    function arrive(id: string, content = 'a new answer'): void {
+      useChatStore().addMessage({
+        id, role: 'assistant', content, timestamp: Date.now(),
+      });
+    }
+
+    it('does not move what the user is reading', async () => {
+      seedConversation();
+      const { container } = await mountList();
+      await wheelUp(container, 12, 120, 2);
+
+      const anchor = topRowElement(container);
+      if (!anchor) throw new Error('no row to anchor on');
+      const anchorId = anchor.dataset.messageId;
+      const offsetBefore = anchor.getBoundingClientRect().top
+        - container.getBoundingClientRect().top;
+
+      arrive('arrived-1');
+      await settle(20);
+
+      const after = container.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
+      expect(after, 'the row being read is still rendered').not.toBeNull();
+      const offsetAfter = after!.getBoundingClientRect().top
+        - container.getBoundingClientRect().top;
+
+      expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThan(4);
+    });
+
+    it('says how many arrived', async () => {
+      seedConversation();
+      const { container } = await mountList();
+      await wheelUp(container, 12, 120, 2);
+
+      arrive('arrived-1');
+      await settle(10);
+      expect(badge(container)?.textContent).toContain('1 new message');
+
+      arrive('arrived-2');
+      arrive('arrived-3');
+      await settle(10);
+      expect(badge(container)?.textContent).toContain('3 new messages');
+    });
+
+    it('offers no badge while the view is at the end', async () => {
+      seedConversation();
+      const { container } = await mountList();
+
+      arrive('arrived-1');
+      await settle(10);
+
+      expect(badge(container)).toBeNull();
+      // And the new message was followed, rather than being counted.
+      expect(distanceFromBottom(container)).toBeLessThan(SETTLE_TOLERANCE_PX);
+    });
+
+    it('goes back to the newest message when the badge is used', async () => {
+      seedConversation();
+      const { container } = await mountList();
+      await wheelUp(container, 12, 120, 2);
+      arrive('arrived-1');
+      await settle(10);
+
+      badge(container)?.click();
+      await settle(20);
+
+      expect(distanceFromBottom(container)).toBeLessThan(SETTLE_TOLERANCE_PX);
+      expect(badge(container)).toBeNull();
+    });
+
+    it('does not move the view while an answer streams in', async () => {
+      // The row grows below the viewport, repeatedly, which is the case a
+      // height-change correction has to leave alone.
+      seedConversation();
+      const { container } = await mountList();
+      await wheelUp(container, 12, 120, 2);
+
+      const anchor = topRowElement(container);
+      const anchorId = anchor?.dataset.messageId;
+      const offsetBefore = anchor!.getBoundingClientRect().top
+        - container.getBoundingClientRect().top;
+
+      const store = useChatStore();
+      store.startAssistantMessage('conv-browser');
+      for (let i = 0; i < 12; i += 1) {
+        store.appendChunk('conv-browser', `streamed chunk ${i}. ${PARAGRAPH}`);
+        await settle(2);
+      }
+      await settle(20);
+
+      const after = container.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
+      const offsetAfter = after!.getBoundingClientRect().top
+        - container.getBoundingClientRect().top;
+
+      expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThan(4);
+    });
+
+    it('counts a message that arrives, not a page of history that is loaded', async () => {
+      // The list grows at the front too, now that it is a window. Counting
+      // any growth announced "500 new messages" for history the user had
+      // asked for themselves.
+      seedWindowedConversation();
+      const store = useChatStore();
+      const { container, wrapper } = await mountList();
+      const heldBefore = store.messages.length;
+      await wheelUp(container, 10, 120, 2);
+
+      await wrapper.find('button').trigger('click');
+      await settle(20);
+
+      // A page really arrived — asserted against what was held before,
+      // because "more than the window" is true without loading anything.
+      expect(store.messages.length).toBeGreaterThan(heldBefore + 400);
+      const text = badge(container)?.textContent ?? '';
+      expect(text).not.toContain('new message');
+
+      // A real arrival still counts.
+      arrive('arrived-after-paging');
+      await settle(10);
+      expect(badge(container)?.textContent).toContain('1 new message');
+    });
+
+    it('does not move the view when a message arrives after paging back', async () => {
+      seedWindowedConversation();
+      const store = useChatStore();
+      const { container, wrapper } = await mountList();
+      const heldBefore = store.messages.length;
+      await wheelUp(container, 10, 120, 2);
+      await wrapper.find('button').trigger('click');
+      await settle(20);
+      expect(store.messages.length).toBeGreaterThan(heldBefore + 400);
+
+      const anchor = topRowElement(container);
+      const anchorId = anchor?.dataset.messageId;
+      const offsetBefore = anchor!.getBoundingClientRect().top
+        - container.getBoundingClientRect().top;
+
+      arrive('arrived-after-paging');
+      await settle(20);
+
+      const after = container.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
+      expect(after).not.toBeNull();
+      const offsetAfter = after!.getBoundingClientRect().top
+        - container.getBoundingClientRect().top;
+
+      expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThan(4);
     });
   });
 });
