@@ -19,11 +19,12 @@
  * measurement the safe behaviour is to render everything, exactly as before.
  */
 
-import { computed, onUnmounted, ref, type Ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue';
 
 import {
   buildOffsets,
   findIndexAtOffset,
+  frontShift,
   scrollCorrection,
   visibleWindow,
   type VirtualWindow,
@@ -201,6 +202,62 @@ export function useVirtualList(options: UseVirtualListOptions) {
     observer?.unobserve(el);
     observed.delete(el);
   }
+
+  /**
+   * Keep the content still when rows arrive at or leave the FRONT of the list.
+   *
+   * The list already corrects for a row changing height above the viewport.
+   * It did not correct for rows being INSERTED above it — which is what
+   * loading a page of older messages does, and what unloading the oldest rows
+   * undoes — so the content the user was reading moved by the whole height of
+   * the page. Four corrections attempted from the component failed, each for
+   * the same underlying reason: they were computed in document pixels, while
+   * the rows that just arrived have never been measured and so contribute a
+   * fixed estimate. Here, inside the list, the geometry being compensated is
+   * the geometry that was just laid out.
+   *
+   * `flush: 'post'` so the spacer has already grown: setting a scroll offset
+   * beyond the current content would be clamped, and the correction lost.
+   *
+   * The arithmetic is `frontShift`, which is pure and tested directly. Rows
+   * appended, or inserted or removed mid-list, move the front of the list not
+   * at all and are left to the existing paths.
+   */
+  let previousKeys: string[] = [];
+  let previousOffsets: number[] = [];
+
+  /**
+   * Registered on mount, not during setup.
+   *
+   * `watch` evaluates its getter immediately to collect dependencies, and the
+   * caller's row list is a computed that legitimately depends on state
+   * declared after this composable is called — reading it that early threw a
+   * ReferenceError out of the temporal dead zone and took the component with
+   * it. By mount everything exists.
+   */
+  onMounted(() => {
+    previousKeys = [...keys()];
+    previousOffsets = [...offsets.value];
+
+    watch(
+      () => keys(),
+      (nextKeys) => {
+        const nextOffsets = offsets.value;
+        const shift = frontShift(previousKeys, nextKeys, previousOffsets, nextOffsets);
+
+        previousKeys = [...nextKeys];
+        previousOffsets = [...nextOffsets];
+
+        if (shift === 0) return;
+        const el = container.value;
+        if (!el) return;
+
+        el.scrollTop += shift;
+        scrollTop.value = el.scrollTop;
+      },
+      { flush: 'post' },
+    );
+  });
 
   /** Track the container's scroll position and height. */
   function syncViewport(): void {

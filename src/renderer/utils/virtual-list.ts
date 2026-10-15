@@ -143,3 +143,52 @@ export function scrollCorrection(
   if (changedIndex >= anchorIndex) return 0;
   return newHeight - (previousHeight ?? estimate);
 }
+
+/**
+ * How far the content moved because rows were added to or removed from the
+ * FRONT of the list.
+ *
+ * Everything else here answers "what should be rendered"; this answers "and
+ * where did the rest of it just go". Inserting a page of older messages above
+ * the viewport pushes the content the user is reading down by the height of
+ * what arrived, and unloading the oldest rows pulls it up by theirs. Neither
+ * is a scroll, and neither is a row changing height, so nothing in the list
+ * compensated for them — which is how a page of history loaded while reading
+ * sent the view hundreds of messages away.
+ *
+ * Expressed as a pure function of the two key lists and their geometry, so it
+ * is decided by arithmetic that can be asserted rather than by measuring a
+ * browser:
+ *
+ *  - rows added at the front: the old first row is now at index `k`, and
+ *    everything above it is new, so the content moved down by `next[k]`;
+ *  - rows removed from the front: the new first row used to be at index `k`,
+ *    so the content moved up by `previous[k]`;
+ *  - anything else — appending, inserting or removing mid-list, or no change
+ *    at all — moves the front of the list not at all, and returns 0.
+ *
+ * Returns the number of pixels to add to the scroll offset to leave the
+ * content where it was.
+ */
+export function frontShift(
+  previousKeys: readonly string[],
+  nextKeys: readonly string[],
+  previousOffsets: readonly number[],
+  nextOffsets: readonly number[],
+): number {
+  if (previousKeys.length === 0 || nextKeys.length === 0) return 0;
+  if (previousKeys[0] === nextKeys[0]) return 0;
+
+  // Added at the front: where did the row that used to be first go?
+  const movedTo = nextKeys.indexOf(previousKeys[0]);
+  if (movedTo > 0) return nextOffsets[movedTo] ?? 0;
+
+  // Removed from the front: where did the row that is now first come from?
+  const camefrom = previousKeys.indexOf(nextKeys[0]);
+  if (camefrom > 0) return -(previousOffsets[camefrom] ?? 0);
+
+  // Neither list's first row appears in the other: this is a different list
+  // altogether — a conversation switch — and holding a position across it is
+  // not this function's business.
+  return 0;
+}

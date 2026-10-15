@@ -16,6 +16,7 @@ import {
   findIndexAtOffset,
   scrollCorrection,
   visibleWindow,
+  frontShift,
 } from '../virtual-list';
 
 /** Heights keyed by index, for rows that have been measured. */
@@ -188,5 +189,107 @@ describe('scrollCorrection', () => {
   it('ignores a change below the anchor', () => {
     expect(scrollCorrection(50, 10, 140, 100, 72)).toBe(0);
     expect(scrollCorrection(50, 10, 200, undefined, 72)).toBe(0);
+  });
+});
+
+/**
+ * Rows arriving at or leaving the front of the list.
+ *
+ * A page of older messages is inserted above everything on screen, and the
+ * oldest rows are unloaded when the window slides. Neither is a scroll and
+ * neither is a row changing height, so nothing compensated for them — a page
+ * loaded while reading moved the view hundreds of messages. This is the
+ * arithmetic that cancels it.
+ */
+describe('frontShift', () => {
+  /** Offsets for rows of a fixed height, as the list builds them. */
+  function offsets(count: number, height = 100): number[] {
+    return Array.from({ length: count + 1 }, (_unused, i) => i * height);
+  }
+
+  function keys(from: number, to: number): string[] {
+    const out: string[] = [];
+    for (let i = from; i < to; i += 1) out.push(`row-${i}`);
+    return out;
+  }
+
+  it('is zero when nothing changed', () => {
+    const k = keys(0, 5);
+    expect(frontShift(k, k, offsets(5), offsets(5))).toBe(0);
+  });
+
+  it('is zero when rows were appended', () => {
+    // The common case: a turn arrives. The front of the list did not move.
+    expect(frontShift(keys(0, 5), keys(0, 8), offsets(5), offsets(8))).toBe(0);
+  });
+
+  it('is the height of a page inserted at the front', () => {
+    // 3 rows of 100px arrived above everything, so the content moved down
+    // 300px and the scroll offset has to follow it.
+    expect(frontShift(keys(3, 8), keys(0, 8), offsets(5), offsets(8))).toBe(300);
+  });
+
+  it('uses the new geometry for the inserted rows', () => {
+    // The rows that arrived have never rendered, so they carry the estimate —
+    // which is exactly what the list's own offsets say, and the only thing
+    // that matches what it just laid out.
+    const nextOffsets = [0, 72, 144, 216, 316, 416];
+    expect(frontShift(keys(3, 6), keys(0, 6), offsets(3), nextOffsets)).toBe(216);
+  });
+
+  it('is negative when the front of the list was unloaded', () => {
+    // Two rows dropped from the front: the content moved up by their height.
+    expect(frontShift(keys(0, 8), keys(2, 8), offsets(8), offsets(6))).toBe(-200);
+  });
+
+  it('uses the old geometry for the rows that went', () => {
+    // They had been rendered, so their measured heights are what left.
+    const previousOffsets = [0, 300, 450, 550, 650];
+    expect(frontShift(keys(0, 4), keys(2, 4), previousOffsets, offsets(2))).toBe(-450);
+  });
+
+  it('is zero for an insertion in the middle', () => {
+    // Expanding a sub-agent inserts rows mid-list; nothing above the viewport
+    // moved, and the row-resize path handles the rest.
+    const previous = ['a', 'b', 'c'];
+    const next = ['a', 'b', 'b1', 'b2', 'c'];
+    expect(frontShift(previous, next, offsets(3), offsets(5))).toBe(0);
+  });
+
+  it('is zero for a removal in the middle', () => {
+    const previous = ['a', 'b', 'b1', 'c'];
+    const next = ['a', 'b', 'c'];
+    expect(frontShift(previous, next, offsets(4), offsets(3))).toBe(0);
+  });
+
+  it('is zero for an unrelated list', () => {
+    // A different conversation. Holding a position across that is the restore
+    // path's job, and guessing here would fight it.
+    expect(frontShift(keys(0, 4), ['x', 'y', 'z'], offsets(4), offsets(3))).toBe(0);
+  });
+
+  it('is zero when either list is empty', () => {
+    expect(frontShift([], keys(0, 3), [0], offsets(3))).toBe(0);
+    expect(frontShift(keys(0, 3), [], offsets(3), [0])).toBe(0);
+  });
+
+  it('cancels a prepend exactly, so the content stays put', () => {
+    // The property the whole thing exists for, stated as arithmetic: the row
+    // the user was looking at sits at the same distance below the scroll
+    // offset before and after.
+    const previousKeys = keys(5, 15);
+    const nextKeys = keys(0, 15);
+    const previous = offsets(10);
+    const next = offsets(15);
+
+    const scrollTopBefore = 250; // 2.5 rows into the old list
+    const rowBefore = previousKeys[2];
+    const offsetOfRowBefore = previous[2];
+
+    const shift = frontShift(previousKeys, nextKeys, previous, next);
+    const scrollTopAfter = scrollTopBefore + shift;
+    const offsetOfRowAfter = next[nextKeys.indexOf(rowBefore)];
+
+    expect(scrollTopAfter - offsetOfRowAfter).toBe(scrollTopBefore - offsetOfRowBefore);
   });
 });
