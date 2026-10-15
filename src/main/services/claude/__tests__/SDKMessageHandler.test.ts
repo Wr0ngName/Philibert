@@ -378,6 +378,74 @@ describe('SDKMessageHandler', () => {
       expect(callbacks.onChunk).toHaveBeenCalledWith('Hello');
     });
 
+    /**
+     * A text content block is a transport unit, not a paragraph: the server
+     * ends one wherever it likes, including mid-word. Emitting a separator at
+     * each block start therefore broke replies apart at arbitrary points —
+     * reported as line breaks everywhere, even in the middle of words.
+     */
+    describe('text split across content blocks', () => {
+      /** Stream one text block's worth of deltas. */
+      async function textBlock(...deltas: string[]): Promise<void> {
+        await handler.handleMessage({
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } },
+        } as never);
+        for (const text of deltas) {
+          await handler.handleMessage({
+            type: 'stream_event',
+            event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
+          } as never);
+        }
+      }
+
+      /** Everything that reached the renderer, concatenated as it would be. */
+      function streamed(): string {
+        return vi.mocked(callbacks.onChunk).mock.calls.map((c) => c[0] as string).join('');
+      }
+
+      it('does not break a word split across two blocks', async () => {
+        await textBlock('The chat bat');
+        await textBlock('ch has started another test run');
+
+        expect(streamed()).toBe('The chat batch has started another test run');
+      });
+
+      it('inserts nothing at all between blocks', async () => {
+        await textBlock('one');
+        await textBlock('two');
+        await textBlock('three');
+
+        expect(vi.mocked(callbacks.onChunk).mock.calls.map((c) => c[0])).toEqual([
+          'one', 'two', 'three',
+        ]);
+      });
+
+      it('keeps the model\'s own paragraph breaks', async () => {
+        // The breaks that belong to the text arrive inside the deltas, which
+        // is why none have to be invented.
+        await textBlock('first paragraph\n\n', 'second paragraph');
+
+        expect(streamed()).toBe('first paragraph\n\nsecond paragraph');
+      });
+
+      it('still suppresses the result text once anything has streamed', async () => {
+        // The flag the separator used is also what stops the final result
+        // being appended on top of the streamed reply.
+        await textBlock('streamed reply');
+
+        await handler.handleMessage({
+          type: 'result',
+          subtype: 'success',
+          num_turns: 1,
+          duration_ms: 100,
+          result: 'streamed reply',
+        } as never);
+
+        expect(streamed()).toBe('streamed reply');
+      });
+    });
+
     it('should not emit for non-text_delta events', async () => {
       await handler.handleMessage({
         type: 'stream_event',

@@ -718,12 +718,30 @@ export class SDKMessageHandler {
 
     const event = partial.event;
 
-    // Emit line break between content blocks for clarity
-    // When a new text content_block_start arrives and we already have streamed content,
-    // add a visual separator so responses don't run together
-    if (event?.type === 'content_block_start' && event?.content_block?.type === 'text' && this.hasStreamedContent) {
-      this.callbacks.onChunk('\n\n');
-    }
+    // Nothing is inserted between content blocks.
+    //
+    // This used to emit '\n\n' on every text `content_block_start` once
+    // anything had streamed, "so responses don't run together". A text content
+    // block is not a paragraph: it is a transport unit, and the server is free
+    // to end one anywhere — including in the middle of a word. So a reply came
+    // out as
+    //
+    //     The chat bat
+    //
+    //     ch has started another test run
+    //
+    // with a blank line wherever a block happened to end. Reported as line
+    // breaks everywhere, even in the middle of words.
+    //
+    // The model's own paragraph breaks are already in the deltas, so
+    // concatenating them verbatim reproduces exactly what it wrote. Where a
+    // break genuinely belongs — text, a tool call, then more text — the
+    // renderer already starts a new message at the tool
+    // (`splitStreamingForTool`), which separates them far more clearly than a
+    // blank line would.
+    //
+    // `hasStreamedContent` is still needed: it is what stops the final result
+    // text being appended on top of content that already streamed.
 
     if (event?.type === 'content_block_delta' && event?.delta?.type === 'text_delta') {
       this.hasStreamedContent = true;
