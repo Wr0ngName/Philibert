@@ -339,11 +339,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     // A rewind removed turns on screen; a write has to say so or they stay in
     // the file. Read here, cleared only once the write has landed.
     const truncation = chatStore.pendingTruncationFor(conversationId);
-    const options = truncation
-      ? (truncation.afterId === null
-        ? { truncateAll: true as const }
-        : { truncateAfterId: truncation.afterId })
-      : {};
+    const options = truncation ? { truncateFromId: truncation.fromId } : {};
     // Deep clone messages to strip ALL Vue reactivity (including nested objects)
     // Vue proxies can't be cloned across IPC - use JSON round-trip for complete deproxification
     const rawMessages: ChatMessage[] = JSON.parse(JSON.stringify(messages));
@@ -411,10 +407,7 @@ export const useConversationsStore = defineStore('conversations', () => {
         ? (existingConv?.workingDirectory || workingDirectory)
         : workingDirectory,
       upsert: rawMessages,
-      ...('truncateAfterId' in options && options.truncateAfterId
-        ? { truncateAfterId: options.truncateAfterId }
-        : {}),
-      ...('truncateAll' in options && options.truncateAll ? { truncateAll: true } : {}),
+      ...(options.truncateFromId ? { truncateFromId: options.truncateFromId } : {}),
       createdAt: existingConv?.createdAt || Date.now(),
       updatedAt: lastMessageAt,
       sdkSessionId,
@@ -477,7 +470,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     logger.info(`Saving conversation${options.logPrefix}`, {
       id: update.id,
       upsertCount: update.upsert.length,
-      truncating: update.truncateAll ? 'all' : update.truncateAfterId ?? 'none',
+      truncating: update.truncateFromId ?? 'none',
       title: update.title?.slice(0, 30),
     });
 
@@ -585,7 +578,12 @@ export const useConversationsStore = defineStore('conversations', () => {
       logger.debug('No current conversation ID, skipping save');
       return Promise.resolve(false);
     }
-    if (chatStore.messages.length === 0) {
+    // Nothing to add AND nothing to remove. A rewind to the oldest turn on
+    // screen empties the list, and skipping the write for that reason meant
+    // the rewind never reached disk at all: the transcript went blank, the
+    // file kept every message, and reopening the conversation brought all of
+    // it back.
+    if (chatStore.messages.length === 0 && !chatStore.pendingTruncationFor(conversationId)) {
       logger.debug('No messages to save');
       return Promise.resolve(false);
     }
@@ -649,7 +647,7 @@ export const useConversationsStore = defineStore('conversations', () => {
             // and everything written is now on disk, so the window may be
             // trimmed back — the only moment at which forgetting part of a
             // conversation is safe.
-            if (conversation.truncateAfterId || conversation.truncateAll) {
+            if (conversation.truncateFromId) {
               chatStore.clearPendingTruncation(id);
             }
             // A turn collected apart from the window is stored now, so it is
@@ -779,6 +777,19 @@ export const useConversationsStore = defineStore('conversations', () => {
       // flight; those messages belong to a list that is no longer on screen.
       if (currentConversationId.value !== id) return 0;
 
+      // Or it may be the same conversation showing a different stretch of
+      // itself: the reader jumped to the end, or reopened it. The page was
+      // computed to sit in front of `top`, and in front of anything else it
+      // is simply wrong — measured, it produced a window running msg_1000 to
+      // msg_1499 followed by msg_3500, with a two-thousand-message hole in
+      // the middle and nothing to say so.
+      if (chatStore.messages[0]?.id !== top.id) {
+        logger.info('Discarded a page of history: the window moved while it was read', {
+          id, anchor: top.id, now: chatStore.messages[0]?.id,
+        });
+        return 0;
+      }
+
       chatStore.prependOlderMessages(id, page.messages, page.olderCount);
       logger.info('Loaded earlier messages', {
         id,
@@ -822,6 +833,16 @@ export const useConversationsStore = defineStore('conversations', () => {
       if (!page) return 0;
       // Switched away while this was in flight.
       if (currentConversationId.value !== id) return 0;
+
+      // Or the same conversation moved to a different stretch of itself. The
+      // page belongs after `from` and nowhere else — measured, appending it
+      // regardless put msg_901 after msg_3999.
+      if (chatStore.messages[chatStore.messages.length - 1]?.id !== from) {
+        logger.info('Discarded a page of the tail: the window moved while it was read', {
+          id, anchor: from, now: chatStore.messages[chatStore.messages.length - 1]?.id,
+        });
+        return 0;
+      }
 
       chatStore.appendNewerMessages(id, page.messages, page.newerCount);
       logger.info('Loaded newer messages', {

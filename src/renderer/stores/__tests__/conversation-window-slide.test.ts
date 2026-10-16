@@ -46,7 +46,8 @@ import { useSettingsStore } from '../settings';
 
 
 import {
-  startRealStack, settle, onDisk, files, unmountApp, mountApp, emitIpc,
+  startRealStack, settle, onDisk, files, unmountApp, mountApp, emitIpc, disk,
+  releaseReads,
 } from './support/real-stack';
 
 const CONV = 'conv-long';
@@ -199,6 +200,38 @@ describe('sliding the window through a long conversation', () => {
     expect(numbers).toEqual(expected);
   }
 
+  /**
+   * Read back until the newest messages have been unloaded, and say so if
+   * that never happens.
+   *
+   * Stops the moment a page fails to arrive rather than grinding to a page
+   * bound. The bound version was not wrong, it was expensive: with the tail
+   * bookkeeping broken the premise never becomes true, so every test in the
+   * block below ran ten page loads instead of three — each one a read and a
+   * parse of the whole stored conversation through the real service — and the
+   * suite went from seconds to over seven minutes. A premise that cannot be
+   * met should fail on the first page, not the tenth.
+   */
+  async function readBackUntilTailUnloads(): Promise<number> {
+    let pages = 0;
+    while (chatStore.newerMessageCount === 0) {
+      const olderBefore = chatStore.olderMessageCount;
+      const loaded = await readBack();
+      pages += 1;
+      expect(loaded, `page ${pages} of history did not arrive`).toBeGreaterThan(0);
+      expect(chatStore.olderMessageCount, `page ${pages} did not advance the window`)
+        .toBeLessThan(olderBefore);
+      expect(chatStore.messages.length).toBeLessThanOrEqual(WINDOW_MAX);
+      // Three pages, by arithmetic: the window opens at WINDOW_SIZE and each
+      // page adds WINDOW_SIZE, so the third is the one that takes the held
+      // list past WINDOW_MAX and makes it slide. A fourth is slack for the
+      // constants moving; ten was slack for nothing, and cost nine page
+      // loads per test whenever the bookkeeping was broken.
+      expect(pages, 'the tail never unloaded').toBeLessThanOrEqual(4);
+    }
+    return pages;
+  }
+
   it('opens a long conversation as a window of its end', () => {
     expect(chatStore.messages).toHaveLength(WINDOW_SIZE);
     expect(chatStore.olderMessageCount).toBe(TOTAL - WINDOW_SIZE);
@@ -207,12 +240,7 @@ describe('sliding the window through a long conversation', () => {
   });
 
   it('unloads the tail once reading back fills the window', async () => {
-    let pages = 0;
-    while (chatStore.newerMessageCount === 0 && pages < 10) {
-      expect(await readBack()).toBeGreaterThan(0);
-      pages += 1;
-      expect(chatStore.messages.length).toBeLessThanOrEqual(WINDOW_MAX);
-    }
+    expect(await readBackUntilTailUnloads()).toBeGreaterThan(0);
 
     expect(chatStore.newerMessageCount).toBeGreaterThan(0);
     expectContiguous();
@@ -252,14 +280,216 @@ describe('sliding the window through a long conversation', () => {
     expect(chatStore.newerMessageCount).toBe(0);
   });
 
+  describe('a stored conversation with a message id twice in it', () => {
+    /**
+     * The conversation is a JSON file on disk. A duplicate id in it is not a
+     * state this app sets out to create, but it is a state the app can be
+     * handed — a file edited by hand, a restore from a partial copy, a bug
+     * elsewhere that shipped once — and paging must not then show the same
+     * message twice. The window is supposed to be one unbroken range; a
+     * duplicate makes it one unbroken range with a repeat in it, and the
+     * repeat travels into the save.
+     */
+    beforeEach(async () => {
+      const stored = onDisk(CONV)!;
+      // Duplicate a message that sits in the page BEFORE the opening window,
+      // so reading back is what pulls it in.
+      const dupedAt = TOTAL - WINDOW_SIZE - 10;
+      const messages = [...stored.messages];
+      messages[dupedAt] = { ...messages[dupedAt], id: messages[dupedAt + 1].id };
+      files.set(`/conversations/${CONV}.json`, JSON.stringify({ ...stored, messages }));
+
+      chatStore.loadMessages([]);
+      await store.loadConversation(CONV);
+      await settle();
+    });
+
+    it('does not hold the same message twice when reading back', async () => {
+      expect(await store.loadEarlierMessages()).toBeGreaterThan(0);
+      await settle();
+
+      const ids = chatStore.messages.map((m) => m.id);
+      expect(new Set(ids).size, 'a message is held twice').toBe(ids.length);
+    });
+
+    it('does not hold the same message twice when reading forward', async () => {
+      await readBackUntilTailUnloads();
+      let guard = 0;
+      while (chatStore.newerMessageCount > 0 && guard < 30) {
+        await readForward();
+        guard += 1;
+        const ids = chatStore.messages.map((m) => m.id);
+        expect(new Set(ids).size, 'a message is held twice').toBe(ids.length);
+      }
+    });
+  });
+
+  describe('a page that arrives after the window has moved', () => {
+    /**
+     * A page is requested against the window as it is NOW: the id at the edge
+     * is the anchor, and the read is asynchronous. By the time it comes back
+     * the window may be a different stretch of the conversation altogether —
+     * the reader pressed "jump to latest", or reopened the conversation — and
+     * applying the page then puts messages from one part of the conversation
+     * on the end of another.
+     *
+     * Only a conversation switch was guarded. Same conversation, different
+     * window, was not.
+     */
+    it('discards a page of history once the view has jumped to the end', async () => {
+      await readBackUntilTailUnloads();
+      const anchor = chatStore.messages[0].id;
+
+      // Ask for the page, and hold the read so it is genuinely in flight.
+      disk.holdReads = true;
+      const inFlight = store.loadEarlierMessages();
+      await settle();
+
+      // Meanwhile the reader goes back to the end of the conversation.
+      disk.holdReads = false;
+      expect(await store.jumpToLatest()).toBe(true);
+      await settle();
+      const atTheEnd = chatStore.messages.map((m) => m.id);
+      expect(chatStore.messages[0].id).not.toBe(anchor);
+
+      // Now the page lands.
+      disk.holdReads = false;
+      await releaseReads();
+      await inFlight;
+      await settle();
+
+      // It changed nothing: the window is still the end of the conversation.
+      expect(chatStore.messages.map((m) => m.id)).toEqual(atTheEnd);
+      expectContiguous();
+      expect(accountedTotal()).toBe(TOTAL);
+    });
+
+    it('discards a page of the tail once the view has jumped to the end', async () => {
+      await readBackUntilTailUnloads();
+      const anchor = chatStore.messages.at(-1)?.id;
+
+      disk.holdReads = true;
+      const inFlight = store.loadNewerMessages();
+      await settle();
+
+      disk.holdReads = false;
+      expect(await store.jumpToLatest()).toBe(true);
+      await settle();
+      const atTheEnd = chatStore.messages.map((m) => m.id);
+      expect(chatStore.messages.at(-1)?.id).not.toBe(anchor);
+
+      await releaseReads();
+      await inFlight;
+      await settle();
+
+      expect(chatStore.messages.map((m) => m.id)).toEqual(atTheEnd);
+      expectContiguous();
+      expect(accountedTotal()).toBe(TOTAL);
+    });
+  });
+
+  describe('rewinding a conversation that is held as a window', () => {
+    /**
+     * A rewind drops a user turn and everything after it, and has to say so
+     * explicitly because a write cannot shorten the stored conversation on its
+     * own. Both halves of that are dangerous with a window: the turn is found
+     * in a list that may not be the window, and "everything before the turn"
+     * is a thing the renderer may not be holding.
+     */
+    function userTurn(n: number, uuid: string): ChatMessage {
+      return { ...message(n), role: 'user', turnUuid: uuid };
+    }
+
+    it('keeps the history the window is not holding', async () => {
+      // Rewinding to the oldest turn ON SCREEN is not rewinding to the start
+      // of the conversation. The survivor was taken as "the message before it
+      // in memory", and at the top of a window there is none — which asked
+      // for the whole conversation to be truncated, thousands of stored
+      // messages included.
+      const uuid = 'turn-at-the-top';
+      chatStore.messages[0] = userTurn(
+        Number(chatStore.messages[0].id.replace('msg_', '')), uuid,
+      );
+      const firstHeld = chatStore.messages[0].id;
+      expect(chatStore.olderMessageCount).toBeGreaterThan(0);
+
+      chatStore.truncateAfterUserTurn(CONV, uuid);
+      await store.saveCurrentConversation();
+      await settle();
+
+      const saved = onDisk(CONV);
+      // Everything before the window survives, and the rewound turn is gone.
+      expect(saved?.messages.length).toBe(chatStore.olderMessageCount);
+      expect(saved?.messages[0].id).toBe('msg_0');
+      expect(saved?.messages.some((m) => m.id === firstHeld)).toBe(false);
+    });
+
+    it('cuts the file at the turn itself, not one message early', async () => {
+      // The exact boundary, because being one out either way is invisible in
+      // the transcript and permanent in the file: one short and the rewound
+      // turn survives on disk and comes back; one long and the turn BEFORE it
+      // is destroyed. Rewinding from the middle of the window, so there is a
+      // predecessor to get wrong.
+      const at = 200;
+      const uuid = 'turn-in-the-middle';
+      const n = Number(chatStore.messages[at].id.replace('msg_', ''));
+      chatStore.messages[at] = userTurn(n, uuid);
+      const predecessor = chatStore.messages[at - 1].id;
+      const rewound = chatStore.messages[at].id;
+
+      // What the write asks for, not only what the file ends up as. Asking to
+      // cut one message early is invisible in the file: the over-truncated
+      // message is still in the window being upserted, so the same write puts
+      // it straight back. The contract is what has to be right.
+      const asked: (string | undefined)[] = [];
+      const original = window.electron.conversation.update;
+      (window.electron.conversation as { update: typeof original }).update = async (u) => {
+        asked.push(u.truncateFromId);
+        return original(u);
+      };
+
+      chatStore.truncateAfterUserTurn(CONV, uuid);
+      await store.saveCurrentConversation();
+      await settle();
+
+      (window.electron.conversation as { update: typeof original }).update = original;
+
+      expect(asked).toEqual([rewound]);
+
+      const saved = onDisk(CONV);
+      const ids = saved?.messages.map((m) => m.id) ?? [];
+      // The message before the rewound turn is the newest thing left.
+      expect(ids.at(-1)).toBe(predecessor);
+      expect(ids).not.toContain(rewound);
+      // And exactly that much survived: everything up to and including it.
+      expect(ids).toHaveLength(chatStore.olderMessageCount + at);
+    });
+
+    it('rewinds the transcript, not a turn held apart from it', async () => {
+      // With a turn collected apart from the window, the list a rewind
+      // searches must still be the transcript. Searching the detached turn
+      // finds nothing and silently rewinds nothing at all.
+      await readBackUntilTailUnloads();
+      chatStore.addMessage(message(TOTAL));
+      expect(chatStore.detachedTurnFor(CONV)).not.toBeNull();
+
+      const uuid = 'turn-in-the-window';
+      const at = chatStore.messages.length - 3;
+      const n = Number(chatStore.messages[at].id.replace('msg_', ''));
+      chatStore.messages[at] = userTurn(n, uuid);
+
+      const heldBefore = chatStore.messages.length;
+      chatStore.truncateAfterUserTurn(CONV, uuid);
+
+      // The transcript really lost those turns.
+      expect(chatStore.messages.length).toBe(heldBefore - 3);
+      expect(chatStore.messages.some((m) => m.turnUuid === uuid)).toBe(false);
+    });
+  });
+
   describe('a turn arriving while the window falls short of the end', () => {
     beforeEach(async () => {
-      let pages = 0;
-      while (chatStore.newerMessageCount === 0 && pages < 10) {
-        await readBack();
-        pages += 1;
-      }
-      expect(chatStore.newerMessageCount).toBeGreaterThan(0);
+      await readBackUntilTailUnloads();
     });
 
     it('keeps it out of the window rather than stitching it onto the end', () => {
@@ -381,6 +611,29 @@ describe('sliding the window through a long conversation', () => {
       expect(onDisk(CONV)?.messages.at(-1)?.content).toBe('first half. second half.');
     });
 
+    it('does not leave the finished turn marked as still streaming', async () => {
+      // The spinner is driven by a message's own isStreaming flag, and the
+      // flag is cleared by walking the list the turn was written to. Walking
+      // the window instead leaves a turn collected apart from it marked live
+      // forever — and the write stores it that way, so reopening the
+      // conversation shows a spinner for a turn that finished long ago.
+      //
+      // Asserted on the stored message and on the held turn, NOT on the list
+      // after a reload: `loadMessages` strips the flag on the way in, which is
+      // exactly why the first version of this test passed with the bug in.
+      chatStore.startAssistantMessage(CONV);
+      chatStore.appendChunk(CONV, 'an answer');
+      chatStore.finishStreaming(CONV);
+
+      expect(chatStore.detachedTurnFor(CONV)?.some((m) => m.isStreaming)).toBe(false);
+
+      await store.saveCurrentConversation();
+      await settle();
+
+      expect(onDisk(CONV)?.messages.at(-1)?.content).toBe('an answer');
+      expect(onDisk(CONV)?.messages.some((m) => m.isStreaming)).toBe(false);
+    });
+
     it('comes back to the end of the conversation, all of it accounted for', async () => {
       // Leaving and returning. A conversation whose window falls short of the
       // end keeps no buffer — its turn is in `detachedTurn`, which outlives
@@ -456,7 +709,8 @@ describe('sliding the window through a long conversation', () => {
       expect(saved?.messages.at(-1)?.content).toBe('the background answer');
       // And it did not shorten the conversation to do it.
       expect(saved?.messages[0].id).toBe('msg_0');
-    });
+}, 30_000); // mounts the whole app and drives real IPC; 5s is too tight
+    // under a full-suite run, and a test that flakes trains you to ignore red.
 
     it('shows a turn that is still running when the user comes back to it', async () => {
       // Coming back mid-turn. `loadConversation` prefers whatever the
@@ -481,7 +735,8 @@ describe('sliding the window through a long conversation', () => {
       expectContiguous();
       // Nothing is claimed to be missing after it, because nothing is.
       expect(chatStore.newerMessageCount).toBe(0);
-    });
+}, 30_000); // mounts the whole app and drives real IPC; 5s is too tight
+    // under a full-suite run, and a test that flakes trains you to ignore red.
 
     it('writes a turn still in flight when the app closes', async () => {
       // Closing the app is the other end of the same question: a turn that
@@ -504,7 +759,8 @@ describe('sliding the window through a long conversation', () => {
       const saved = onDisk(CONV);
       expect(saved?.messages.at(-1)?.content).toBe('half an answer');
       expect(saved?.messages).toHaveLength(TOTAL + 1);
-    });
+}, 30_000); // mounts the whole app and drives real IPC; 5s is too tight
+    // under a full-suite run, and a test that flakes trains you to ignore red.
 
     it('stays one range however hard the window is trimmed', async () => {
       // The trim after a save drops the oldest messages, and it knows nothing
