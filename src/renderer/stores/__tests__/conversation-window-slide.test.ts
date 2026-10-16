@@ -424,6 +424,68 @@ describe('sliding the window through a long conversation', () => {
       expect(saved?.messages.some((m) => m.id === firstHeld)).toBe(false);
     });
 
+    it('discards a turn held apart from the window too', async () => {
+      // A rewind means "forget everything after this point", and a turn that
+      // arrived while the window fell short of the end is after every message
+      // in the window by definition. So it goes as well — otherwise the write
+      // that carries the rewind also carries that turn, putting the messages
+      // the rewind was told to forget straight back on the end of the file,
+      // and the badge goes on offering a jump to them.
+      //
+      // A turn is unwritten from the moment it arrives until a write lands,
+      // which is the state wanted here. Reaching it by failing a write would
+      // say the same thing and cost the retry machinery — a pending save with
+      // a thirty-second timeout outlives the test that started it and slows
+      // every one after it. That path has its own test.
+      await readBackUntilTailUnloads();
+      chatStore.addMessage(message(TOTAL));
+      // The premise: the turn really is held, and really is not on disk.
+      expect(chatStore.detachedTurnFor(CONV)?.map((m) => m.id)).toEqual([`msg_${TOTAL}`]);
+      expect(onDisk(CONV)?.messages.some((m) => m.id === `msg_${TOTAL}`)).toBe(false);
+
+      const at = 100;
+      const uuid = 'rewind-with-a-turn-pending';
+      const n = Number(chatStore.messages[at].id.replace('msg_', ''));
+      chatStore.messages[at] = userTurn(n, uuid);
+      const rewound = chatStore.messages[at].id;
+
+      chatStore.truncateAfterUserTurn(CONV, uuid);
+      await store.saveCurrentConversation();
+      await settle();
+
+      // Gone from memory, and never written.
+      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
+      const ids = onDisk(CONV)?.messages.map((m) => m.id) ?? [];
+      expect(ids).not.toContain(`msg_${TOTAL}`);
+      expect(ids).not.toContain(rewound);
+      expect(ids.at(-1)).toBe(`msg_${n - 1}`);
+      // And nothing is left claiming there is more to come back to.
+      expect(chatStore.newerMessageCount).toBe(0);
+    });
+
+    it('persists a rewind that empties the window, even on the way out', async () => {
+      // Rewinding the oldest turn on screen leaves nothing on screen, and the
+      // save on the way out of a conversation was guarded on there being
+      // something on screen to save. So the rewind went nowhere: the file
+      // kept every message, and the next visit showed them all again.
+      const uuid = 'turn-at-the-very-top';
+      const n = Number(chatStore.messages[0].id.replace('msg_', ''));
+      chatStore.messages[0] = userTurn(n, uuid);
+      const rewound = chatStore.messages[0].id;
+
+      chatStore.truncateAfterUserTurn(CONV, uuid);
+      expect(chatStore.messages).toHaveLength(0);
+
+      // Leave without saving by hand; switching away is the flush point.
+      await store.switchConversation('conv-elsewhere');
+      await settle();
+
+      const ids = onDisk(CONV)?.messages.map((m) => m.id) ?? [];
+      expect(ids).not.toContain(rewound);
+      expect(ids.at(-1)).toBe(`msg_${n - 1}`);
+      expect(ids).toHaveLength(n);
+    });
+
     it('cuts the file at the turn itself, not one message early', async () => {
       // The exact boundary, because being one out either way is invisible in
       // the transcript and permanent in the file: one short and the rewound
@@ -709,8 +771,14 @@ describe('sliding the window through a long conversation', () => {
       expect(saved?.messages.at(-1)?.content).toBe('the background answer');
       // And it did not shorten the conversation to do it.
       expect(saved?.messages[0].id).toBe('msg_0');
-}, 30_000); // mounts the whole app and drives real IPC; 5s is too tight
-    // under a full-suite run, and a test that flakes trains you to ignore red.
+    }, 15_000);
+    // ^ mounts the whole app, drives real IPC and reads a 4,000-message
+    // conversation several times: measured at ~2.1s on an idle machine, and
+    // this suite runs in CI on a shared runner, so the 5s default leaves too
+    // little headroom. Seven times the measurement — not a number picked to
+    // make red go away, which is what 30s was: it came from a "flaky under
+    // load" reading taken while three orphaned test workers of my own were
+    // starving the machine.
 
     it('shows a turn that is still running when the user comes back to it', async () => {
       // Coming back mid-turn. `loadConversation` prefers whatever the
@@ -735,8 +803,14 @@ describe('sliding the window through a long conversation', () => {
       expectContiguous();
       // Nothing is claimed to be missing after it, because nothing is.
       expect(chatStore.newerMessageCount).toBe(0);
-}, 30_000); // mounts the whole app and drives real IPC; 5s is too tight
-    // under a full-suite run, and a test that flakes trains you to ignore red.
+    }, 15_000);
+    // ^ mounts the whole app, drives real IPC and reads a 4,000-message
+    // conversation several times: measured at ~2.1s on an idle machine, and
+    // this suite runs in CI on a shared runner, so the 5s default leaves too
+    // little headroom. Seven times the measurement — not a number picked to
+    // make red go away, which is what 30s was: it came from a "flaky under
+    // load" reading taken while three orphaned test workers of my own were
+    // starving the machine.
 
     it('writes a turn still in flight when the app closes', async () => {
       // Closing the app is the other end of the same question: a turn that
@@ -759,8 +833,14 @@ describe('sliding the window through a long conversation', () => {
       const saved = onDisk(CONV);
       expect(saved?.messages.at(-1)?.content).toBe('half an answer');
       expect(saved?.messages).toHaveLength(TOTAL + 1);
-}, 30_000); // mounts the whole app and drives real IPC; 5s is too tight
-    // under a full-suite run, and a test that flakes trains you to ignore red.
+    }, 15_000);
+    // ^ mounts the whole app, drives real IPC and reads a 4,000-message
+    // conversation several times: measured at ~2.1s on an idle machine, and
+    // this suite runs in CI on a shared runner, so the 5s default leaves too
+    // little headroom. Seven times the measurement — not a number picked to
+    // make red go away, which is what 30s was: it came from a "flaky under
+    // load" reading taken while three orphaned test workers of my own were
+    // starving the machine.
 
     it('stays one range however hard the window is trimmed', async () => {
       // The trim after a save drops the oldest messages, and it knows nothing

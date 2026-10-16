@@ -801,9 +801,21 @@ export const useChatStore = defineStore('chat', () => {
     // the oldest turn on screen has no predecessor to name, and "after
     // nothing" meant "drop the whole conversation" — including the thousands
     // of stored messages the window was not holding.
-    getConversationState(conversationId).pendingTruncation = { fromId: sink[index].id };
+    const state = getConversationState(conversationId);
+    state.pendingTruncation = { fromId: sink[index].id };
 
     sink.splice(index);
+
+    // A rewind means "forget everything after this point", and everything
+    // after the window is after that point too: the stored messages the
+    // window stops short of, and a turn collected apart from it. Both go.
+    //
+    // The write carries the truncation, so the stored ones are already gone;
+    // the detached turn has to be dropped here or the SAME write puts it
+    // back, appending the messages the rewind was told to forget onto the end
+    // of the file — and until then the badge goes on offering a jump to them.
+    state.newerCount = 0;
+    state.detachedTurn = [];
   }
 
   /**

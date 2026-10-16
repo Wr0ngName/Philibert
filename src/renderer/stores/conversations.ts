@@ -299,7 +299,17 @@ export const useConversationsStore = defineStore('conversations', () => {
     // buffer (see retainUnsavedMessages), which is what the next visit reads
     // in preference to the older file.
     const leaving = currentConversationId.value;
-    if (leaving && chatStore.messages.length > 0) {
+    // Something to add, something to remove, or something held apart from the
+    // window — any of the three is a reason to write before leaving. Guarding
+    // on the on-screen list alone meant a rewind that emptied it was never
+    // written: the file kept every message and the next visit showed them all
+    // again.
+    const leavingHasWork = !!leaving && (
+      chatStore.messages.length > 0
+      || !!chatStore.pendingTruncationFor(leaving)
+      || !!chatStore.detachedTurnFor(leaving)
+    );
+    if (leaving && leavingHasWork) {
       const saved = await saveCurrentConversation().catch((err) => {
         logger.error('Failed to save conversation before switch', err);
         return false;
@@ -308,7 +318,7 @@ export const useConversationsStore = defineStore('conversations', () => {
         logger.error('Switching away from a conversation that was not saved', {
           id: leaving,
           messageCount: chatStore.messages.length,
-          retained: chatStore.getBufferedMessages(leaving)?.length ?? 0,
+          retained: chatStore.unwrittenMessagesFor(leaving)?.length ?? 0,
         });
       }
     }
