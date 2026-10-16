@@ -646,13 +646,6 @@ export const useChatStore = defineStore('chat', () => {
    * For flushing them to disk when the app is closing: their buffers hold
    * everything since the last save, and nothing else would write it.
    */
-  function bufferingConversationIds(): string[] {
-    const ids: string[] = [];
-    for (const [id, state] of conversationStates.value.entries()) {
-      if (state.bufferingMessages && state.bufferedMessages.length > 0) ids.push(id);
-    }
-    return ids;
-  }
 
   /**
    * The messages a conversation is holding that are not on disk, or null.
@@ -676,13 +669,23 @@ export const useChatStore = defineStore('chat', () => {
     return null;
   }
 
-  /** Every conversation holding messages that are not on disk. */
-  function conversationIdsWithUnwrittenMessages(): string[] {
-    const ids: string[] = [];
+  /**
+   * Every conversation holding messages that are not on disk, with those
+   * messages.
+   *
+   * The work itself rather than a list of ids to ask about: a caller handed
+   * ids has to ask each one again, and then there are two filters for one
+   * decision. Mutation testing found exactly that — removing either filter
+   * changed nothing, because the other one covered for it, which is the
+   * definition of one of them being dead.
+   */
+  function unwrittenByConversation(): [string, ChatMessage[]][] {
+    const work: [string, ChatMessage[]][] = [];
     for (const id of conversationStates.value.keys()) {
-      if (unwrittenMessagesFor(id)) ids.push(id);
+      const unwritten = unwrittenMessagesFor(id);
+      if (unwritten) work.push([id, unwritten]);
     }
-    return ids;
+    return work;
   }
 
   /**
@@ -1127,7 +1130,10 @@ export const useChatStore = defineStore('chat', () => {
    */
   function absorbDetachedTurn(conversationId: string): void {
     const state = conversationStates.value.get(conversationId);
-    if (!state || state.detachedTurn.length === 0) return;
+    if (!state) return;
+    // The on-screen list belongs to the conversation on screen. Absorbing
+    // another one's turn into it would append that turn to the wrong
+    // transcript, and the next save would write it there.
     if (conversationId !== currentConversationId.value) return;
 
     const held = new Set(messages.value.map((m) => m.id));
@@ -2370,7 +2376,7 @@ export const useChatStore = defineStore('chat', () => {
     detachedTurnStored,
     absorbDetachedTurn,
     unwrittenMessagesFor,
-    conversationIdsWithUnwrittenMessages,
+    unwrittenByConversation,
     windowReachesEnd,
     hasSessionUsage,
     activeModel,
@@ -2437,7 +2443,6 @@ export const useChatStore = defineStore('chat', () => {
     updateBackgroundTaskMessage,
     beginMessageBuffer,
     getBufferedMessages,
-    bufferingConversationIds,
     retainUnsavedMessages,
     endMessageBuffer,
     reconcileBackgroundTasks,

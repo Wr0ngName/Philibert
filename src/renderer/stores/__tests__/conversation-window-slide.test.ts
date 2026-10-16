@@ -411,7 +411,12 @@ describe('sliding the window through a long conversation', () => {
         Number(chatStore.messages[0].id.replace('msg_', '')), uuid,
       );
       const firstHeld = chatStore.messages[0].id;
-      expect(chatStore.olderMessageCount).toBeGreaterThan(0);
+      const rewoundNumber = Number(firstHeld.replace('msg_', ''));
+      // Taken before the save, because the save legitimately changes it: the
+      // window is refilled once the rewind lands, which moves messages from
+      // the older count back onto the screen.
+      const storedBeforeTheWindow = chatStore.olderMessageCount;
+      expect(storedBeforeTheWindow).toBe(rewoundNumber);
 
       chatStore.truncateAfterUserTurn(CONV, uuid);
       await store.saveCurrentConversation();
@@ -419,7 +424,7 @@ describe('sliding the window through a long conversation', () => {
 
       const saved = onDisk(CONV);
       // Everything before the window survives, and the rewound turn is gone.
-      expect(saved?.messages.length).toBe(chatStore.olderMessageCount);
+      expect(saved?.messages.length).toBe(storedBeforeTheWindow);
       expect(saved?.messages[0].id).toBe('msg_0');
       expect(saved?.messages.some((m) => m.id === firstHeld)).toBe(false);
     });
@@ -484,6 +489,32 @@ describe('sliding the window through a long conversation', () => {
       expect(ids).not.toContain(rewound);
       expect(ids.at(-1)).toBe(`msg_${n - 1}`);
       expect(ids).toHaveLength(n);
+    });
+
+    it('leaves the conversation readable after a rewind empties the window', async () => {
+      // Rewinding the oldest turn ON SCREEN is not rewinding to the start of
+      // the conversation: thousands of messages can still be stored in front
+      // of it. The window is empty afterwards, and a page of history is
+      // fetched against the id at the top of the window — so with no window
+      // there is no anchor, and nothing can be loaded. The transcript shows
+      // the empty state while the file holds thousands of messages.
+      const uuid = 'turn-at-the-very-top';
+      const n = Number(chatStore.messages[0].id.replace('msg_', ''));
+      chatStore.messages[0] = userTurn(n, uuid);
+
+      chatStore.truncateAfterUserTurn(CONV, uuid);
+      await store.saveCurrentConversation();
+      await settle();
+
+      // The file kept everything before the rewind point.
+      expect(onDisk(CONV)?.messages).toHaveLength(n);
+
+      // And the user can see it: something is on screen, and the accounting
+      // adds up against what is stored.
+      expect(chatStore.messages.length).toBeGreaterThan(0);
+      expect(accountedTotal()).toBe(n);
+      expectContiguous();
+      expect(chatStore.messages.at(-1)?.id).toBe(`msg_${n - 1}`);
     });
 
     it('cuts the file at the turn itself, not one message early', async () => {
@@ -632,6 +663,27 @@ describe('sliding the window through a long conversation', () => {
       expect(chatStore.detachedTurnFor(CONV)).toBeNull();
       expect(chatStore.messages.length).toBeLessThanOrEqual(WINDOW_MAX);
       expectContiguous();
+    });
+
+    it('never absorbs a turn into another conversation transcript', async () => {
+      // The on-screen list belongs to whatever is on screen. Absorbing a
+      // different conversation's turn into it would append that turn to the
+      // wrong transcript — and the next save would write it there, putting
+      // one conversation's messages inside another's file.
+      chatStore.addMessage(message(TOTAL));
+      expect(chatStore.detachedTurnFor(CONV)).not.toBeNull();
+
+      await store.loadConversation('conv-elsewhere');
+      await settle();
+      const elsewhere = chatStore.messages.map((m) => m.id);
+      expect(elsewhere).not.toHaveLength(0);
+
+      chatStore.absorbDetachedTurn(CONV);
+
+      // The transcript on screen is untouched, and the turn is still held
+      // against the conversation it belongs to.
+      expect(chatStore.messages.map((m) => m.id)).toEqual(elsewhere);
+      expect(chatStore.detachedTurnFor(CONV)?.map((m) => m.id)).toEqual([`msg_${TOTAL}`]);
     });
 
     it('puts it back on the end when the window catches up', async () => {

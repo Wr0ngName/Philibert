@@ -659,6 +659,7 @@ export const useConversationsStore = defineStore('conversations', () => {
             // conversation is safe.
             if (conversation.truncateFromId) {
               chatStore.clearPendingTruncation(id);
+              await refillEmptyWindow(id);
             }
             // A turn collected apart from the window is stored now, so it is
             // simply what follows the window — which is what the "newer
@@ -813,6 +814,39 @@ export const useConversationsStore = defineStore('conversations', () => {
       return 0;
     } finally {
       loadingEarlier.value = false;
+    }
+  }
+
+  /**
+   * Put a window back on screen when a rewind has emptied it.
+   *
+   * Rewinding the oldest turn ON SCREEN is not rewinding to the start of the
+   * conversation: with a window, thousands of messages can still be stored in
+   * front of it. The transcript is left empty, and nothing can bring it back
+   * by itself — a page of history is fetched against the id at the top of the
+   * window, and there is no longer a window to take one from. What the user
+   * saw was the empty "start a conversation" state over a file holding
+   * thousands of messages, recoverable only by navigating away and back.
+   *
+   * The conversation now ends just before the turn that was rewound, so the
+   * right view is its new end, which is what opening it would show.
+   */
+  async function refillEmptyWindow(id: string): Promise<void> {
+    if (currentConversationId.value !== id) return;
+    if (chatStore.messages.length > 0) return;
+    if (chatStore.olderMessageCount === 0) return;
+
+    try {
+      const latest = await window.electron.conversation.getWindow(
+        id, CONSTANTS.CONVERSATION.WINDOW_SIZE,
+      );
+      if (!latest || currentConversationId.value !== id) return;
+      chatStore.loadMessages(latest.conversation.messages, latest.olderCount, 0);
+      logger.info('Refilled the window after a rewind emptied it', {
+        id, held: latest.conversation.messages.length, older: latest.olderCount,
+      });
+    } catch (err) {
+      logger.error('Failed to refill the window after a rewind', { id, err });
     }
   }
 
@@ -1172,10 +1206,8 @@ export const useConversationsStore = defineStore('conversations', () => {
     // falls short of the end keeps its turn in `detachedTurn` and has no
     // buffer at all, so asking only about buffers let its turn die with the
     // process.
-    for (const id of chatStore.conversationIdsWithUnwrittenMessages()) {
+    for (const [id, unwritten] of chatStore.unwrittenByConversation()) {
       if (id === currentConversationId.value) continue;
-      const unwritten = chatStore.unwrittenMessagesFor(id);
-      if (!unwritten || unwritten.length === 0) continue;
       try {
         await saveConversation(id, unwritten);
       } catch (err) {
