@@ -125,6 +125,34 @@ export function useVirtualList(options: UseVirtualListOptions) {
   const observed = new WeakMap<Element, string>();
   let observer: ResizeObserver | null = null;
 
+  /**
+   * The key list and geometry as they were before the change being handled.
+   *
+   * Read by both halves of the front correction: `isFrontArrival` while the
+   * arriving rows are being measured, and the watcher below that applies the
+   * shift and then brings these up to date. Declared here because the
+   * measurement path runs first.
+   */
+  let previousKeys: string[] = [];
+  let previousOffsets: number[] = [];
+
+  /**
+   * Is the row at `index` one of those that just arrived in FRONT of the row
+   * that used to be first?
+   *
+   * Those are exactly the rows `frontShift` compensates in one go, so their
+   * first measurement must not be corrected individually as well. Everything
+   * else — a row scrolled into view, a row inserted mid-list when a sub-agent
+   * is expanded, a row appended at the end — is not a front arrival and is
+   * corrected as before.
+   */
+  function isFrontArrival(rowKeys: readonly string[], index: number): boolean {
+    if (index < 0 || previousKeys.length === 0) return false;
+    if (previousKeys[0] === rowKeys[0]) return false;
+    const movedTo = rowKeys.indexOf(previousKeys[0]);
+    return movedTo > 0 && index < movedTo;
+  }
+
   function record(key: string, height: number): void {
     const previous = heights.get(key);
     if (previous === height) return;
@@ -140,6 +168,23 @@ export function useVirtualList(options: UseVirtualListOptions) {
     // measuring them does move the view and does need correcting.
     const anchorIndex = findIndexAtOffset(offsets.value, scrollTop.value);
 
+    // Rows that arrived in front of the row that used to be first belong to
+    // `frontShift`, which compensates the whole height of the page in one
+    // go. Their first measurement must NOT also be corrected here, or the two
+    // mechanisms compensate the same pixels twice.
+    //
+    // Measured in a browser before this guard existed: a page of history
+    // loaded while reading moved the content 692px — four of the arriving
+    // rows were rendered and measured during the same flush, at 245px each
+    // against a 72px estimate, and 4 × 173 is the 692. Not drift; a fixed
+    // jog of rather more than a screen, every time a page loaded.
+    //
+    // Measurements that arrive LATER, from the ResizeObserver, are a
+    // different matter and are still corrected: by then `frontShift` has run
+    // and counted those rows at their estimate, so their real height is a
+    // genuine, uncompensated change in the content above the viewport.
+    const arrivedInFront = previous === undefined && isFrontArrival(rowKeys, changedIndex);
+
     heights.set(key, height);
     heightsVersion.value += 1;
 
@@ -149,7 +194,7 @@ export function useVirtualList(options: UseVirtualListOptions) {
     // reported as content growth, or scrolling would re-pin to the bottom.
     if (previous !== undefined) options.onRowResized?.();
 
-    if (!enabled.value || changedIndex === -1) return;
+    if (!enabled.value || changedIndex === -1 || arrivedInFront) return;
 
     const correction = scrollCorrection(
       changedIndex,
@@ -223,9 +268,6 @@ export function useVirtualList(options: UseVirtualListOptions) {
    * appended, or inserted or removed mid-list, move the front of the list not
    * at all and are left to the existing paths.
    */
-  let previousKeys: string[] = [];
-  let previousOffsets: number[] = [];
-
   /**
    * Registered on mount, not during setup.
    *
