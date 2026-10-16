@@ -219,9 +219,14 @@ export const useConversationsStore = defineStore('conversations', () => {
           }
         }
 
-        // A buffer is a complete history for its conversation — it was
-        // seeded from one — so nothing precedes it.
-        chatStore.loadMessages(messages, state.olderCount);
+        // The buffer is seeded from what was on screen, which is a WINDOW of
+        // the conversation and not the whole of it — so its accounting comes
+        // back with it. Restoring the list while letting the counts default
+        // said "this is the entire conversation" about a window that could
+        // stop thousands of messages short at either end: nothing said
+        // otherwise, and the badge that was the only way to the rest of it
+        // was gone.
+        chatStore.loadMessages(messages, state.olderCount, state.newerCount);
       } else {
         // Load messages from saved file
         chatStore.loadMessages(conversation.messages, olderCount);
@@ -588,9 +593,23 @@ export const useConversationsStore = defineStore('conversations', () => {
       return Promise.resolve(false);
     }
 
+    // What to write: the window, or — when the window does not reach the end
+    // of the conversation — only the turn that was collected apart from it.
+    //
+    // This is the whole point of a write being an upsert. It adds and
+    // replaces by id and never shortens the file, so a payload of just what
+    // changed is exactly what the contract was built for; and because the
+    // save no longer has to be handed the window, the window no longer has to
+    // contain everything that needs saving. That was what forced an arriving
+    // turn into a list it did not belong to.
+    const detached = chatStore.detachedTurnFor(conversationId);
     saveQueue.set(
       conversationId,
-      buildConversationUpdate(conversationId, chatStore.messages, settingsStore.workingDirectory),
+      buildConversationUpdate(
+        conversationId,
+        detached ?? chatStore.messages,
+        settingsStore.workingDirectory,
+      ),
     );
     return drainSaveQueue();
   }
@@ -626,6 +645,10 @@ export const useConversationsStore = defineStore('conversations', () => {
             if (conversation.truncateAfterId || conversation.truncateAll) {
               chatStore.clearPendingTruncation(id);
             }
+            // A turn collected apart from the window is stored now, so it is
+            // simply what follows the window — which is what the "newer
+            // messages" count means. Held no longer.
+            chatStore.detachedTurnStored(id);
             trimAfterSave(id);
           } catch (err) {
             const errorMessage = err instanceof Error ? err.message : String(err);
@@ -777,13 +800,10 @@ export const useConversationsStore = defineStore('conversations', () => {
     if (!id) return 0;
     if (chatStore.newerMessageCount === 0) return 0;
 
-    // Where the loaded stretch stops, which is NOT the last message held
-    // whenever a turn arrived after the tail was unloaded: that message
-    // belongs at the end of the conversation, and asking for what follows it
-    // skips everything in between and reports nothing left to load. See
-    // ConversationState.tailGapAfterId.
-    const from = chatStore.loadedUpToId(id)
-      ?? chatStore.messages[chatStore.messages.length - 1]?.id;
+    // The end of the window, which is always the end of one unbroken range
+    // of the conversation — a turn that arrived while the window fell short
+    // of the end is held apart from it, not stitched onto it.
+    const from = chatStore.messages[chatStore.messages.length - 1]?.id;
     if (!from) return 0;
     if (loadingNewer.value) return 0;
 
@@ -828,30 +848,17 @@ export const useConversationsStore = defineStore('conversations', () => {
       if (!latest) return false;
       if (currentConversationId.value !== id) return false;
 
-      // A turn that arrived while the tail was unloaded is held in memory and
-      // may not be on disk yet — the save lands at the end of the turn. The
-      // loaded window replaces the message list outright, so anything newer
-      // than the file has to be carried across or jumping to the end would
-      // destroy the very messages it was meant to reveal.
-      const gapAt = chatStore.loadedUpToId(id);
-      const unsaved = gapAt === null
-        ? []
-        : chatStore.messages.slice(
-          chatStore.messages.findIndex((m) => m.id === gapAt) + 1,
-        );
-      const onDisk = new Set(latest.conversation.messages.map((m) => m.id));
-      const carried = unsaved.filter((m) => !onDisk.has(m.id));
-
-      chatStore.loadMessages(
-        [...latest.conversation.messages, ...carried],
-        latest.olderCount,
-        0,
-      );
+      chatStore.loadMessages(latest.conversation.messages, latest.olderCount, 0);
+      // A turn written while the window fell short of the end may not be
+      // stored yet — the write lands when the turn ends — and the loaded
+      // window replaces the message list outright. The window now reaches the
+      // end, so that turn belongs on it: without this, jumping to the end
+      // would destroy the very messages it was meant to reveal.
+      chatStore.absorbDetachedTurn(id);
       logger.info('Jumped to the end of the conversation', {
         id,
-        held: latest.conversation.messages.length,
+        held: chatStore.messages.length,
         older: latest.olderCount,
-        carried: carried.length,
       });
       return true;
     } catch (err) {

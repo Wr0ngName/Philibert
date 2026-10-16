@@ -42,18 +42,7 @@ const emit = defineEmits<{
 }>();
 
 const chatStore = useChatStore();
-/**
- * The conversation as one unbroken stretch.
- *
- * Not `messages`: reading far enough back unloads the tail, and a turn
- * arriving after that is held at the end of the list while hundreds of
- * messages it comes after are still on disk. Rendering those would show the
- * newest turn immediately below a message from the middle of the
- * conversation, with the count of what is missing printed underneath it. The
- * two are the same array whenever there is no hole, which is almost always.
- */
-const { contiguousMessages: messages, hasMessages, currentStreamingContent, isLoading }
-  = storeToRefs(chatStore);
+const { messages, hasMessages, currentStreamingContent, isLoading } = storeToRefs(chatStore);
 const conversationsStore = useConversationsStore();
 const { loadingEarlier, loadingNewer } = storeToRefs(conversationsStore);
 const { olderMessageCount, newerMessageCount } = storeToRefs(chatStore);

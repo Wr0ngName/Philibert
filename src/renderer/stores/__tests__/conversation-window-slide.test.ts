@@ -97,6 +97,21 @@ describe('sliding the window through a long conversation', () => {
     unmountApp();
   });
 
+  /**
+   * Every message in the conversation, counted once: what is on screen, plus
+   * what is not, either side of it.
+   *
+   * It adds up because the three are disjoint — which is the invariant this
+   * file exists to hold. While a turn could be stitched onto the end of the
+   * window AND counted among the messages after it, this sum double-counted
+   * and no honest version of it existed.
+   */
+  function accountedTotal(): number {
+    return chatStore.messages.length
+      + chatStore.olderMessageCount
+      + chatStore.newerMessageCount;
+  }
+
   /** Where the loaded window sits in the conversation, by message number. */
   function heldRange(): { first: number; last: number } {
     const number = (id: string | undefined) => Number((id ?? '').replace('msg_', ''));
@@ -143,15 +158,12 @@ describe('sliding the window through a long conversation', () => {
   }
 
   /**
-   * What is on screen is one unbroken stretch of the conversation.
-   *
-   * Asserted on `contiguousMessages`, which is what the message list renders:
-   * the held list can legitimately carry a turn that arrived after the tail
-   * was unloaded, and that turn belongs at the end of the conversation rather
-   * than after the message it happens to sit behind in memory.
+   * The invariant: what is on screen is one unbroken range of the
+   * conversation. Everything else in this file is a way of trying to break
+   * it.
    */
   function expectContiguous(): void {
-    const numbers = chatStore.contiguousMessages
+    const numbers = chatStore.messages
       .map((m) => Number(m.id.replace('msg_', '')));
     const expected = Array.from(
       { length: numbers.length },
@@ -178,9 +190,7 @@ describe('sliding the window through a long conversation', () => {
     expect(chatStore.newerMessageCount).toBeGreaterThan(0);
     expectContiguous();
     // Everything is still accounted for.
-    expect(chatStore.messages.length
-      + chatStore.olderMessageCount
-      + chatStore.newerMessageCount).toBe(TOTAL);
+    expect(accountedTotal()).toBe(TOTAL);
   });
 
   it('reads forward through what it unloaded, rather than past it', async () => {
@@ -215,7 +225,7 @@ describe('sliding the window through a long conversation', () => {
     expect(chatStore.newerMessageCount).toBe(0);
   });
 
-  describe('a message arriving while the tail is unloaded', () => {
+  describe('a turn arriving while the window falls short of the end', () => {
     beforeEach(async () => {
       let pages = 0;
       while (chatStore.newerMessageCount === 0 && pages < 10) {
@@ -225,33 +235,28 @@ describe('sliding the window through a long conversation', () => {
       expect(chatStore.newerMessageCount).toBeGreaterThan(0);
     });
 
-    it('does not pretend the new message follows the loaded window', async () => {
-      // The window ends hundreds of messages before the end of the
-      // conversation. Pushing an arrival onto it would put message 4000
-      // directly after message 1500 — a list that claims to be a stretch of
-      // the conversation while being nothing of the kind, and the hole never
-      // closes: the next page forward is fetched from the last held id, which
-      // is now the new message, so everything in between becomes unreachable
-      // without reopening the conversation.
+    it('keeps it out of the window rather than stitching it onto the end', () => {
+      // The window ends hundreds of messages before the conversation does.
+      // Appending an arrival to it would put message 4000 directly after
+      // message 1500 — a list claiming to be a stretch of the conversation
+      // while being nothing of the kind. It is held apart instead.
       chatStore.addMessage(message(TOTAL));
 
       expectContiguous();
-      // Held, so it is saved and nothing is lost — but not shown, because
-      // what comes before it is not on screen.
-      expect(chatStore.messages.some((m) => m.id === `msg_${TOTAL}`)).toBe(true);
-      expect(chatStore.contiguousMessages.some((m) => m.id === `msg_${TOTAL}`))
-        .toBe(false);
+      expect(chatStore.messages.some((m) => m.id === `msg_${TOTAL}`)).toBe(false);
+      expect(chatStore.detachedTurnFor(CONV)?.map((m) => m.id)).toEqual([`msg_${TOTAL}`]);
     });
 
-    it('counts the new message as something to come back to', () => {
+    it('counts it as something to come back to', () => {
       const newerBefore = chatStore.newerMessageCount;
 
       chatStore.addMessage(message(TOTAL));
 
       expect(chatStore.newerMessageCount).toBe(newerBefore + 1);
+      expect(accountedTotal()).toBe(TOTAL + 1);
     });
 
-    it('saves the new message even though it is not on screen', async () => {
+    it('writes it, even though it is not in the window', async () => {
       chatStore.addMessage(message(TOTAL));
       await store.saveCurrentConversation();
       await settle();
@@ -259,11 +264,27 @@ describe('sliding the window through a long conversation', () => {
       const saved = onDisk(CONV);
       expect(saved?.messages).toHaveLength(TOTAL + 1);
       expect(saved?.messages.at(-1)?.id).toBe(`msg_${TOTAL}`);
-      // And nothing the window forgot was lost with it.
+      // And nothing the window forgot was lost with it: the write carried
+      // only the turn, and an upsert never shortens the file.
       expect(saved?.messages[0].id).toBe('msg_0');
+      expect(saved?.messages[TOTAL - 1].id).toBe(`msg_${TOTAL - 1}`);
     });
 
-    it('reaches the new message by reading forward, with nothing skipped', async () => {
+    it('stops holding it once it is stored', async () => {
+      chatStore.addMessage(message(TOTAL));
+      expect(chatStore.detachedTurnFor(CONV)).not.toBeNull();
+      const newerBefore = chatStore.newerMessageCount;
+
+      await store.saveCurrentConversation();
+      await settle();
+
+      // Stored, so it is simply what follows the window now.
+      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
+      expect(chatStore.newerMessageCount).toBe(newerBefore);
+      expect(accountedTotal()).toBe(TOTAL + 1);
+    });
+
+    it('reaches it by reading forward, with nothing skipped', async () => {
       chatStore.addMessage(message(TOTAL));
       await store.saveCurrentConversation();
       await settle();
@@ -277,26 +298,46 @@ describe('sliding the window through a long conversation', () => {
 
       expect(chatStore.messages.at(-1)?.id).toBe(`msg_${TOTAL}`);
       expect(chatStore.newerMessageCount).toBe(0);
+      const ids = chatStore.messages.map((m) => m.id);
+      expect(new Set(ids).size).toBe(ids.length);
     });
 
-    it('reaches it by jumping to the end too', async () => {
+    it('reaches it by jumping to the end, even before it is stored', async () => {
       chatStore.addMessage(message(TOTAL));
-      await store.saveCurrentConversation();
-      await settle();
 
       expect(await store.jumpToLatest()).toBe(true);
       await settle();
 
       expect(chatStore.messages.at(-1)?.id).toBe(`msg_${TOTAL}`);
       expect(chatStore.newerMessageCount).toBe(0);
+      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
       expect(chatStore.messages.length).toBeLessThanOrEqual(WINDOW_MAX);
       expectContiguous();
     });
 
+    it('puts it back on the end when the window catches up', async () => {
+      // Reading forward all the way is the other way the two meet: the
+      // window reaches the end of what is stored, and what was held apart
+      // from it is exactly what comes next.
+      chatStore.addMessage(message(TOTAL));
+      const detached = chatStore.detachedTurnFor(CONV)?.length ?? 0;
+      expect(detached).toBe(1);
+
+      let guard = 0;
+      while (chatStore.newerMessageCount > 0 && guard < 20) {
+        await readForward();
+        guard += 1;
+      }
+
+      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
+      expect(chatStore.messages.at(-1)?.id).toBe(`msg_${TOTAL}`);
+      expectContiguous();
+    });
+
     it('shows a turn that streamed in while the view was away', async () => {
-      // A background turn: it is written while the reader is elsewhere in the
+      // A background turn: written while the reader is elsewhere in the
       // conversation, so none of it is on screen, and all of it has to be
-      // there when they come back.
+      // there when they come back — with no spinner left running on it.
       chatStore.startAssistantMessage(CONV);
       chatStore.appendChunk(CONV, 'first half. ');
       chatStore.appendChunk(CONV, 'second half.');
@@ -311,6 +352,69 @@ describe('sliding the window through a long conversation', () => {
       expect(last?.content).toBe('first half. second half.');
       expect(last?.isStreaming).toBeFalsy();
       expect(onDisk(CONV)?.messages.at(-1)?.content).toBe('first half. second half.');
+    });
+
+    it('comes back to the end of the conversation, all of it accounted for', async () => {
+      // Leaving and returning. A conversation whose window falls short of the
+      // end keeps no buffer — its turn is in `detachedTurn`, which outlives
+      // the switch — so coming back reads the window afresh and lands at the
+      // end, like opening it does. What must not happen is the thing that
+      // did: the buffer restored as though it were the whole conversation,
+      // with `newerCount` dropped to 0, so a window stopping hundreds of
+      // messages short of the end was treated as the end — nothing said
+      // otherwise and the badge that was the only way back was gone.
+      const total = accountedTotal();
+
+      chatStore.beginMessageBuffer(CONV);
+      chatStore.addMessage(message(TOTAL));
+      await store.saveCurrentConversation();
+      await settle();
+
+      await store.loadConversation('conv-elsewhere');
+      await settle();
+      await store.loadConversation(CONV);
+      await settle();
+
+      expect(accountedTotal()).toBe(total + 1);
+      expectContiguous();
+      // At the end, with the turn that ran while the view was away on it.
+      expect(chatStore.messages.at(-1)?.id).toBe(`msg_${TOTAL}`);
+      expect(chatStore.newerMessageCount).toBe(0);
+      // And the whole conversation is still behind it, not lost.
+      expect(chatStore.olderMessageCount).toBe(total + 1 - chatStore.messages.length);
+    });
+
+    it('keeps a turn that failed to be written', async () => {
+      // A write that does not land must not take the turn with it. The window
+      // was already stored, so there is nothing to retain there — the turn is
+      // what is unwritten, and it stays held until a write succeeds.
+      chatStore.addMessage(message(TOTAL));
+      chatStore.retainUnsavedMessages(CONV, [...chatStore.messages]);
+
+      expect(chatStore.detachedTurnFor(CONV)?.map((m) => m.id)).toEqual([`msg_${TOTAL}`]);
+      // Still counted as something the reader has yet to see.
+      expect(accountedTotal()).toBe(TOTAL + 1);
+
+      // And a later write does store it.
+      await store.saveCurrentConversation();
+      await settle();
+      expect(onDisk(CONV)?.messages.at(-1)?.id).toBe(`msg_${TOTAL}`);
+      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
+    });
+
+    it('stays one range however hard the window is trimmed', async () => {
+      // The trim after a save drops the oldest messages, and it knows nothing
+      // about turns held apart from the window. Whatever it drops, what is on
+      // screen is still one unbroken range and everything is still counted.
+      for (let n = 0; n < 5; n += 1) chatStore.addMessage(message(TOTAL + n));
+      const total = accountedTotal();
+
+      const dropped = chatStore.trimWindow(CONV, 10);
+
+      expect(dropped).toBeGreaterThan(0);
+      expect(chatStore.messages).toHaveLength(10);
+      expectContiguous();
+      expect(accountedTotal()).toBe(total);
     });
   });
 });
