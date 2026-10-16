@@ -511,9 +511,10 @@ export class ConversationService {
   /**
    * The `limit` messages stored immediately before `beforeId`.
    *
-   * What "Load earlier messages" asks for. Keyed by the id the renderer
-   * currently holds at the top of its window rather than by an index, so a
-   * conversation that grew in between cannot shift the page under it.
+   * What scrolling to the top of the window asks for. Keyed by the id the
+   * renderer currently holds at the top of its window rather than by an
+   * index, so a conversation that grew in between cannot shift the page under
+   * it.
    */
   async getOlder(
     id: string,
@@ -532,6 +533,35 @@ export class ConversationService {
 
     const start = Math.max(0, at - Math.max(0, limit));
     return { messages: all.slice(start, at), olderCount: start };
+  }
+
+  /**
+   * The `limit` messages stored immediately after `afterId`.
+   *
+   * The other direction of the same window: reading back through a long
+   * conversation unloads the newest messages to keep the loaded set bounded,
+   * and reading forward again has to be able to fetch them. Keyed by id for
+   * the same reason as `getOlder` — a conversation that grew in between cannot
+   * shift the page under the reader.
+   */
+  async getNewer(
+    id: string,
+    afterId: string,
+    limit: number,
+  ): Promise<{ messages: ChatMessage[]; newerCount: number } | null> {
+    const conversation = await this.get(id);
+    if (!conversation) return null;
+
+    const all = conversation.messages ?? [];
+    const at = all.findIndex((m) => m.id === afterId);
+    if (at === -1) {
+      logger.warn('Asked for messages after an id that is not stored', { id, afterId });
+      return { messages: [], newerCount: 0 };
+    }
+
+    const start = at + 1;
+    const end = Math.min(all.length, start + Math.max(0, limit));
+    return { messages: all.slice(start, end), newerCount: all.length - end };
   }
 
   /**

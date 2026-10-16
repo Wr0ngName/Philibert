@@ -224,6 +224,31 @@ export function setupConversationIPC(conversationService: ConversationService): 
     },
   );
 
+  // A page of messages newer than the one the renderer holds at its bottom.
+  ipcMain.handle(
+    IPC_CHANNELS.CONVERSATION_GET_NEWER,
+    async (_event, id: string, afterId: string, limit: number) => {
+      try {
+        ensureService(conversationService, 'ConversationService');
+        validateString(id, 'Conversation ID');
+        validateString(afterId, 'Message ID');
+        if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) {
+          throw new ValidationError('Page limit must be a positive number', 'limit', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+        }
+
+        const page = await conversationService.getNewer(id, afterId, Math.floor(limit));
+        if (!page) {
+          logger.debug('IPC: conversation:get-newer — no such conversation', { id });
+          return null;
+        }
+        return page;
+      } catch (error) {
+        logger.error('Failed to get newer messages', { error, id, afterId });
+        throw new ConfigurationError(formatErrorMessage('Failed to get newer messages', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
+      }
+    },
+  );
+
   // Rename a conversation
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_RENAME, async (_event, id: string, newTitle: string) => {
     try {

@@ -389,6 +389,9 @@ const electronAPI: ElectronAPI = {
     getOlder: (id: string, beforeId: string, limit: number) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET_OLDER, id, beforeId, limit),
 
+    getNewer: (id: string, afterId: string, limit: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET_NEWER, id, afterId, limit),
+
     rename: (id: string, newTitle: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_RENAME, id, newTitle),
 

@@ -273,6 +273,12 @@ export interface ElectronAPI {
       beforeId: string,
       limit: number,
     ) => Promise<{ messages: ChatMessage[]; olderCount: number } | null>;
+    /** The `limit` messages stored immediately after `afterId`. */
+    getNewer: (
+      id: string,
+      afterId: string,
+      limit: number,
+    ) => Promise<{ messages: ChatMessage[]; newerCount: number } | null>;
     rename: (id: string, newTitle: string) => Promise<void>;
     delete: (id: string) => Promise<void>;
     search: (

@@ -95,6 +95,50 @@ export interface ConversationState {
    */
   olderCount: number;
   /**
+   * How many of this conversation's stored messages come AFTER the ones held
+   * in memory.
+   *
+   * The window slides both ways: reading back through a long conversation
+   * loads older pages and unloads the newest, so the loaded set stays bounded
+   * however far back the reader goes. Non-zero means the list on screen ends
+   * before the conversation does — so "at the bottom" is not "at the end",
+   * and reaching the newest message means loading it rather than scrolling to
+   * it.
+   *
+   * The tail is never unloaded while a turn is running — an arriving chunk
+   * has to find its message in the window — but it stays unloaded when the
+   * NEXT turn starts, which is what {@link tailGapAfterId} is about.
+   */
+  newerCount: number;
+  /**
+   * Where the loaded window stops being one unbroken stretch of the
+   * conversation, when messages have arrived since its tail was unloaded.
+   *
+   * Reading far enough back unloads the tail, and the conversation can then
+   * receive a turn — a background task finishing, a channel message, a prompt
+   * sent from the composer without scrolling down. That message is appended
+   * to the window, because the window is the only list a turn can be written
+   * into and the only one that gets saved; but it does NOT follow the message
+   * before it. Hundreds of messages sit in between, on disk and not loaded.
+   *
+   * Left unrecorded, that hole never closes and takes the rest of the
+   * conversation with it: the next page forward is fetched from the last held
+   * message, which is now the newly arrived one, so the page comes back empty,
+   * `newerCount` drops to zero and everything in between is unreachable until
+   * the conversation is reopened.
+   *
+   * So the boundary is remembered at the moment the tail is dropped: this is
+   * the last message that the loaded stretch is known to continue from.
+   * Paging forward resumes there and splices the page in at the hole rather
+   * than at the end of the list, and the renderer shows the conversation only
+   * up to here — so what it shows is always one unbroken stretch, and the
+   * "newer messages" it reports sit exactly where they really are.
+   *
+   * Null when the window runs to the end of the conversation, which is the
+   * normal case.
+   */
+  tailGapAfterId: string | null;
+  /**
    * A removal of history that has happened on screen and has yet to reach
    * disk.
    *
@@ -147,6 +191,8 @@ function createConversationState(): ConversationState {
     sessionPermissions: [],
     modifiedFilesInLastQuery: new Set(),
     olderCount: 0,
+    newerCount: 0,
+    tailGapAfterId: null,
     pendingTruncation: null,
     tailPinned: true,
     bufferedMessages: [],
@@ -871,7 +917,11 @@ export const useChatStore = defineStore('chat', () => {
    * do hold everything (a newly created conversation, a buffer that was
    * seeded from a full history).
    */
-  function loadMessages(loadedMessages: ChatMessage[], olderCount = 0): void {
+  function loadMessages(
+    loadedMessages: ChatMessage[],
+    olderCount = 0,
+    newerCount = 0,
+  ): void {
     // Nothing is streaming at load time. A message persisted mid-turn keeps
     // isStreaming: true, and restoring it verbatim shows a spinner for a turn
     // that ended long ago — possibly in a previous run of the app.
@@ -880,7 +930,14 @@ export const useChatStore = defineStore('chat', () => {
     );
 
     const current = currentConversationId.value;
-    if (current) getConversationState(current).olderCount = olderCount;
+    if (current) {
+      const state = getConversationState(current);
+      state.olderCount = olderCount;
+      state.newerCount = newerCount;
+      // A freshly loaded window is one unbroken stretch by construction, so
+      // any hole remembered from the window it replaces is gone with it.
+      state.tailGapAfterId = null;
+    }
 
     // Re-point a running turn's buffer at the list that is now on screen.
     //
@@ -921,6 +978,122 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * Put a page of newer messages after the window.
+   *
+   * The way back down after reading history: the newest messages were
+   * unloaded to keep the loaded set bounded, and this is how they return.
+   *
+   * The page goes in at the hole rather than at the end of the list when
+   * there is one — see {@link ConversationState.tailGapAfterId}. Pushing it at
+   * the end instead would put the messages that come BEFORE a turn that
+   * arrived while the tail was unloaded AFTER it, which is the kind of
+   * reordering that is impossible to notice and impossible to undo: the next
+   * save would upsert them in that order.
+   */
+  function appendNewerMessages(
+    conversationId: string,
+    newer: ChatMessage[],
+    newerCount: number,
+  ): void {
+    const state = getConversationState(conversationId);
+
+    const sink = messageSink(conversationId);
+    if (!sink) {
+      state.newerCount = newerCount;
+      if (newerCount === 0) state.tailGapAfterId = null;
+      return;
+    }
+
+    const gapAt = state.tailGapAfterId === null
+      ? -1
+      : sink.findIndex((m) => m.id === state.tailGapAfterId);
+
+    // Messages held beyond the hole — a turn that arrived after the tail was
+    // unloaded. The count that came back covers everything after the page
+    // just fetched, and those messages are part of it once they have been
+    // saved, so they are discounted here: `newerCount` is what is NOT held,
+    // and `newerMessageCount` adds the hidden ones back for the reader.
+    const heldBeyondGap = gapAt === -1 ? 0 : sink.length - (gapAt + 1);
+    state.newerCount = Math.max(0, newerCount - heldBeyondGap);
+
+    const held = new Set(sink.map((m) => m.id));
+    const fresh = newer
+      .filter((m) => !held.has(m.id))
+      .map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m));
+
+    if (fresh.length > 0) {
+      if (gapAt === -1) sink.push(...fresh);
+      else sink.splice(gapAt + 1, 0, ...fresh);
+    }
+
+    // The hole has moved to the end of what just arrived, and is closed
+    // altogether once nothing is left behind the window — at which point what
+    // was held beyond it is simply the end of the conversation.
+    if (state.newerCount === 0) state.tailGapAfterId = null;
+    else if (gapAt !== -1 && fresh.length > 0) {
+      state.tailGapAfterId = fresh[fresh.length - 1].id;
+    }
+  }
+
+  /**
+   * Keep a band of the window around one message, dropping both ends.
+   *
+   * This is what sliding means. Trimming to "the oldest N" or "the newest N"
+   * is anchored to an end of the list, and after a page has been prepended the
+   * reader sits several hundred rows below the new top — so keeping the oldest
+   * N unloaded the very rows they were looking at. The band is measured from
+   * where they are.
+   *
+   * The tail end is refused while a turn is live or anything is streaming: an
+   * arriving chunk looks for its message in the window, and unloading the tail
+   * would leave it nowhere to go. The head end has no such constraint.
+   */
+  function trimWindowAround(
+    conversationId: string,
+    anchorMessageId: string,
+    keepBefore: number,
+    keepAfter: number,
+  ): { droppedHead: number; droppedTail: number } {
+    const nothing = { droppedHead: 0, droppedTail: 0 };
+    const state = conversationStates.value.get(conversationId);
+    if (!state) return nothing;
+
+    const sink = messageSink(conversationId);
+    if (!sink) return nothing;
+
+    const at = sink.findIndex((m) => m.id === anchorMessageId);
+    if (at === -1) return nothing;
+
+    const keepUntil = at + keepAfter;
+    let droppedTail = Math.max(0, sink.length - 1 - keepUntil);
+    if (droppedTail > 0) {
+      const live = state.isLoading
+        || state.bufferingMessages
+        || sink.slice(-droppedTail).some((m) => m.isStreaming);
+      if (live) droppedTail = 0;
+    }
+
+    const droppedHead = Math.max(0, at - keepBefore);
+
+    // Tail first: dropping the head shifts every index below it.
+    if (droppedTail > 0) {
+      // Where the loaded stretch now stops. Recorded before the splice,
+      // because afterwards the message is simply the last one in the list and
+      // indistinguishable from the end of the conversation — which is the
+      // confusion that made a turn arriving here unreachable.
+      state.tailGapAfterId = sink[keepUntil]?.id ?? null;
+      sink.splice(keepUntil + 1, droppedTail);
+      state.newerCount += droppedTail;
+    }
+    if (droppedHead > 0) {
+      sink.splice(0, droppedHead);
+      state.olderCount += droppedHead;
+    }
+
+    return { droppedHead, droppedTail };
+  }
+
+  /**
    * Drop the oldest messages from the window, keeping the newest `keep`.
    *
    * Called once a save has landed, so everything dropped is on disk. That is
@@ -951,6 +1124,53 @@ export const useChatStore = defineStore('chat', () => {
     const state = getCurrentState();
     return state?.olderCount ?? 0;
   });
+
+  /**
+   * How many of the conversation's messages come after what is on screen.
+   *
+   * `newerCount` is what is not loaded; a turn that arrived after the tail was
+   * unloaded is loaded but still not shown, because it does not follow the
+   * message before it (see {@link ConversationState.tailGapAfterId}). Both are
+   * messages the reader has yet to see, so both are counted.
+   */
+  const newerMessageCount = computed(() => {
+    const state = getCurrentState();
+    if (!state) return 0;
+    const gap = state.tailGapAfterId;
+    if (!gap) return state.newerCount;
+    const at = messages.value.findIndex((m) => m.id === gap);
+    if (at === -1) return state.newerCount;
+    return state.newerCount + (messages.value.length - (at + 1));
+  });
+
+  /**
+   * The messages on screen, as one unbroken stretch of the conversation.
+   *
+   * Everything after a hole is held but not shown: it belongs after the
+   * messages that are still on disk, so showing it here would put it
+   * immediately after the wrong message. See
+   * {@link ConversationState.tailGapAfterId}. Identical to `messages` in the
+   * normal case, including the same array, so nothing is copied for the sake
+   * of a case that is not happening.
+   */
+  const contiguousMessages = computed((): ChatMessage[] => {
+    const state = getCurrentState();
+    const gap = state?.tailGapAfterId;
+    if (!gap) return messages.value;
+    const at = messages.value.findIndex((m) => m.id === gap);
+    if (at === -1 || at === messages.value.length - 1) return messages.value;
+    return messages.value.slice(0, at + 1);
+  });
+
+  /**
+   * Where the loaded stretch stops, for the page-forward request.
+   *
+   * Null when the window runs to the end of what is loaded, which is the
+   * normal case.
+   */
+  function loadedUpToId(conversationId: string): string | null {
+    return conversationStates.value.get(conversationId)?.tailGapAfterId ?? null;
+  }
 
   // ============================================
   // Loading State Actions
@@ -2066,6 +2286,9 @@ export const useChatStore = defineStore('chat', () => {
     taskListItems,
     hasTaskListItems,
     olderMessageCount,
+    newerMessageCount,
+    contiguousMessages,
+    loadedUpToId,
     hasSessionUsage,
     activeModel,
     totalTokensUsed,
@@ -2139,7 +2362,9 @@ export const useChatStore = defineStore('chat', () => {
 
     // Message window actions
     prependOlderMessages,
+    appendNewerMessages,
     trimWindow,
+    trimWindowAround,
 
     // Task list actions
     restoreTaskList,

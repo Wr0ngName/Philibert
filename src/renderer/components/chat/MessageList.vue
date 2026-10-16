@@ -17,9 +17,11 @@ import { storeToRefs } from 'pinia';
 import type { ChatMessage } from '@shared/types';
 
 import { useVirtualList } from '../../composables/useVirtualList';
+import { CONSTANTS } from '../../constants/app';
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { formatTime } from '../../utils/date';
+import { logger } from '../../utils/logger';
 import {
   childrenByParent as buildChildrenByParent,
   descendantCounts,
@@ -40,28 +42,147 @@ const emit = defineEmits<{
 }>();
 
 const chatStore = useChatStore();
-const { messages, hasMessages, currentStreamingContent, isLoading } = storeToRefs(chatStore);
+/**
+ * The conversation as one unbroken stretch.
+ *
+ * Not `messages`: reading far enough back unloads the tail, and a turn
+ * arriving after that is held at the end of the list while hundreds of
+ * messages it comes after are still on disk. Rendering those would show the
+ * newest turn immediately below a message from the middle of the
+ * conversation, with the count of what is missing printed underneath it. The
+ * two are the same array whenever there is no hole, which is almost always.
+ */
+const { contiguousMessages: messages, hasMessages, currentStreamingContent, isLoading }
+  = storeToRefs(chatStore);
 const conversationsStore = useConversationsStore();
-const { loadingEarlier } = storeToRefs(conversationsStore);
-const { olderMessageCount } = storeToRefs(chatStore);
+const { loadingEarlier, loadingNewer } = storeToRefs(conversationsStore);
+const { olderMessageCount, newerMessageCount } = storeToRefs(chatStore);
 
 /**
- * Fetch the page before the window.
- *
- * A conversation is opened as a window of its most recent messages, so there
- * is history above the top of the list that is on disk but not in memory.
- *
- * Nothing here holds the view: the list does it, by remembering the row under
- * the viewport and putting it back when the rows change
- * (`scrollTopForAnchor`). This used to correct the scroll offset by the change
- * in document height, which is the wrong quantity — the rows that arrive have
- * never been measured, so they contribute a fixed estimate rather than their
- * real height, and on a conversation with real answers in it those differ by
- * an order of magnitude. Leaving it in would also compensate the same
- * movement twice.
+ * How close to an edge of the loaded window the view must come before the
+ * next page is fetched. A screen's worth, so the page is on its way before
+ * the reader reaches the end of what is loaded.
  */
+const PAGE_AHEAD_PX = 600;
+
+/**
+ * Load the next page when the view approaches either edge of the window.
+ *
+ * A conversation is held as a window of itself, so scrolling up runs out of
+ * loaded history and scrolling back down runs out of loaded tail. Reaching
+ * for a control to carry on reading is not scrolling; this is what makes the
+ * window invisible.
+ *
+ * NOTHING here corrects the scroll offset, and that is the whole lesson of
+ * getting this wrong four times. Holding the view still across a prepend is
+ * the virtual list's job and is done in one place — `frontShift` in
+ * useVirtualList, which shifts the offset by the height of exactly the rows
+ * that arrived, measured against the geometry that was just laid out. Every
+ * correction attempted from here was in document pixels against rows that had
+ * never been measured, and compensated a movement that was already being
+ * compensated: the 766px drifts and the four-hundred-message jumps were two
+ * fixes fighting, not one missing.
+ */
+async function pageIfNearAnEdge(): Promise<void> {
+  const el = listRef.value;
+  if (!el) return;
+
+  const nearTop = el.scrollTop <= PAGE_AHEAD_PX;
+  const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+  const nearBottom = fromBottom <= PAGE_AHEAD_PX;
+
+  // Re-armed once the view is clear of the edge again. Without this a page
+  // cascades: loading one moves the scroll offset, which is itself a scroll
+  // event, which asks again — nine loads for one approach to the top.
+  if (!nearTop) armedForOlder = true;
+  if (!nearBottom) armedForNewer = true;
+
+  if (nearTop && armedForOlder && olderMessageCount.value > 0 && !loadingEarlier.value) {
+    armedForOlder = false;
+    await loadEarlier();
+    return;
+  }
+
+  if (nearBottom && armedForNewer && newerMessageCount.value > 0 && !loadingNewer.value) {
+    armedForNewer = false;
+    await loadNewer();
+  }
+}
+
+/** One page per approach to an edge; see pageIfNearAnEdge. */
+let armedForOlder = true;
+let armedForNewer = true;
+
+/**
+ * True while a page is being loaded, so the list does not report it as
+ * messages arriving.
+ *
+ * A page lands in the same list new messages do — at the front when reading
+ * back, at the end when reading forward — so counting growth as arrivals
+ * announced "500 new messages" for history the reader had scrolled to
+ * themselves.
+ */
+let pagingInProgress = false;
+
 async function loadEarlier(): Promise<void> {
-  await conversationsStore.loadEarlierMessages();
+  pagingInProgress = true;
+  try {
+    const loaded = await conversationsStore.loadEarlierMessages();
+    if (loaded > 0) slideAround();
+  } finally {
+    pagingInProgress = false;
+  }
+}
+
+async function loadNewer(): Promise<void> {
+  pagingInProgress = true;
+  try {
+    const loaded = await conversationsStore.loadNewerMessages();
+    if (loaded > 0) slideAround();
+  } finally {
+    pagingInProgress = false;
+  }
+}
+
+/**
+ * Unload the parts of the window the reader has moved away from.
+ *
+ * Without this the window only grows: paging to the start of a long
+ * conversation would end up holding all of it, which is what the window
+ * exists to prevent. Centred on the message under the viewport rather than on
+ * an end of the list — trimming to "the oldest N" unloaded the very rows
+ * being read.
+ */
+function slideAround(): void {
+  const conversationId = chatStore.currentConversationId;
+  if (!conversationId) return;
+  if (chatStore.messages.length <= CONSTANTS.CONVERSATION.WINDOW_MAX) return;
+
+  const anchorMessageId = viewportMessageId();
+  if (!anchorMessageId) return;
+
+  const { droppedHead, droppedTail } = chatStore.trimWindowAround(
+    conversationId,
+    anchorMessageId,
+    CONSTANTS.CONVERSATION.WINDOW_SIZE,
+    CONSTANTS.CONVERSATION.WINDOW_SIZE,
+  );
+  if (droppedHead || droppedTail) {
+    logger.debug('Slid the message window', { conversationId, droppedHead, droppedTail });
+  }
+}
+
+/** The message under the top of the viewport, for sliding around it. */
+function viewportMessageId(): string | null {
+  const el = listRef.value;
+  if (!el) return null;
+
+  const index = virtual.indexAt(el.scrollTop);
+  for (let i = Math.max(0, index); i < rows.value.length; i += 1) {
+    const id = rows.value[i].msg?.id;
+    if (id) return id;
+  }
+  return null;
 }
 
 // Declared up here because useVirtualList reads it while the component sets
@@ -370,6 +491,9 @@ const unreadCount = ref(0);
  */
 function checkIfAtBottom(): boolean {
   if (!listRef.value) return true;
+  // A window that stops short of the end is not the end: with newer messages
+  // unloaded, the bottom of the list is the middle of the conversation.
+  if (newerMessageCount.value > 0) return false;
   return distanceFromBottom() <= SCROLL_THRESHOLD;
 }
 
@@ -489,6 +613,7 @@ function handleScroll(): void {
   // The window to render is derived from the scroll position, so this has to
   // run before anything reads it.
   virtual.syncViewport();
+  void pageIfNearAnEdge();
   isUserAtBottom.value = checkIfAtBottom();
   wasPinnedToBottom.value = distanceFromBottom() <= PINNED_EPSILON_PX;
   if (isUserAtBottom.value) {
@@ -529,7 +654,12 @@ function recordPosition(): void {
   });
 }
 
-function handleScrollToBottom(): void {
+async function handleScrollToBottom(): Promise<void> {
+  // With the tail unloaded there is nothing below the window to scroll to.
+  if (newerMessageCount.value > 0) {
+    await conversationsStore.jumpToLatest();
+    await nextTick();
+  }
   scrollToBottom();
   unreadCount.value = 0;
 }
@@ -572,7 +702,7 @@ function appendedSince(previousTailId: string | null): number {
 watch(
   () => messages.value.length,
   () => {
-    const added = appendedSince(lastTailId);
+    const added = pagingInProgress ? 0 : appendedSince(lastTailId);
     lastTailId = messages.value.at(-1)?.id ?? null;
     if (added > 0 && !isUserAtBottom.value) {
       unreadCount.value += added;
@@ -807,27 +937,21 @@ onUnmounted(() => {
         What is on disk but not in memory.
 
         A conversation opens as a window of its most recent messages, so a long
-        one does not sit in memory in full. This is the way back into the rest
-        of it, a page at a time. Outside the virtualised spacer below, because
-        its height is not part of the measured row geometry.
+        one does not sit in memory in full, and scrolling to either edge loads
+        the next page by itself. Nothing to click: this only says that more
+        exists and that a page is on its way. Outside the virtualised spacer
+        below, because its height is not part of the measured row geometry.
       -->
       <div
         v-if="hasMessages && olderMessageCount > 0"
-        class="flex justify-center pb-3"
+        class="flex items-center justify-center gap-2 pb-3 text-xs text-surface-500 dark:text-surface-400"
       >
-        <button
-          type="button"
-          class="text-xs px-3 py-1.5 rounded-full border border-surface-200 dark:border-surface-700 text-surface-600 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-700/50 transition-colors disabled:opacity-60"
-          :disabled="loadingEarlier"
-          @click="loadEarlier"
-        >
-          <Spinner
-            v-if="loadingEarlier"
-            size="xs"
-            class="inline-block mr-1 align-[-2px]"
-          />
-          {{ loadingEarlier ? 'Loading…' : `Load earlier messages (${olderMessageCount})` }}
-        </button>
+        <Spinner
+          v-if="loadingEarlier"
+          size="xs"
+          class="shrink-0"
+        />
+        <span>{{ loadingEarlier ? 'Loading earlier messages…' : `${olderMessageCount} earlier messages` }}</span>
       </div>
 
       <div
@@ -925,12 +1049,25 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+
+      <!-- The same, for the tail that was unloaded while reading back. -->
+      <div
+        v-if="hasMessages && newerMessageCount > 0"
+        class="flex items-center justify-center gap-2 pt-3 text-xs text-surface-500 dark:text-surface-400"
+      >
+        <Spinner
+          v-if="loadingNewer"
+          size="xs"
+          class="shrink-0"
+        />
+        <span>{{ loadingNewer ? 'Loading newer messages…' : `${newerMessageCount} newer messages` }}</span>
+      </div>
     </div>
 
     <!-- Scroll to new messages button -->
     <Transition name="scroll-badge">
       <button
-        v-if="!isUserAtBottom && (unreadCount > 0 || isLoading)"
+        v-if="!isUserAtBottom && (unreadCount > 0 || isLoading || newerMessageCount > 0)"
         class="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary-500 hover:bg-primary-600 text-white text-xs font-medium shadow-lg transition-colors z-10"
         @click="handleScrollToBottom"
       >
@@ -938,7 +1075,11 @@ onUnmounted(() => {
           name="chevron-down"
           size="xs"
         />
+        <!-- Reading far enough back unloads the tail, and then there is
+             nothing below the window to scroll to: the badge fetches the end
+             rather than scrolling to it. -->
         <span v-if="unreadCount > 0">{{ unreadCount }} new message{{ unreadCount > 1 ? 's' : '' }}</span>
+        <span v-else-if="newerMessageCount > 0">Jump to latest</span>
         <span v-else>New activity</span>
       </button>
     </Transition>

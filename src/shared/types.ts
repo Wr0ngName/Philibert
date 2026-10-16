@@ -1622,6 +1622,8 @@ export const IPC_CHANNELS = {
   CONVERSATION_GET_WINDOW: 'conversation:get-window',
   /** Read a page of messages older than the ones already held. */
   CONVERSATION_GET_OLDER: 'conversation:get-older',
+  /** Read a page of messages newer than the ones already held. */
+  CONVERSATION_GET_NEWER: 'conversation:get-newer',
   /** Rename a conversation */
   CONVERSATION_RENAME: 'conversation:rename',
   /** Delete a conversation */

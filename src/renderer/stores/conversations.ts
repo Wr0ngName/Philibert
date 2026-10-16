@@ -546,6 +546,8 @@ export const useConversationsStore = defineStore('conversations', () => {
   const saveQueue = new Map<string, ConversationUpdate>();
   /** True while a page of earlier messages is being fetched. */
   const loadingEarlier = ref(false);
+  /** True while a page of newer messages is being fetched. */
+  const loadingNewer = ref(false);
 
   /**
    * Save the conversation on screen — bound to THAT conversation, now.
@@ -760,6 +762,102 @@ export const useConversationsStore = defineStore('conversations', () => {
       return 0;
     } finally {
       loadingEarlier.value = false;
+    }
+  }
+
+  /**
+   * Fetch the page after the window and put it on screen.
+   *
+   * The way back down: reading far enough back unloads the newest messages,
+   * and this is how they return. Keyed by the id at the bottom of the window
+   * for the same reason the other direction is keyed by the id at the top.
+   */
+  async function loadNewerMessages(): Promise<number> {
+    const id = currentConversationId.value;
+    if (!id) return 0;
+    if (chatStore.newerMessageCount === 0) return 0;
+
+    // Where the loaded stretch stops, which is NOT the last message held
+    // whenever a turn arrived after the tail was unloaded: that message
+    // belongs at the end of the conversation, and asking for what follows it
+    // skips everything in between and reports nothing left to load. See
+    // ConversationState.tailGapAfterId.
+    const from = chatStore.loadedUpToId(id)
+      ?? chatStore.messages[chatStore.messages.length - 1]?.id;
+    if (!from) return 0;
+    if (loadingNewer.value) return 0;
+
+    loadingNewer.value = true;
+    try {
+      const page = await window.electron.conversation.getNewer(
+        id, from, CONSTANTS.CONVERSATION.WINDOW_SIZE,
+      );
+      if (!page) return 0;
+      // Switched away while this was in flight.
+      if (currentConversationId.value !== id) return 0;
+
+      chatStore.appendNewerMessages(id, page.messages, page.newerCount);
+      logger.info('Loaded newer messages', {
+        id, loaded: page.messages.length, stillNewer: page.newerCount,
+      });
+      return page.messages.length;
+    } catch (err) {
+      logger.error('Failed to load newer messages', { id, err });
+      error.value = 'Could not load newer messages';
+      return 0;
+    } finally {
+      loadingNewer.value = false;
+    }
+  }
+
+  /**
+   * Reload the window at the end of the conversation.
+   *
+   * What "go to the newest message" has to mean once the tail has been
+   * unloaded: scrolling cannot reach a message that is not loaded.
+   */
+  async function jumpToLatest(): Promise<boolean> {
+    const id = currentConversationId.value;
+    if (!id) return false;
+    if (chatStore.newerMessageCount === 0) return true;
+
+    try {
+      const latest = await window.electron.conversation.getWindow(
+        id, CONSTANTS.CONVERSATION.WINDOW_SIZE,
+      );
+      if (!latest) return false;
+      if (currentConversationId.value !== id) return false;
+
+      // A turn that arrived while the tail was unloaded is held in memory and
+      // may not be on disk yet — the save lands at the end of the turn. The
+      // loaded window replaces the message list outright, so anything newer
+      // than the file has to be carried across or jumping to the end would
+      // destroy the very messages it was meant to reveal.
+      const gapAt = chatStore.loadedUpToId(id);
+      const unsaved = gapAt === null
+        ? []
+        : chatStore.messages.slice(
+          chatStore.messages.findIndex((m) => m.id === gapAt) + 1,
+        );
+      const onDisk = new Set(latest.conversation.messages.map((m) => m.id));
+      const carried = unsaved.filter((m) => !onDisk.has(m.id));
+
+      chatStore.loadMessages(
+        [...latest.conversation.messages, ...carried],
+        latest.olderCount,
+        0,
+      );
+      logger.info('Jumped to the end of the conversation', {
+        id,
+        held: latest.conversation.messages.length,
+        older: latest.olderCount,
+        carried: carried.length,
+      });
+      return true;
+    } catch (err) {
+      logger.error('Failed to jump to the latest messages', { id, err });
+      error.value = 'Could not load the newest messages';
+      return false;
     }
   }
 
@@ -1059,7 +1157,10 @@ export const useConversationsStore = defineStore('conversations', () => {
     switchConversation,
     saveCurrentConversation,
     loadEarlierMessages,
+    loadNewerMessages,
+    jumpToLatest,
     loadingEarlier,
+    loadingNewer,
     saveConversation,
     createNewConversation,
     renameConversation,

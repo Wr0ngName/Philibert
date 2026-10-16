@@ -26,6 +26,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { commands } from 'vitest/browser';
 
+import { CONSTANTS } from '../../../constants/app';
 import { useChatStore } from '../../../stores/chat';
 import { useConversationsStore } from '../../../stores/conversations';
 import MessageList from '../MessageList.vue';
@@ -65,12 +66,33 @@ function messagesFor(prefix: string, count = MESSAGE_COUNT) {
   });
 }
 
-/** How much history sits behind the window in the windowed tests. */
-const OLDER_COUNT = 1000;
+/**
+ * How much history sits behind the window in the windowed tests.
+ *
+ * Enough that reading back past WINDOW_MAX is reachable: the window opens at
+ * 401 messages and a page is WINDOW_SIZE, so the third page is what first
+ * takes the held list past the cap and makes it slide. At 1,000 it never did,
+ * and the test that claimed to prove the window stays bounded was only
+ * proving that 1,400 is less than 1,500.
+ */
+const OLDER_COUNT = 1600;
 
 /** The pages that sit behind the window, as the file would hold them. */
 function olderMessages() {
   return messagesFor('older', OLDER_COUNT);
+}
+
+/**
+ * The whole conversation, the way the file holds it: the history behind the
+ * window followed by the window itself.
+ *
+ * One array answers all three window reads, so paging back and forward cannot
+ * disagree about what the conversation is — which a separate fixture per
+ * direction did, and it took a test asserting a message was "newer" than
+ * itself to notice.
+ */
+function wholeConversation() {
+  return [...olderMessages(), ...messagesFor('msg')];
 }
 
 /**
@@ -104,14 +126,29 @@ function seedWindowedConversation(): void {
  * would, out of the same fixture the window was cut from.
  */
 function installWindowIpc(): void {
-  const older = olderMessages();
+  const whole = wholeConversation();
+  const indexOf = (id: string) => whole.findIndex((m) => m.id === id);
+
   (window as unknown as { electron: unknown }).electron = {
     conversation: {
       getOlder: async (_id: string, beforeId: string, limit: number) => {
-        const at = older.findIndex((m) => m.id === beforeId);
-        const end = at === -1 ? older.length : at;
-        const start = Math.max(0, end - limit);
-        return { messages: older.slice(start, end), olderCount: start };
+        const at = indexOf(beforeId);
+        if (at === -1) throw new Error(`asked for history before an unknown message: ${beforeId}`);
+        const start = Math.max(0, at - limit);
+        return { messages: whole.slice(start, at), olderCount: start };
+      },
+      getNewer: async (_id: string, afterId: string, limit: number) => {
+        const at = indexOf(afterId);
+        if (at === -1) throw new Error(`asked for messages after an unknown message: ${afterId}`);
+        const end = Math.min(whole.length, at + 1 + limit);
+        return { messages: whole.slice(at + 1, end), newerCount: whole.length - end };
+      },
+      getWindow: async (_id: string, limit: number) => {
+        const start = Math.max(0, whole.length - limit);
+        return {
+          conversation: { id: 'conv-browser', messages: whole.slice(start) },
+          olderCount: start,
+        };
       },
     },
     config: { get: async () => ({}), set: async () => undefined, onChange: () => () => {} },
@@ -161,6 +198,37 @@ async function wheelUp(
   await settle(30);
 
   return offset() - before;
+}
+
+/**
+ * Roll the wheel until something happens, or give up saying so.
+ *
+ * Paging is driven by the view reaching an edge of the window, so a test for
+ * it has to actually get there with the wheel — and how many clicks that
+ * takes depends on where the measured row heights put the content, which is
+ * not something a test can know in advance. The guard is what keeps a failure
+ * legible: "never reached the top of the window" rather than a silent
+ * assertion about a count that never changed.
+ *
+ * Nothing here assigns `scrollTop`. Assigning it is not scrolling: the list
+ * legitimately moves the offset itself while rows settle, so a gesture faked
+ * that way gets undone and the test ends up measuring its own assignment.
+ */
+async function wheelUntil(
+  direction: -1 | 1,
+  done: () => boolean,
+  what: string,
+  clickPx = EDGE_CLICK_PX,
+  maxClicks = 80,
+): Promise<void> {
+  for (let click = 0; click < maxClicks && !done(); click += 1) {
+    await commands.wheel(WHEEL_TARGET, direction * clickPx);
+    await settle(4);
+  }
+  // Long enough for the page request, the render and the measurements it
+  // causes to finish before anything is asserted.
+  await settle(30);
+  if (!done()) throw new Error(`gave up rolling the wheel: ${what}`);
 }
 
 /**
@@ -258,6 +326,31 @@ const SETTLE_TOLERANCE_PX = 80;
 
 /** Where the wheel command puts the pointer: the scroll container itself. */
 const WHEEL_TARGET = '.overflow-y-auto';
+
+/**
+ * Wheel travel per click when crossing the window to reach one of its edges.
+ *
+ * Measured, not guessed: this fixture's window is ~98,500px of real rows and
+ * a loaded page adds ~123,000px more, while the wheel travels exactly the
+ * delta it is given (checked at 120, 400, 1,200, 3,000 and 8,000px — travel
+ * matched the delta at every one). A 400px click therefore needs ~250 of them
+ * to reach the top, which is how the first version of these tests failed:
+ * "never reached the top of the window", eighty clicks in.
+ *
+ * Reaching an edge is a flick, so it is driven as one. The gentle 120px
+ * clicks the travel and cadence tests use are unchanged — those are about how
+ * far a roll moves the content, which is a different question.
+ */
+const EDGE_CLICK_PX = 8000;
+
+/**
+ * Wheel travel per click when the travel itself is being measured, so a page
+ * arriving can be told apart from the gesture that fetched it.
+ */
+const FINE_CLICK_PX = 400;
+
+/** The size the window is trimmed back to, and the slack before it is. */
+const { WINDOW_MAX } = CONSTANTS.CONVERSATION;
 
 /**
  * Frames to wait between wheel clicks, to stand in for a hand rolling a wheel
@@ -576,12 +669,190 @@ describe('MessageList scrolling with real layout', () => {
       return mountList();
     }
 
-    it('offers the way back into the rest of the conversation', async () => {
+    it('says how much of the conversation is not loaded', async () => {
       const { container } = await seedWindowed();
+      const store = useChatStore();
 
-      const button = container.querySelector('button');
-      expect(button?.textContent).toContain('Load earlier messages');
+      expect(store.olderMessageCount).toBeGreaterThan(0);
+      expect(container.textContent).toContain(`${store.olderMessageCount} earlier messages`);
+      // And there is nothing to press. Reaching for a control to carry on
+      // reading is not scrolling.
+      expect(container.textContent).not.toContain('Load earlier');
     });
+
+    it('loads the previous page by being scrolled to, with nothing pressed', async () => {
+      const { container } = await seedWindowed();
+      const store = useChatStore();
+      const olderBefore = store.olderMessageCount;
+      const heldBefore = store.messages.length;
+
+      await wheelUntil(
+        -1,
+        () => store.olderMessageCount < olderBefore,
+        'never reached the top of the window',
+      );
+
+      // A page really arrived, and the accounting moved with it: asserted
+      // against what was held before, because "more than the window" is true
+      // of a window one message too big.
+      expect(store.messages.length).toBeGreaterThan(heldBefore);
+      expect(store.olderMessageCount).toBeLessThan(olderBefore);
+      expect(store.olderMessageCount + store.messages.length)
+        .toBe(olderBefore + heldBefore);
+      // In order, with nothing repeated or skipped.
+      const ids = store.messages.map((m) => m.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids).toEqual(wholeConversation()
+        .map((m) => m.id)
+        .slice(store.olderMessageCount, store.olderMessageCount + ids.length));
+      // And what is said about the rest followed it down.
+      expect(container.textContent).toContain(`${store.olderMessageCount} earlier messages`);
+    }, 120_000);
+
+    it('keeps the message being read in place when a page arrives mid-gesture', async () => {
+      // The difference from the prepend test above: there the page is handed
+      // to the store, here the reader's own scrolling fetches it, so the
+      // arrival lands in the middle of a gesture.
+      //
+      // Measured one wheel click at a time, so the click a page arrives
+      // during can be judged on its own: the view may move by that click's
+      // travel and by nothing else. A page is 500 messages — tens of
+      // thousands of pixels — so a bound of two clicks is a wide tolerance
+      // for the wheel and still an unmissable one for the defect.
+      const { container } = await seedWindowed();
+      const store = useChatStore();
+
+      // Flick up to within sight of the top, then switch to measured clicks
+      // for the crossing itself. The threshold the page loads at is 600px, so
+      // stopping at 15,000 is comfortably short of it.
+      await wheelUntil(
+        -1,
+        () => container.scrollTop < 15_000,
+        'never got within sight of the top',
+      );
+      expect(store.olderMessageCount, 'paged before the measuring began')
+        .toBe(OLDER_COUNT - 1);
+
+      const offsetOf = (id: string) => {
+        const row = container.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+        return row
+          ? row.getBoundingClientRect().top - container.getBoundingClientRect().top
+          : null;
+      };
+
+      let travelled: number | null = null;
+      for (let click = 0; click < 60 && travelled === null; click += 1) {
+        const anchorId = topMessageId(container);
+        const before = anchorId === null ? null : offsetOf(anchorId);
+        const olderBefore = store.olderMessageCount;
+
+        await commands.wheel(WHEEL_TARGET, -FINE_CLICK_PX);
+        await settle(6);
+
+        if (store.olderMessageCount < olderBefore && anchorId !== null && before !== null) {
+          const after = offsetOf(anchorId);
+          expect(after, 'the row being read was unloaded by the page arriving').not.toBeNull();
+          travelled = after! - before;
+        }
+      }
+
+      expect(travelled, 'no page arrived while scrolling up').not.toBeNull();
+      // Scrolling up moves the content down, so a click's travel is positive.
+      expect(travelled!).toBeGreaterThan(0);
+      expect(travelled!).toBeLessThan(FINE_CLICK_PX * 2);
+    }, 120_000);
+
+    it('does not end up holding the whole conversation when read back', async () => {
+      // The window exists so a long conversation does not sit in memory in
+      // full. Paging without unloading the other side would defeat it on the
+      // way back to the start.
+      const { container } = await seedWindowed();
+      const store = useChatStore();
+      const total = store.messages.length + store.olderMessageCount;
+
+      let pages = 0;
+      while (store.olderMessageCount > 0 && pages < 6) {
+        const olderBefore = store.olderMessageCount;
+        await wheelUntil(
+          -1,
+          () => store.olderMessageCount < olderBefore,
+          `page ${pages + 1} never loaded`,
+        );
+        pages += 1;
+        expect(store.messages.length).toBeLessThanOrEqual(WINDOW_MAX);
+      }
+
+      expect(pages).toBeGreaterThan(1);
+      // Everything is still accounted for: what is held, plus what is behind
+      // the window, plus the tail that was unloaded to make room.
+      expect(store.messages.length + store.olderMessageCount + store.newerMessageCount)
+        .toBe(total);
+      expect(container.querySelectorAll('[data-message-id]').length)
+        .toBeLessThan(store.messages.length);
+    }, 180_000);
+
+    it('reads forward again by scrolling back down', async () => {
+      const { container } = await seedWindowed();
+      const store = useChatStore();
+
+      // Read back far enough that the tail is unloaded.
+      let guard = 0;
+      while (store.newerMessageCount === 0 && guard < 6) {
+        const olderBefore = store.olderMessageCount;
+        await wheelUntil(
+          -1,
+          () => store.olderMessageCount < olderBefore,
+          'a page of history never loaded',
+        );
+        guard += 1;
+      }
+      expect(store.newerMessageCount, 'the tail was never unloaded').toBeGreaterThan(0);
+
+      const newerBefore = store.newerMessageCount;
+      await wheelUntil(
+        1,
+        () => store.newerMessageCount < newerBefore,
+        'never reached the end of the window',
+      );
+
+      expect(store.newerMessageCount).toBeLessThan(newerBefore);
+      expect(store.messages.length).toBeLessThanOrEqual(WINDOW_MAX);
+      const ids = store.messages.map((m) => m.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(container.querySelectorAll('[data-message-id]').length).toBeGreaterThan(0);
+    }, 180_000);
+
+    it('goes to the live end of the conversation from the badge', async () => {
+      // Scrolling down would only reach the end of what is loaded. Once the
+      // tail has been unloaded there is nothing below the window to scroll
+      // to, so the badge fetches the end instead of scrolling to it.
+      const { container } = await seedWindowed();
+      const store = useChatStore();
+
+      let guard = 0;
+      while (store.newerMessageCount === 0 && guard < 6) {
+        const olderBefore = store.olderMessageCount;
+        await wheelUntil(
+          -1,
+          () => store.olderMessageCount < olderBefore,
+          'a page of history never loaded',
+        );
+        guard += 1;
+      }
+      expect(store.newerMessageCount, 'the tail was never unloaded').toBeGreaterThan(0);
+
+      const jump = container.closest('.relative')
+        ?.querySelector<HTMLElement>('button.bg-primary-500');
+      expect(jump?.textContent).toContain('Jump to latest');
+
+      jump!.click();
+      await settle(30);
+
+      expect(store.newerMessageCount).toBe(0);
+      expect(store.messages.at(-1)?.id).toBe(`msg-${MESSAGE_COUNT - 1}`);
+      expect(distanceFromBottom(container)).toBeLessThan(SETTLE_TOLERANCE_PX);
+      expect(store.isTailPinned('conv-browser')).toBe(true);
+    }, 180_000);
 
     it('keeps the message being read where it was when a page is prepended', async () => {
       // The reason the list compensates for rows arriving at its front at
@@ -691,10 +962,11 @@ describe('MessageList scrolling with real layout', () => {
     /**
      * The badge offering the way back to the newest message.
      *
-     * Selected by its own colour class: the "Load earlier messages" control is
-     * also a pill-shaped button, and a looser selector matched that instead —
-     * which is how this test first reported the badge saying "Load earlier
-     * messages (999)".
+     * Selected by its own colour class rather than by being "the button":
+     * back when a page of history was loaded by pressing a control, that
+     * control was a pill-shaped button too, and a looser selector matched it
+     * instead — which is how this test once reported the badge saying "Load
+     * earlier messages (999)". The control is gone, the lesson is not.
      */
     function badge(container: HTMLElement): HTMLElement | null {
       const root = container.closest('.relative') ?? container.parentElement;
@@ -803,16 +1075,20 @@ describe('MessageList scrolling with real layout', () => {
       // asked for themselves.
       seedWindowedConversation();
       const store = useChatStore();
-      const { container, wrapper } = await mountList();
+      const { container } = await mountList();
       const heldBefore = store.messages.length;
-      await wheelUp(container, 10, 120, 2);
+      const olderBefore = store.olderMessageCount;
 
-      await wrapper.find('button').trigger('click');
-      await settle(20);
+      await wheelUntil(
+        -1,
+        () => store.olderMessageCount < olderBefore,
+        'never reached the top of the window',
+      );
 
       // A page really arrived — asserted against what was held before,
       // because "more than the window" is true without loading anything.
-      expect(store.messages.length).toBeGreaterThan(heldBefore + 400);
+      expect(store.messages.length).toBeGreaterThan(heldBefore);
+      expect(store.olderMessageCount).toBeLessThan(olderBefore);
       const text = badge(container)?.textContent ?? '';
       expect(text).not.toContain('new message');
 
@@ -820,17 +1096,20 @@ describe('MessageList scrolling with real layout', () => {
       arrive('arrived-after-paging');
       await settle(10);
       expect(badge(container)?.textContent).toContain('1 new message');
-    });
+    }, 120_000);
 
     it('does not move the view when a message arrives after paging back', async () => {
       seedWindowedConversation();
       const store = useChatStore();
-      const { container, wrapper } = await mountList();
+      const { container } = await mountList();
       const heldBefore = store.messages.length;
-      await wheelUp(container, 10, 120, 2);
-      await wrapper.find('button').trigger('click');
-      await settle(20);
-      expect(store.messages.length).toBeGreaterThan(heldBefore + 400);
+      const olderBefore = store.olderMessageCount;
+      await wheelUntil(
+        -1,
+        () => store.olderMessageCount < olderBefore,
+        'never reached the top of the window',
+      );
+      expect(store.messages.length).toBeGreaterThan(heldBefore);
 
       const anchor = topRowElement(container);
       const anchorId = anchor?.dataset.messageId;
@@ -846,6 +1125,61 @@ describe('MessageList scrolling with real layout', () => {
         - container.getBoundingClientRect().top;
 
       expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThan(4);
-    });
+    }, 120_000);
+
+    it('does not show a turn that arrives after the tail was unloaded', async () => {
+      // Read back far enough and the newest messages are unloaded to keep the
+      // loaded set bounded. A turn arriving then is held — it has to be, it
+      // is what gets saved — but it does not follow the message before it:
+      // hundreds sit in between, on disk. Showing it would put the newest
+      // answer directly under a message from the middle of the conversation.
+      seedWindowedConversation();
+      const store = useChatStore();
+      const { container } = await mountList();
+
+      let guard = 0;
+      while (store.newerMessageCount === 0 && guard < 6) {
+        const olderBefore = store.olderMessageCount;
+        await wheelUntil(
+          -1,
+          () => store.olderMessageCount < olderBefore,
+          'a page of history never loaded',
+        );
+        guard += 1;
+      }
+      expect(store.newerMessageCount, 'the tail was never unloaded').toBeGreaterThan(0);
+
+      const anchor = topRowElement(container);
+      const anchorId = anchor?.dataset.messageId;
+      const offsetBefore = anchor!.getBoundingClientRect().top
+        - container.getBoundingClientRect().top;
+      const newerBefore = store.newerMessageCount;
+
+      arrive('arrived-while-reading');
+      await settle(20);
+
+      // Not rendered, and not moving the view.
+      expect(container.querySelector('[data-message-id="arrived-while-reading"]'))
+        .toBeNull();
+      const after = container.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
+      expect(after, 'the row being read is still rendered').not.toBeNull();
+      const offsetAfter = after!.getBoundingClientRect().top
+        - container.getBoundingClientRect().top;
+      expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThan(4);
+
+      // Counted, and reachable: the badge is the way to it.
+      expect(store.newerMessageCount).toBe(newerBefore + 1);
+      const jump = container.closest('.relative')
+        ?.querySelector<HTMLElement>('button.bg-primary-500');
+      expect(jump).not.toBeNull();
+
+      jump!.click();
+      await settle(30);
+
+      expect(store.messages.at(-1)?.id).toBe('arrived-while-reading');
+      expect(container.querySelector('[data-message-id="arrived-while-reading"]'))
+        .not.toBeNull();
+      expect(distanceFromBottom(container)).toBeLessThan(SETTLE_TOLERANCE_PX);
+    }, 180_000);
   });
 });
