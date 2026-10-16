@@ -231,6 +231,13 @@ export const useConversationsStore = defineStore('conversations', () => {
         // Load messages from saved file
         chatStore.loadMessages(conversation.messages, olderCount);
 
+        // A turn collected apart from a window that fell short of the end is
+        // not in the file yet, and this window IS the end of the file — so
+        // that turn is what comes next and belongs on it. Without this, a
+        // reader who stepped out mid-turn came back to a window read fresh
+        // off disk with the turn they were waiting on nowhere in it.
+        chatStore.absorbDetachedTurn(id);
+
         // If this conversation was streaming, check for buffered content
         if (state.streamingMessageId && state.currentStreamingContent) {
           // There's buffered streaming content - find the message and update it
@@ -1122,19 +1129,24 @@ export const useConversationsStore = defineStore('conversations', () => {
       logger.error('Failed to save conversation during cleanup', err);
     }
 
-    // And every conversation still collecting a turn out of sight.
+    // And every conversation holding anything that is not on disk.
     //
     // Only the conversation on screen was saved here, so a turn running in
-    // another one lost everything since its last save: its buffer is written
-    // to disk when the turn ends, and closing the app means that never
-    // happens. Saved one at a time, and independently, so one failure does
-    // not take the others down with it.
-    for (const id of chatStore.bufferingConversationIds()) {
+    // another one lost everything since its last save: it is written when the
+    // turn ends, and closing the app means that never happens. Saved one at a
+    // time, and independently, so one failure does not take the others down
+    // with it.
+    //
+    // "Holding anything" rather than "buffering": a conversation whose window
+    // falls short of the end keeps its turn in `detachedTurn` and has no
+    // buffer at all, so asking only about buffers let its turn die with the
+    // process.
+    for (const id of chatStore.conversationIdsWithUnwrittenMessages()) {
       if (id === currentConversationId.value) continue;
-      const buffered = chatStore.getBufferedMessages(id);
-      if (!buffered || buffered.length === 0) continue;
+      const unwritten = chatStore.unwrittenMessagesFor(id);
+      if (!unwritten || unwritten.length === 0) continue;
       try {
-        await saveConversation(id, buffered);
+        await saveConversation(id, unwritten);
       } catch (err) {
         logger.error('Failed to save background conversation during cleanup', { id, err });
       }

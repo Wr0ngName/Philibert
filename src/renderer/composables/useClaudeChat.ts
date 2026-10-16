@@ -584,7 +584,12 @@ export function useClaudeChat() {
         // User switched away - need to save this conversation in background
         logger.info('Saving completed conversation in background', { conversationId });
 
-        const messages = chatStore.getBufferedMessages(conversationId);
+        // Whatever this conversation is holding that is not on disk — a
+        // background buffer, or a turn collected apart from a window that
+        // falls short of the end of the conversation. Asking only for the
+        // buffer meant writing nothing for a conversation holding the other,
+        // which dropped the entire turn.
+        const messages = chatStore.unwrittenMessagesFor(conversationId);
 
         let onDisk = true;
         if (messages && messages.length > 0) {

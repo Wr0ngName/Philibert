@@ -19,7 +19,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import type { ChatMessage, Conversation } from '@shared/types';
+import { IPC_CHANNELS, type ChatMessage, type Conversation } from '@shared/types';
 
 vi.mock('node:fs', async () => (await import('./support/real-stack')).fakeFsModule());
 vi.mock('electron', async () => (await import('./support/real-stack')).fakeElectronModule());
@@ -38,12 +38,16 @@ vi.mock('../../utils/logger', () => ({
 import { setupConversationIPC } from '../../../main/ipc/conversations';
 import { ConversationService } from '../../../main/services/ConversationService';
 import '../../../preload/preload';
+import ChatWindow from '../../components/chat/ChatWindow.vue';
 import { CONSTANTS } from '../../constants/app';
 import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
-import { startRealStack, settle, onDisk, files, unmountApp } from './support/real-stack';
+
+import {
+  startRealStack, settle, onDisk, files, unmountApp, mountApp, emitIpc,
+} from './support/real-stack';
 
 const CONV = 'conv-long';
 const TOTAL = 4000;
@@ -80,6 +84,20 @@ describe('sliding the window through a long conversation', () => {
       workingDirectory: '/home/user/project',
     };
     files.set(`/conversations/${CONV}.json`, JSON.stringify(conversation));
+
+    // A real second conversation to switch to. Without one on disk,
+    // `loadConversation` fails and leaves the user where they were — so a
+    // test that "switches away" switches nowhere, and the on-screen save path
+    // quietly handles what was meant to exercise the background one. Two
+    // tests here passed that way before this existed.
+    files.set('/conversations/conv-elsewhere.json', JSON.stringify({
+      id: 'conv-elsewhere',
+      title: 'Somewhere else',
+      messages: [{ id: 'other_0', role: 'user', content: 'elsewhere', timestamp: 1 }],
+      createdAt: 1,
+      updatedAt: 1,
+      workingDirectory: '/home/user/project',
+    } satisfies Conversation));
 
     store = useConversationsStore();
     chatStore = useChatStore();
@@ -163,8 +181,17 @@ describe('sliding the window through a long conversation', () => {
    * it.
    */
   function expectContiguous(): void {
-    const numbers = chatStore.messages
-      .map((m) => Number(m.id.replace('msg_', '')));
+    const ids = chatStore.messages.map((m) => m.id);
+    // The fixture numbers the stored conversation; a turn that really ran
+    // carries generated ids. Those are legitimate, and they can only be at
+    // the END — a live turn in the middle of the stored history would mean
+    // the window had been stitched together out of order, so that is asserted
+    // too rather than filtered away.
+    const stored = ids.filter((id) => /^msg_\d+$/.test(id));
+    const live = ids.filter((id) => !/^msg_\d+$/.test(id));
+    expect(ids).toEqual([...stored, ...live]);
+
+    const numbers = stored.map((id) => Number(id.replace('msg_', '')));
     const expected = Array.from(
       { length: numbers.length },
       (_unused, i) => numbers[0] + i,
@@ -400,6 +427,83 @@ describe('sliding the window through a long conversation', () => {
       await settle();
       expect(onDisk(CONV)?.messages.at(-1)?.id).toBe(`msg_${TOTAL}`);
       expect(chatStore.detachedTurnFor(CONV)).toBeNull();
+    });
+
+    it('writes a turn that finished while the user was in another conversation', async () => {
+      // The real turn-completion path, driven by the real IPC event through
+      // the real useClaudeChat handlers — because that path decides what to
+      // write for a conversation the user has left, and it decided it by
+      // asking for a background buffer. A conversation whose window falls
+      // short of the end keeps no buffer, so the answer was "nothing": the
+      // whole turn was dropped on the floor with nothing logged and nothing
+      // to say it had happened.
+      mountApp(ChatWindow);
+      await settle();
+
+      chatStore.setLoading(CONV, true);
+      chatStore.beginMessageBuffer(CONV);
+      chatStore.startAssistantMessage(CONV);
+      chatStore.appendChunk(CONV, 'the background answer');
+
+      // The user walks away to another conversation, and THEN the turn ends.
+      await store.loadConversation('conv-elsewhere');
+      await settle();
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+      await settle();
+
+      const saved = onDisk(CONV);
+      expect(saved?.messages).toHaveLength(TOTAL + 1);
+      expect(saved?.messages.at(-1)?.content).toBe('the background answer');
+      // And it did not shorten the conversation to do it.
+      expect(saved?.messages[0].id).toBe('msg_0');
+    });
+
+    it('shows a turn that is still running when the user comes back to it', async () => {
+      // Coming back mid-turn. `loadConversation` prefers whatever the
+      // conversation is holding in memory to the saved file, because it is
+      // more up to date — and it asked for the background buffer, which a
+      // conversation whose window falls short of the end does not have. So
+      // the reader came back to a window read fresh off disk with the turn
+      // they were waiting on nowhere in it.
+      mountApp(ChatWindow);
+      await settle();
+
+      chatStore.setLoading(CONV, true);
+      chatStore.startAssistantMessage(CONV);
+      chatStore.appendChunk(CONV, 'still writing');
+
+      await store.loadConversation('conv-elsewhere');
+      await settle();
+      await store.loadConversation(CONV);
+      await settle();
+
+      expect(chatStore.messages.at(-1)?.content).toBe('still writing');
+      expectContiguous();
+      // Nothing is claimed to be missing after it, because nothing is.
+      expect(chatStore.newerMessageCount).toBe(0);
+    });
+
+    it('writes a turn still in flight when the app closes', async () => {
+      // Closing the app is the other end of the same question: a turn that
+      // never got to finish must still reach disk. Only conversations with a
+      // background buffer were flushed, and a conversation whose window falls
+      // short of the end has none — so its turn died with the process.
+      mountApp(ChatWindow);
+      await settle();
+
+      chatStore.setLoading(CONV, true);
+      chatStore.startAssistantMessage(CONV);
+      chatStore.appendChunk(CONV, 'half an answer');
+
+      // Away from it, so the on-screen save cannot be what rescues this.
+      await store.loadConversation('conv-elsewhere');
+      await settle();
+      await store.cleanup();
+      await settle();
+
+      const saved = onDisk(CONV);
+      expect(saved?.messages.at(-1)?.content).toBe('half an answer');
+      expect(saved?.messages).toHaveLength(TOTAL + 1);
     });
 
     it('stays one range however hard the window is trimmed', async () => {

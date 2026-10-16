@@ -653,6 +653,37 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * The messages a conversation is holding that are not on disk, or null.
+   *
+   * The single answer to "what is there to write for this conversation",
+   * asked by the turn that just finished out of sight, by the app closing,
+   * and by the on-screen save. There are two places such messages can be —
+   * a detached turn, or a background buffer — and a caller that only knew
+   * about one of them wrote nothing at all for a conversation holding the
+   * other. That is not a lost update, it is a lost turn: measured, a
+   * background turn in a conversation whose window fell short of the end was
+   * dropped entirely at turn end, with nothing logged.
+   */
+  function unwrittenMessagesFor(conversationId: string): ChatMessage[] | null {
+    const state = conversationStates.value.get(conversationId);
+    if (!state) return null;
+    if (state.detachedTurn.length > 0) return state.detachedTurn;
+    if (state.bufferingMessages && state.bufferedMessages.length > 0) {
+      return state.bufferedMessages;
+    }
+    return null;
+  }
+
+  /** Every conversation holding messages that are not on disk. */
+  function conversationIdsWithUnwrittenMessages(): string[] {
+    const ids: string[] = [];
+    for (const id of conversationStates.value.keys()) {
+      if (unwrittenMessagesFor(id)) ids.push(id);
+    }
+    return ids;
+  }
+
+  /**
    * Release the buffer — but only for the conversation on screen, which has
    * the live list to fall back on.
    *
@@ -2319,6 +2350,8 @@ export const useChatStore = defineStore('chat', () => {
     detachedTurnFor,
     detachedTurnStored,
     absorbDetachedTurn,
+    unwrittenMessagesFor,
+    conversationIdsWithUnwrittenMessages,
     windowReachesEnd,
     hasSessionUsage,
     activeModel,
