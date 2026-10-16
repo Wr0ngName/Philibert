@@ -150,8 +150,7 @@ export function setupConversationIPC(conversationService: ConversationService): 
       logger.info('IPC: conversation:update called', {
         id: update.id,
         upsertCount: update.upsert.length,
-        truncateAfterId: update.truncateAfterId,
-        truncateAll: update.truncateAll === true,
+        truncateFromId: update.truncateFromId,
       });
 
       await conversationService.update(update);

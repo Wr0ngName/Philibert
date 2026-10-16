@@ -146,10 +146,12 @@ export interface ConversationState {
    * Writes are upserts — they add and replace, never shorten (see
    * ConversationUpdate) — so a rewind has to say so explicitly or the turns
    * it dropped would stay in the file and come back on the next visit.
-   * `afterId` is the last message that survives; null means none did.
-   * Cleared only once a write carrying it has succeeded.
+   * `fromId` is the oldest message being discarded, named that way round
+   * because the on-screen list is a window and the message BEFORE the oldest
+   * one in it is not held. Cleared only once a write carrying it has
+   * succeeded.
    */
-  pendingTruncation: { afterId: string | null } | null;
+  pendingTruncation: { fromId: string } | null;
   /**
    * Whether the view of this conversation is sitting at the newest message.
    *
@@ -779,7 +781,10 @@ export const useChatStore = defineStore('chat', () => {
    * is about to be replayed rather than kept.
    */
   function truncateAfterUserTurn(conversationId: string, turnUuid: string): void {
-    const sink = messageSink(conversationId);
+    // The transcript, not the sink: a rewind acts on what the user is reading,
+    // and while a turn is collecting apart from the window the sink is that
+    // turn. Searching it finds nothing and silently rewinds nothing at all.
+    const sink = windowList(conversationId);
     if (!sink) return;
 
     const index = sink.findIndex(
@@ -787,11 +792,16 @@ export const useChatStore = defineStore('chat', () => {
     );
     if (index === -1) return;
 
-    // Record what the file has to lose. A write cannot shorten a stored
-    // conversation on its own, so without this the dropped turns would
-    // survive on disk and reappear on the next visit.
-    const survivor = index > 0 ? sink[index - 1].id : null;
-    getConversationState(conversationId).pendingTruncation = { afterId: survivor };
+    // Record what the file has to lose, named as the oldest message being
+    // discarded. A write cannot shorten a stored conversation on its own, so
+    // without this the dropped turns would survive on disk and reappear on
+    // the next visit.
+    //
+    // Naming the last SURVIVOR instead cannot work for a window: rewinding to
+    // the oldest turn on screen has no predecessor to name, and "after
+    // nothing" meant "drop the whole conversation" — including the thousands
+    // of stored messages the window was not holding.
+    getConversationState(conversationId).pendingTruncation = { fromId: sink[index].id };
 
     sink.splice(index);
   }
@@ -812,7 +822,7 @@ export const useChatStore = defineStore('chat', () => {
   /** A removal of history not yet written, if there is one. */
   function pendingTruncationFor(
     conversationId: string,
-  ): { afterId: string | null } | null {
+  ): { fromId: string } | null {
     return conversationStates.value.get(conversationId)?.pendingTruncation ?? null;
   }
 
@@ -1056,13 +1066,13 @@ export const useChatStore = defineStore('chat', () => {
     const sink = windowList(conversationId);
     if (!sink) return;
 
-    // Skip anything already held: a page can overlap after a turn landed in
-    // between, and a duplicated message is worse than a missing one.
-    const held = new Set(sink.map((m) => m.id));
-    const fresh = older.filter((m) => !held.has(m.id));
-    if (fresh.length === 0) return;
-
-    sink.unshift(...fresh.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)));
+    // No dedupe, deliberately. A page is fetched against the id at the edge
+    // of the window, so what comes back is strictly outside it; and a
+    // duplicate id cannot reach here, because the stored transcript is
+    // cleaned of repeats where the file is read (see `withoutRepeatedIds`).
+    // A filter here could not have handled the real case anyway — two copies
+    // inside ONE page are not yet "already held" when they arrive.
+    sink.unshift(...older.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)));
   }
 
   /**
@@ -1089,11 +1099,8 @@ export const useChatStore = defineStore('chat', () => {
     const sink = windowList(conversationId);
     if (!sink) return;
 
-    const held = new Set(sink.map((m) => m.id));
-    const fresh = newer.filter((m) => !held.has(m.id));
-    if (fresh.length === 0) return;
-
-    sink.push(...fresh.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)));
+    // No dedupe; see prependOlderMessages.
+    sink.push(...newer.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)));
     if (newerCount === 0) absorbDetachedTurn(conversationId);
   }
 

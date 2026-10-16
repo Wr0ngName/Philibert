@@ -76,6 +76,48 @@ export function describeSuspiciousWrite(
   return null;
 }
 
+/**
+ * A stored transcript with any repeated message id dropped, keeping the first.
+ *
+ * Done where the file enters the app, so nothing downstream has to cope. A
+ * message id is the identity of a row everywhere above here: it keys the
+ * upsert that writes it, the height the virtual list measures it at, and the
+ * anchor a page of history is fetched against. Two messages sharing one makes
+ * all three ambiguous — the same message shown twice, measured as two rows,
+ * and written twice on the next save.
+ *
+ * Nothing this app does produces a duplicate: an upsert is keyed by id, so a
+ * repeat replaces rather than appends. A file can still arrive with one — a
+ * hand edit, a restore from a partial copy, a version of this app that had a
+ * bug — and "the conversation file is slightly wrong" should cost the user a
+ * dropped duplicate, not a transcript that cannot be paged through. The next
+ * write stores the cleaned list, so the file repairs itself.
+ *
+ * The window code deliberately does NOT dedupe. With pages anchored by id,
+ * what comes back is always strictly outside the window, so an overlap can
+ * only mean a duplicate in the file — which is this function's business, and
+ * which a filter inside the window could not fix anyway: the duplicate can
+ * sit inside a single page, where "already held" is not yet true of it.
+ */
+function withoutRepeatedIds(id: string, messages: ChatMessage[] | undefined): ChatMessage[] {
+  if (!messages || messages.length === 0) return messages ?? [];
+
+  const seen = new Set<string>();
+  const kept: ChatMessage[] = [];
+  for (const message of messages) {
+    if (seen.has(message.id)) continue;
+    seen.add(message.id);
+    kept.push(message);
+  }
+
+  if (kept.length !== messages.length) {
+    logger.warn('Dropped repeated message ids from a stored conversation', {
+      id, stored: messages.length, kept: kept.length,
+    });
+  }
+  return kept;
+}
+
 export class ConversationService {
   private conversationsDir: string;
   /**
@@ -297,7 +339,8 @@ export class ConversationService {
 
     try {
       const content = await fs.promises.readFile(filePath, 'utf-8');
-      return JSON.parse(content) as Conversation;
+      const conversation = JSON.parse(content) as Conversation;
+      return { ...conversation, messages: withoutRepeatedIds(id, conversation.messages) };
     } catch (error) {
       // A conversation that is not there is an answer: null.
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
@@ -403,7 +446,7 @@ export class ConversationService {
    * list makes the file only as complete as the renderer's memory, so memory
    * can never be bounded without risking the loss this app has already
    * shipped once. Here the stored transcript can only grow, except where
-   * `truncateAfterId` or `truncateAll` says otherwise.
+   * `truncateFromId` says otherwise.
    *
    * Upsert is positional-stable: a message already stored is replaced where it
    * is, so an edit cannot reorder history, and one that is new is appended in
@@ -424,20 +467,20 @@ export class ConversationService {
       updatedAt: update.updatedAt,
     };
 
-    let messages = update.truncateAll ? [] : [...base.messages];
+    let messages = [...base.messages];
 
-    if (!update.truncateAll && update.truncateAfterId) {
-      const cut = messages.findIndex((m) => m.id === update.truncateAfterId);
+    if (update.truncateFromId) {
+      const cut = messages.findIndex((m) => m.id === update.truncateFromId);
       if (cut === -1) {
-        // The anchor is gone, so what "after" means cannot be known. Dropping
+        // The anchor is gone, so what "from" means cannot be known. Dropping
         // nothing is the recoverable mistake; dropping everything is not.
         logger.warn('Truncation anchor not found — keeping the stored history', {
           id: update.id,
-          truncateAfterId: update.truncateAfterId,
+          truncateFromId: update.truncateFromId,
           storedCount: messages.length,
         });
       } else {
-        messages = messages.slice(0, cut + 1);
+        messages = messages.slice(0, cut);
       }
     }
 
@@ -478,7 +521,7 @@ export class ConversationService {
       storedCount: base.messages.length,
       added,
       replaced,
-      truncated: update.truncateAll ? 'all' : update.truncateAfterId ?? 'none',
+      truncated: update.truncateFromId ?? 'none',
       resultCount: messages.length,
     });
 

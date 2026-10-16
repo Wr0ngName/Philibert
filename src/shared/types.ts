@@ -876,15 +876,22 @@ export interface ConversationUpdate {
    */
   upsert: ChatMessage[];
   /**
-   * Drop every stored message after this id, inclusive of nothing else.
+   * Drop this stored message and every one after it.
    *
    * The only way history is removed. Set by a rewind, which really does
-   * discard the turns after a point; absent on every ordinary write, so no
+   * discard the turns from a point; absent on every ordinary write, so no
    * ordinary write can shorten the file.
+   *
+   * Named from the message being discarded rather than from the last one to
+   * survive, because the renderer is holding a WINDOW: at the top of it there
+   * is no predecessor to name. Asking for "after null" used to mean "drop
+   * everything", so rewinding to the oldest turn on screen asked for the
+   * whole conversation — thousands of stored messages it was not even
+   * holding — and the only reason it did not happen is that the same rewind
+   * emptied the on-screen list and the write was skipped as having nothing to
+   * say. The rewind was silently not persisted at all.
    */
-  truncateAfterId?: string;
-  /** Remove every message. Set by a conversation being cleared. */
-  truncateAll?: boolean;
+  truncateFromId?: string;
   workingDirectory: string;
   updatedAt: number;
   title?: string;

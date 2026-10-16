@@ -931,11 +931,11 @@ describe('ConversationService', () => {
       expect(ids('c4')).toEqual(['m1', 'm2', 'm3', 'm4']);
     });
 
-    it('truncates after a message when asked to', async () => {
-      // What a rewind does: the turns after that point really are gone.
+    it('truncates from a message when asked to', async () => {
+      // What a rewind does: that turn and the ones after it really are gone.
       await seed('c5', ['m1', 'm2', 'm3', 'm4']);
 
-      await service.update({ ...base('c5'), truncateAfterId: 'm2' });
+      await service.update({ ...base('c5'), truncateFromId: 'm3' });
 
       expect(ids('c5')).toEqual(['m1', 'm2']);
     });
@@ -945,26 +945,30 @@ describe('ConversationService', () => {
       await seed('c6', ['m1', 'm2', 'm3']);
 
       await service.update({
-        ...base('c6'), truncateAfterId: 'm1', upsert: [msg('m9')],
+        ...base('c6'), truncateFromId: 'm2', upsert: [msg('m9')],
       });
 
       expect(ids('c6')).toEqual(['m1', 'm9']);
     });
 
     it('keeps the history when the truncation anchor is gone', async () => {
-      // "After" cannot be known without the anchor. Dropping nothing is the
+      // "From" cannot be known without the anchor. Dropping nothing is the
       // recoverable mistake; dropping everything is not.
       await seed('c7', ['m1', 'm2', 'm3']);
 
-      await service.update({ ...base('c7'), truncateAfterId: 'does-not-exist' });
+      await service.update({ ...base('c7'), truncateFromId: 'does-not-exist' });
 
       expect(ids('c7')).toEqual(['m1', 'm2', 'm3']);
     });
 
-    it('clears every message when asked to', async () => {
+    it('clears every message when the first one is the anchor', async () => {
+      // Which is how a conversation is emptied now: there is no separate
+      // "remove everything", because naming the oldest message to discard
+      // says it already — and that spelling cannot be reached by accident
+      // from a window with no predecessor to name.
       await seed('c8', ['m1', 'm2']);
 
-      await service.update({ ...base('c8'), truncateAll: true });
+      await service.update({ ...base('c8'), truncateFromId: 'm1' });
 
       expect(ids('c8')).toEqual([]);
     });
