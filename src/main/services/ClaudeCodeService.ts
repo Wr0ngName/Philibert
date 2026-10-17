@@ -69,6 +69,8 @@ import {
   ToolCaptureData,
   MAX_CONCURRENT_QUERIES,
   SessionPermissionEntry,
+  MessageImage,
+  ImageMediaType,
 } from '../../shared/types';
 import { AsyncChannel } from '../utils/AsyncChannel';
 import { createSender } from '../utils/ipc-helpers';
@@ -76,6 +78,7 @@ import logger from '../utils/logger';
 import { ClaudeCliPaths, WindowsPaths, getClaudeConfigDir } from '../utils/resourcePaths';
 
 import ConfigService from './ConfigService';
+import { ImageStore } from './ImageStore';
 import NotificationService from './NotificationService';
 import { ChannelService } from './channel';
 import {
@@ -87,6 +90,7 @@ import {
 } from './claude';
 import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
 import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
+import type { ExtractedImage } from './claude/tool-result-images';
 
 /**
  * An entry in the known-model catalog. `minor` is absent for the Claude 5
@@ -248,6 +252,21 @@ export class ClaudeCodeService {
   private configService: ConfigService;
   private notificationService: NotificationService;
   private sessionPermissionCache: SessionPermissionCache;
+  /**
+   * Where image bytes from tool results are kept; messages carry references.
+   *
+   * Built on first use, not in a field initializer. The store resolves the
+   * conversations directory, which asks Electron for the userData path — so
+   * constructing it eagerly made merely CONSTRUCTING this service depend on
+   * the Electron app being there. A service that cannot be built without the
+   * app path cannot be built in a test, and 92 of them stopped at `new
+   * ClaudeCodeService`.
+   */
+  private imageStoreInstance: ImageStore | null = null;
+  private get imageStore(): ImageStore {
+    this.imageStoreInstance ??= new ImageStore();
+    return this.imageStoreInstance;
+  }
 
   constructor(configService: ConfigService, getMainWindow: () => BrowserWindow | null, notificationService: NotificationService) {
     // Create bound sender using the provided window getter
@@ -418,7 +437,7 @@ export class ClaudeCodeService {
    * @param workingDirectory - The working directory for file operations
    * @param resumeSessionId - Optional SDK session ID to resume conversation context
    */
-  async sendMessage(conversationId: string, message: string, workingDirectory: string, resumeSessionId?: string): Promise<void> {
+  async sendMessage(conversationId: string, message: string, workingDirectory: string, resumeSessionId?: string, images?: MessageImage[]): Promise<void> {
     // Channel mode: delegate to ChannelService (only valid with OAuth auth)
     const currentConfig = await this.configService.getConfig();
     if (currentConfig.executionMode === 'channel' && currentConfig.authMethod === 'oauth') {
@@ -501,7 +520,7 @@ export class ClaudeCodeService {
       const resumeFrom = resumeSessionId ?? existingSession.sdkSessionId ?? undefined;
       this.cleanupSession(conversationId);
       await this.startNewSession(
-        conversationId, message, workingDirectory, isSlashCommand, resumeFrom,
+        conversationId, message, workingDirectory, isSlashCommand, resumeFrom, images,
       );
       return;
     }
@@ -529,12 +548,12 @@ export class ClaudeCodeService {
             conversationId, error,
           });
           this.cleanupSession(conversationId);
-          await this.startNewSession(conversationId, message, workingDirectory, isSlashCommand, resumeSessionId);
+          await this.startNewSession(conversationId, message, workingDirectory, isSlashCommand, resumeSessionId, images);
           return;
         }
       }
       // Reuse existing session — push message to channel
-      await this.sendToExistingSession(existingSession, message, isSlashCommand);
+      await this.sendToExistingSession(existingSession, message, isSlashCommand, images);
       return;
     }
 
@@ -545,13 +564,71 @@ export class ClaudeCodeService {
     }
 
     // Create new persistent session
-    await this.startNewSession(conversationId, message, workingDirectory, isSlashCommand, resumeSessionId);
+    await this.startNewSession(conversationId, message, workingDirectory, isSlashCommand, resumeSessionId, images);
   }
 
   /**
    * Send a message to an existing persistent session.
    */
-  private async sendToExistingSession(session: SessionInstance, message: string, isSlashCommand: boolean): Promise<void> {
+  /**
+   * The content of a user message: the text alone, or blocks when the user
+   * attached images.
+   *
+   * `MessageParam.content` takes "a string or an array of content blocks
+   * (text, image, document, tool_result, ...)" (sdk.d.ts) — and images have
+   * to go here specifically: the SDK is explicit that blocks other than text
+   * in `pastedContents` are ignored, so an image sent that way would vanish
+   * without a word.
+   *
+   * The renderer sends references, not bytes: the bytes were stored when the
+   * user attached them, so they cross IPC once instead of on every send, and
+   * the message that gets persisted stays small. They are read back here,
+   * where they are needed.
+   *
+   * Images go before the text, which is the order the composer shows them in.
+   * An image whose bytes have gone missing is skipped rather than failing the
+   * turn — the user's question is still worth asking.
+   */
+  private async userContent(
+    conversationId: string,
+    text: string,
+    images?: MessageImage[],
+  ): Promise<SDKUserMessage['message']['content']> {
+    if (!images || images.length === 0) return text;
+
+    const blocks: Array<
+      { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }
+      | { type: 'text'; text: string }
+    > = [];
+
+    for (const image of images) {
+      try {
+        const bytes = await this.imageStore.read(conversationId, image.id, image.mediaType);
+        if (!bytes) {
+          logger.warn('Skipped an attached image with no stored bytes', {
+            conversationId, imageId: image.id,
+          });
+          continue;
+        }
+        blocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: bytes.mediaType, data: bytes.base64 },
+        });
+      } catch (err) {
+        logger.error('Failed to read an attached image', { conversationId, imageId: image.id, err });
+      }
+    }
+
+    if (blocks.length === 0) return text;
+    if (text.length > 0) blocks.push({ type: 'text', text });
+
+    logger.info('Sending a user message with images', {
+      conversationId, images: blocks.length - (text.length > 0 ? 1 : 0), textLength: text.length,
+    });
+    return blocks;
+  }
+
+  private async sendToExistingSession(session: SessionInstance, message: string, isSlashCommand: boolean, images?: MessageImage[]): Promise<void> {
     const { conversationId, inputChannel, messageHandler } = session;
 
     logger.info('Sending message to existing persistent session', {
@@ -580,10 +657,17 @@ export class ClaudeCodeService {
     // echoes back on this turn's result.
     const turnUuid = randomUUID();
     session.pendingTurnUuid = turnUuid;
+    // Only awaited when there is something to read: with no attachments the
+    // content IS the text, and going through an async call anyway would push
+    // the message a microtask later than it used to go — a turn's start
+    // delayed for the overwhelmingly common case that has no images at all.
+    const userContent = images && images.length > 0
+      ? await this.userContent(conversationId, message, images)
+      : message;
     const userMessage: SDKUserMessage = {
       uuid: turnUuid,
       type: 'user',
-      message: { role: 'user', content: message },
+      message: { role: 'user', content: userContent },
       parent_tool_use_id: null,
       session_id: session.sdkSessionId,
       origin: HUMAN_ORIGIN,
@@ -605,6 +689,7 @@ export class ClaudeCodeService {
     workingDirectory: string,
     isSlashCommand: boolean,
     resumeSessionId?: string,
+    images?: MessageImage[],
   ): Promise<void> {
     // Create abort controller for this session
     const abortController = new AbortController();
@@ -663,7 +748,12 @@ export class ClaudeCodeService {
       onToolUseCapture: (capture: ToolCaptureData) => {
         this.send(IPC_CHANNELS.CLAUDE_TOOL_CAPTURE, conversationId, capture);
       },
-      onToolResult: (result: { toolUseBlockId: string; content: string; taskListId?: string }) => {
+      onToolResult: (result: {
+        toolUseBlockId: string;
+        content: string;
+        taskListId?: string;
+        images?: ExtractedImage[];
+      }) => {
         const outputDir = path.join(os.tmpdir(), 'claude', 'tool-results');
         fs.mkdirSync(outputDir, { recursive: true });
         const safeId = result.toolUseBlockId.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -683,12 +773,47 @@ export class ClaudeCodeService {
           taskListId: result.taskListId,
           contentPreview: result.content.slice(0, 200),
         });
-        this.send(IPC_CHANNELS.CLAUDE_TOOL_RESULT, conversationId, {
-          toolUseBlockId: result.toolUseBlockId,
-          outputFile,
-          ...(inlineContent !== undefined && { content: inlineContent }),
-          ...(result.taskListId && { taskListId: result.taskListId }),
-        });
+        // Images are stored before the result is announced, so the renderer
+        // never receives a reference to bytes that are not there yet. The
+        // bytes themselves do not travel: a screenshot is megabytes, and the
+        // renderer fetches them by id only when it draws them.
+        const deliver = (images?: MessageImage[]): void => {
+          this.send(IPC_CHANNELS.CLAUDE_TOOL_RESULT, conversationId, {
+            toolUseBlockId: result.toolUseBlockId,
+            outputFile,
+            ...(inlineContent !== undefined && { content: inlineContent }),
+            ...(result.taskListId && { taskListId: result.taskListId }),
+            ...(images && images.length > 0 && { images }),
+          });
+        };
+
+        if (!result.images || result.images.length === 0) {
+          deliver();
+          return;
+        }
+
+        void (async () => {
+          const stored: MessageImage[] = [];
+          for (const image of result.images ?? []) {
+            try {
+              const ref = await this.imageStore.save(conversationId, {
+                base64: image.base64,
+                mediaType: image.mediaType,
+                origin: 'tool',
+                ...(image.width ? { width: image.width } : {}),
+                ...(image.height ? { height: image.height } : {}),
+              });
+              if (ref) stored.push(ref);
+            } catch (err) {
+              // An image that cannot be stored must not cost the result it
+              // came with: the text is the part the model acted on.
+              logger.error('Failed to store a tool image', {
+                conversationId, toolUseBlockId: result.toolUseBlockId, err,
+              });
+            }
+          }
+          deliver(stored);
+        })();
       },
       onModelReported: (model: string, source: ModelReportSource) => {
         this.reconcileReportedModel(conversationId, model, source);
@@ -929,10 +1054,14 @@ export class ClaudeCodeService {
       // Waiting for session_id before pushing would deadlock.
       // For the first message, use resumeSessionId if available, or empty string.
       // The SDK assigns/validates the session_id server-side regardless.
+      // See sendToExistingSession: awaited only when there are attachments.
+      const userContent = images && images.length > 0
+        ? await this.userContent(conversationId, message, images)
+        : message;
       const userMessage: SDKUserMessage = {
         uuid: firstTurnUuid,
         type: 'user',
-        message: { role: 'user', content: message },
+        message: { role: 'user', content: userContent },
         parent_tool_use_id: null,
         session_id: resumeSessionId || '',
         origin: HUMAN_ORIGIN,

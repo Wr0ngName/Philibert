@@ -31,6 +31,94 @@ describe('SDKMessageHandler', () => {
     handler = new SDKMessageHandler(callbacks);
   });
 
+  describe('a tool result carrying an image', () => {
+    /**
+     * The wiring, not the arithmetic: `toolResultParts` is tested on its own,
+     * but what regressed in the first place was this handler folding an image
+     * block into an empty string with `blocks.map(b => b.text || '')`. The
+     * extractor can be perfect and the handler can still not call it.
+     */
+    const DATA = 'aGVsbG8=';
+
+    function userMessageWith(content: unknown, toolUseResult?: unknown) {
+      return {
+        type: 'user',
+        message: { role: 'user', content },
+        parent_tool_use_id: null,
+        ...(toolUseResult !== undefined ? { tool_use_result: toolUseResult } : {}),
+      };
+    }
+
+    it('hands the image to the caller instead of dropping it', async () => {
+      const onToolResult = vi.fn();
+      const h = new SDKMessageHandler({ ...callbacks, onToolResult });
+
+      await h.handleMessage(userMessageWith([
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: [
+            { type: 'text', text: 'here is the image' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: DATA } },
+          ],
+        },
+      ]) as never);
+
+      expect(onToolResult).toHaveBeenCalledTimes(1);
+      const result = onToolResult.mock.calls[0][0];
+      expect(result.toolUseBlockId).toBe('toolu_1');
+      expect(result.text ?? result.content).toBe('here is the image');
+      expect(result.images).toEqual([{ base64: DATA, mediaType: 'image/png' }]);
+    });
+
+    it('does not report an image-only result as empty text', async () => {
+      // The exact defect: a Read of a .png showed a blank result.
+      const onToolResult = vi.fn();
+      const h = new SDKMessageHandler({ ...callbacks, onToolResult });
+
+      await h.handleMessage(userMessageWith([
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_2',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: DATA } },
+          ],
+        },
+      ]) as never);
+
+      const result = onToolResult.mock.calls[0][0];
+      expect(result.content).not.toBe('');
+      expect(result.images).toHaveLength(1);
+    });
+
+    it('takes the image off the structured Read result too', async () => {
+      const onToolResult = vi.fn();
+      const h = new SDKMessageHandler({ ...callbacks, onToolResult });
+
+      await h.handleMessage(userMessageWith(
+        [{ type: 'tool_result', tool_use_id: 'toolu_3', content: 'Read 1 image' }],
+        { type: 'image', file: { base64: DATA, type: 'image/png', originalSize: 5 } },
+      ) as never);
+
+      const result = onToolResult.mock.calls[0][0];
+      expect(result.content).toBe('Read 1 image');
+      expect(result.images).toEqual([{ base64: DATA, mediaType: 'image/png' }]);
+    });
+
+    it('says nothing about images on an ordinary text result', async () => {
+      const onToolResult = vi.fn();
+      const h = new SDKMessageHandler({ ...callbacks, onToolResult });
+
+      await h.handleMessage(userMessageWith([
+        { type: 'tool_result', tool_use_id: 'toolu_4', content: 'ok' },
+      ]) as never);
+
+      const result = onToolResult.mock.calls[0][0];
+      expect(result.content).toBe('ok');
+      expect(result.images).toBeUndefined();
+    });
+  });
+
   describe('reset', () => {
     it('should reset querySucceeded flag', () => {
       // Simulate query success

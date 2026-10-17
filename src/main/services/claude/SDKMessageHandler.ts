@@ -14,6 +14,8 @@ import type {
 import type { SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, ToolCaptureData } from '../../../shared/types';
 import logger from '../../utils/logger';
 
+import { toolResultParts, type ExtractedImage } from './tool-result-images';
+
 /**
  * Best-effort extraction of an error string from an SDK result message.
  *
@@ -137,7 +139,17 @@ export interface MessageHandlerCallbacks {
   onUsageUpdate: (usage: SessionUsage) => void;
   onSystemNote: (note: string) => void;
   onToolUseCapture?: (capture: ToolCaptureData) => void;
-  onToolResult?: (result: { toolUseBlockId: string; content: string; taskListId?: string }) => void;
+  onToolResult?: (result: {
+    toolUseBlockId: string;
+    content: string;
+    taskListId?: string;
+    /**
+     * Images the tool produced, as bytes. The handler does not store them —
+     * it has no conversation to store them against — so the caller writes
+     * them to the image store and keeps only the references.
+     */
+    images?: ExtractedImage[];
+  }) => void;
   onSessionId?: (sessionId: string) => void;
   onAuthError?: () => void;
   /**
@@ -516,11 +528,14 @@ export class SDKMessageHandler {
       for (const block of contentBlocks) {
         if (block.tool_use_id && block.type === 'tool_result') {
           const resultBlock = block as { tool_use_id: string; content?: unknown };
-          const content = typeof resultBlock.content === 'string'
-            ? resultBlock.content
-            : Array.isArray(resultBlock.content)
-              ? (resultBlock.content as Array<{ text?: string }>).map(b => b.text || '').join('')
-              : JSON.stringify(resultBlock.content);
+          // Text and images, separated. Joining the blocks with
+          // `b.text || ''` folded an image into an empty string, so a Read of
+          // an image file showed a blank result; the bytes are carried out
+          // here instead and stored by the caller.
+          const { text: content, images } = toolResultParts(
+            resultBlock.content,
+            userMsg.tool_use_result,
+          );
           // For TaskCreate we need the SDK-assigned task ID so the renderer can
           // re-key its pending taskListItem entry (kept transiently under the
           // tool_use block ID) to the real ID before any TaskUpdate arrives.
@@ -550,6 +565,7 @@ export class SDKMessageHandler {
             toolUseBlockId: block.tool_use_id,
             content,
             ...(taskListId && { taskListId }),
+            ...(images.length > 0 && { images }),
           });
         }
       }

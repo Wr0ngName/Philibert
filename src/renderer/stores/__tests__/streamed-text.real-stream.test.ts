@@ -66,7 +66,12 @@ async function replay(name: string): Promise<ReturnType<typeof useChatStore>> {
   const handler = new SDKMessageHandler({
     onChunk: (chunk: string) => chat.appendChunk(CONV, chunk),
     onToolUseCapture: (capture: ToolCaptureData) => chat.addAutoToolUseMessage(CONV, capture),
-    onToolResult: (result) => chat.updateToolUseResult(CONV, { ...result, outputFile: '' }),
+    // `images` is dropped: the handler emits image BYTES, and what reaches
+    // the renderer is references to bytes already stored — a conversion
+    // ClaudeCodeService does, and which this file, about text streaming,
+    // stands in for only as far as the text.
+    onToolResult: ({ images: _images, ...result }) =>
+      chat.updateToolUseResult(CONV, { ...result, outputFile: '' }),
     onSlashCommands: () => {},
     onTaskNotification: () => {},
     onUsageUpdate: () => {},
