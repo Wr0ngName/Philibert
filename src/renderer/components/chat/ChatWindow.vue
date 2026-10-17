@@ -6,7 +6,7 @@
 import { ref, computed, nextTick, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
-import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, PendingAction, PermissionScope, ToolUseInfo } from '@shared/types';
+import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, MessageImage, PendingAction, PermissionScope, ToolUseInfo } from '@shared/types';
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
@@ -105,8 +105,8 @@ const taskDetailActivity = computed<ActivityRow[]>(() => {
 const toolDetailOpen = ref(false);
 const toolDetailInfo = ref<ToolUseInfo | null>(null);
 
-function handleSend(message: string) {
-  sendMessage(message);
+function handleSend(message: string, images?: MessageImage[]) {
+  sendMessage(message, images);
   nextTick(() => messageListRef.value?.scrollToBottom());
 }
 

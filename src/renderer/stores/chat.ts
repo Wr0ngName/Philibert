@@ -8,7 +8,7 @@ import { ref, computed } from 'vue';
 
 import { modifiedPathsForTool } from '@shared/file-modifications';
 import { primaryModelUsage } from '@shared/model-usage';
-import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData } from '@shared/types';
+import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData, MessageImage } from '@shared/types';
 
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
@@ -718,12 +718,15 @@ export const useChatStore = defineStore('chat', () => {
     state.bufferingMessages = false;
   }
 
-  function addUserMessage(content: string): ChatMessage {
+  function addUserMessage(content: string, images?: MessageImage[]): ChatMessage {
     const message: ChatMessage = {
       id: generateId(ID_PREFIXES.MESSAGE),
       role: 'user',
       content,
       timestamp: Date.now(),
+      // References to bytes already in the image store, so the transcript can
+      // show what was sent without the message carrying it.
+      ...(images && images.length > 0 ? { images } : {}),
     };
     addMessage(message);
     return message;
@@ -1695,6 +1698,13 @@ export const useChatStore = defineStore('chat', () => {
           // refers to its task by this id. See rebuildTaskList.
           ...(result.taskListId ? { taskListId: result.taskListId } : {}),
         };
+        // Images the tool produced go on the MESSAGE, not inside toolUse:
+        // they are the result's content as far as the reader is concerned,
+        // and a message is where the transcript draws things. References
+        // only — the bytes are in the image store, fetched when drawn.
+        if (result.images && result.images.length > 0) {
+          msg.images = [...(msg.images ?? []), ...result.images];
+        }
         if (newStatus === 'executed') {
           trackModificationsFor(conversationId, msg.toolUse);
         }

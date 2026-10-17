@@ -18,6 +18,7 @@ import { logger } from '../../utils/logger';
 import { renderMarkdown, renderUserMarkdown } from '../../utils/markdown';
 import { selectionWithin } from '../../utils/selection';
 import BackgroundTaskMessage from './BackgroundTaskMessage.vue';
+import MessageImages from './MessageImages.vue';
 import ContextMenu, { type ContextMenuItem } from '../shared/ContextMenu.vue';
 import Spinner from '../shared/Spinner.vue';
 import ToolUseMessage from './ToolUseMessage.vue';
@@ -31,13 +32,27 @@ interface Props {
   childCount?: number;
   /** For tool-use messages: whether the sub-agent group is expanded */
   isExpanded?: boolean;
+  /** Which conversation's image store to read attachments from. */
+  conversationId?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   grouped: false,
   childCount: 0,
   isExpanded: false,
+  conversationId: '',
 });
+
+/**
+ * Whether there is anything to draw for this message's images.
+ *
+ * `conversationId` comes down as a prop rather than from the store. Reading
+ * the store here made this component need Pinia merely to render, which is a
+ * dependency on a global for something its parent already knows — and it
+ * broke six tests that mount it on its own, which is exactly the property
+ * worth keeping.
+ */
+const hasImages = computed(() => (props.message.images?.length ?? 0) > 0);
 
 const emit = defineEmits<{
   (e: 'open-task-detail', taskId: string): void;
@@ -174,11 +189,20 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
 
   <!-- Grouped text content (inside a turn bubble — no wrapper/header) -->
   <div
-    v-else-if="grouped && message.content.trim()"
-    class="prose prose-sm dark:prose-invert max-w-full text-surface-800 dark:text-surface-200 message-content"
+    v-else-if="grouped && (message.content.trim() || hasImages)"
     @contextmenu="openContextMenu"
-    v-html="renderedContent"
-  />
+  >
+    <div
+      v-if="message.content.trim()"
+      class="prose prose-sm dark:prose-invert max-w-full text-surface-800 dark:text-surface-200 message-content"
+      v-html="renderedContent"
+    />
+    <MessageImages
+      v-if="hasImages"
+      :conversation-id="conversationId"
+      :images="message.images!"
+    />
+  </div>
 
   <!-- User / standalone assistant message -->
   <div
@@ -211,8 +235,16 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
 
     <!-- Content -->
     <div
+      v-if="message.content.trim()"
       class="prose prose-sm dark:prose-invert max-w-full text-surface-800 dark:text-surface-200 message-content"
       v-html="renderedContent"
+    />
+
+    <!-- What the user attached, or what a tool produced. -->
+    <MessageImages
+      v-if="hasImages"
+      :conversation-id="conversationId"
+      :images="message.images!"
     />
 
     <!-- Trailing spinner: sits under the content so it stays visible on long

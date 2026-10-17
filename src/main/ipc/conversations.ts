@@ -10,10 +10,64 @@ import { app, ipcMain } from 'electron';
 import { Conversation, ConversationUpdate, IPC_CHANNELS } from '../../shared/types';
 import { ConfigurationError, ValidationError, ERROR_CODES } from '../errors';
 import ConversationService from '../services/ConversationService';
+import { ImageStore } from '../services/ImageStore';
 import { validateString, validateObject, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
 export function setupConversationIPC(conversationService: ConversationService): void {
+  // Images belong to a conversation and are deleted with it, so they are
+  // registered here rather than beside the Claude handlers.
+  const imageStore = new ImageStore();
+
+  // Store bytes the user attached, returning the reference a message carries.
+  ipcMain.handle(
+    IPC_CHANNELS.IMAGE_SAVE,
+    async (_event, conversationId: string, input: { base64: string; mediaType: string; label?: string }) => {
+      try {
+        validateString(conversationId, 'Conversation ID');
+        validateObject(input, 'Image');
+        validateString(input.base64, 'Image data');
+        validateString(input.mediaType, 'Image media type');
+
+        // Null when the store refuses it — an unsupported type or an
+        // oversized image. The renderer tells the user; it is not an error.
+        return await imageStore.save(conversationId, {
+          base64: input.base64,
+          mediaType: input.mediaType,
+          origin: 'user',
+          ...(input.label ? { label: input.label } : {}),
+        });
+      } catch (error) {
+        logger.error('Failed to store an image', { error, conversationId });
+        throw new ConfigurationError(
+          formatErrorMessage('Failed to store the image', error),
+          ERROR_CODES.CONVERSATION_SAVE_FAILED,
+          error,
+        );
+      }
+    },
+  );
+
+  // Read stored bytes back so the renderer can draw them.
+  ipcMain.handle(
+    IPC_CHANNELS.IMAGE_READ,
+    async (_event, conversationId: string, id: string, mediaType: string) => {
+      try {
+        validateString(conversationId, 'Conversation ID');
+        validateString(id, 'Image ID');
+        validateString(mediaType, 'Image media type');
+        return await imageStore.read(conversationId, id, mediaType);
+      } catch (error) {
+        logger.error('Failed to read an image', { error, conversationId, id });
+        throw new ConfigurationError(
+          formatErrorMessage('Failed to read the image', error),
+          ERROR_CODES.CONVERSATION_LOAD_FAILED,
+          error,
+        );
+      }
+    },
+  );
+
   // List all conversations
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_LIST, async () => {
     try {
@@ -279,6 +333,11 @@ export function setupConversationIPC(conversationService: ConversationService): 
       validateString(id, 'Conversation ID');
 
       await conversationService.delete(id);
+
+      // The transcript is gone, so nothing will ever name its images again.
+      // These are the largest files this app writes; left behind they are an
+      // unbounded leak with no way back to them.
+      await imageStore.deleteAll(id);
 
       const sessionDir = path.join(app.getPath('userData'), 'channel-sessions', id);
       if (fs.existsSync(sessionDir)) {

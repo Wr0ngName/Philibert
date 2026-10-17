@@ -969,6 +969,7 @@ onUnmounted(() => {
               <MessageItem
                 v-if="row.kind === 'standalone' && row.msg"
                 :message="row.msg"
+                :conversation-id="chatStore.currentConversationId ?? ''"
                 @open-task-detail="emit('open-task-detail', $event)"
                 @open-tool-detail="emit('open-tool-detail', $event)"
               />
@@ -997,6 +998,7 @@ onUnmounted(() => {
               >
                 <MessageItem
                   :message="row.msg"
+                  :conversation-id="chatStore.currentConversationId ?? ''"
                   :child-count="row.childCount"
                   :is-expanded="row.isExpanded"
                   grouped

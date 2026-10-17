@@ -5,6 +5,8 @@
 import type { ModelDownloadProgress } from './speech';
 import type {
   ChatMessage,
+  MessageImage,
+  ImageMediaType,
   AboutInfo,
   ActionResponse,
   AppConfig,
@@ -54,7 +56,18 @@ export interface ElectronAPI {
   // Claude operations
   claude: {
     /** Send a message to Claude for a specific conversation */
-    send: (conversationId: string, message: string, workingDir: string, resumeSessionId?: string) => Promise<void>;
+    send: (
+      conversationId: string,
+      message: string,
+      workingDir: string,
+      resumeSessionId?: string,
+      /**
+       * Images the user attached, as references. The bytes were stored when
+       * they were attached, so they cross IPC once rather than on every send;
+       * the main process reads them back to build the image content blocks.
+       */
+      images?: MessageImage[],
+    ) => Promise<void>;
     /** Approve a pending action for a specific conversation */
     approve: (
       conversationId: string,
@@ -273,6 +286,21 @@ export interface ElectronAPI {
       beforeId: string,
       limit: number,
     ) => Promise<{ messages: ChatMessage[]; olderCount: number } | null>;
+    /**
+     * Store image bytes against a conversation, returning the reference a
+     * message should carry. Null when the image is not one we accept — an
+     * unsupported media type, or over the size limit.
+     */
+    saveImage: (
+      conversationId: string,
+      input: { base64: string; mediaType: string; label?: string },
+    ) => Promise<MessageImage | null>;
+    /** Read stored image bytes back. Null when there are none. */
+    readImage: (
+      conversationId: string,
+      id: string,
+      mediaType: string,
+    ) => Promise<{ base64: string; mediaType: ImageMediaType } | null>;
     /** The `limit` messages stored immediately after `afterId`. */
     getNewer: (
       id: string,

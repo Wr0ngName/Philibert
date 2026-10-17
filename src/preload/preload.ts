@@ -5,14 +5,22 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type { ElectronAPI } from '../shared/preload-api';
-import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData } from '../shared/types';
+import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type MessageImage, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData } from '../shared/types';
 
 // Create the API object that will be exposed to the renderer
 const electronAPI: ElectronAPI = {
   // Claude operations - all operations now include conversationId for multi-instance support
   claude: {
-    send: (conversationId: string, message: string, workingDir: string, resumeSessionId?: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND, conversationId, message, workingDir, resumeSessionId),
+    send: (
+      conversationId: string,
+      message: string,
+      workingDir: string,
+      resumeSessionId?: string,
+      images?: MessageImage[],
+    ) =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.CLAUDE_SEND, conversationId, message, workingDir, resumeSessionId, images,
+      ),
 
     approve: (
       conversationId: string,
@@ -391,6 +399,12 @@ const electronAPI: ElectronAPI = {
 
     getNewer: (id: string, afterId: string, limit: number) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET_NEWER, id, afterId, limit),
+
+    saveImage: (conversationId: string, input: { base64: string; mediaType: string; label?: string }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.IMAGE_SAVE, conversationId, input),
+
+    readImage: (conversationId: string, id: string, mediaType: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.IMAGE_READ, conversationId, id, mediaType),
 
     rename: (id: string, newTitle: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_RENAME, id, newTitle),

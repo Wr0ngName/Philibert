@@ -13,7 +13,7 @@
 
 import { ipcMain } from 'electron';
 
-import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionScope, RewindScope, SessionPermissionEntry } from '../../shared/types';
+import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionScope, RewindScope, SessionPermissionEntry, IMAGE_MEDIA_TYPES, type MessageImage } from '../../shared/types';
 import { IpcError, ValidationError, AppError, ERROR_CODES } from '../errors';
 import ClaudeCodeService from '../services/ClaudeCodeService';
 import { validateString, validateObject, validateBoolean, formatErrorMessage, ensureService } from '../utils/ipc-helpers';
@@ -24,14 +24,43 @@ import logger from '../utils/logger';
  *
  * @param claudeService - The ClaudeCodeService instance to use for SDK operations
  */
+/**
+ * The attachments on a send, with anything malformed dropped.
+ *
+ * These come from the renderer, so the shape is checked rather than trusted —
+ * an id reaches the filesystem when the bytes are read back, and a media type
+ * reaches the API. Dropping a bad entry rather than refusing the whole send
+ * keeps a mistyped attachment from costing the user their message.
+ */
+function validImages(images?: unknown): MessageImage[] | undefined {
+  if (!Array.isArray(images) || images.length === 0) return undefined;
+
+  const kept = images.filter((image): image is MessageImage => {
+    if (typeof image !== 'object' || image === null) return false;
+    const candidate = image as Partial<MessageImage>;
+    return typeof candidate.id === 'string'
+      && /^[A-Za-z0-9_-]+$/.test(candidate.id)
+      && typeof candidate.mediaType === 'string'
+      && (IMAGE_MEDIA_TYPES as readonly string[]).includes(candidate.mediaType);
+  });
+
+  if (kept.length !== images.length) {
+    logger.warn('Dropped malformed image attachments from a send', {
+      given: images.length, kept: kept.length,
+    });
+  }
+  return kept.length > 0 ? kept : undefined;
+}
+
 export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
   // Send message to Claude
-  ipcMain.handle(IPC_CHANNELS.CLAUDE_SEND, async (_event, conversationId: string, message: string, workingDir: string, resumeSessionId?: string) => {
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_SEND, async (_event, conversationId: string, message: string, workingDir: string, resumeSessionId?: string, images?: MessageImage[]) => {
     try {
       logger.debug('IPC: claude:send', {
         conversationId,
         messageLength: message?.length || 0,
         hasResumeSession: !!resumeSessionId,
+        images: images?.length ?? 0,
       });
 
       // Validate service
@@ -39,10 +68,14 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
 
       // Validate inputs
       validateString(conversationId, 'Conversation ID');
-      validateString(message, 'Message');
+      validateString(message, 'Message', { allowEmpty: (images?.length ?? 0) > 0 });
       validateString(workingDir, 'Working directory');
 
-      await claudeService.sendMessage(conversationId, message, workingDir, resumeSessionId);
+      // An empty message is normally refused, but a message that is only
+      // images is a real thing to send: a screenshot with no question.
+      await claudeService.sendMessage(
+        conversationId, message, workingDir, resumeSessionId, validImages(images),
+      );
     } catch (error) {
       logger.error('Failed to send message to Claude', { error, conversationId, messageLength: message?.length });
       throw new IpcError(formatErrorMessage('Failed to send message', error), IPC_CHANNELS.CLAUDE_SEND, ERROR_CODES.CLAUDE_SEND_FAILED, error);

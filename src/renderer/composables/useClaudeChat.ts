@@ -10,7 +10,7 @@
 
 import { effectScope, onMounted, onUnmounted, shallowRef, watch, type EffectScope } from 'vue';
 
-import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, PermissionScope } from '@shared/types';
+import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, MessageImage, PermissionScope } from '@shared/types';
 
 import { useChatStore } from '../stores/chat';
 import { useConversationsStore } from '../stores/conversations';
@@ -123,8 +123,11 @@ export function useClaudeChat() {
    */
   type SendOutcome = 'started' | 'handled' | 'rejected';
 
-  async function sendMessage(content: string): Promise<SendOutcome> {
-    if (!content.trim()) {
+  async function sendMessage(content: string, images?: MessageImage[]): Promise<SendOutcome> {
+    // Attachments alone are a message: a screenshot with no question is a
+    // real thing to send, and refusing it would make an attachment useless
+    // without something typed next to it.
+    if (!content.trim() && (!images || images.length === 0)) {
       return 'rejected';
     }
 
@@ -160,7 +163,7 @@ export function useClaudeChat() {
     chatStore.clearModifiedFiles(currentConvId);
 
     // Add user message to chat
-    chatStore.addUserMessage(content);
+    chatStore.addUserMessage(content, images);
 
     // Commands this GUI answers itself stop here: the prompt is never sent, no
     // turn is started and no tokens are spent. The user's message is added
@@ -197,7 +200,7 @@ export function useClaudeChat() {
       });
 
       // Send message via IPC with conversationId and optional resume session ID
-      await window.electron.claude.send(currentConvId, content, effectiveCwd, resumeSessionId);
+      await window.electron.claude.send(currentConvId, content, effectiveCwd, resumeSessionId, images);
       // New work means the user has moved past whatever stopped the queue, so
       // queued prompts go back to releasing on their own.
       chatStore.releaseQueueHold(currentConvId);

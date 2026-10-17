@@ -63,11 +63,18 @@ export function createSender(
  * @param fieldName - Name of the field for error messages
  * @throws Error if validation fails
  */
-export function validateString(value: unknown, fieldName: string): asserts value is string {
+export function validateString(
+  value: unknown,
+  fieldName: string,
+  options?: { allowEmpty?: boolean },
+): asserts value is string {
   if (typeof value !== 'string') {
     throw new ValidationError(`${fieldName} must be a string`, fieldName, ERROR_CODES.VALIDATION_TYPE_MISMATCH);
   }
-  if (value.trim().length === 0) {
+  // Empty is normally a caller mistake. The exception is a message that is
+  // only attachments — a screenshot with no question is a real thing to send,
+  // and refusing it would make the attachment useless on its own.
+  if (!options?.allowEmpty && value.trim().length === 0) {
     throw new ValidationError(`${fieldName} must not be empty`, fieldName, ERROR_CODES.VALIDATION_REQUIRED);
   }
 }

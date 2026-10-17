@@ -129,7 +129,8 @@ describe('Claude IPC handlers', () => {
         TEST_CONV_ID,
         'Hello Claude',
         '/home/user/project',
-        undefined // resumeSessionId is optional
+        undefined, // resumeSessionId is optional
+        undefined // images, likewise
       );
     });
 
@@ -179,21 +180,76 @@ describe('Claude IPC handlers', () => {
       const longMessage = 'x'.repeat(10000);
       await handler({}, TEST_CONV_ID, longMessage, '/home/user');
 
-      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, longMessage, '/home/user', undefined);
+      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, longMessage, '/home/user', undefined, undefined);
     });
 
     it('should handle special characters in message', async () => {
       const specialMessage = 'Hello\n\t"quotes" <tags> & symbols™';
       await handler({}, TEST_CONV_ID, specialMessage, '/home/user');
 
-      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, specialMessage, '/home/user', undefined);
+      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, specialMessage, '/home/user', undefined, undefined);
+    });
+
+    it('passes image attachments through to the service', async () => {
+      const images = [{ id: 'img_1', mediaType: 'image/png', byteSize: 10, origin: 'user' }];
+
+      await handler({}, TEST_CONV_ID, 'what is this?', '/home/user', undefined, images);
+
+      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(
+        TEST_CONV_ID, 'what is this?', '/home/user', undefined, images,
+      );
+    });
+
+    it('sends a message that is only images', async () => {
+      // A screenshot with no question is a real thing to send. Empty text is
+      // normally refused, and refusing it here would make an attachment
+      // useless on its own.
+      const images = [{ id: 'img_1', mediaType: 'image/png', byteSize: 10, origin: 'user' }];
+
+      await handler({}, TEST_CONV_ID, '', '/home/user', undefined, images);
+
+      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(
+        TEST_CONV_ID, '', '/home/user', undefined, images,
+      );
+    });
+
+    it('still refuses an empty message with nothing attached', async () => {
+      await expect(handler({}, TEST_CONV_ID, '   ', '/home/user')).rejects.toThrow();
+      expect(mockClaudeService.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('drops attachments whose shape is wrong rather than losing the message', async () => {
+      // These come from the renderer: an id reaches the filesystem when the
+      // bytes are read back, and a media type reaches the API.
+      await handler({}, TEST_CONV_ID, 'look', '/home/user', undefined, [
+        { id: '../../etc/passwd', mediaType: 'image/png', byteSize: 1, origin: 'user' },
+        { id: 'img_ok', mediaType: 'image/svg+xml', byteSize: 1, origin: 'user' },
+        { id: 'img_ok', mediaType: 'image/png', byteSize: 1, origin: 'user' },
+        null,
+        'not an object',
+      ]);
+
+      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(
+        TEST_CONV_ID, 'look', '/home/user', undefined,
+        [{ id: 'img_ok', mediaType: 'image/png', byteSize: 1, origin: 'user' }],
+      );
+    });
+
+    it('treats a send with no usable attachment as a send with none', async () => {
+      await handler({}, TEST_CONV_ID, 'look', '/home/user', undefined, [
+        { id: 'bad id!', mediaType: 'image/png', byteSize: 1, origin: 'user' },
+      ]);
+
+      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(
+        TEST_CONV_ID, 'look', '/home/user', undefined, undefined,
+      );
     });
 
     it('should pass resumeSessionId when provided', async () => {
       const sessionId = 'session-abc-123';
       await handler({}, TEST_CONV_ID, 'Hello', '/home/user', sessionId);
 
-      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, 'Hello', '/home/user', sessionId);
+      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, 'Hello', '/home/user', sessionId, undefined);
     });
   });
 

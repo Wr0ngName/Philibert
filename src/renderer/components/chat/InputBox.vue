@@ -6,7 +6,7 @@
 import { ref, computed, onMounted, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
 
-import type { SlashCommandInfo } from '@shared/types';
+import { IMAGE_MEDIA_TYPES, type MessageImage, type SlashCommandInfo } from '@shared/types';
 
 import { CONSTANTS } from '../../constants/app';
 import { useClaudeChat } from '../../composables/useClaudeChat';
@@ -15,13 +15,14 @@ import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useFilesStore } from '../../stores/files';
 import { useSettingsStore } from '../../stores/settings';
+import { logger } from '../../utils/logger';
 import Button from '../shared/Button.vue';
 import ContextMenu, { type ContextMenuItem } from '../shared/ContextMenu.vue';
 import Icon from '../shared/Icon.vue';
 import CommandAutocomplete from './CommandAutocomplete.vue';
 
 const emit = defineEmits<{
-  (e: 'send', message: string): void;
+  (e: 'send', message: string, images?: MessageImage[]): void;
   /** Hold this prompt until the running turn finishes. */
   (e: 'queue', message: string): void;
   /** Send what is queued now, without waiting for a turn to end. */
@@ -146,7 +147,9 @@ async function toggleDictation(): Promise<void> {
  * the SDK could not resume this conversation at all.
  */
 const canSubmit = computed(() => {
-  return message.value.trim().length > 0
+  // Attachments alone are a submission: a screenshot with no question is a
+  // real thing to send.
+  return (message.value.trim().length > 0 || attachments.value.length > 0)
     && hasAuth.value
     && hasWorkingDirectory.value
     && !currentModeMismatch.value;
@@ -204,14 +207,123 @@ const showAutocomplete = computed(() => {
   return isTypingCommand.value && slashCommands.value.length > 0;
 });
 
+/**
+ * Images attached to the prompt being written.
+ *
+ * Stored the moment they are attached, so what is held here is a reference
+ * and the bytes cross IPC once rather than on every keystroke-driven
+ * re-render or on send. Cleared when the prompt goes.
+ */
+const attachments = ref<MessageImage[]>([]);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+const attachError = ref<string | null>(null);
+const isDraggingOver = ref(false);
+
+/** Only what the API takes; anything else is refused with a reason. */
+function isAcceptedImage(file: File | null): boolean {
+  return !!file && (IMAGE_MEDIA_TYPES as readonly string[]).includes(file.type);
+}
+
+async function attachFiles(files: Iterable<File>): Promise<void> {
+  const conversationId = conversationsStore.currentConversationId;
+  if (!conversationId) {
+    attachError.value = 'Open a conversation before attaching an image.';
+    return;
+  }
+
+  attachError.value = null;
+  for (const file of files) {
+    if (!isAcceptedImage(file)) {
+      attachError.value = `${file.name || 'That file'} is not a PNG, JPEG, GIF or WebP.`;
+      continue;
+    }
+    try {
+      const base64 = await fileToBase64(file);
+      const stored = await window.electron.conversation.saveImage(conversationId, {
+        base64,
+        mediaType: file.type,
+        ...(file.name ? { label: file.name } : {}),
+      });
+      if (!stored) {
+        // The store refused it — oversized, or not decodable. Said plainly
+        // rather than left as an attachment that would vanish on send.
+        attachError.value = `${file.name || 'That image'} could not be attached (too large?).`;
+        continue;
+      }
+      attachments.value = [...attachments.value, stored];
+    } catch (err) {
+      logger.error('Failed to attach an image', { err });
+      attachError.value = 'Could not attach that image.';
+    }
+  }
+}
+
+/** The bytes, base64-encoded, without the data: prefix a FileReader adds. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read the file'));
+    reader.onload = () => {
+      const result = String(reader.result ?? '');
+      const comma = result.indexOf(',');
+      resolve(comma === -1 ? result : result.slice(comma + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function removeAttachment(id: string): void {
+  attachments.value = attachments.value.filter((image) => image.id !== id);
+}
+
+/**
+ * Pasting an image.
+ *
+ * Only consumed when the clipboard actually holds an image file — pasting
+ * text next to a screenshot is still a text paste, and intercepting that
+ * would break ordinary pasting.
+ */
+function handlePaste(event: ClipboardEvent): void {
+  const items = event.clipboardData?.files;
+  if (!items || items.length === 0) return;
+  const images = [...items].filter(isAcceptedImage);
+  if (images.length === 0) return;
+
+  event.preventDefault();
+  void attachFiles(images);
+}
+
+function handleDrop(event: DragEvent): void {
+  isDraggingOver.value = false;
+  const files = event.dataTransfer?.files;
+  if (!files || files.length === 0) return;
+  const images = [...files].filter(isAcceptedImage);
+  if (images.length === 0) return;
+
+  event.preventDefault();
+  void attachFiles(images);
+}
+
+function handleFilePick(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  if (input.files) void attachFiles(input.files);
+  // Cleared so picking the same file twice in a row still fires a change.
+  input.value = '';
+}
+
 function handleSubmit(): void {
   if (!canSubmit.value) return;
 
   const prompt = message.value.trim();
   if (willQueue.value) {
+    // A queued prompt is text only: it is held in memory until the running
+    // turn ends, and attachments are already stored against the
+    // conversation, so carrying them through the queue would mean two owners
+    // for the same bytes. Held back and sent with the next real submit.
     emit('queue', prompt);
   } else {
-    emit('send', prompt);
+    emit('send', prompt, attachments.value.length > 0 ? [...attachments.value] : undefined);
+    attachments.value = [];
   }
   message.value = '';
   // Reset textarea height
@@ -373,17 +485,69 @@ function handleInput(event: Event) {
             @select="handleCommandSelect"
           />
 
+          <!-- What is attached to the prompt being written. -->
+          <div
+            v-if="attachments.length > 0"
+            class="flex flex-wrap gap-2 mb-2"
+          >
+            <span
+              v-for="image in attachments"
+              :key="image.id"
+              class="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-md bg-surface-100 dark:bg-surface-700 text-xs text-surface-700 dark:text-surface-200"
+            >
+              <Icon
+                name="image"
+                size="xs"
+              />
+              <span class="max-w-[12rem] truncate">{{ image.label || 'image' }}</span>
+              <button
+                type="button"
+                class="p-0.5 rounded hover:bg-surface-200 dark:hover:bg-surface-600"
+                :aria-label="`Remove ${image.label || 'image'}`"
+                @click="removeAttachment(image.id)"
+              >
+                <Icon
+                  name="close"
+                  size="xs"
+                />
+              </button>
+            </span>
+          </div>
+
+          <p
+            v-if="attachError"
+            class="mb-2 text-xs text-red-500 dark:text-red-400"
+          >
+            {{ attachError }}
+          </p>
+
           <textarea
             ref="inputRef"
             v-model="message"
             :placeholder="placeholder"
             :disabled="isDisabled"
             class="input-base resize-none min-h-[44px] max-h-[200px] pr-4"
-            :class="{ 'opacity-60 cursor-not-allowed': isDisabled }"
+            :class="[
+              { 'opacity-60 cursor-not-allowed': isDisabled },
+              isDraggingOver ? 'ring-2 ring-primary-400' : '',
+            ]"
             rows="1"
             @keydown="handleKeydown"
             @input="handleInput"
+            @paste="handlePaste"
+            @drop="handleDrop"
+            @dragover.prevent="isDraggingOver = true"
+            @dragleave="isDraggingOver = false"
           />
+
+          <input
+            ref="fileInputRef"
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            class="hidden"
+            @change="handleFilePick"
+          >
         </div>
 
         <!-- Hints -->
@@ -421,6 +585,22 @@ function handleInput(event: Event) {
       </div>
 
       <div class="flex gap-2 h-[44px] items-center">
+        <!-- Attach an image. The model can be shown pictures, so there has to
+             be a way to hand it one that does not depend on knowing you can
+             paste. -->
+        <Button
+          variant="secondary"
+          size="md"
+          :disabled="isDisabled"
+          title="Attach an image (or paste one)"
+          @click="fileInputRef?.click()"
+        >
+          <Icon
+            name="image"
+            size="sm"
+          />
+        </Button>
+
         <!-- Dictation. Hidden unless enabled in settings and the build has a
              whisper binary, so a build without one offers nothing that cannot
              work. -->
