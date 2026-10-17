@@ -16,6 +16,7 @@ import {
   findIndexAtOffset,
   scrollCorrection,
   visibleWindow,
+  frontAnchor,
   frontShift,
 } from '../virtual-list';
 
@@ -291,5 +292,70 @@ describe('frontShift', () => {
     const offsetOfRowAfter = next[nextKeys.indexOf(rowBefore)];
 
     expect(scrollTopAfter - offsetOfRowAfter).toBe(scrollTopBefore - offsetOfRowBefore);
+  });
+
+  /*
+   * A page boundary falls by message count, so it routinely lands inside an
+   * assistant turn. The turn's header row is keyed by the turn's FIRST
+   * message, so when the earlier half of the turn arrives the old first row
+   * (`a5:header`) is replaced by `a1:header` and appears nowhere in the new
+   * list. Looking only for the old first row read that as an unrelated list
+   * and returned 0: the page landed in front of the viewport uncompensated,
+   * the view stayed at the very top, and what the reader had been looking at
+   * was pushed down below it.
+   */
+  it('is the height of a page that completed a turn cut at the front', () => {
+    const previousKeys = ['a5:header', 'a5', 'a6', 'u7'];
+    const nextKeys = ['u0', 'a1:header', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'u7'];
+    // a5 sat 40px down (under a 40px header) and now sits under six 100px rows.
+    const previous = [0, 40, 140, 240, 340];
+    const next = offsets(9);
+
+    expect(frontShift(previousKeys, nextKeys, previous, next)).toBe(600 - 40);
+  });
+
+  it('is the height that went when an unload cut a turn at the front', () => {
+    const previousKeys = ['u0', 'a1:header', 'a1', 'a2', 'a3', 'u4'];
+    const nextKeys = ['a2:header', 'a2', 'a3', 'u4'];
+    const previous = offsets(6);
+    const next = [0, 40, 140, 240, 340];
+
+    // a2 was 300px down and is now 40px down.
+    expect(frontShift(previousKeys, nextKeys, previous, next)).toBe(40 - 300);
+  });
+});
+
+/**
+ * Which row both lists still share at the front: the row the content is held
+ * against, and the boundary between rows that arrived in front of it and the
+ * rest.
+ */
+describe('frontAnchor', () => {
+  it('is null when the front did not change', () => {
+    expect(frontAnchor(['a', 'b'], ['a', 'b', 'c'])).toBeNull();
+  });
+
+  it('is null for an unrelated list', () => {
+    expect(frontAnchor(['a', 'b'], ['x', 'y'])).toBeNull();
+  });
+
+  it('is null when either list is empty', () => {
+    expect(frontAnchor([], ['a'])).toBeNull();
+    expect(frontAnchor(['a'], [])).toBeNull();
+  });
+
+  it('finds the old first row after a prepend', () => {
+    expect(frontAnchor(['c', 'd'], ['a', 'b', 'c', 'd'])).toEqual({ previousIndex: 0, nextIndex: 2 });
+  });
+
+  it('finds the new first row after an unload', () => {
+    expect(frontAnchor(['a', 'b', 'c'], ['c'])).toEqual({ previousIndex: 2, nextIndex: 0 });
+  });
+
+  it('skips a first row whose key did not survive', () => {
+    expect(frontAnchor(['a5:header', 'a5'], ['a1:header', 'a1', 'a5'])).toEqual({
+      previousIndex: 1,
+      nextIndex: 2,
+    });
   });
 });

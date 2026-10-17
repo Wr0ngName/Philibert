@@ -356,7 +356,11 @@ const rows = computed((): Row[] => {
   }
 
   if (showThinkingPlaceholder.value) {
-    const row = blankRow('thinking', 'thinking');
+    // Keyed by the message it follows, like every other row, so two
+    // conversations never share a key. A shared `thinking` key would let the
+    // virtual list mistake a conversation switch for a change at the front of
+    // one list and hold the view against it.
+    const row = blankRow(`${messages.value[messages.value.length - 1].id}:thinking`, 'thinking');
     row.startsBlock = true;
     out.push(row);
   }

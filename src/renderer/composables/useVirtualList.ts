@@ -24,6 +24,7 @@ import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue';
 import {
   buildOffsets,
   findIndexAtOffset,
+  frontAnchor,
   frontShift,
   scrollCorrection,
   visibleWindow,
@@ -137,8 +138,8 @@ export function useVirtualList(options: UseVirtualListOptions) {
   let previousOffsets: number[] = [];
 
   /**
-   * Is the row at `index` one of those that just arrived in FRONT of the row
-   * that used to be first?
+   * Is the row at `index` one of those that just arrived in FRONT of the
+   * first row the two lists share (see `frontAnchor`)?
    *
    * Those are exactly the rows `frontShift` compensates in one go, so their
    * first measurement must not be corrected individually as well. Everything
@@ -147,10 +148,9 @@ export function useVirtualList(options: UseVirtualListOptions) {
    * corrected as before.
    */
   function isFrontArrival(rowKeys: readonly string[], index: number): boolean {
-    if (index < 0 || previousKeys.length === 0) return false;
-    if (previousKeys[0] === rowKeys[0]) return false;
-    const movedTo = rowKeys.indexOf(previousKeys[0]);
-    return movedTo > 0 && index < movedTo;
+    if (index < 0) return false;
+    const anchor = frontAnchor(previousKeys, rowKeys);
+    return anchor !== null && index < anchor.nextIndex;
   }
 
   function record(key: string, height: number): void {

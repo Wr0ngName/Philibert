@@ -888,6 +888,40 @@ describe('MessageList scrolling with real layout', () => {
       expect(topMessageId(container)).toBe(anchorId);
     });
 
+    it('keeps the message being read where it was when a page completes a turn the window cut', async () => {
+      // The fixture above alternates user and assistant, so every turn is one
+      // message and a page boundary can never fall inside one. A real
+      // conversation's turns run to dozens of messages, and a page is cut by
+      // count, so the window usually opens mid-turn. The turn's header row is
+      // keyed by its first message: when the page brings the rest of the
+      // turn, the row that was first is replaced by a header with another key.
+      // The list read that as a different list and held nothing — the page
+      // landed in front of the viewport, the view stayed at the very top, and
+      // what the reader had been looking at was pushed below it.
+      const whole = messagesFor('cut', 1000).map((message, index) => ({
+        ...message,
+        // A prompt, then a five-message answer.
+        role: (index % 6 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      }));
+      // 503 is the fifth message of the answer that starts at 499.
+      const cutAt = 503;
+      const store = useChatStore();
+      store.setCurrentConversation('conv-browser');
+      store.loadMessages(whole.slice(cutAt), cutAt);
+
+      const { container } = await mountList();
+      await wheelUp(container, 10, 120, 2);
+      await settle(10);
+      const anchorId = topMessageId(container);
+      expect(anchorId).not.toBeNull();
+
+      store.prependOlderMessages('conv-browser', whole.slice(3, cutAt), 3);
+      await settle(30);
+
+      expect(store.messages[0].id).toBe('cut-3');
+      expect(topMessageId(container)).toBe(anchorId);
+    });
+
     it('does not move the view when the window is trimmed at the tail', async () => {
       // Trimming happens after a save, at the end of every turn, and removes
       // rows ABOVE the viewport. At the tail the browser clamps the scroll

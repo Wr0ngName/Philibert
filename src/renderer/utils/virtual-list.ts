@@ -144,6 +144,45 @@ export function scrollCorrection(
   return newHeight - (previousHeight ?? estimate);
 }
 
+/** A row present in both lists, by its index in each. */
+export interface FrontAnchor {
+  previousIndex: number;
+  nextIndex: number;
+}
+
+/**
+ * The row the content should be held against when the front of the list
+ * changed: the first row of the previous list that is still in the next one.
+ *
+ * Not simply the previous first row. A page is cut by message count, so it
+ * routinely starts inside an assistant turn, and a turn's header row is keyed
+ * by the turn's first message — when the rest of the turn arrives, the old
+ * first row is replaced by a header with a different key and appears nowhere
+ * in the new list. The first message row of that turn survives, and is what
+ * the reader's content is still attached to.
+ *
+ * Every row in front of the anchor, in either list, is one that arrived or
+ * left. Null when the front did not change, or when the lists share no row at
+ * all — a different conversation, which holding a position across is not this
+ * function's business.
+ */
+export function frontAnchor(
+  previousKeys: readonly string[],
+  nextKeys: readonly string[],
+): FrontAnchor | null {
+  if (previousKeys.length === 0 || nextKeys.length === 0) return null;
+  if (previousKeys[0] === nextKeys[0]) return null;
+
+  const nextIndexOf = new Map<string, number>();
+  nextKeys.forEach((key, index) => nextIndexOf.set(key, index));
+
+  for (let previousIndex = 0; previousIndex < previousKeys.length; previousIndex += 1) {
+    const nextIndex = nextIndexOf.get(previousKeys[previousIndex]);
+    if (nextIndex !== undefined) return { previousIndex, nextIndex };
+  }
+  return null;
+}
+
 /**
  * How far the content moved because rows were added to or removed from the
  * FRONT of the list.
@@ -158,14 +197,15 @@ export function scrollCorrection(
  *
  * Expressed as a pure function of the two key lists and their geometry, so it
  * is decided by arithmetic that can be asserted rather than by measuring a
- * browser:
+ * browser: the row both lists share at the front (see `frontAnchor`) sat at
+ * `previous[i]` and now sits at `next[j]`, so the content moved by the
+ * difference. That one rule covers a page added at the front (`i` is 0), the
+ * oldest rows unloaded (`j` is 0), and either of those cutting a turn so its
+ * header row was replaced (neither is 0).
  *
- *  - rows added at the front: the old first row is now at index `k`, and
- *    everything above it is new, so the content moved down by `next[k]`;
- *  - rows removed from the front: the new first row used to be at index `k`,
- *    so the content moved up by `previous[k]`;
- *  - anything else — appending, inserting or removing mid-list, or no change
- *    at all — moves the front of the list not at all, and returns 0.
+ * Anything else — appending, inserting or removing mid-list, no change at
+ * all, or an unrelated list — moves the front of the list not at all, and
+ * returns 0.
  *
  * Returns the number of pixels to add to the scroll offset to leave the
  * content where it was.
@@ -176,19 +216,7 @@ export function frontShift(
   previousOffsets: readonly number[],
   nextOffsets: readonly number[],
 ): number {
-  if (previousKeys.length === 0 || nextKeys.length === 0) return 0;
-  if (previousKeys[0] === nextKeys[0]) return 0;
-
-  // Added at the front: where did the row that used to be first go?
-  const movedTo = nextKeys.indexOf(previousKeys[0]);
-  if (movedTo > 0) return nextOffsets[movedTo] ?? 0;
-
-  // Removed from the front: where did the row that is now first come from?
-  const camefrom = previousKeys.indexOf(nextKeys[0]);
-  if (camefrom > 0) return -(previousOffsets[camefrom] ?? 0);
-
-  // Neither list's first row appears in the other: this is a different list
-  // altogether — a conversation switch — and holding a position across it is
-  // not this function's business.
-  return 0;
+  const anchor = frontAnchor(previousKeys, nextKeys);
+  if (!anchor) return 0;
+  return (nextOffsets[anchor.nextIndex] ?? 0) - (previousOffsets[anchor.previousIndex] ?? 0);
 }
