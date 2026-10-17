@@ -47,6 +47,12 @@ const conversationsStore = useConversationsStore();
 const { loadingEarlier, loadingNewer } = storeToRefs(conversationsStore);
 const { olderMessageCount, newerMessageCount } = storeToRefs(chatStore);
 
+/** Where this conversation ran, so a relative image path in it can be found. */
+const workingDirectory = computed(() => {
+  const id = chatStore.currentConversationId;
+  return id ? (conversationsStore.getConversationWorkingDirectory(id) ?? '') : '';
+});
+
 /**
  * How close to an edge of the loaded window the view must come before the
  * next page is fetched. A screen's worth, so the page is on its way before
@@ -974,6 +980,7 @@ onUnmounted(() => {
                 v-if="row.kind === 'standalone' && row.msg"
                 :message="row.msg"
                 :conversation-id="chatStore.currentConversationId ?? ''"
+                :working-directory="workingDirectory"
                 @open-task-detail="emit('open-task-detail', $event)"
                 @open-tool-detail="emit('open-tool-detail', $event)"
               />
@@ -1003,6 +1010,7 @@ onUnmounted(() => {
                 <MessageItem
                   :message="row.msg"
                   :conversation-id="chatStore.currentConversationId ?? ''"
+                  :working-directory="workingDirectory"
                   :child-count="row.childCount"
                   :is-expanded="row.isExpanded"
                   grouped

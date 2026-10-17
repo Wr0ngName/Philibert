@@ -8,16 +8,14 @@
  * and a handful of them can have megabyte screenshots attached without either
  * the saved file or the in-memory window paying for it.
  *
- * Bytes become a blob URL rather than a `data:` URI. A data URI of a
- * multi-megabyte image is a multi-megabyte string living in the DOM, re-parsed
- * on every render; a blob URL is a handle, and it is revoked when the row goes
- * away — which matters here, because this list is virtualised and rows are
- * mounted and unmounted constantly as the user scrolls.
+ * Bytes become a blob URL (see blobUrlFromBase64), revoked when the row goes
+ * away.
  */
 import { ref, watch, onUnmounted } from 'vue';
 
 import type { MessageImage } from '@shared/types';
 
+import { blobUrlFromBase64 } from '../../utils/image-bytes';
 import { logger } from '../../utils/logger';
 
 const props = defineProps<{
@@ -47,12 +45,7 @@ async function load(images: MessageImage[], conversationId: string): Promise<voi
         failed.value.add(image.id);
         continue;
       }
-      // Decoded here rather than handed to the DOM as a data: URI.
-      const binary = atob(bytes.base64);
-      const buffer = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i += 1) buffer[i] = binary.charCodeAt(i);
-      const url = URL.createObjectURL(new Blob([buffer], { type: bytes.mediaType }));
-      urls.value.set(image.id, url);
+      urls.value.set(image.id, blobUrlFromBase64(bytes.base64, bytes.mediaType));
       // The Map is replaced rather than mutated: Vue tracks the ref, and a
       // mutation in place would not redraw the row.
       urls.value = new Map(urls.value);

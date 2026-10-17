@@ -307,6 +307,9 @@ const electronAPI: ElectronAPI = {
     read: (filePath: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.FILES_READ, filePath),
 
+    readImage: (reference: string, baseDir: string | null) =>
+      ipcRenderer.invoke(IPC_CHANNELS.FILES_READ_IMAGE, reference, baseDir),
+
     open: (filePath: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.FILES_OPEN, filePath),
 

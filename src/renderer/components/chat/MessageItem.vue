@@ -13,6 +13,7 @@ import { computed, ref } from 'vue';
 
 import type { ChatMessage } from '@shared/types';
 
+import { useLocalImages } from '../../composables/useLocalImages';
 import { formatTime } from '../../utils/date';
 import { logger } from '../../utils/logger';
 import { renderMarkdown, renderUserMarkdown } from '../../utils/markdown';
@@ -34,6 +35,8 @@ interface Props {
   isExpanded?: boolean;
   /** Which conversation's image store to read attachments from. */
   conversationId?: string;
+  /** What a relative image path in the text is relative to. */
+  workingDirectory?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -41,6 +44,7 @@ const props = withDefaults(defineProps<Props>(), {
   childCount: 0,
   isExpanded: false,
   conversationId: '',
+  workingDirectory: '',
 });
 
 /**
@@ -81,6 +85,10 @@ const renderedContent = computed(() =>
     ? renderUserMarkdown(props.message.content)
     : renderMarkdown(props.message.content),
 );
+
+/** The rendered text, so the images it points at by path can be drawn. */
+const contentRef = ref<HTMLElement | null>(null);
+useLocalImages(contentRef, () => renderedContent.value, () => props.workingDirectory || null);
 
 // Right-click context menu state — opens at the click coordinates, closes on
 // outside click / Escape / scroll (handled inside ContextMenu).
@@ -194,6 +202,7 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
   >
     <div
       v-if="message.content.trim()"
+      ref="contentRef"
       class="prose prose-sm dark:prose-invert max-w-full text-surface-800 dark:text-surface-200 message-content"
       v-html="renderedContent"
     />
@@ -236,6 +245,7 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
     <!-- Content -->
     <div
       v-if="message.content.trim()"
+      ref="contentRef"
       class="prose prose-sm dark:prose-invert max-w-full text-surface-800 dark:text-surface-200 message-content"
       v-html="renderedContent"
     />

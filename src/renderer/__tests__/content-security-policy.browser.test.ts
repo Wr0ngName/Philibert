@@ -1,30 +1,22 @@
 /**
  * The page's Content-Security-Policy, against the images the app draws.
  *
- * Every other image test runs without it: the browser suite mounts components
- * into a bare page, never `index.html`, so a policy that forbids a kind of URL
- * the app relies on passes every component test and shows the user a broken
- * image. Here the policy is lifted out of `index.html` itself and enforced on
- * the test page, and Chromium is asked to draw what the components draw.
+ * Every component test runs on a bare page; here the policy from `index.html`
+ * is enforced (see enforceAppContentSecurityPolicy) and Chromium is asked to
+ * draw the kinds of URL the components produce.
  *
  * Run with `npm run test:browser`.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
 
-import indexHtml from '../../../index.html?raw';
+import { blobUrlFromBase64 } from '../utils/image-bytes';
+
+import { enforceAppContentSecurityPolicy } from './support/app-content-security-policy';
 
 /** A real 1×1 PNG. */
 const PNG_1X1 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-
-function policyFromIndexHtml(): string {
-  const doc = new DOMParser().parseFromString(indexHtml, 'text/html');
-  const meta = doc.querySelector('meta[http-equiv="Content-Security-Policy"]');
-  const content = meta?.getAttribute('content');
-  if (!content) throw new Error('index.html carries no Content-Security-Policy');
-  return content;
-}
 
 /** Resolve with whether the image decoded under the policy. */
 function draws(src: string): Promise<boolean> {
@@ -36,23 +28,11 @@ function draws(src: string): Promise<boolean> {
   });
 }
 
-function pngBytes(): Uint8Array<ArrayBuffer> {
-  const binary = atob(PNG_1X1);
-  const buffer = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) buffer[i] = binary.charCodeAt(i);
-  return buffer;
-}
-
 describe("index.html's Content-Security-Policy", () => {
-  beforeAll(() => {
-    const meta = document.createElement('meta');
-    meta.httpEquiv = 'Content-Security-Policy';
-    meta.content = policyFromIndexHtml();
-    document.head.appendChild(meta);
-  });
+  beforeAll(enforceAppContentSecurityPolicy);
 
   it('lets a blob image draw, which is how stored and local images are shown', async () => {
-    const url = URL.createObjectURL(new Blob([pngBytes()], { type: 'image/png' }));
+    const url = blobUrlFromBase64(PNG_1X1, 'image/png');
     try {
       expect(await draws(url)).toBe(true);
     } finally {

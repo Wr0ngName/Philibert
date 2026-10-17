@@ -34,15 +34,39 @@ const CLASSES = {
   LINK: 'text-primary-500 hover:underline',
 } as const;
 
+/**
+ * The attribute an image naming a file on this machine carries instead of a
+ * `src` — see useLocalImages, which reads the file and draws it.
+ */
+export const LOCAL_IMAGE_ATTR = 'data-local-src';
+
+/** A src the page can load by itself. Anything else names a local file. */
+const LOADABLE_SRC = /^(https?:|data:|blob:)/i;
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 const sharedRenderer = {
   code({ text, lang }: { text: string; lang?: string }) {
     const language = lang || 'text';
-    const escaped = text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-    return `<pre class="${CLASSES.CODE_BLOCK}"><code class="language-${language}">${escaped}</code></pre>`;
+    return `<pre class="${CLASSES.CODE_BLOCK}"><code class="language-${language}">${escapeHtml(text)}</code></pre>`;
+  },
+  /**
+   * Claude writes `![shot](C:/work/a.png)` after making a picture. As a `src`
+   * that is not a URL the page can load — `C:` reads as a URL scheme, and the
+   * page's policy refuses `file:` anyway — so it was always drawn broken. A
+   * local reference is handed over under its own attribute instead, with no
+   * `src` for the browser to fail on.
+   */
+  image({ href, title, text }: { href: string; title?: string | null; text: string }) {
+    const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+    const source = LOADABLE_SRC.test(href) ? 'src' : LOCAL_IMAGE_ATTR;
+    return `<img ${source}="${escapeHtml(href)}" alt="${escapeHtml(text)}"${titleAttr}>`;
   },
   codespan({ text }: { text: string }) {
     return `<code class="${CLASSES.INLINE_CODE}">${text}</code>`;

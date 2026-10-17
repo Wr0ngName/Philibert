@@ -1631,6 +1631,8 @@ export const IPC_CHANNELS = {
   FILES_GET_TREE: 'files:get-tree',
   /** Read contents of a file */
   FILES_READ: 'files:read',
+  /** Read an image file a message points at by path, for display */
+  FILES_READ_IMAGE: 'files:read-image',
   /** File system changes detected */
   FILES_CHANGED: 'files:changed',
   /** Open a file in the system's default application */

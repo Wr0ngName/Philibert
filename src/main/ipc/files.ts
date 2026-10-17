@@ -8,6 +8,7 @@ import { IPC_CHANNELS } from '../../shared/types';
 import { FileSystemError, ERROR_CODES } from '../errors';
 import ConfigService from '../services/ConfigService';
 import FileWatcherService from '../services/FileWatcherService';
+import { readLocalImage } from '../services/LocalImageReader';
 import { validateString, validatePath, sendToRenderer, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
@@ -111,6 +112,27 @@ export function setupFilesIPC(
       throw new FileSystemError(formatErrorMessage('Failed to read file', error), filePath, ERROR_CODES.FS_READ_FAILED, error);
     }
   });
+
+  // Read an image a message points at by path. Not confined to the working
+  // directory, and only ever answers with an image — see LocalImageReader.
+  ipcMain.handle(
+    IPC_CHANNELS.FILES_READ_IMAGE,
+    async (_event, reference: string, baseDir: string | null) => {
+      try {
+        validateString(reference, 'Image reference');
+        if (baseDir !== null) validateString(baseDir, 'Base directory');
+        return await readLocalImage(reference, baseDir);
+      } catch (error) {
+        logger.error('Failed to read a referenced image', { error, reference });
+        throw new FileSystemError(
+          formatErrorMessage('Failed to read the image', error),
+          reference,
+          ERROR_CODES.FS_READ_FAILED,
+          error,
+        );
+      }
+    },
+  );
 
   // Open file in system's default application
   ipcMain.handle(IPC_CHANNELS.FILES_OPEN, async (_event, filePath: string) => {

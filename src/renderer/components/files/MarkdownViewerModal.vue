@@ -12,6 +12,7 @@
 
 import { computed, ref, watch } from 'vue';
 
+import { useLocalImages } from '../../composables/useLocalImages';
 import { renderMarkdown } from '../../utils/markdown';
 import { logger } from '../../utils/logger';
 import Modal from '../shared/Modal.vue';
@@ -46,6 +47,14 @@ const renderedHtml = computed(() => {
   if (content.value === null) return '';
   return renderMarkdown(content.value);
 });
+
+/** A relative image path in a markdown file is relative to that file. */
+const fileDirectory = computed(() =>
+  props.filePath ? props.filePath.replace(/[/\\][^/\\]*$/, '') : null,
+);
+
+const renderedRef = ref<HTMLElement | null>(null);
+useLocalImages(renderedRef, () => renderedHtml.value, () => fileDirectory.value);
 
 async function loadContent(path: string): Promise<void> {
   const myGen = ++loadGeneration;
@@ -107,6 +116,7 @@ watch(
 
     <div
       v-else
+      ref="renderedRef"
       class="prose prose-sm dark:prose-invert max-w-full text-surface-800 dark:text-surface-200"
       v-html="renderedHtml"
     />

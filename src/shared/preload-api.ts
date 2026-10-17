@@ -215,6 +215,15 @@ export interface ElectronAPI {
     selectDirectory: () => Promise<string | null>;
     getTree: (directory: string) => Promise<FileNode[]>;
     read: (filePath: string) => Promise<string>;
+    /**
+     * Read an image a message points at — an absolute path, a `file:` URL,
+     * or a path relative to `baseDir`. Null when there is no image there to
+     * draw.
+     */
+    readImage: (
+      reference: string,
+      baseDir: string | null,
+    ) => Promise<{ base64: string; mediaType: ImageMediaType } | null>;
     open: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     onChange: (callback: (changes: FileChange[]) => void) => () => void;
   };
