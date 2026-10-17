@@ -24,7 +24,6 @@ import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue';
 import {
   buildOffsets,
   findIndexAtOffset,
-  frontAnchor,
   frontShift,
   scrollCorrection,
   visibleWindow,
@@ -127,31 +126,26 @@ export function useVirtualList(options: UseVirtualListOptions) {
   let observer: ResizeObserver | null = null;
 
   /**
-   * The key list and geometry as they were before the change being handled.
+   * The key list as it was before the change being handled.
    *
-   * Read by both halves of the front correction: `isFrontArrival` while the
-   * arriving rows are being measured, and the watcher below that applies the
-   * shift and then brings these up to date. Declared here because the
-   * measurement path runs first.
+   * Only the keys are remembered, never the geometry. The previous list's
+   * offsets are rebuilt from the measurements as they stand when the change
+   * is handled: a snapshot taken at the previous change would miss every row
+   * measured since — every row the reader scrolled through — and unloading
+   * those rows from the front would subtract their estimates instead of
+   * their heights.
    */
   let previousKeys: string[] = [];
-  let previousOffsets: number[] = [];
 
   /**
-   * Is the row at `index` one of those that just arrived in FRONT of the
-   * first row the two lists share (see `frontAnchor`)?
+   * True from the moment the front of the list changed until the element's
+   * scroll offset has caught up with it — see the front watchers below.
    *
-   * Those are exactly the rows `frontShift` compensates in one go, so their
-   * first measurement must not be corrected individually as well. Everything
-   * else — a row scrolled into view, a row inserted mid-list when a sub-agent
-   * is expanded, a row appended at the end — is not a front arrival and is
-   * corrected as before.
+   * In between, `scrollTop` is the position in the NEW geometry while the
+   * element still holds one in the old, so the element is left alone and
+   * corrections are made to `scrollTop` only, to be applied with the shift.
    */
-  function isFrontArrival(rowKeys: readonly string[], index: number): boolean {
-    if (index < 0) return false;
-    const anchor = frontAnchor(previousKeys, rowKeys);
-    return anchor !== null && index < anchor.nextIndex;
-  }
+  let frontShiftPending = false;
 
   function record(key: string, height: number): void {
     const previous = heights.get(key);
@@ -168,23 +162,6 @@ export function useVirtualList(options: UseVirtualListOptions) {
     // measuring them does move the view and does need correcting.
     const anchorIndex = findIndexAtOffset(offsets.value, scrollTop.value);
 
-    // Rows that arrived in front of the row that used to be first belong to
-    // `frontShift`, which compensates the whole height of the page in one
-    // go. Their first measurement must NOT also be corrected here, or the two
-    // mechanisms compensate the same pixels twice.
-    //
-    // Measured in a browser before this guard existed: a page of history
-    // loaded while reading moved the content 692px — four of the arriving
-    // rows were rendered and measured during the same flush, at 245px each
-    // against a 72px estimate, and 4 × 173 is the 692. Not drift; a fixed
-    // jog of rather more than a screen, every time a page loaded.
-    //
-    // Measurements that arrive LATER, from the ResizeObserver, are a
-    // different matter and are still corrected: by then `frontShift` has run
-    // and counted those rows at their estimate, so their real height is a
-    // genuine, uncompensated change in the content above the viewport.
-    const arrivedInFront = previous === undefined && isFrontArrival(rowKeys, changedIndex);
-
     heights.set(key, height);
     heightsVersion.value += 1;
 
@@ -194,7 +171,11 @@ export function useVirtualList(options: UseVirtualListOptions) {
     // reported as content growth, or scrolling would re-pin to the bottom.
     if (previous !== undefined) options.onRowResized?.();
 
-    if (!enabled.value || changedIndex === -1 || arrivedInFront) return;
+    // Not virtualising, the rows simply flow and nothing is corrected — except
+    // while a front shift is pending, which counted the arriving rows at the
+    // estimate and so needs their real heights, rendered or not.
+    if (changedIndex === -1) return;
+    if (!enabled.value && !frontShiftPending) return;
 
     const correction = scrollCorrection(
       changedIndex,
@@ -203,7 +184,13 @@ export function useVirtualList(options: UseVirtualListOptions) {
       previous,
       estimateBefore,
     );
-    if (correction !== 0 && container.value) {
+    if (correction === 0) return;
+
+    if (frontShiftPending) {
+      scrollTop.value += correction;
+      return;
+    }
+    if (container.value) {
       container.value.scrollTop += correction;
       scrollTop.value = container.value.scrollTop;
     }
@@ -253,16 +240,25 @@ export function useVirtualList(options: UseVirtualListOptions) {
    *
    * The list already corrects for a row changing height above the viewport.
    * It did not correct for rows being INSERTED above it — which is what
-   * loading a page of older messages does, and what unloading the oldest rows
-   * undoes — so the content the user was reading moved by the whole height of
-   * the page. Four corrections attempted from the component failed, each for
-   * the same underlying reason: they were computed in document pixels, while
-   * the rows that just arrived have never been measured and so contribute a
-   * fixed estimate. Here, inside the list, the geometry being compensated is
-   * the geometry that was just laid out.
+   * loading a page of older messages does — or REMOVED from above it, which
+   * is what unloading the oldest rows does after a page of newer ones, so the
+   * content the user was reading moved by the whole height of the page.
    *
-   * `flush: 'post'` so the spacer has already grown: setting a scroll offset
-   * beyond the current content would be clamped, and the correction lost.
+   * Two halves, either side of the render, and the split is the point:
+   *
+   *  - `pre`: the logical position moves the moment the rows do, BEFORE they
+   *    are rendered. Moved only afterwards, the render in between drew the
+   *    window from the old offset against the new rows — rows hundreds of
+   *    messages from the reader — and measuring those as they mounted read as
+   *    content changing above the viewport. Measured: a page read forward
+   *    moved the reader 692px, six such corrections, before the shift itself
+   *    was even applied. The shift counts every row that arrived at the
+   *    estimate; the ones the render then measures are corrected one by one,
+   *    by the same rule as any other row.
+   *  - `post`: only then is the element told, because before the render its
+   *    content is the old height and an offset beyond it would be clamped.
+   *    Assigned, not added: removing rows from the front can shorten the
+   *    content below the old offset, and the browser has already clamped it.
    *
    * The arithmetic is `frontShift`, which is pure and tested directly. Rows
    * appended, or inserted or removed mid-list, move the front of the list not
@@ -279,22 +275,38 @@ export function useVirtualList(options: UseVirtualListOptions) {
    */
   onMounted(() => {
     previousKeys = [...keys()];
-    previousOffsets = [...offsets.value];
 
     watch(
       () => keys(),
       (nextKeys) => {
-        const nextOffsets = offsets.value;
-        const shift = frontShift(previousKeys, nextKeys, previousOffsets, nextOffsets);
-
+        const before = previousKeys;
         previousKeys = [...nextKeys];
-        previousOffsets = [...nextOffsets];
 
+        const el = container.value;
+        if (!el) return;
+        const previousOffsets = buildOffsets(
+          before.length, (i) => heights.get(before[i]), estimatedHeight,
+        );
+        const shift = frontShift(before, nextKeys, previousOffsets, offsets.value);
         if (shift === 0) return;
+
+        // From the element rather than the last scroll event, which may not
+        // have been dispatched yet.
+        scrollTop.value = el.scrollTop + shift;
+        frontShiftPending = true;
+      },
+      { flush: 'pre' },
+    );
+
+    watch(
+      () => keys(),
+      () => {
+        if (!frontShiftPending) return;
+        frontShiftPending = false;
         const el = container.value;
         if (!el) return;
 
-        el.scrollTop += shift;
+        el.scrollTop = scrollTop.value;
         scrollTop.value = el.scrollTop;
       },
       { flush: 'post' },

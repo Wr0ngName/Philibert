@@ -525,6 +525,21 @@ const PINNED_EPSILON_PX = 2;
 const wasPinnedToBottom = ref(true);
 
 /**
+ * Whether the view sits exactly at the end of the conversation.
+ *
+ * The end of the WINDOW is not that, for the same reason as in
+ * checkIfAtBottom: with newer messages unloaded it is the middle of the
+ * conversation. Reading forward reaches it before the next page has been read
+ * from disk, and counting it as pinned made the page's arrival — a change in
+ * total height — drag the view to the end of the page: 500 messages skipped,
+ * all of them above the reader, and the reader at an edge again.
+ */
+function checkIfPinnedToBottom(): boolean {
+  if (newerMessageCount.value > 0) return false;
+  return distanceFromBottom() <= PINNED_EPSILON_PX;
+}
+
+/**
  * Tell the store whether the view is following the tail.
  *
  * The window is trimmed from the store, after a save, and trimming removes
@@ -614,7 +629,7 @@ function handleScroll(): void {
   virtual.syncViewport();
   void pageIfNearAnEdge();
   isUserAtBottom.value = checkIfAtBottom();
-  wasPinnedToBottom.value = distanceFromBottom() <= PINNED_EPSILON_PX;
+  wasPinnedToBottom.value = checkIfPinnedToBottom();
   if (isUserAtBottom.value) {
     unreadCount.value = 0;
   }

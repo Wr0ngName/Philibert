@@ -117,6 +117,27 @@ function seedWindowedConversation(): void {
   chat.prependOlderMessages('conv-browser', [older[OLDER_COUNT - 1]], OLDER_COUNT - 1);
 }
 
+/** While set, a newer-page request waits for it — see holdNewerPages. */
+let newerPagesHeld: Promise<void> | null = null;
+
+/**
+ * Keep newer pages from arriving until the returned function is called.
+ *
+ * The stand-in IPC answers at once, so a page always landed while the reader
+ * was still a screen short of the edge. In the app it is a read from disk,
+ * and an ordinary scroll reaches the very end of the window before it
+ * answers — which is the state the defects live in, and the one this makes
+ * reachable on purpose rather than by timing.
+ */
+function holdNewerPages(): () => void {
+  let release!: () => void;
+  newerPagesHeld = new Promise<void>((resolve) => { release = resolve; });
+  return () => {
+    newerPagesHeld = null;
+    release();
+  };
+}
+
 /**
  * Stand in for Electron's IPC, which does not exist in a browser at all.
  *
@@ -128,6 +149,7 @@ function seedWindowedConversation(): void {
 function installWindowIpc(): void {
   const whole = wholeConversation();
   const indexOf = (id: string) => whole.findIndex((m) => m.id === id);
+  newerPagesHeld = null;
 
   (window as unknown as { electron: unknown }).electron = {
     conversation: {
@@ -138,6 +160,7 @@ function installWindowIpc(): void {
         return { messages: whole.slice(start, at), olderCount: start };
       },
       getNewer: async (_id: string, afterId: string, limit: number) => {
+        if (newerPagesHeld) await newerPagesHeld;
         const at = indexOf(afterId);
         if (at === -1) throw new Error(`asked for messages after an unknown message: ${afterId}`);
         const end = Math.min(whole.length, at + 1 + limit);
@@ -386,6 +409,48 @@ function topMessageId(container: HTMLElement): string | null {
   }
 
   return best?.id ?? null;
+}
+
+/**
+ * Roll the wheel one measured click at a time until a page arrives, and report
+ * how far the row being read moved on the click it arrived during.
+ *
+ * Measured per click so that click can be judged on its own: the view may move
+ * by that click's travel and by nothing else. A page is 500 messages — tens of
+ * thousands of pixels — so anything beyond a click or two is the page landing
+ * in front of the reader rather than out of their way. Null when no page
+ * arrived.
+ *
+ * `unloaded` is how much lies beyond the edge being approached; a page
+ * arriving is that count going down.
+ */
+async function travelWhileAPageArrives(
+  container: HTMLElement,
+  direction: -1 | 1,
+  unloaded: () => number,
+): Promise<number | null> {
+  const offsetOf = (id: string) => {
+    const row = container.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+    return row
+      ? row.getBoundingClientRect().top - container.getBoundingClientRect().top
+      : null;
+  };
+
+  for (let click = 0; click < 60; click += 1) {
+    const anchorId = topMessageId(container);
+    const before = anchorId === null ? null : offsetOf(anchorId);
+    const unloadedBefore = unloaded();
+
+    await commands.wheel(WHEEL_TARGET, direction * FINE_CLICK_PX);
+    await settle(6);
+
+    if (unloaded() < unloadedBefore && anchorId !== null && before !== null) {
+      const after = offsetOf(anchorId);
+      expect(after, 'the row being read was unloaded by the page arriving').not.toBeNull();
+      return after! - before;
+    }
+  }
+  return null;
 }
 
 describe('MessageList scrolling with real layout', () => {
@@ -713,12 +778,6 @@ describe('MessageList scrolling with real layout', () => {
       // The difference from the prepend test above: there the page is handed
       // to the store, here the reader's own scrolling fetches it, so the
       // arrival lands in the middle of a gesture.
-      //
-      // Measured one wheel click at a time, so the click a page arrives
-      // during can be judged on its own: the view may move by that click's
-      // travel and by nothing else. A page is 500 messages — tens of
-      // thousands of pixels — so a bound of two clicks is a wide tolerance
-      // for the wheel and still an unmissable one for the defect.
       const { container } = await seedWindowed();
       const store = useChatStore();
 
@@ -733,28 +792,9 @@ describe('MessageList scrolling with real layout', () => {
       expect(store.olderMessageCount, 'paged before the measuring began')
         .toBe(OLDER_COUNT - 1);
 
-      const offsetOf = (id: string) => {
-        const row = container.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
-        return row
-          ? row.getBoundingClientRect().top - container.getBoundingClientRect().top
-          : null;
-      };
-
-      let travelled: number | null = null;
-      for (let click = 0; click < 60 && travelled === null; click += 1) {
-        const anchorId = topMessageId(container);
-        const before = anchorId === null ? null : offsetOf(anchorId);
-        const olderBefore = store.olderMessageCount;
-
-        await commands.wheel(WHEEL_TARGET, -FINE_CLICK_PX);
-        await settle(6);
-
-        if (store.olderMessageCount < olderBefore && anchorId !== null && before !== null) {
-          const after = offsetOf(anchorId);
-          expect(after, 'the row being read was unloaded by the page arriving').not.toBeNull();
-          travelled = after! - before;
-        }
-      }
+      const travelled = await travelWhileAPageArrives(
+        container, -1, () => store.olderMessageCount,
+      );
 
       expect(travelled, 'no page arrived while scrolling up').not.toBeNull();
       // Scrolling up moves the content down, so a click's travel is positive.
@@ -821,6 +861,106 @@ describe('MessageList scrolling with real layout', () => {
       expect(new Set(ids).size).toBe(ids.length);
       expect(container.querySelectorAll('[data-message-id]').length).toBeGreaterThan(0);
     }, 180_000);
+
+    it('keeps the message being read in place when a newer page arrives', async () => {
+      // The mirror of reading back. A page of newer messages belongs BELOW
+      // the reader, ready for them to carry on into. It used to land and the
+      // view was dragged to the end of it, so the page sat above the reader,
+      // unread, and the bottom edge left no way to fetch the next one without
+      // scrolling up and back down again.
+      const { container } = await seedWindowed();
+      const store = useChatStore();
+
+      let guard = 0;
+      while (store.newerMessageCount === 0 && guard < 6) {
+        const olderBefore = store.olderMessageCount;
+        await wheelUntil(
+          -1,
+          () => store.olderMessageCount < olderBefore,
+          'a page of history never loaded',
+        );
+        guard += 1;
+      }
+      expect(store.newerMessageCount, 'the tail was never unloaded').toBeGreaterThan(0);
+
+      // Close to the end of the window, then measured clicks for the crossing.
+      await wheelUntil(
+        1,
+        () => distanceFromBottom(container) < 15_000,
+        'never got within sight of the end of the window',
+      );
+
+      const travelled = await travelWhileAPageArrives(
+        container, 1, () => store.newerMessageCount,
+      );
+
+      expect(travelled, 'no page arrived while scrolling down').not.toBeNull();
+      // Scrolling down moves the content up, so a click's travel is negative.
+      expect(travelled!).toBeLessThan(0);
+      expect(travelled!).toBeGreaterThan(-FINE_CLICK_PX * 2);
+      // And the page is there to read on into, not behind the view.
+      expect(distanceFromBottom(container)).toBeGreaterThan(5_000);
+    }, 240_000);
+
+    it('keeps the reader in place when a newer page arrives after they reached the end of the window', async () => {
+      // How it happens in the app: the page is read from disk, and the
+      // reader's scroll gets to the very end of what is loaded before it
+      // answers. Sitting exactly at the end looked like following the live
+      // tail, so the page landing dragged the view to ITS end — the reader
+      // jumped 500 messages forward, everything they had not read was above
+      // them, and they were at an edge again with nothing below.
+      const { container } = await seedWindowed();
+      const store = useChatStore();
+
+      let guard = 0;
+      while (store.newerMessageCount === 0 && guard < 6) {
+        const olderBefore = store.olderMessageCount;
+        await wheelUntil(
+          -1,
+          () => store.olderMessageCount < olderBefore,
+          'a page of history never loaded',
+        );
+        guard += 1;
+      }
+      expect(store.newerMessageCount, 'the tail was never unloaded').toBeGreaterThan(0);
+
+      const release = holdNewerPages();
+      await wheelUntil(
+        1,
+        () => distanceFromBottom(container) <= 2,
+        'never reached the end of the window',
+      );
+      const newerBefore = store.newerMessageCount;
+      const firstBefore = store.messages[0].id;
+      const lastHeld = store.messages.at(-1)!.id;
+      const anchorId = topMessageId(container);
+      expect(anchorId).not.toBeNull();
+      const offsetOfAnchor = () => {
+        const row = container.querySelector<HTMLElement>(`[data-message-id="${anchorId}"]`);
+        return row
+          ? row.getBoundingClientRect().top - container.getBoundingClientRect().top
+          : null;
+      };
+      const before = offsetOfAnchor()!;
+
+      release();
+      await settle(30);
+
+      expect(store.newerMessageCount, 'the held page never arrived').toBeLessThan(newerBefore);
+      // The page took the window past its cap, so the oldest rows were
+      // unloaded from above the reader as well — the harder half.
+      expect(store.messages[0].id, 'the window was not trimmed at the front').not.toBe(firstBefore);
+      // Judged by where the row being read sits, to within layout rounding.
+      // Not by which row is nearest the top: with that row part-scrolled
+      // away, the nearest edge is a near tie between it and the next, decided
+      // by a fraction of a pixel.
+      const after = offsetOfAnchor();
+      expect(after, 'the row being read was unloaded').not.toBeNull();
+      expect(Math.abs(after! - before)).toBeLessThan(2);
+      // What was the last message is still on screen, with the page below it.
+      expect(container.querySelector(`[data-message-id="${lastHeld}"]`)).not.toBeNull();
+      expect(distanceFromBottom(container)).toBeGreaterThan(5_000);
+    }, 240_000);
 
     it('goes to the live end of the conversation from the badge', async () => {
       // Scrolling down would only reach the end of what is loaded. Once the
