@@ -142,6 +142,30 @@ export function fakeFsModule(): Record<string, unknown> {
       mkdir: async (p: string) => {
         dirs.add(p);
       },
+      /**
+       * Recursive removal, as `ImageStore.deleteAll` uses it.
+       *
+       * Absent, the call threw, the store caught and logged it, and the files
+       * stayed — so deletion looked broken in a test while being fine in the
+       * app. A fake filesystem missing a method does not fail loudly; it
+       * makes a swallowed error look like a result.
+       */
+      rm: async (p: string, options?: { recursive?: boolean; force?: boolean }) => {
+        if (options?.recursive) {
+          for (const key of [...files.keys()]) {
+            if (key === p || key.startsWith(p + '/')) files.delete(key);
+          }
+          for (const key of [...dirs]) {
+            if (key === p || key.startsWith(p + '/')) dirs.delete(key);
+          }
+          return;
+        }
+        if (!files.delete(p) && !options?.force) {
+          const err = new Error(`ENOENT: ${p}`) as NodeJS.ErrnoException;
+          err.code = 'ENOENT';
+          throw err;
+        }
+      },
       stat: async () => ({ isDirectory: () => true, size: 0 }),
     },
   };

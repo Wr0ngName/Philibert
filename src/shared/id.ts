@@ -39,4 +39,6 @@ export const ID_PREFIXES = {
   MODAL: 'modal',
   /** Queued-prompt ID prefix (a prompt written during a running turn) */
   QUEUED_PROMPT: 'queued',
+  /** Stored-image ID prefix. Becomes a filename, so it stays [A-Za-z0-9_-]. */
+  IMAGE: 'img',
 } as const;

@@ -143,6 +143,12 @@ export interface ToolResultData {
    *  passed here so the renderer can key its task-list state deterministically
    *  without re-parsing joined text. */
   taskListId?: string;
+  /**
+   * Images this tool produced — a Read of an image file, a rendered PDF page.
+   * References, not bytes: they were stored in the main process before this
+   * was sent, and the renderer fetches the bytes by id when it draws them.
+   */
+  images?: MessageImage[];
 }
 
 /**
@@ -174,6 +180,41 @@ export interface BackgroundTaskInfo {
 /**
  * Represents a single message in the chat conversation
  */
+/** The image media types the Anthropic API accepts. */
+export const IMAGE_MEDIA_TYPES = [
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+] as const;
+export type ImageMediaType = (typeof IMAGE_MEDIA_TYPES)[number];
+
+/**
+ * An image belonging to a message — a REFERENCE to it, never its bytes.
+ *
+ * The bytes live in the image store on disk (see ImageStore) and are fetched
+ * by id when something actually needs to show them. That split is not
+ * incidental: a screenshot is one to three megabytes of base64, a
+ * conversation file is read and parsed whole on every `get()` — which
+ * `update()` does before every write — and the renderer holds a window of
+ * messages whose size is deliberately bounded. Putting bytes on a message
+ * would undo all of that on every save.
+ */
+export interface MessageImage {
+  /** Identifies the bytes in the conversation's image store. */
+  id: string;
+  mediaType: ImageMediaType;
+  /** Size of the stored bytes, for showing and for limits. */
+  byteSize: number;
+  width?: number;
+  height?: number;
+  /**
+   * Where it came from: the user attached it, or a tool produced it (a Read
+   * of an image file, a rendered PDF page). Shown differently, and only the
+   * user's are sent back up as input.
+   */
+  origin: 'user' | 'tool';
+  /** For a tool image, the path or name it came from, when known. */
+  label?: string;
+}
+
 export interface ChatMessage {
   /** Unique identifier for the message */
   id: string;
@@ -181,6 +222,11 @@ export interface ChatMessage {
   role: MessageRole;
   /** Text content of the message */
   content: string;
+  /**
+   * Images attached to this message, as references. Absent on the
+   * overwhelming majority of messages, so it costs nothing to carry.
+   */
+  images?: MessageImage[];
   /** Unix timestamp when the message was created */
   timestamp: number;
   /** Whether the message is currently being streamed */
@@ -1629,6 +1675,10 @@ export const IPC_CHANNELS = {
   CONVERSATION_GET_WINDOW: 'conversation:get-window',
   /** Read a page of messages older than the ones already held. */
   CONVERSATION_GET_OLDER: 'conversation:get-older',
+  /** Store image bytes against a conversation, returning a reference. */
+  IMAGE_SAVE: 'image:save',
+  /** Read stored image bytes back, by conversation and image id. */
+  IMAGE_READ: 'image:read',
   /** Read a page of messages newer than the ones already held. */
   CONVERSATION_GET_NEWER: 'conversation:get-newer',
   /** Rename a conversation */
