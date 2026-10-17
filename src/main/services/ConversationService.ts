@@ -118,6 +118,22 @@ function withoutRepeatedIds(id: string, messages: ChatMessage[] | undefined): Ch
   return kept;
 }
 
+/**
+ * Where the stored messages a window may be given end: at `untilId`, the
+ * first message of a turn the renderer holds in memory apart from its
+ * window, or at the end of the conversation.
+ *
+ * That turn may be stored in part — a save mid-turn writes it as far as it
+ * has got — and the renderer's copy is ahead of the stored one. A page or
+ * stretch running into it would hand back a stale copy of what is already
+ * held, and count it a second time among the messages still to come.
+ */
+function storedUntil(all: readonly ChatMessage[], untilId: string | null): number {
+  if (!untilId) return all.length;
+  const at = all.findIndex((m) => m.id === untilId);
+  return at === -1 ? all.length : at;
+}
+
 export class ConversationService {
   private conversationsDir: string;
   /**
@@ -585,12 +601,13 @@ export class ConversationService {
    * conversation unloads the newest messages to keep the loaded set bounded,
    * and reading forward again has to be able to fetch them. Keyed by id for
    * the same reason as `getOlder` — a conversation that grew in between cannot
-   * shift the page under the reader.
+   * shift the page under the reader. Stops at `untilId`; see `storedUntil`.
    */
   async getNewer(
     id: string,
     afterId: string,
     limit: number,
+    untilId: string | null = null,
   ): Promise<{ messages: ChatMessage[]; newerCount: number } | null> {
     const conversation = await this.get(id);
     if (!conversation) return null;
@@ -602,9 +619,46 @@ export class ConversationService {
       return { messages: [], newerCount: 0 };
     }
 
-    const start = at + 1;
-    const end = Math.min(all.length, start + Math.max(0, limit));
-    return { messages: all.slice(start, end), newerCount: all.length - end };
+    const stop = storedUntil(all, untilId);
+    const start = Math.min(at + 1, stop);
+    const end = Math.min(stop, start + Math.max(0, limit));
+    return { messages: all.slice(start, end), newerCount: stop - end };
+  }
+
+  /**
+   * A window of the conversation centred on one message: up to `before`
+   * messages ahead of it, the message, and up to `after` behind it.
+   *
+   * What opening a search hit needs. The renderer holds a window of the
+   * conversation, so a hit further back than that window cannot be scrolled
+   * to — it has to be loaded first, and loading everything between the hit
+   * and the window would throw away the bound the window exists for.
+   *
+   * Null when the conversation or the message is not stored — or when the
+   * message lies at or past `untilId`, inside the turn the renderer holds.
+   */
+  async getAround(
+    id: string,
+    messageId: string,
+    before: number,
+    after: number,
+    untilId: string | null = null,
+  ): Promise<{ messages: ChatMessage[]; olderCount: number; newerCount: number } | null> {
+    const conversation = await this.get(id);
+    if (!conversation) return null;
+
+    const all = conversation.messages ?? [];
+    const at = all.findIndex((m) => m.id === messageId);
+    if (at === -1) {
+      logger.warn('Asked for messages around an id that is not stored', { id, messageId });
+      return null;
+    }
+
+    const stop = storedUntil(all, untilId);
+    if (at >= stop) return null;
+    const start = Math.max(0, at - Math.max(0, before));
+    const end = Math.min(stop, at + 1 + Math.max(0, after));
+    return { messages: all.slice(start, end), olderCount: start, newerCount: stop - end };
   }
 
   /**

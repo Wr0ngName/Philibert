@@ -17,11 +17,9 @@ import { storeToRefs } from 'pinia';
 import type { ChatMessage } from '@shared/types';
 
 import { useVirtualList } from '../../composables/useVirtualList';
-import { CONSTANTS } from '../../constants/app';
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { formatTime } from '../../utils/date';
-import { logger } from '../../utils/logger';
 import {
   childrenByParent as buildChildrenByParent,
   descendantCounts,
@@ -123,7 +121,7 @@ async function loadEarlier(): Promise<void> {
   pagingInProgress = true;
   try {
     const loaded = await conversationsStore.loadEarlierMessages();
-    if (loaded > 0) slideAround();
+    if (loaded > 0) await slideAround();
   } finally {
     pagingInProgress = false;
   }
@@ -133,38 +131,22 @@ async function loadNewer(): Promise<void> {
   pagingInProgress = true;
   try {
     const loaded = await conversationsStore.loadNewerMessages();
-    if (loaded > 0) slideAround();
+    if (loaded > 0) await slideAround();
   } finally {
     pagingInProgress = false;
   }
 }
 
 /**
- * Unload the parts of the window the reader has moved away from.
- *
- * Without this the window only grows: paging to the start of a long
- * conversation would end up holding all of it, which is what the window
- * exists to prevent. Centred on the message under the viewport rather than on
- * an end of the list — trimming to "the oldest N" unloaded the very rows
- * being read.
+ * Unload the parts of the window the reader has moved away from, centred on
+ * the message under the viewport. See `slideWindowAround`.
  */
-function slideAround(): void {
+async function slideAround(): Promise<void> {
   const conversationId = chatStore.currentConversationId;
   if (!conversationId) return;
-  if (chatStore.messages.length <= CONSTANTS.CONVERSATION.WINDOW_MAX) return;
-
   const anchorMessageId = viewportMessageId();
   if (!anchorMessageId) return;
-
-  const { droppedHead, droppedTail } = chatStore.trimWindowAround(
-    conversationId,
-    anchorMessageId,
-    CONSTANTS.CONVERSATION.WINDOW_SIZE,
-    CONSTANTS.CONVERSATION.WINDOW_SIZE,
-  );
-  if (droppedHead || droppedTail) {
-    logger.debug('Slid the message window', { conversationId, droppedHead, droppedTail });
-  }
+  await conversationsStore.slideWindowAround(conversationId, anchorMessageId);
 }
 
 /** The message under the top of the viewport, for sliding around it. */

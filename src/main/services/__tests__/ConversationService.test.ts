@@ -1072,6 +1072,80 @@ describe('ConversationService', () => {
       expect(page?.messages).toEqual([]);
       expect(page?.olderCount).toBe(0);
     });
+
+    it('returns the page after a given message', async () => {
+      const page = await service.getNewer('long', 'm899', 50);
+
+      expect(page?.messages[0].id).toBe('m900');
+      expect(page?.messages).toHaveLength(50);
+      expect(page?.newerCount).toBe(50);
+    });
+
+    // A turn the renderer holds in memory apart from its window may be
+    // stored in part, and its copy in memory is ahead of the stored one. A
+    // read running into it would hand back a stale copy and count it twice.
+    it('stops a page at the start of a turn held in memory', async () => {
+      const page = await service.getNewer('long', 'm899', 500, 'm950');
+
+      expect(page?.messages.map((m) => m.id)).toEqual(
+        Array.from({ length: 50 }, (_, i) => `m${900 + i}`),
+      );
+      expect(page?.newerCount).toBe(0);
+    });
+
+    it('counts only what lies before a held turn', async () => {
+      const page = await service.getNewer('long', 'm899', 10, 'm950');
+
+      expect(page?.messages).toHaveLength(10);
+      expect(page?.newerCount).toBe(40);
+    });
+
+    it('ignores a held turn that is not stored yet', async () => {
+      const page = await service.getNewer('long', 'm989', 500, 'not-stored-yet');
+
+      expect(page?.messages).toHaveLength(10);
+      expect(page?.newerCount).toBe(0);
+    });
+
+    it('returns nothing past a held turn, even asked from inside it', async () => {
+      const page = await service.getNewer('long', 'm960', 10, 'm950');
+
+      expect(page?.messages).toEqual([]);
+      expect(page?.newerCount).toBe(0);
+    });
+
+    it('returns the stretch around a message, counted either side', async () => {
+      const around = await service.getAround('long', 'm500', 250, 250);
+
+      expect(around?.messages[0].id).toBe('m250');
+      expect(around?.messages.at(-1)?.id).toBe('m750');
+      expect(around?.messages).toHaveLength(501);
+      expect(around?.olderCount).toBe(250);
+      expect(around?.newerCount).toBe(249);
+    });
+
+    it('clamps the stretch at both ends of the conversation', async () => {
+      const first = await service.getAround('long', 'm3', 250, 250);
+      expect(first?.olderCount).toBe(0);
+      expect(first?.messages[0].id).toBe('m0');
+
+      const last = await service.getAround('long', 'm998', 250, 250);
+      expect(last?.newerCount).toBe(0);
+      expect(last?.messages.at(-1)?.id).toBe('m999');
+    });
+
+    it('stops the stretch at the start of a held turn', async () => {
+      const around = await service.getAround('long', 'm900', 250, 250, 'm950');
+
+      expect(around?.messages.at(-1)?.id).toBe('m949');
+      expect(around?.newerCount).toBe(0);
+    });
+
+    it('has no stretch for a message inside a held turn, or one not stored', async () => {
+      expect(await service.getAround('long', 'm960', 250, 250, 'm950')).toBeNull();
+      expect(await service.getAround('long', 'nope', 250, 250)).toBeNull();
+      expect(await service.getAround('nope', 'm1', 250, 250)).toBeNull();
+    });
   });
 
   // ===========================================================================

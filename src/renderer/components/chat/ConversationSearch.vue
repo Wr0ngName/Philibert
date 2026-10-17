@@ -100,20 +100,30 @@ onMounted(() => {
   }
 });
 
+/**
+ * Open a hit: its conversation, then the stretch of it holding the message,
+ * then the scroll — in that order, each finished before the next.
+ *
+ * The scroll used to be requested first, so it raced the switch: it could
+ * run against the conversation being left, or be undone by the switch putting
+ * back where the new one was last left. And the conversation is held as a
+ * window of itself, so a hit outside that window was never loaded at all —
+ * the scroll looked for a row that did not exist, and nothing happened.
+ */
 async function openResult(result: ConversationSearchResult): Promise<void> {
   close();
-  // Set the scroll target FIRST so the ChatWindow watcher can pick it up
-  // regardless of whether we need to switch conversations or not.
-  chatStore.pendingScrollMessageId = result.messageId;
   if (result.conversationId !== currentConversationId.value) {
-    try {
-      await conversationsStore.switchConversation(result.conversationId);
-    } catch (err) {
-      logger.warn('Failed to switch to result conversation', {
-        error: err instanceof Error ? err.message : String(err),
+    const switched = await conversationsStore.switchConversation(result.conversationId);
+    if (!switched) {
+      logger.warn('Failed to switch to a search hit\'s conversation', {
+        conversationId: result.conversationId,
       });
+      return;
     }
   }
+  const loaded = await conversationsStore.revealMessage(result.conversationId, result.messageId);
+  if (!loaded) return;
+  chatStore.pendingScrollMessageId = result.messageId;
 }
 
 const hasResults = computed(() => results.value.length > 0);

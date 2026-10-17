@@ -556,6 +556,68 @@ export const useConversationsStore = defineStore('conversations', () => {
     }
   }
 
+  /**
+   * Unload the parts of the window the reader has moved away from, keeping a
+   * band of WINDOW_SIZE either side of `anchorMessageId`.
+   *
+   * Without this the window only grows: paging to the start of a long
+   * conversation would end up holding all of it, which is what the window
+   * exists to prevent. Centred on the message being read rather than on an
+   * end of the list — trimming to "the oldest N" unloaded the very rows being
+   * read. Left alone until the window passes WINDOW_MAX.
+   */
+  async function slideWindowAround(
+    conversationId: string,
+    anchorMessageId: string,
+  ): Promise<{ droppedHead: number; droppedTail: number }> {
+    const nothing = { droppedHead: 0, droppedTail: 0 };
+    if (currentConversationId.value !== conversationId) return nothing;
+    if (chatStore.messages.length <= CONSTANTS.CONVERSATION.WINDOW_MAX) return nothing;
+
+    const { WINDOW_SIZE } = CONSTANTS.CONVERSATION;
+    // A turn still writing into the end that is about to go is held apart
+    // first; the band the reader is in stays on screen either way.
+    const at = chatStore.messages.findIndex((m) => m.id === anchorMessageId);
+    if (at === -1) return nothing;
+    const keepThroughId = chatStore.messages[at + WINDOW_SIZE]?.id;
+    if (keepThroughId && keepThroughId !== chatStore.messages.at(-1)?.id) {
+      await releaseWindowFromLiveTurn(conversationId, keepThroughId);
+      if (currentConversationId.value !== conversationId) return nothing;
+    }
+
+    const slid = chatStore.trimWindowAround(conversationId, anchorMessageId, WINDOW_SIZE, WINDOW_SIZE);
+    if (slid.droppedHead || slid.droppedTail) {
+      logger.debug('Slid the message window', { conversationId, ...slid });
+    }
+    return slid;
+  }
+
+  /**
+   * Make the window free to let go of its end, holding a turn that is still
+   * writing into it apart first. True when the window no longer holds such a
+   * turn.
+   *
+   * Saved before anything moves, and only on a write that landed: whatever
+   * stays in the window may be unloaded next, and only what is on disk can
+   * be. A failed write leaves everything where it is.
+   */
+  async function releaseWindowFromLiveTurn(
+    conversationId: string,
+    keepThroughId: string | null = null,
+  ): Promise<boolean> {
+    if (!chatStore.windowHoldsLiveTurn(conversationId)) return true;
+
+    const saved = await saveCurrentConversation();
+    if (!saved) {
+      logger.warn('Keeping a running turn on screen: the write before moving it did not land', {
+        conversationId,
+      });
+      return false;
+    }
+    if (currentConversationId.value !== conversationId) return false;
+    return chatStore.detachLiveTurn(conversationId, keepThroughId);
+  }
+
   let saveWriting: Promise<boolean> | null = null;
   /** Writes waiting to go out, newest per conversation, in order. */
   const saveQueue = new Map<string, ConversationUpdate>();
@@ -871,12 +933,21 @@ export const useConversationsStore = defineStore('conversations', () => {
 
     loadingNewer.value = true;
     try {
+      const held = chatStore.detachedTurnFor(id);
       const page = await window.electron.conversation.getNewer(
-        id, from, CONSTANTS.CONVERSATION.WINDOW_SIZE,
+        id, from, CONSTANTS.CONVERSATION.WINDOW_SIZE, held?.[0]?.id ?? null,
       );
       if (!page) return 0;
       // Switched away while this was in flight.
       if (currentConversationId.value !== id) return 0;
+
+      // The held turn was stored and let go of while this was read, so the
+      // page stops short of messages that are now simply stored and its count
+      // is behind. The next approach to the edge asks again.
+      if (chatStore.detachedTurnFor(id) !== held) {
+        logger.info('Discarded a page of the tail: the held turn changed while it was read', { id });
+        return 0;
+      }
 
       // Or the same conversation moved to a different stretch of itself. The
       // page belongs after `from` and nowhere else — measured, appending it
@@ -936,6 +1007,74 @@ export const useConversationsStore = defineStore('conversations', () => {
     } catch (err) {
       logger.error('Failed to jump to the latest messages', { id, err });
       error.value = 'Could not load the newest messages';
+      return false;
+    }
+  }
+
+  /**
+   * Make sure a message is loaded, so it can be scrolled to. True when it is
+   * on screen afterwards.
+   *
+   * Opening a search hit needs this. The conversation is held as a window of
+   * itself, so a hit further back than that window is not loaded, and
+   * scrolling to it found no row and did nothing at all.
+   *
+   * The window is replaced by the stretch around the hit, so it stays a
+   * window — including while a turn is still being written into it: that turn
+   * is held apart first (see `releaseWindowFromLiveTurn`) and keeps receiving
+   * everything it writes off screen. A hit inside that held turn is reached by
+   * going back to the end of the conversation instead.
+   */
+  async function revealMessage(conversationId: string, messageId: string): Promise<boolean> {
+    if (currentConversationId.value !== conversationId) return false;
+    const onScreen = () => chatStore.messages.some((m) => m.id === messageId);
+    if (onScreen()) return true;
+
+    const half = Math.floor(CONSTANTS.CONVERSATION.WINDOW_SIZE / 2);
+    try {
+      // Re-read, never patched up, if the held turn changes while the stretch
+      // is read: its count would be behind. Bounded, because each pass waits
+      // on the disk and a turn cannot end more than once.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (chatStore.detachedTurnFor(conversationId)?.some((m) => m.id === messageId)) {
+          return (await jumpToLatest()) && onScreen();
+        }
+        if (!(await releaseWindowFromLiveTurn(conversationId))) {
+          // A failed save has already said so, in its own words.
+          error.value ??= 'Could not open that part of the conversation while the answer is being written';
+          return false;
+        }
+        if (currentConversationId.value !== conversationId) return false;
+
+        const held = chatStore.detachedTurnFor(conversationId);
+        const around = await window.electron.conversation.getAround(
+          conversationId, messageId, half, half, held?.[0]?.id ?? null,
+        );
+        if (currentConversationId.value !== conversationId) return false;
+        if (chatStore.detachedTurnFor(conversationId) !== held) continue;
+        // A turn started in the window while the stretch was read: it has to
+        // be held apart before the window is replaced.
+        if (chatStore.windowHoldsLiveTurn(conversationId)) continue;
+        if (!around) {
+          logger.warn('A search hit is no longer stored', { conversationId, messageId });
+          return false;
+        }
+
+        chatStore.loadMessages(around.messages, around.olderCount, around.newerCount);
+        if (around.newerCount === 0) chatStore.absorbDetachedTurn(conversationId);
+        logger.info('Loaded the stretch around a message', {
+          conversationId, messageId, held: around.messages.length,
+          older: around.olderCount, newer: around.newerCount,
+        });
+        return onScreen();
+      }
+      logger.warn('Gave up opening a search hit: the conversation kept changing under it', {
+        conversationId, messageId,
+      });
+      return false;
+    } catch (err) {
+      logger.error('Failed to load the messages around a search hit', { conversationId, messageId, err });
+      error.value = 'Could not load that part of the conversation';
       return false;
     }
   }
@@ -1241,6 +1380,8 @@ export const useConversationsStore = defineStore('conversations', () => {
     loadEarlierMessages,
     loadNewerMessages,
     jumpToLatest,
+    revealMessage,
+    slideWindowAround,
     loadingEarlier,
     loadingNewer,
     saveConversation,

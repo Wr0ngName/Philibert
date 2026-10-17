@@ -1683,6 +1683,8 @@ export const IPC_CHANNELS = {
   IMAGE_READ: 'image:read',
   /** Read a page of messages newer than the ones already held. */
   CONVERSATION_GET_NEWER: 'conversation:get-newer',
+  /** Read the stretch of a conversation around one message. */
+  CONVERSATION_GET_AROUND: 'conversation:get-around',
   /** Rename a conversation */
   CONVERSATION_RENAME: 'conversation:rename',
   /** Delete a conversation */

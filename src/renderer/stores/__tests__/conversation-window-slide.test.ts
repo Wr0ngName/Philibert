@@ -17,6 +17,7 @@
  * real ConversationService. Only Electron and the filesystem are faked.
  */
 
+import { mount } from '@vue/test-utils';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import { IPC_CHANNELS, type ChatMessage, type Conversation } from '@shared/types';
@@ -39,6 +40,7 @@ import { setupConversationIPC } from '../../../main/ipc/conversations';
 import { ConversationService } from '../../../main/services/ConversationService';
 import '../../../preload/preload';
 import ChatWindow from '../../components/chat/ChatWindow.vue';
+import ConversationSearch from '../../components/chat/ConversationSearch.vue';
 import { CONSTANTS } from '../../constants/app';
 import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
@@ -159,9 +161,7 @@ describe('sliding the window through a long conversation', () => {
     const anchor = chatStore.messages[0]?.id;
     const loaded = await store.loadEarlierMessages();
     await settle();
-    if (loaded > 0 && anchor && chatStore.messages.length > WINDOW_MAX) {
-      chatStore.trimWindowAround(CONV, anchor, WINDOW_SIZE, WINDOW_SIZE);
-    }
+    if (loaded > 0 && anchor) await store.slideWindowAround(CONV, anchor);
     return loaded;
   }
 
@@ -170,9 +170,7 @@ describe('sliding the window through a long conversation', () => {
     const anchor = chatStore.messages.at(-1)?.id;
     const loaded = await store.loadNewerMessages();
     await settle();
-    if (loaded > 0 && anchor && chatStore.messages.length > WINDOW_MAX) {
-      chatStore.trimWindowAround(CONV, anchor, WINDOW_SIZE, WINDOW_SIZE);
-    }
+    if (loaded > 0 && anchor) await store.slideWindowAround(CONV, anchor);
     return loaded;
   }
 
@@ -908,5 +906,625 @@ describe('sliding the window through a long conversation', () => {
       expectContiguous();
       expect(accountedTotal()).toBe(total);
     });
+  });
+
+  // =========================================================================
+  // A turn still running when the window has to let go of its end
+  // =========================================================================
+  //
+  // Reading back, or opening a search hit, unloads the newest messages. While
+  // a turn is writing into them that used to be refused outright — so the
+  // window simply grew past its bound for as long as the turn ran — and the
+  // obvious alternative, replacing the window, takes away the list the turn's
+  // chunks and tool results look their messages up in. Both are tried here,
+  // with the turn kept writing throughout, and judged by what reaches the
+  // disk.
+  describe('a turn still running when the window has to let go of its end', () => {
+    beforeEach(async () => {
+      mountApp(ChatWindow);
+      await settle();
+    });
+
+    /** Start a turn the way sendMessage does, in its order. */
+    function startTurn(prompt: string): void {
+      chatStore.addUserMessage(prompt);
+      chatStore.startAssistantMessage(CONV);
+      chatStore.setLoading(CONV, true);
+      chatStore.beginMessageBuffer(CONV);
+    }
+
+    function toolCall(blockId: string): void {
+      chatStore.addAutoToolUseMessage(CONV, {
+        toolUseBlockId: blockId, toolName: 'Read', input: {}, description: `read ${blockId}`,
+      });
+    }
+
+    function toolResult(blockId: string): void {
+      chatStore.updateToolUseResult(CONV, { toolUseBlockId: blockId, outputFile: `/out/${blockId}` });
+    }
+
+    async function endTurn(): Promise<void> {
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+      await settle(30);
+    }
+
+    /** The messages a turn really produced, as opposed to the fixture's. */
+    function turnMessages(list: ChatMessage[]): ChatMessage[] {
+      return list.filter((m) => !/^msg_\d+$/.test(m.id));
+    }
+
+    /** Everything the turn said, in order, across however many messages. */
+    function turnText(list: ChatMessage[]): string {
+      return turnMessages(list)
+        .filter((m) => m.role === 'assistant' && !m.toolUse)
+        .map((m) => m.content)
+        .join('');
+    }
+
+    /** What is stored, checked for the things that must never happen. */
+    function stored(): ChatMessage[] {
+      const saved = onDisk(CONV)?.messages ?? [];
+      const ids = saved.map((m) => m.id);
+      expect(new Set(ids).size, 'a message is stored twice').toBe(ids.length);
+      expect(saved[0]?.id, 'the file was shortened').toBe('msg_0');
+      return saved;
+    }
+
+    it('keeps the window bounded when the reader reads back during the turn', async () => {
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'a ');
+      // Scrolled away from the end, as the list reports. Left pinned, the
+      // save made before holding the turn apart trims the window to its
+      // newest messages by itself — which kept it small without the slide
+      // ever letting go of the end, and hid a slide that never did.
+      chatStore.setTailPinned(CONV, false);
+
+      for (let page = 0; page < 4; page += 1) {
+        expect(await readBack(), `page ${page} of history did not arrive`).toBeGreaterThan(0);
+        expect(chatStore.messages.length).toBeLessThanOrEqual(WINDOW_MAX);
+        expectContiguous();
+        chatStore.appendChunk(CONV, `${page} `);
+      }
+      toolCall('tb-read-back');
+      toolResult('tb-read-back');
+      chatStore.appendChunk(CONV, 'end');
+      expect(chatStore.newerMessageCount, 'the tail was never let go of').toBeGreaterThan(0);
+
+      await endTurn();
+
+      const saved = stored();
+      expect(turnText(saved)).toBe('a 0 1 2 3 end');
+      expect(saved.find((m) => m.toolUse?.toolUseBlockId === 'tb-read-back')?.toolUse?.outputFile)
+        .toBe('/out/tb-read-back');
+      expect(accountedTotal()).toBe(saved.length);
+    }, 20_000);
+
+    it('opens a search hit far back during the turn without holding more than a window', async () => {
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'before ');
+
+      expect(await store.revealMessage(CONV, 'msg_100')).toBe(true);
+
+      expect(chatStore.messages.some((m) => m.id === 'msg_100')).toBe(true);
+      expect(chatStore.messages.length).toBeLessThanOrEqual(WINDOW_SIZE + 1);
+      expectContiguous();
+      // The turn is off screen, so none of it is in the window — and none of
+      // it is unaccounted for either.
+      expect(turnMessages(chatStore.messages).filter((m) => m.role === 'assistant')).toHaveLength(0);
+      expect(accountedTotal()).toBe(TOTAL + 1 + (chatStore.detachedTurnFor(CONV)?.length ?? 0));
+
+      chatStore.appendChunk(CONV, 'after ');
+      toolCall('tb-search');
+      toolResult('tb-search');
+      chatStore.appendChunk(CONV, 'done');
+      await endTurn();
+
+      const saved = stored();
+      expect(turnText(saved)).toBe('before after done');
+      expect(saved.find((m) => m.toolUse?.toolUseBlockId === 'tb-search')?.toolUse?.outputFile)
+        .toBe('/out/tb-search');
+      expect(accountedTotal()).toBe(saved.length);
+      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
+
+      // And reading forward comes back through all of it, the turn once.
+      let guard = 0;
+      while (chatStore.newerMessageCount > 0 && guard < 20) {
+        await readForward();
+        guard += 1;
+        expectContiguous();
+      }
+      expect(chatStore.newerMessageCount).toBe(0);
+      expect(turnText(chatStore.messages)).toBe('before after done');
+      const ids = chatStore.messages.map((m) => m.id);
+      expect(new Set(ids).size).toBe(ids.length);
+    }, 20_000);
+
+    it('keeps every part of a turn that streams while the user is in another conversation', async () => {
+      // The turn is held apart from the window, and switching away saves it
+      // mid-turn. That save used to stop holding it — while it was still being
+      // written — so everything it said afterwards had nowhere to go.
+      await readBackUntilTailUnloads();
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'one ');
+
+      expect(await store.switchConversation('conv-elsewhere')).toBe(true);
+      await settle();
+      chatStore.appendChunk(CONV, 'two ');
+      toolCall('tb-away');
+      toolResult('tb-away');
+      chatStore.appendChunk(CONV, 'three');
+
+      expect(await store.switchConversation(CONV)).toBe(true);
+      await settle();
+      await endTurn();
+
+      const saved = stored();
+      expect(turnText(saved)).toBe('one two three');
+      expect(saved.find((m) => m.toolUse?.toolUseBlockId === 'tb-away')?.toolUse?.outputFile)
+        .toBe('/out/tb-away');
+    }, 20_000);
+
+    it('changes nothing when the save it needs first does not land', async () => {
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'kept ');
+      const before = chatStore.messages.map((m) => m.id);
+
+      // Every attempt: the service retries a failed write, so failing one
+      // write is not a failed save.
+      disk.failWrites = true;
+      expect(await store.revealMessage(CONV, 'msg_100')).toBe(false);
+
+      expect(chatStore.messages.map((m) => m.id)).toEqual(before);
+      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
+      // Told why, in the save's own words rather than a guess at them.
+      expect(store.error).toMatch(/Failed to save conversation/);
+      disk.failWrites = false;
+      chatStore.appendChunk(CONV, 'still');
+      await endTurn();
+      expect(turnText(stored())).toBe('kept still');
+    }, 20_000);
+
+    it('shows the live turn, not a stale stored copy of it, on jumping back to the end', async () => {
+      // Opening the hit stored the turn as far as it had got. Jumping back to
+      // the end reads that copy off disk — and it is behind what is in memory.
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'a');
+      expect(await store.revealMessage(CONV, 'msg_100')).toBe(true);
+      chatStore.appendChunk(CONV, 'b');
+
+      expect(await store.jumpToLatest()).toBe(true);
+      await settle();
+
+      expect(turnText(chatStore.messages)).toBe('ab');
+      const ids = chatStore.messages.map((m) => m.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(chatStore.newerMessageCount).toBe(0);
+
+      chatStore.appendChunk(CONV, 'c');
+      expect(turnText(chatStore.messages)).toBe('abc');
+      await endTurn();
+      expect(turnText(stored())).toBe('abc');
+    }, 20_000);
+
+    /**
+     * Hold back the answer to one IPC read until the test lets it through.
+     * The read itself happens at once, against the disk as it is then; only
+     * its delivery waits — which is IPC latency, and the window in which the
+     * conversation changes under a read already made.
+     */
+    function delayDelivery(method: 'getAround' | 'getNewer'): () => void {
+      const api = window.electron.conversation as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+      const original = api[method];
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      api[method] = async (...args: unknown[]) => {
+        const answer = await original(...args);
+        await gate;
+        return answer;
+      };
+      return () => {
+        api[method] = original;
+        release();
+      };
+    }
+
+    it('re-reads the stretch around a hit when the turn ends while it is in flight', async () => {
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'x');
+      expect(await store.revealMessage(CONV, 'msg_100')).toBe(true);
+      expect(chatStore.detachedTurnFor(CONV)).not.toBeNull();
+
+      // Read while the turn is held; delivered after it has ended and been
+      // stored — so its count stops short of messages that are now stored.
+      const deliver = delayDelivery('getAround');
+      const opening = store.revealMessage(CONV, 'msg_3000');
+      await settle(20);
+      await endTurn();
+      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
+      deliver();
+      expect(await opening).toBe(true);
+      await settle(20);
+
+      const saved = stored();
+      expectContiguous();
+      expect(chatStore.messages.some((m) => m.id === 'msg_3000')).toBe(true);
+      expect(accountedTotal()).toBe(saved.length);
+    }, 20_000);
+
+    it('discards a page of the tail when the turn ends while it is in flight', async () => {
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'y');
+      // Outside the window the conversation opened with, so it is replaced and
+      // the turn held apart; close enough to the end that a page reaches it.
+      expect(await store.revealMessage(CONV, `msg_${TOTAL - 700}`)).toBe(true);
+      expect(chatStore.detachedTurnFor(CONV)).not.toBeNull();
+
+      const deliver = delayDelivery('getNewer');
+      const reading = store.loadNewerMessages();
+      await settle(20);
+      await endTurn();
+      deliver();
+      await reading;
+      await settle(20);
+
+      const saved = stored();
+      expectContiguous();
+      expect(accountedTotal()).toBe(saved.length);
+      // And the next page comes back through all of it, the turn once.
+      let guard = 0;
+      while (chatStore.newerMessageCount > 0 && guard < 10) {
+        await readForward();
+        guard += 1;
+      }
+      expect(chatStore.newerMessageCount).toBe(0);
+      expect(turnText(chatStore.messages)).toBe('y');
+      expect(accountedTotal()).toBe(saved.length);
+    }, 20_000);
+
+    it('never shows a held turn twice while reading forward through a long one', async () => {
+      // A turn long enough that a page boundary falls inside the part of it
+      // the save stored. A page running into it would put stale copies of
+      // held messages in the window, alongside the held ones.
+      startTurn('a long question');
+      for (let n = 0; n < WINDOW_SIZE + 100; n += 1) toolCall(`tb-fwd-${n}`);
+      chatStore.appendChunk(CONV, 'long');
+      expect(await store.revealMessage(CONV, `msg_${TOTAL - 700}`)).toBe(true);
+      const heldIds = new Set(chatStore.detachedTurnFor(CONV)!.map((m) => m.id));
+
+      let guard = 0;
+      while (chatStore.newerMessageCount > 0 && guard < 10) {
+        await readForward();
+        guard += 1;
+        const held = chatStore.detachedTurnFor(CONV) ?? [];
+        const both = chatStore.messages.filter((m) => held.some((h) => h.id === m.id));
+        expect(both, 'a held message is also in the window').toEqual([]);
+        expectContiguous();
+      }
+      expect(chatStore.newerMessageCount).toBe(0);
+      const ids = chatStore.messages.map((m) => m.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids.filter((id) => heldIds.has(id))).toHaveLength(heldIds.size);
+    }, 20_000);
+
+    it('stays accounted for when the turn ends while the save before opening a hit is held up', async () => {
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'x');
+
+      disk.holdReads = true;
+      const opening = store.revealMessage(CONV, 'msg_100');
+      await settle();
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+      await settle();
+      await releaseReads();
+      await opening;
+      await settle(30);
+
+      const saved = stored();
+      expect(turnText(saved)).toBe('x');
+      expectContiguous();
+      expect(accountedTotal()).toBe(saved.length);
+      const ids = [...chatStore.messages, ...(chatStore.detachedTurnFor(CONV) ?? [])].map((m) => m.id);
+      expect(new Set(ids).size).toBe(ids.length);
+    }, 20_000);
+
+    it('keeps a turn that came back on screen mid-turn writable after leaving again', async () => {
+      // Held apart, then pulled back onto the end of the window by jumping
+      // there while still running. Back in the window, it needs the window's
+      // buffer again — without one, leaving the conversation a second time
+      // left it nowhere to write.
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'one ');
+      expect(await store.revealMessage(CONV, 'msg_100')).toBe(true);
+      expect(await store.jumpToLatest()).toBe(true);
+      await settle();
+      chatStore.appendChunk(CONV, 'two ');
+
+      expect(await store.switchConversation('conv-elsewhere')).toBe(true);
+      await settle();
+      chatStore.appendChunk(CONV, 'three ');
+      toolCall('tb-again');
+      toolResult('tb-again');
+      chatStore.appendChunk(CONV, 'four');
+      expect(await store.switchConversation(CONV)).toBe(true);
+      await settle();
+      await endTurn();
+
+      const saved = stored();
+      expect(turnText(saved)).toBe('one two three four');
+      expect(saved.find((m) => m.toolUse?.toolUseBlockId === 'tb-again')?.toolUse?.outputFile)
+        .toBe('/out/tb-again');
+    }, 20_000);
+
+    it('can hold a turn apart again after it started off screen and was brought back', async () => {
+      // Started while the reader was far back, so held from its first chunk
+      // and marked against the window it started from. Jumping to the end
+      // puts it on screen — next to messages that window never held — and
+      // opening a hit afterwards has to find where it starts all the same.
+      chatStore.setTailPinned(CONV, false);
+      await readBackUntilTailUnloads();
+      startTurn('asked from far back');
+      chatStore.appendChunk(CONV, 'one ');
+      expect(chatStore.detachedTurnFor(CONV)).not.toBeNull();
+
+      expect(await store.jumpToLatest()).toBe(true);
+      await settle();
+      chatStore.appendChunk(CONV, 'two ');
+
+      expect(await store.revealMessage(CONV, 'msg_100')).toBe(true);
+      expect(chatStore.detachedTurnFor(CONV)?.some((m) => m.role === 'assistant')).toBe(true);
+      expectContiguous();
+      chatStore.appendChunk(CONV, 'three');
+      await endTurn();
+      expect(turnText(stored())).toBe('one two three');
+    }, 20_000);
+
+    it('knows where the turn starts when it is marked loading before its first message', async () => {
+      // The other order: loading set, then the first message started. The
+      // turn must still be told apart from the history before it.
+      chatStore.addUserMessage('a question');
+      chatStore.setLoading(CONV, true);
+      chatStore.beginMessageBuffer(CONV);
+      chatStore.startAssistantMessage(CONV);
+      chatStore.appendChunk(CONV, 'first ');
+
+      expect(await store.revealMessage(CONV, 'msg_100')).toBe(true);
+      expect(chatStore.detachedTurnFor(CONV)?.[0]?.role).toBe('assistant');
+      expectContiguous();
+
+      chatStore.appendChunk(CONV, 'second');
+      await endTurn();
+      expect(turnText(stored())).toBe('first second');
+    }, 20_000);
+
+    it('holds apart a turn that opened with a tool call', async () => {
+      // The commonest opening of all. The turn's empty first message is
+      // removed when the tool call arrives, so a turn marked by its first
+      // message was marked by a message that no longer existed — and could
+      // not be held apart at all.
+      startTurn('a question');
+      toolCall('tb-first');
+      toolResult('tb-first');
+      chatStore.appendChunk(CONV, 'then words');
+
+      expect(await store.revealMessage(CONV, 'msg_100')).toBe(true);
+      expect(chatStore.detachedTurnFor(CONV)?.[0]?.toolUse?.toolUseBlockId).toBe('tb-first');
+      expectContiguous();
+
+      chatStore.appendChunk(CONV, ' and more');
+      await endTurn();
+      const saved = stored();
+      expect(turnText(saved)).toBe('then words and more');
+      expect(saved.find((m) => m.toolUse?.toolUseBlockId === 'tb-first')?.toolUse?.outputFile)
+        .toBe('/out/tb-first');
+    }, 20_000);
+
+    it('lets a long turn\'s first tool call still receive its result after a save trims the window', async () => {
+      // At the end, so the save after a write trims the window back to its
+      // newest messages — and a turn longer than that reaches back past
+      // them. Its first tool call is still waiting on a result, found by
+      // looking in the window.
+      startTurn('a long question');
+      for (let n = 0; n < WINDOW_MAX; n += 1) toolCall(`tb-cap-${n}`);
+      expect(await store.saveCurrentConversation()).toBe(true);
+      await settle();
+
+      expect(chatStore.messages.some((m) => m.toolUse?.toolUseBlockId === 'tb-cap-0')).toBe(true);
+      toolResult('tb-cap-0');
+      await endTurn();
+      expect(stored().find((m) => m.toolUse?.toolUseBlockId === 'tb-cap-0')?.toolUse?.outputFile)
+        .toBe('/out/tb-cap-0');
+    }, 20_000);
+
+    it('brings a held turn back when nothing stored lies between it and the window', async () => {
+      // The window ends exactly where the held turn begins, so a page read
+      // forward comes back empty. That empty page is still the end of what
+      // is stored — and so the moment the turn goes back on screen.
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'held ');
+      expect(await store.saveCurrentConversation()).toBe(true);
+      expect(chatStore.detachLiveTurn(CONV)).toBe(true);
+      expect(chatStore.newerMessageCount).toBeGreaterThan(0);
+
+      await readForward();
+
+      expect(chatStore.newerMessageCount).toBe(0);
+      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
+      expect(turnText(chatStore.messages)).toBe('held ');
+      chatStore.appendChunk(CONV, 'back');
+      await endTurn();
+      expect(turnText(stored())).toBe('held back');
+    }, 20_000);
+
+    it('leaves a running turn on screen while the reader is reading it', async () => {
+      // A turn long enough to fill the window on its own, read from inside.
+      // Its end is what the reader is looking at; holding it apart would take
+      // it off the screen under them.
+      startTurn('a long question');
+      for (let n = 0; n < WINDOW_MAX; n += 1) toolCall(`tb-long-${n}`);
+      chatStore.appendChunk(CONV, 'reading');
+      const inside = chatStore.messages.find((m) => m.toolUse?.toolUseBlockId === 'tb-long-100')!;
+      // Scrolled up into it, as the list reports when the view leaves the end.
+      chatStore.setTailPinned(CONV, false);
+
+      await store.slideWindowAround(CONV, inside.id);
+
+      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
+      expect(chatStore.messages.some((m) => m.id === inside.id)).toBe(true);
+      expect(chatStore.messages.some((m) => m.isStreaming)).toBe(true);
+      chatStore.appendChunk(CONV, ' on');
+      await endTurn();
+      expect(turnText(stored())).toBe('reading on');
+    }, 20_000);
+
+    it('puts the held turn back on screen when the stretch around a hit reaches it', async () => {
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'near ');
+      expect(await store.revealMessage(CONV, 'msg_100')).toBe(true);
+
+      // Close enough to the end that the stretch runs up to the held turn.
+      expect(await store.revealMessage(CONV, `msg_${TOTAL - 50}`)).toBe(true);
+
+      expect(chatStore.newerMessageCount).toBe(0);
+      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
+      expect(turnText(chatStore.messages)).toBe('near ');
+      expectContiguous();
+      chatStore.appendChunk(CONV, 'end');
+      await endTurn();
+      expect(turnText(stored())).toBe('near end');
+    }, 20_000);
+
+    it('opens a search hit inside the running turn by going back to the end', async () => {
+      // Stored in part by the save that held it apart, so search can find it
+      // — but the stretch around it is read only up to the held turn.
+      startTurn('a question');
+      chatStore.appendChunk(CONV, 'findable');
+      expect(await store.revealMessage(CONV, 'msg_100')).toBe(true);
+      const inTurn = chatStore.detachedTurnFor(CONV)!.find((m) => m.role === 'assistant')!;
+
+      expect(await store.revealMessage(CONV, inTurn.id)).toBe(true);
+
+      expect(chatStore.messages.some((m) => m.id === inTurn.id)).toBe(true);
+      expect(chatStore.newerMessageCount).toBe(0);
+      expectContiguous();
+      chatStore.appendChunk(CONV, ' still');
+      await endTurn();
+      expect(turnText(stored())).toBe('findable still');
+    }, 20_000);
+
+    it('holds apart a turn that starts while the stretch around a hit is being read', async () => {
+      disk.holdReads = true;
+      const opening = store.revealMessage(CONV, 'msg_100');
+      await settle();
+
+      startTurn('asked meanwhile');
+      chatStore.appendChunk(CONV, 'live');
+      await releaseReads();
+      expect(await opening).toBe(true);
+      await settle(20);
+
+      expect(chatStore.messages.some((m) => m.id === 'msg_100')).toBe(true);
+      expectContiguous();
+      chatStore.appendChunk(CONV, ' more');
+      await endTurn();
+      expect(turnText(stored())).toBe('live more');
+    }, 20_000);
+
+    it('opens a search hit with no turn running, accounted to the message', async () => {
+      expect(await store.revealMessage(CONV, 'msg_100')).toBe(true);
+
+      expectContiguous();
+      expect(chatStore.messages.some((m) => m.id === 'msg_100')).toBe(true);
+      expect(chatStore.messages.length).toBeLessThanOrEqual(WINDOW_SIZE + 1);
+      expect(accountedTotal()).toBe(TOTAL);
+    });
+
+    it('leaves a window that already holds the hit alone, without writing', async () => {
+      const before = chatStore.messages.map((m) => m.id);
+      const writes = disk.writes;
+
+      expect(await store.revealMessage(CONV, `msg_${TOTAL - 5}`)).toBe(true);
+
+      expect(chatStore.messages.map((m) => m.id)).toEqual(before);
+      expect(disk.writes).toBe(writes);
+    });
+
+    it('changes nothing for a hit that is no longer stored', async () => {
+      const before = chatStore.messages.map((m) => m.id);
+
+      expect(await store.revealMessage(CONV, 'msg_gone')).toBe(false);
+
+      expect(chatStore.messages.map((m) => m.id)).toEqual(before);
+    });
+  });
+
+  // =========================================================================
+  // Opening a search hit, the way the user does
+  // =========================================================================
+  //
+  // The search modal itself, against the real search in the main process.
+  // Clicking a hit outside the loaded window did nothing at all: nothing
+  // loaded the stretch it was in, and the scroll was requested before the
+  // conversation had even been switched to.
+  describe('opening a search hit from the search box', () => {
+    let search: ReturnType<typeof mount> | null = null;
+
+    afterEach(() => {
+      search?.unmount();
+      search = null;
+    });
+
+    /** Search, wait out the debounce, and click the hit for `messageId`. */
+    async function openHit(query: string, scope: 'current' | 'all', messageId: string): Promise<void> {
+      search = mount(ConversationSearch, { props: { open: true }, attachTo: document.body });
+      await settle();
+      if (scope === 'all') {
+        const all = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+          .find((b) => /all/i.test(b.textContent ?? ''));
+        all?.click();
+      }
+      const input = document.body.querySelector<HTMLInputElement>('input')!;
+      input.value = query;
+      input.dispatchEvent(new Event('input'));
+      // The search is debounced on a real timer.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await settle(20);
+
+      const number = messageId.replace('msg_', '');
+      const hit = [...document.body.querySelectorAll<HTMLButtonElement>('li button')]
+        .find((b) => new RegExp(`message ${number}(?!\\d)`).test(b.textContent ?? ''));
+      expect(hit, `no search result for ${messageId}`).toBeDefined();
+      hit!.click();
+      // Done when the scroll is requested — the last step, and only taken
+      // once the hit is loaded. Waited for rather than counted in ticks: a
+      // switch, a save and a read of a 4,000-message file take as many as
+      // they take, and a fixed count failed one run in a few.
+      await vi.waitFor(() => expect(chatStore.pendingScrollMessageId).toBe(messageId), {
+        timeout: 5_000,
+      });
+    }
+
+    it('loads the stretch around a hit that is not loaded, then asks to scroll to it', async () => {
+      expect(chatStore.messages.some((m) => m.id === 'msg_123')).toBe(false);
+
+      await openHit('message 123', 'current', 'msg_123');
+
+      expect(chatStore.messages.some((m) => m.id === 'msg_123')).toBe(true);
+      expect(chatStore.messages.length).toBeLessThanOrEqual(WINDOW_SIZE + 1);
+      expect(chatStore.pendingScrollMessageId).toBe('msg_123');
+      expectContiguous();
+      expect(accountedTotal()).toBe(TOTAL);
+    }, 20_000);
+
+    it('switches to the hit conversation first, then loads, then asks to scroll', async () => {
+      expect(await store.switchConversation('conv-elsewhere')).toBe(true);
+      await settle();
+
+      await openHit('message 123', 'all', 'msg_123');
+
+      expect(store.currentConversationId).toBe(CONV);
+      expect(chatStore.messages.some((m) => m.id === 'msg_123')).toBe(true);
+      expect(chatStore.pendingScrollMessageId).toBe('msg_123');
+      expectContiguous();
+    }, 20_000);
   });
 });

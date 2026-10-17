@@ -400,8 +400,14 @@ const electronAPI: ElectronAPI = {
     getOlder: (id: string, beforeId: string, limit: number) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET_OLDER, id, beforeId, limit),
 
-    getNewer: (id: string, afterId: string, limit: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET_NEWER, id, afterId, limit),
+    getNewer: (id: string, afterId: string, limit: number, untilId: string | null = null) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET_NEWER, id, afterId, limit, untilId),
+
+    getAround: (
+      id: string, messageId: string, before: number, after: number, untilId: string | null = null,
+    ) => ipcRenderer.invoke(
+      IPC_CHANNELS.CONVERSATION_GET_AROUND, id, messageId, before, after, untilId,
+    ),
 
     saveImage: (conversationId: string, input: { base64: string; mediaType: string; label?: string }) =>
       ipcRenderer.invoke(IPC_CHANNELS.IMAGE_SAVE, conversationId, input),

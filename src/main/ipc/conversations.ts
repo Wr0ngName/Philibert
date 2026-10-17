@@ -14,6 +14,20 @@ import { ImageStore } from '../services/ImageStore';
 import { validateString, validateObject, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
+/** A count of messages to read must be a positive, finite number. */
+function validateMessageCount(value: unknown, label: string, field: string): void {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new ValidationError(`${label} must be a positive number`, field, ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+  }
+}
+
+/** A message id that may be left out: null when absent, validated when given. */
+function optionalMessageId(value: unknown, label: string): string | null {
+  if (value === undefined || value === null) return null;
+  validateString(value as string, label);
+  return value as string;
+}
+
 export function setupConversationIPC(conversationService: ConversationService): void {
   // Images belong to a conversation and are deleted with it, so they are
   // registered here rather than beside the Claude handlers.
@@ -226,9 +240,7 @@ export function setupConversationIPC(conversationService: ConversationService): 
     try {
       ensureService(conversationService, 'ConversationService');
       validateString(id, 'Conversation ID');
-      if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) {
-        throw new ValidationError('Window limit must be a positive number', 'limit', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
-      }
+      validateMessageCount(limit, 'Window limit', 'limit');
 
       // Null means there is no such conversation, which is an answer rather
       // than a failure — the renderer says so, and keeps "failed to load" for
@@ -258,9 +270,7 @@ export function setupConversationIPC(conversationService: ConversationService): 
         ensureService(conversationService, 'ConversationService');
         validateString(id, 'Conversation ID');
         validateString(beforeId, 'Message ID');
-        if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) {
-          throw new ValidationError('Page limit must be a positive number', 'limit', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
-        }
+        validateMessageCount(limit, 'Page limit', 'limit');
 
         const page = await conversationService.getOlder(id, beforeId, Math.floor(limit));
         if (!page) {
@@ -280,16 +290,16 @@ export function setupConversationIPC(conversationService: ConversationService): 
   // A page of messages newer than the one the renderer holds at its bottom.
   ipcMain.handle(
     IPC_CHANNELS.CONVERSATION_GET_NEWER,
-    async (_event, id: string, afterId: string, limit: number) => {
+    async (_event, id: string, afterId: string, limit: number, untilId?: string | null) => {
       try {
         ensureService(conversationService, 'ConversationService');
         validateString(id, 'Conversation ID');
         validateString(afterId, 'Message ID');
-        if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) {
-          throw new ValidationError('Page limit must be a positive number', 'limit', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
-        }
+        validateMessageCount(limit, 'Page limit', 'limit');
 
-        const page = await conversationService.getNewer(id, afterId, Math.floor(limit));
+        const page = await conversationService.getNewer(
+          id, afterId, Math.floor(limit), optionalMessageId(untilId, 'Held turn start'),
+        );
         if (!page) {
           logger.debug('IPC: conversation:get-newer — no such conversation', { id });
           return null;
@@ -298,6 +308,33 @@ export function setupConversationIPC(conversationService: ConversationService): 
       } catch (error) {
         logger.error('Failed to get newer messages', { error, id, afterId });
         throw new ConfigurationError(formatErrorMessage('Failed to get newer messages', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
+      }
+    },
+  );
+
+  // The stretch of a conversation around one message — opening a search hit
+  // that lies outside the window the renderer holds.
+  ipcMain.handle(
+    IPC_CHANNELS.CONVERSATION_GET_AROUND,
+    async (
+      _event, id: string, messageId: string, before: number, after: number, untilId?: string | null,
+    ) => {
+      try {
+        ensureService(conversationService, 'ConversationService');
+        validateString(id, 'Conversation ID');
+        validateString(messageId, 'Message ID');
+        validateMessageCount(before, 'Messages before', 'before');
+        validateMessageCount(after, 'Messages after', 'after');
+
+        // Null when the conversation or the message is not stored: an
+        // answer, not a failure — the hit can simply no longer be shown.
+        return await conversationService.getAround(
+          id, messageId, Math.floor(before), Math.floor(after),
+          optionalMessageId(untilId, 'Held turn start'),
+        );
+      } catch (error) {
+        logger.error('Failed to get messages around a message', { error, id, messageId });
+        throw new ConfigurationError(formatErrorMessage('Failed to get messages around a message', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
       }
     },
   );

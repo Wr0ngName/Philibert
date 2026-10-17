@@ -24,6 +24,24 @@ export interface ConversationState {
   currentStreamingContent: string;
   /** Message ID being streamed in this conversation */
   streamingMessageId: string | null;
+  /**
+   * Where the running turn starts in the window: it is everything AFTER this
+   * message — chunks, tool calls, their results — so it can be told apart
+   * from the history before it when it has to be held off screen (see
+   * `detachLiveTurn`). `{ id: null }` means it starts at the window's first
+   * row; null means it is not known, and nothing is moved on a guess.
+   *
+   * The message before the turn rather than the turn's first message,
+   * because that one does not survive: a turn that opens with a tool call
+   * removes its empty first message (see `splitStreamingForTool`), and a
+   * marker naming it named nothing. What came before the turn is history,
+   * and a turn does not remove history.
+   *
+   * Left in place after the turn ends: a later turn records its own, and a
+   * stale one only names a message further back, which holds more than the
+   * turn rather than less.
+   */
+  turnAfter: { id: string | null } | null;
   /** Pending actions waiting for user approval */
   pendingActions: PendingAction[];
   /**
@@ -183,6 +201,7 @@ function createConversationState(): ConversationState {
     isLoading: false,
     currentStreamingContent: '',
     streamingMessageId: null,
+    turnAfter: null,
     pendingActions: [],
     queuedPrompts: [],
     queueHeld: false,
@@ -511,10 +530,10 @@ export const useChatStore = defineStore('chat', () => {
    * as a reason to discard the update.
    */
   function messageSink(conversationId: string): ChatMessage[] | null {
-    const state = conversationStates.value.get(conversationId);
     // A turn that does not belong to the window collects apart from it,
     // whether or not the conversation is the one on screen.
-    if (state && state.newerCount > 0) return state.detachedTurn;
+    const state = conversationStates.value.get(conversationId);
+    if (state && !windowReachesEnd(conversationId)) return state.detachedTurn;
     return windowList(conversationId);
   }
 
@@ -536,9 +555,19 @@ export const useChatStore = defineStore('chat', () => {
     return state.bufferedMessages;
   }
 
-  /** Does the window run to the end of the conversation? */
+  /**
+   * Does the window run to the end of the conversation?
+   *
+   * Not if anything comes after it: stored messages it does not hold, or a
+   * turn held apart from it. The second is not always accompanied by the
+   * first — a running turn moved off screen (see `detachLiveTurn`) can be all
+   * there is after the window — and counting only stored messages put that
+   * turn's chunks back into a window that no longer holds it.
+   */
   function windowReachesEnd(conversationId: string): boolean {
-    return (conversationStates.value.get(conversationId)?.newerCount ?? 0) === 0;
+    const state = conversationStates.value.get(conversationId);
+    if (!state) return true;
+    return state.newerCount === 0 && state.detachedTurn.length === 0;
   }
 
   /**
@@ -1112,13 +1141,17 @@ export const useChatStore = defineStore('chat', () => {
   ): void {
     const state = getConversationState(conversationId);
     state.newerCount = newerCount;
-    if (newer.length === 0) return;
 
     const sink = windowList(conversationId);
     if (!sink) return;
 
     // No dedupe; see prependOlderMessages.
-    sink.push(...newer.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)));
+    if (newer.length > 0) {
+      sink.push(...newer.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)));
+    }
+    // Even after an empty page: when all that is left after the window is a
+    // turn held apart from it, reaching the end of what is stored IS reaching
+    // that turn.
     if (newerCount === 0) absorbDetachedTurn(conversationId);
   }
 
@@ -1139,10 +1172,134 @@ export const useChatStore = defineStore('chat', () => {
     // transcript, and the next save would write it there.
     if (conversationId !== currentConversationId.value) return;
 
-    const held = new Set(messages.value.map((m) => m.id));
-    const fresh = state.detachedTurn.filter((m) => !held.has(m.id));
-    if (fresh.length > 0) messages.value.push(...fresh);
+    // A message the window already holds is a stored copy of a held one —
+    // read off disk by the page or the jump that caught the window up — and
+    // the held one is never behind it: it is what the turn has been writing
+    // into since. So the held object takes the copy's place rather than the
+    // copy being kept. Keeping the copy showed a running turn as it was when
+    // last saved, and its next chunk was appended to that stale text.
+    const position = new Map(messages.value.map((m, i) => [m.id, i]));
+    const first = state.detachedTurn[0];
+    for (const message of state.detachedTurn) {
+      const at = position.get(message.id);
+      if (at === undefined) messages.value.push(message);
+      else messages.value[at] = message;
+    }
     state.detachedTurn = [];
+
+    // Wherever the turn now sits in the window is where it starts — the
+    // window it started from may be long gone.
+    if (first && state.isLoading) {
+      const at = messages.value.indexOf(first);
+      state.turnAfter = { id: at > 0 ? messages.value[at - 1].id : null };
+    }
+
+    // Back on screen while still being written: buffer it again, so it keeps
+    // a sink if the user leaves the conversation before it ends.
+    if (state.isLoading) beginMessageBuffer(conversationId);
+  }
+
+  /**
+   * Whether a turn is still writing into `list`: one is running, its output
+   * is being buffered, or a message in it is still streaming. An arriving
+   * chunk looks for its message in the window, so such a list must not be
+   * unloaded.
+   */
+  function turnIsLive(state: ConversationState, list: readonly ChatMessage[]): boolean {
+    return turnIsWriting(state, list) || state.bufferingMessages;
+  }
+
+  /**
+   * Whether a turn is actually writing into `list` now: running, or a message
+   * in it still streaming. Narrower than {@link turnIsLive}, which also counts
+   * a buffer kept after a failed write — that holds history to be saved, not
+   * a turn with chunks and results still to come.
+   */
+  function turnIsWriting(state: ConversationState, list: readonly ChatMessage[]): boolean {
+    return state.isLoading || list.some((m) => m.isStreaming);
+  }
+
+  /**
+   * Whether the window on screen holds a turn that is still being written.
+   *
+   * Only a window that reaches the end of the conversation can: one that
+   * falls short collects a live turn apart from itself (see
+   * {@link ConversationState.detachedTurn}), so replacing it loses nothing.
+   */
+  function windowHoldsLiveTurn(conversationId: string): boolean {
+    const state = conversationStates.value.get(conversationId);
+    const list = windowList(conversationId);
+    if (!state || !list || !windowReachesEnd(conversationId)) return false;
+    return turnIsLive(state, list);
+  }
+
+  /**
+   * Move the turn being written out of the on-screen window and hold it apart
+   * from it, so the window can let go of its end. True when the window no
+   * longer holds a live turn.
+   *
+   * Reading back, or opening a search hit, unloads the newest messages — and
+   * while a turn was writing into them that was refused outright, so the
+   * window grew past its bound for as long as the turn ran. Unloading them
+   * anyway would take away the list the turn's chunks and tool results look
+   * their messages up in. Held apart instead, they keep receiving all of it
+   * (see `messageSink`), are written from there, and come back on the end of
+   * the window once it reaches the end of the conversation again.
+   *
+   * The caller must have saved the window first, and seen the write land:
+   * everything left in the window may be unloaded after this, and only what
+   * is on disk can be.
+   *
+   * `keepThroughId` is the last message the reader still needs on screen. A
+   * turn that starts at or before it is what they are reading, and is left
+   * where it is. An id rather than an index, because the save the caller made
+   * first can trim the head of the window and move every index.
+   */
+  /**
+   * Index in `list` at which the running turn starts (see `turnAfter`), or
+   * -1 when that is not known — in which case nothing may be moved or
+   * dropped on its account.
+   */
+  function turnStartIn(state: ConversationState, list: readonly ChatMessage[]): number {
+    const after = state.turnAfter;
+    if (!after) return -1;
+    if (after.id === null) return 0;
+    const at = list.findIndex((m) => m.id === after.id);
+    return at === -1 ? -1 : at + 1;
+  }
+
+  function detachLiveTurn(conversationId: string, keepThroughId: string | null = null): boolean {
+    const state = conversationStates.value.get(conversationId);
+    if (!state || conversationId !== currentConversationId.value) return false;
+    if (!windowHoldsLiveTurn(conversationId)) return true;
+
+    const list = messages.value;
+    // Live only because a failed write left a buffer holding the history
+    // (see retainUnsavedMessages). The caller's write just landed, so that
+    // buffer has done its job and nothing is being written.
+    if (!turnIsWriting(state, list)) {
+      endMessageBuffer(conversationId);
+      return true;
+    }
+
+    const start = turnStartIn(state, list);
+    if (start === -1) {
+      logger.warn('Cannot tell where the running turn starts; keeping it on screen', {
+        conversationId, turnAfter: state.turnAfter,
+      });
+      return false;
+    }
+    const keepThrough = keepThroughId ? list.findIndex((m) => m.id === keepThroughId) : -1;
+    if (start <= keepThrough) return false;
+
+    // In place: the list is shared with the buffer, which is ended right
+    // after — a turn held apart needs none (see beginMessageBuffer).
+    state.detachedTurn = list.splice(start);
+    endMessageBuffer(conversationId);
+    logger.info('Held a running turn apart from the window', {
+      conversationId, held: state.detachedTurn.length, window: list.length,
+    });
+    return true;
   }
 
   /**
@@ -1154,9 +1311,11 @@ export const useChatStore = defineStore('chat', () => {
    * N unloaded the very rows they were looking at. The band is measured from
    * where they are.
    *
-   * The tail end is refused while a turn is live or anything is streaming: an
-   * arriving chunk looks for its message in the window, and unloading the tail
-   * would leave it nowhere to go. The head end has no such constraint.
+   * The tail end is refused while the window holds a turn that is still being
+   * written: an arriving chunk looks for its message in the window, and
+   * unloading the tail would leave it nowhere to go. The conversations store
+   * holds such a turn apart first (`detachLiveTurn`), after which the tail is
+   * stored history like any other. The head end has no such constraint.
    */
   function trimWindowAround(
     conversationId: string,
@@ -1176,12 +1335,9 @@ export const useChatStore = defineStore('chat', () => {
 
     const keepUntil = at + keepAfter;
     let droppedTail = Math.max(0, sink.length - 1 - keepUntil);
-    if (droppedTail > 0) {
-      const live = state.isLoading
-        || state.bufferingMessages
-        || sink.slice(-droppedTail).some((m) => m.isStreaming);
-      if (live) droppedTail = 0;
-    }
+    // A turn still writing into the window keeps its end; `detachLiveTurn`
+    // moves it out first when the end has to go.
+    if (droppedTail > 0 && windowHoldsLiveTurn(conversationId)) droppedTail = 0;
 
     const droppedHead = Math.max(0, at - keepBefore);
 
@@ -1214,7 +1370,18 @@ export const useChatStore = defineStore('chat', () => {
     const sink = windowList(conversationId);
     if (!sink || sink.length <= keep) return 0;
 
-    const drop = sink.length - keep;
+    let drop = sink.length - keep;
+    // Never into a turn still being written. Not only its streaming message:
+    // a tool call waiting on its result is found by looking in the window
+    // too, and a turn longer than `keep` reached back past its own start —
+    // measured, a 601-message turn lost its first 101 at the first save after
+    // the reader reached the end, results still to come for every one.
+    if (windowReachesEnd(conversationId) && turnIsWriting(state, sink)) {
+      const start = turnStartIn(state, sink);
+      if (start === -1) return 0;
+      drop = Math.min(drop, start);
+    }
+    if (drop <= 0) return 0;
     // A message still streaming has content arriving into it; dropping it
     // would strand that content. Never trim into the live tail.
     if (sink.slice(0, drop).some((m) => m.isStreaming)) return 0;
@@ -1256,6 +1423,12 @@ export const useChatStore = defineStore('chat', () => {
   function detachedTurnStored(conversationId: string): void {
     const state = conversationStates.value.get(conversationId);
     if (!state || state.detachedTurn.length === 0) return;
+    // Still being written: a save mid-turn — switching away, opening a search
+    // hit — stores it as far as it has got, and it is still where the rest of
+    // it is going. Letting go of it here left the turn's next chunks and tool
+    // results nothing to land in. It stays held, and uncounted among the
+    // stored messages after the window, until a save after the turn ends.
+    if (state.isLoading || state.detachedTurn.some((m) => m.isStreaming)) return;
     state.newerCount += state.detachedTurn.length;
     state.detachedTurn = [];
   }
@@ -1266,6 +1439,15 @@ export const useChatStore = defineStore('chat', () => {
 
   function setLoading(conversationId: string, loading: boolean): void {
     const state = getConversationState(conversationId);
+    // A turn starts here: it is whatever follows the window's last message,
+    // not counting the turn's own first message if sendMessage has already
+    // started it.
+    if (loading && !state.isLoading) {
+      const list = windowList(conversationId) ?? [];
+      const last = list.length - 1;
+      const before = list[last]?.id === state.streamingMessageId ? last - 1 : last;
+      state.turnAfter = { id: list[before]?.id ?? null };
+    }
     state.isLoading = loading;
   }
 
@@ -2385,6 +2567,8 @@ export const useChatStore = defineStore('chat', () => {
     detachedTurnFor,
     detachedTurnStored,
     absorbDetachedTurn,
+    windowHoldsLiveTurn,
+    detachLiveTurn,
     unwrittenMessagesFor,
     unwrittenByConversation,
     windowReachesEnd,

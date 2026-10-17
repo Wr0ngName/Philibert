@@ -166,6 +166,15 @@ function installWindowIpc(): void {
         const end = Math.min(whole.length, at + 1 + limit);
         return { messages: whole.slice(at + 1, end), newerCount: whole.length - end };
       },
+      getAround: async (_id: string, messageId: string, before: number, after: number) => {
+        const at = indexOf(messageId);
+        if (at === -1) return null;
+        const start = Math.max(0, at - before);
+        const end = Math.min(whole.length, at + 1 + after);
+        return {
+          messages: whole.slice(start, end), olderCount: start, newerCount: whole.length - end,
+        };
+      },
       getWindow: async (_id: string, limit: number) => {
         const start = Math.max(0, whole.length - limit);
         return {
@@ -1120,6 +1129,67 @@ describe('MessageList scrolling with real layout', () => {
       const travelled = await wheelUp(container, 8, 120, 2);
 
       expect(travelled).toBeGreaterThan(8 * 120 * 0.8);
+    });
+  });
+  // =========================================================================
+  // Jumping to a search hit
+  // =========================================================================
+  describe('jumping to a search hit', () => {
+    /** Whether the message's row is inside the viewport, and highlighted. */
+    function shown(container: HTMLElement, id: string): { visible: boolean; flashed: boolean } {
+      const row = container.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+      if (!row) return { visible: false, flashed: false };
+      const r = row.getBoundingClientRect();
+      const c = container.getBoundingClientRect();
+      return {
+        visible: r.bottom > c.top && r.top < c.bottom,
+        flashed: row.classList.contains('search-hit-flash'),
+      };
+    }
+
+    it('lands on a loaded message far above the view', async () => {
+      seedConversation();
+      const { wrapper, container } = await mountList();
+      const target = 'msg-40';
+
+      await (wrapper.vm as unknown as { scrollToMessage: (id: string) => Promise<void> })
+        .scrollToMessage(target);
+      // Long enough for a smooth scroll to have finished, had it survived.
+      await settle(90);
+
+      expect(shown(container, target)).toEqual({ visible: true, flashed: true });
+    });
+
+    it('lands on a loaded message in a conversation held as a window', async () => {
+      seedWindowedConversation();
+      const { wrapper, container } = await mountList();
+      const target = 'msg-40';
+
+      await (wrapper.vm as unknown as { scrollToMessage: (id: string) => Promise<void> })
+        .scrollToMessage(target);
+      await settle(90);
+
+      expect(shown(container, target)).toEqual({ visible: true, flashed: true });
+    });
+
+    it('lands on a message that is not loaded, by loading the stretch around it', async () => {
+      seedWindowedConversation();
+      const { wrapper, container } = await mountList();
+      const store = useChatStore();
+      const target = 'older-700';
+      expect(store.messages.some((m) => m.id === target), 'the hit is already loaded').toBe(false);
+
+      await useConversationsStore().revealMessage('conv-browser', target);
+      await settle(10);
+      await (wrapper.vm as unknown as { scrollToMessage: (id: string) => Promise<void> })
+        .scrollToMessage(target);
+      await settle(90);
+
+      expect(shown(container, target)).toEqual({ visible: true, flashed: true });
+      // Still a window: the stretch around the hit, not everything up to it.
+      expect(store.messages.length).toBeLessThanOrEqual(WINDOW_MAX);
+      expect(store.olderMessageCount + store.messages.length + store.newerMessageCount)
+        .toBe(OLDER_COUNT + MESSAGE_COUNT);
     });
   });
   // =========================================================================

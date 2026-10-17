@@ -310,12 +310,30 @@ export interface ElectronAPI {
       id: string,
       mediaType: string,
     ) => Promise<{ base64: string; mediaType: ImageMediaType } | null>;
-    /** The `limit` messages stored immediately after `afterId`. */
+    /**
+     * The `limit` messages stored immediately after `afterId`, stopping at
+     * `untilId` — the first message of a turn held in memory apart from the
+     * window, which must not come back as a stale stored copy.
+     */
     getNewer: (
       id: string,
       afterId: string,
       limit: number,
+      untilId?: string | null,
     ) => Promise<{ messages: ChatMessage[]; newerCount: number } | null>;
+    /**
+     * Up to `before` messages ahead of `messageId`, the message, and up to
+     * `after` behind it, with how many are stored either side — stopping at
+     * `untilId`, as `getNewer` does. Null when the conversation or the
+     * message is not stored, or the message lies inside that held turn.
+     */
+    getAround: (
+      id: string,
+      messageId: string,
+      before: number,
+      after: number,
+      untilId?: string | null,
+    ) => Promise<{ messages: ChatMessage[]; olderCount: number; newerCount: number } | null>;
     rename: (id: string, newTitle: string) => Promise<void>;
     delete: (id: string) => Promise<void>;
     search: (
