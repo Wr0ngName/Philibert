@@ -277,31 +277,30 @@ function removeAttachment(id: string): void {
 }
 
 /**
- * Pasting an image.
+ * Pasting a file.
  *
- * Only consumed when the clipboard actually holds an image file — pasting
- * text next to a screenshot is still a text paste, and intercepting that
- * would break ordinary pasting.
+ * A paste carrying no files is an ordinary text paste and is left alone —
+ * intercepting those would break the thing the composer is mostly for. A
+ * paste that does carry files goes to `attachFiles`, which names any it
+ * cannot use. Filtering them out here instead meant pasting, say, an SVG did
+ * nothing at all and said nothing about why.
  */
 function handlePaste(event: ClipboardEvent): void {
   const items = event.clipboardData?.files;
+  // No files at all is an ordinary text paste, and not ours to touch.
   if (!items || items.length === 0) return;
-  const images = [...items].filter(isAcceptedImage);
-  if (images.length === 0) return;
 
   event.preventDefault();
-  void attachFiles(images);
+  void attachFiles(items);
 }
 
 function handleDrop(event: DragEvent): void {
   isDraggingOver.value = false;
   const files = event.dataTransfer?.files;
   if (!files || files.length === 0) return;
-  const images = [...files].filter(isAcceptedImage);
-  if (images.length === 0) return;
 
   event.preventDefault();
-  void attachFiles(images);
+  void attachFiles(files);
 }
 
 function handleFilePick(event: Event): void {

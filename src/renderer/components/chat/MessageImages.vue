@@ -64,8 +64,17 @@ async function load(images: MessageImage[], conversationId: string): Promise<voi
   }
 }
 
+/**
+ * Keyed on a STRING, not an array.
+ *
+ * A getter returning a fresh array is a fresh value every time Vue evaluates
+ * it, so the watcher fired on every re-render — revoking the blob URLs and
+ * fetching the bytes again. In a virtualised list, which re-renders rows
+ * constantly, that is a flicker on every scroll and an IPC read per frame.
+ * A string compares by value, so it fires only when the images really change.
+ */
 watch(
-  () => [props.conversationId, props.images.map((i) => i.id).join(',')] as const,
+  () => `${props.conversationId}|${props.images.map((i) => i.id).join(',')}`,
   () => {
     releaseAll();
     failed.value = new Set();
