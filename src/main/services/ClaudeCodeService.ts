@@ -29,6 +29,7 @@ import * as path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
+  AccountInfo,
   AgentInfo as SDKAgentInfo,
   ModelInfo as SDKModelInfo,
   Query,
@@ -71,6 +72,7 @@ import {
   SessionPermissionEntry,
   MessageImage,
   ImageMediaType,
+  type ClaudeAccount,
 } from '../../shared/types';
 import { AsyncChannel } from '../utils/AsyncChannel';
 import { createSender } from '../utils/ipc-helpers';
@@ -240,6 +242,14 @@ export class ClaudeCodeService {
   private send: (channel: string, ...args: unknown[]) => boolean;
   // Cached models list (shared across all sessions)
   private cachedModels: ModelInfo[] = [];
+  /**
+   * The logged-in account, and the login it was read under. Keyed by
+   * `authGeneration` so an account read before a login or logout is never
+   * shown after it.
+   */
+  private cachedAccount: { generation: number; account: ClaudeAccount } | null = null;
+  /** A read already under way, shared by everyone asking for the same login. */
+  private accountRequest: { generation: number; promise: Promise<ClaudeAccount | null> } | null = null;
   // Cached slash commands (shared across all sessions)
   private cachedSlashCommands: SlashCommandInfo[] = [];
   // Cached subagent list (shared across all sessions)
@@ -2406,6 +2416,62 @@ export class ClaudeCodeService {
     }
 
     return [];
+  }
+
+  /**
+   * The account the current login belongs to — email, organization, plan.
+   *
+   * Asked of the CLI, which reads it from the account behind the
+   * credentials; the login flow itself only ever receives tokens. A session
+   * running under the current login answers it; otherwise a throwaway query
+   * does, which is a free control command. Null when it could not be read.
+   */
+  async getAccountInfo(): Promise<ClaudeAccount | null> {
+    const generation = this.authGeneration;
+    if (this.cachedAccount?.generation === generation) return this.cachedAccount.account;
+    if (this.accountRequest?.generation === generation) return this.accountRequest.promise;
+
+    const promise = this.readAccountInfo()
+      .then((account) => {
+        // Filed under the login it was read for, so an answer that arrives
+        // after the login changed is never handed out for the new one.
+        if (account) {
+          this.cachedAccount = { generation, account };
+        }
+        return account;
+      })
+      .finally(() => {
+        if (this.accountRequest?.promise === promise) this.accountRequest = null;
+      });
+    this.accountRequest = { generation, promise };
+    return promise;
+  }
+
+  private async readAccountInfo(): Promise<ClaudeAccount | null> {
+    for (const instance of this.activeSessions.values()) {
+      // A session left over from the previous login would report that one.
+      if (instance.authGeneration !== this.authGeneration) continue;
+      try {
+        return ClaudeCodeService.toClaudeAccount(await instance.query.accountInfo());
+      } catch (error) {
+        logger.warn('Failed to read account info from session', { error });
+      }
+    }
+    return this.withTemporaryQuery('accountInfo', async (tempQuery) =>
+      ClaudeCodeService.toClaudeAccount(await tempQuery.accountInfo()));
+  }
+
+  /** Only the fields shown, and only when the CLI reported them as text. */
+  private static toClaudeAccount(info: AccountInfo): ClaudeAccount {
+    const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
+    const email = text(info.email);
+    const organization = text(info.organization);
+    const subscriptionType = text(info.subscriptionType);
+    return {
+      ...(email ? { email } : {}),
+      ...(organization ? { organization } : {}),
+      ...(subscriptionType ? { subscriptionType } : {}),
+    };
   }
 
   /**

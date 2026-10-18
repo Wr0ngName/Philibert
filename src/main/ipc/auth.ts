@@ -6,7 +6,7 @@ import * as fs from 'fs';
 
 import { ipcMain, BrowserWindow } from 'electron';
 
-import { IPC_CHANNELS, AuthStatus } from '../../shared/types';
+import { IPC_CHANNELS, AuthStatus, type ClaudeAccount } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { AuthenticationError, ERROR_CODES } from '../errors';
 import AuthService from '../services/AuthService';
@@ -60,6 +60,19 @@ export function setupAuthHandlers(
     } catch (error) {
       logger.error('Failed to get auth status', { error });
       throw new AuthenticationError(formatErrorMessage('Failed to get authentication status', error), ERROR_CODES.AUTH_NOT_CONFIGURED, error);
+    }
+  });
+
+  // The account behind the current login, so the user can check which one
+  // the app is using. Null rather than an error when it cannot be read: the
+  // settings panel says so, and nothing else depends on it.
+  ipcMain.handle(IPC_CHANNELS.AUTH_GET_ACCOUNT, async (): Promise<ClaudeAccount | null> => {
+    try {
+      ensureService(claudeService, 'ClaudeCodeService');
+      return await claudeService.getAccountInfo();
+    } catch (error) {
+      logger.warn('Failed to read the logged-in account', { error });
+      return null;
     }
   });
 

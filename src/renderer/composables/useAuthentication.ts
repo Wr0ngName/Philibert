@@ -4,7 +4,7 @@
 
 import { ref } from 'vue';
 
-import type { AuthStatus } from '@shared/types';
+import type { AuthStatus, ClaudeAccount } from '@shared/types';
 
 import { logger } from '../utils/logger';
 
@@ -22,6 +22,16 @@ export function useAuthentication(options: UseAuthenticationOptions = {}) {
   const loginError = ref('');
   const oauthCode = ref('');
   const showCodeInput = ref(false);
+  /** The account behind an OAuth login, once read. */
+  const account = ref<ClaudeAccount | null>(null);
+  /**
+   * Where reading it stands. 'unavailable' is said out loud in the form:
+   * the point of showing the account is that the user can check it, and a
+   * blank where it should be would look like there is nothing to check.
+   */
+  const accountState = ref<'none' | 'loading' | 'loaded' | 'unavailable'>('none');
+  /** Bumped per read, so a slow answer for an earlier login is dropped. */
+  let accountRead = 0;
 
   /**
    * Fetch current authentication status from main process
@@ -32,6 +42,30 @@ export function useAuthentication(options: UseAuthenticationOptions = {}) {
     } catch (err) {
       logger.error('Failed to get auth status', err);
     }
+    void refreshAccount();
+  }
+
+  /**
+   * Read the account behind the login. Only an OAuth login has one with an
+   * email to show; an API key does not.
+   */
+  async function refreshAccount() {
+    const read = ++accountRead;
+    account.value = null;
+    if (!authStatus.value.isAuthenticated || authStatus.value.method !== 'oauth') {
+      accountState.value = 'none';
+      return;
+    }
+    accountState.value = 'loading';
+    let result: ClaudeAccount | null = null;
+    try {
+      result = await window.electron.auth.getAccount();
+    } catch (err) {
+      logger.warn('Failed to read the logged-in account', { error: err });
+    }
+    if (read !== accountRead) return;
+    account.value = result;
+    accountState.value = result?.email ? 'loaded' : 'unavailable';
   }
 
   /**
@@ -149,6 +183,8 @@ export function useAuthentication(options: UseAuthenticationOptions = {}) {
     loginError,
     oauthCode,
     showCodeInput,
+    account,
+    accountState,
 
     // Methods
     refreshAuthStatus,

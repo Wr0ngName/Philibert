@@ -2374,6 +2374,132 @@ describe('ClaudeCodeService', () => {
     it('is harmless when nothing is open', () => {
       expect(service.invalidateSessionAuth('logout')).toEqual({ ended: 0, deferred: 0 });
     });
+
+    /**
+     * The account shown in Settings, so the user can check which one the app
+     * is using. Its whole value is being right about the CURRENT login: an
+     * email left over from before a login change would tell the user the
+     * wrong thing at exactly the moment they are checking.
+     */
+    describe('the account behind the login', () => {
+      /** A throwaway query answering only `accountInfo`, as the CLI does. */
+      function accountQuery(info: Record<string, unknown>) {
+        return {
+          [Symbol.asyncIterator]: async function* () { /* no turn ever runs */ },
+          accountInfo: vi.fn().mockResolvedValue(info),
+        };
+      }
+
+      it('reads the email, plan and organization from the CLI', async () => {
+        mockQuery.mockReturnValue(accountQuery({
+          email: 'someone@example.com', subscriptionType: 'Claude Max',
+          organization: 'Example Org', apiProvider: 'firstParty', tokenSource: 'claude.ai',
+        }));
+
+        expect(await service.getAccountInfo()).toEqual({
+          email: 'someone@example.com', subscriptionType: 'Claude Max', organization: 'Example Org',
+        });
+        // A throwaway query, with the same credentials a turn would get.
+        const env = mockQuery.mock.calls[0][0].options.env as Record<string, string>;
+        expect(env['CLAUDE_CODE_OAUTH_TOKEN'] ?? env['CLAUDE_CONFIG_DIR']).toBeTruthy();
+      });
+
+      it('asks once per login, however often it is asked', async () => {
+        const first = accountQuery({ email: 'someone@example.com' });
+        mockQuery.mockReturnValue(first);
+
+        const [a, b] = await Promise.all([service.getAccountInfo(), service.getAccountInfo()]);
+        const c = await service.getAccountInfo();
+
+        expect([a, b, c].map((x) => x?.email)).toEqual(Array(3).fill('someone@example.com'));
+        expect(mockQuery).toHaveBeenCalledTimes(1);
+      });
+
+      it('asks again after the login changes, and never shows the old account', async () => {
+        mockQuery.mockReturnValue(accountQuery({ email: 'old@example.com' }));
+        expect((await service.getAccountInfo())?.email).toBe('old@example.com');
+
+        service.invalidateSessionAuth('login');
+        await configService.setOAuthToken(NEW_TOKEN);
+        mockQuery.mockReturnValue(accountQuery({ email: 'new@example.com' }));
+
+        expect((await service.getAccountInfo())?.email).toBe('new@example.com');
+      });
+
+      it('does not keep an answer that arrived after the login changed', async () => {
+        let answer!: (info: Record<string, unknown>) => void;
+        mockQuery.mockReturnValue({
+          [Symbol.asyncIterator]: async function* () { /* no turn ever runs */ },
+          accountInfo: vi.fn(() => new Promise((resolve) => { answer = resolve; })),
+        });
+        const slow = service.getAccountInfo();
+        await vi.waitFor(() => expect(answer).toBeDefined());
+
+        service.invalidateSessionAuth('login');
+        answer({ email: 'old@example.com' });
+        await slow;
+
+        mockQuery.mockReturnValue(accountQuery({ email: 'new@example.com' }));
+        expect((await service.getAccountInfo())?.email).toBe('new@example.com');
+      });
+
+      it('asks a session running under the current login rather than starting a process', async () => {
+        const session = openSession();
+        const accountInfo = vi.fn().mockResolvedValue({ email: 'someone@example.com' });
+        Object.assign(session.iterator, { accountInfo });
+        mockQuery.mockReturnValue(session.iterator);
+        await sendAndSettle(session, TEST_CONV_ID, 'hello');
+
+        expect((await service.getAccountInfo())?.email).toBe('someone@example.com');
+        expect(accountInfo).toHaveBeenCalledTimes(1);
+        expect(mockQuery).toHaveBeenCalledTimes(1);
+        session.close();
+      });
+
+      it('does not ask a session left over from the previous login', async () => {
+        // Mid-turn when the login changed, so it was kept for that turn —
+        // and it is still the old account.
+        const session = openSession();
+        const stale = vi.fn().mockResolvedValue({ email: 'old@example.com' });
+        Object.assign(session.iterator, { accountInfo: stale });
+        mockQuery.mockReturnValue(session.iterator);
+        const sent = service.sendMessage(TEST_CONV_ID, 'long job', '/home/user/project');
+        await vi.waitFor(() => expect(service.isConversationActive(TEST_CONV_ID)).toBe(true));
+        service.invalidateSessionAuth('login');
+
+        mockQuery.mockReturnValue(accountQuery({ email: 'new@example.com' }));
+        expect((await service.getAccountInfo())?.email).toBe('new@example.com');
+        expect(stale).not.toHaveBeenCalled();
+
+        session.endTurn();
+        await sent;
+        session.close();
+      });
+
+      it('answers null when the CLI cannot say, and asks again next time', async () => {
+        mockQuery.mockReturnValue({
+          [Symbol.asyncIterator]: async function* () { /* no turn ever runs */ },
+          accountInfo: vi.fn().mockRejectedValue(new Error('not logged in')),
+        });
+        expect(await service.getAccountInfo()).toBeNull();
+
+        mockQuery.mockReturnValue(accountQuery({ email: 'someone@example.com' }));
+        expect((await service.getAccountInfo())?.email).toBe('someone@example.com');
+      });
+
+      it('passes on only text, and nothing blank', async () => {
+        mockQuery.mockReturnValue(accountQuery({ email: '  ', organization: 42, subscriptionType: 'Claude Pro' }));
+
+        expect(await service.getAccountInfo()).toEqual({ subscriptionType: 'Claude Pro' });
+      });
+
+      it('answers null without starting anything when there is no login', async () => {
+        await configService.logout();
+
+        expect(await service.getAccountInfo()).toBeNull();
+        expect(mockQuery).not.toHaveBeenCalled();
+      });
+    });
   });
 });
 

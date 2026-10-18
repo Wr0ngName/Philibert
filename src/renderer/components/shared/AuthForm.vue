@@ -36,6 +36,8 @@ const {
   loginError,
   oauthCode,
   showCodeInput,
+  account,
+  accountState,
   refreshAuthStatus,
   startOAuthLogin,
   completeOAuthLogin,
@@ -121,6 +123,30 @@ defineExpose({
             </p>
             <p class="text-sm text-green-600 dark:text-green-400">
               {{ authStatus.displayName || (authStatus.method === 'oauth' ? 'Claude Pro/Max Account' : 'API Key') }}
+            </p>
+            <!-- Which account, so the user can check it is the one they meant. -->
+            <p
+              v-if="accountState === 'loading'"
+              class="text-xs text-green-600/80 dark:text-green-400/80"
+              data-testid="auth-account"
+            >
+              Checking account…
+            </p>
+            <p
+              v-else-if="accountState === 'loaded' && account"
+              class="text-xs text-green-700 dark:text-green-300 break-all"
+              data-testid="auth-account"
+            >
+              <span class="font-medium">{{ account.email }}</span>
+              <span v-if="account.subscriptionType"> · {{ account.subscriptionType }}</span>
+              <span v-if="account.organization"> · {{ account.organization }}</span>
+            </p>
+            <p
+              v-else-if="accountState === 'unavailable'"
+              class="text-xs text-amber-700 dark:text-amber-400"
+              data-testid="auth-account"
+            >
+              Could not read which account this is.
             </p>
           </div>
         </div>

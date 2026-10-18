@@ -43,6 +43,7 @@ import type {
   ConversationUpdate,
   ConversationWindow,
   RendererLogEntry,
+  ClaudeAccount,
 } from './types';
 
 /** Active query status info */
@@ -271,6 +272,8 @@ export interface ElectronAPI {
   // Auth operations
   auth: {
     getStatus: () => Promise<AuthStatus>;
+    /** The logged-in account, or null when it could not be read. */
+    getAccount: () => Promise<ClaudeAccount | null>;
     startOAuth: () => Promise<{ authUrl: string; error?: string }>;
     completeOAuth: (code: string) => Promise<{ success: boolean; error?: string }>;
     logout: () => Promise<void>;

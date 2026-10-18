@@ -661,6 +661,19 @@ export interface AuthStatus {
   displayName?: string;
 }
 
+/**
+ * The account a Claude login belongs to, as the CLI reports it.
+ *
+ * Shown so the user can check which account the app is actually using. Each
+ * field is absent when the CLI does not report it — an API key has no email.
+ */
+export interface ClaudeAccount {
+  email?: string;
+  organization?: string;
+  /** The plan, e.g. "Claude Max". */
+  subscriptionType?: string;
+}
+
 // Configuration types
 
 /**
@@ -1717,6 +1730,12 @@ export const IPC_CHANNELS = {
   // Authentication operations
   /** Get current authentication status */
   AUTH_GET_STATUS: 'auth:get-status',
+  /**
+   * The account the current login belongs to — its email, organization and
+   * plan. Separate from the status because answering means asking the CLI,
+   * which takes a moment; the status stays instant.
+   */
+  AUTH_GET_ACCOUNT: 'auth:get-account',
   /** Start OAuth flow */
   AUTH_START_OAUTH: 'auth:start-oauth',
   /** Complete OAuth flow */

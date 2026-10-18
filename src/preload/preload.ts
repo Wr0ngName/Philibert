@@ -368,6 +368,8 @@ const electronAPI: ElectronAPI = {
   auth: {
     getStatus: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_STATUS),
 
+    getAccount: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_ACCOUNT),
+
     startOAuth: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_START_OAUTH),
 
     completeOAuth: (code: string) =>
