@@ -621,6 +621,16 @@ export const useConversationsStore = defineStore('conversations', () => {
   let saveWriting: Promise<boolean> | null = null;
   /** Writes waiting to go out, newest per conversation, in order. */
   const saveQueue = new Map<string, ConversationUpdate>();
+  /**
+   * Conversations deleted this session, which nothing may write again.
+   *
+   * A write is an upsert and creates the file when it is missing, so any save
+   * that reached a deleted conversation brought it straight back — the one
+   * that started it all was deleting the open conversation, which opens a new
+   * one, which saves the one on screen first. Refused at the queue, which
+   * every save goes through, rather than at each caller.
+   */
+  const deletedConversationIds = new Set<string>();
   /** True while a page of earlier messages is being fetched. */
   const loadingEarlier = ref(false);
   /** True while a page of newer messages is being fetched. */
@@ -709,6 +719,10 @@ export const useConversationsStore = defineStore('conversations', () => {
         while (saveQueue.size > 0) {
           const [id, conversation] = saveQueue.entries().next().value as [string, ConversationUpdate];
           saveQueue.delete(id);
+          // Gone, so there is nothing left to write for it — which is not a
+          // failure, and is not reported as one: the caller's copy is of a
+          // conversation that no longer exists.
+          if (deletedConversationIds.has(id)) continue;
           try {
             await executeSave(conversation, { useTimeout: true, logPrefix: '' });
             logger.info('Conversation saved successfully', {
@@ -1110,8 +1124,26 @@ export const useConversationsStore = defineStore('conversations', () => {
    * Delete a conversation
    */
   async function deleteConversation(id: string): Promise<void> {
+    // Nothing may write it from here on — see deletedConversationIds. A write
+    // still queued is skipped when its turn comes, and one already under way
+    // is waited for, so it lands before the file is removed rather than
+    // recreating it after.
+    deletedConversationIds.add(id);
+    if (saveWriting) await saveWriting;
+
     try {
       await window.electron.conversation.delete(id);
+
+      // A turn still running would go on into a conversation that no longer
+      // exists, and hold a run slot while it did. Stopped only once the
+      // delete has landed: a delete that failed leaves the turn alone.
+      if (chatStore.isConversationLoading(id)) {
+        try {
+          await window.electron.claude.abort(id);
+        } catch (abortErr) {
+          logger.warn('Failed to stop the turn of a deleted conversation', { id, error: abortErr });
+        }
+      }
 
       // Remove from list
       const index = conversations.value.findIndex((c: Conversation) => c.id === id);
@@ -1142,6 +1174,8 @@ export const useConversationsStore = defineStore('conversations', () => {
     } catch (err) {
       logger.error('Failed to delete conversation', err);
       error.value = 'Failed to delete conversation';
+      // Still on disk, so still a conversation the user can carry on in.
+      deletedConversationIds.delete(id);
     }
   }
 
