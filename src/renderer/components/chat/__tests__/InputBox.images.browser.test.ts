@@ -16,6 +16,7 @@
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { describe, it, expect, beforeEach } from 'vitest';
+import { commands } from 'vitest/browser';
 
 import type { MessageImage } from '@shared/types';
 
@@ -25,9 +26,9 @@ import { useSettingsStore } from '../../../stores/settings';
 import InputBox from '../InputBox.vue';
 
 /** A real 1×1 PNG, as bytes. */
-const PNG_BYTES = Uint8Array.from(atob(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
-), (c) => c.charCodeAt(0));
+const PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const PNG_BYTES = Uint8Array.from(atob(PNG_BASE64), (c) => c.charCodeAt(0));
 
 const CONV = 'conv-attach';
 
@@ -287,6 +288,28 @@ describe('attaching a picture to a prompt, for real', () => {
     await settle();
 
     expect(wrapper.emitted('send')).toBeUndefined();
+
+    wrapper.unmount();
+  });
+
+  it('attaches a screenshot pasted from the clipboard with Ctrl+V', async () => {
+    // A screenshot tool leaves image data on the clipboard — no file, no
+    // name. Whether Chromium hands that to the paste as a file is the whole
+    // question, so the clipboard and the keystroke are real here.
+    const { saved } = installIpc();
+    const wrapper = mountComposer();
+    await settle();
+
+    await commands.pasteImageFromClipboard('textarea', PNG_BASE64);
+    await expect.poll(() => saved.length).toBe(1);
+
+    expect(saved[0].conversationId).toBe(CONV);
+    expect(saved[0].mediaType).toBe('image/png');
+    // Chromium re-encodes what passes through the clipboard, so the bytes
+    // are not the ones written; what matters is that they are a PNG.
+    const stored = Uint8Array.from(atob(saved[0].base64), (c) => c.charCodeAt(0));
+    expect([...stored.slice(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    await expect.poll(() => wrapper.find('[aria-label^="Remove"]').exists()).toBe(true);
 
     wrapper.unmount();
   });

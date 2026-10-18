@@ -9,6 +9,8 @@ declare module 'vitest/browser' {
   interface BrowserCommands {
     /** Scroll with a real mouse wheel over the first match for `selector`. */
     wheel(selector: string, deltaY: number): Promise<void>;
+    /** Put a PNG on the clipboard as image data, then paste it with a real Ctrl+V. */
+    pasteImageFromClipboard(selector: string, pngBase64: string): Promise<void>;
   }
 }
 

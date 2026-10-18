@@ -27,6 +27,29 @@ const wheel = defineBrowserCommand<[selector: string, deltaY: number]>(
 );
 
 /**
+ * Put a picture on the clipboard and paste it with a real Ctrl+V.
+ *
+ * What a screenshot tool leaves on the clipboard is image data, not a file —
+ * nothing on disk, no name. A paste event built in the test with a `File` in
+ * it says nothing about whether Chromium turns that data into a file the
+ * composer can take, which is the actual question. So the bytes go onto the
+ * browser's own clipboard as `image/png`, and the paste is the trusted
+ * keystroke a user makes, which has Chromium build the event itself.
+ */
+const pasteImageFromClipboard = defineBrowserCommand<[selector: string, pngBase64: string]>(
+  async ({ context, iframe, page }, selector, pngBase64) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.evaluate(async (base64) => {
+      const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: 'image/png' });
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    }, pngBase64);
+    await iframe.locator(selector).first().focus();
+    await page.keyboard.press('ControlOrMeta+V');
+  },
+);
+
+/**
  * Tests that need a real layout engine.
  *
  * Deliberately a separate config, a separate file pattern and a separate npm
@@ -59,7 +82,7 @@ export default defineConfig({
       // Nothing here is a visual regression test, and failure screenshots
       // would write files into the repo on every red run.
       screenshotFailures: false,
-      commands: { wheel },
+      commands: { wheel, pasteImageFromClipboard },
     },
   },
   resolve: {
