@@ -119,6 +119,58 @@ describe('SDKMessageHandler', () => {
     });
   });
 
+  describe('tool progress heartbeats', () => {
+    // Captured from a real session: a Bash command still running at 30s.
+    const heartbeat = {
+      type: 'tool_progress',
+      tool_use_id: 'toolu_01Vp8UFXGekPvhfr9cE7GvoY-heartbeat-0',
+      tool_name: 'Bash',
+      parent_tool_use_id: 'toolu_01Vp8UFXGekPvhfr9cE7GvoY',
+      elapsed_time_seconds: 30,
+      heartbeat: true,
+      session_id: '02050891-c712-4746-9f21-205df6f2756d',
+      uuid: '67bde0c4-4df6-4f9f-af88-99b8dc866d94',
+    };
+
+    it('is known, so it does not fill main.log as unhandled', async () => {
+      // main.log is written at info and above; a heartbeat arrives every 30
+      // seconds for as long as a command runs.
+      const logger = (await import('../../../utils/logger')).default;
+      vi.mocked(logger.info).mockClear();
+      vi.mocked(logger.warn).mockClear();
+
+      await handler.handleMessage(heartbeat as never);
+
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledWith('Tool still running', {
+        toolName: 'Bash',
+        toolUseId: 'toolu_01Vp8UFXGekPvhfr9cE7GvoY',
+        elapsedSeconds: 30,
+      });
+    });
+
+    it('changes nothing the user sees', async () => {
+      await handler.handleMessage(heartbeat as never);
+
+      for (const callback of Object.values(callbacks)) {
+        expect(callback).not.toHaveBeenCalled();
+      }
+    });
+
+    it('still reports a message type nothing handles', async () => {
+      // Which is how a new SDK message is noticed at all.
+      const logger = (await import('../../../utils/logger')).default;
+      vi.mocked(logger.info).mockClear();
+
+      await handler.handleMessage({ type: 'something_new', uuid: 'u' } as never);
+
+      expect(logger.info).toHaveBeenCalledWith('Unhandled SDK message type', expect.objectContaining({
+        type: 'something_new',
+      }));
+    });
+  });
+
   describe('reset', () => {
     it('should reset querySucceeded flag', () => {
       // Simulate query success

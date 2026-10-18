@@ -352,6 +352,18 @@ export class SDKMessageHandler {
         this.processUserMessage(message);
         break;
 
+      // A heartbeat for a tool still running — the CLI sends one every 30
+      // seconds for as long as a command takes. Nothing in the UI reads it,
+      // and leaving it to the default case wrote a 12-line "unhandled" entry
+      // to main.log twice a minute for every long command.
+      case 'tool_progress':
+        logger.debug('Tool still running', {
+          toolName: message.tool_name,
+          toolUseId: message.parent_tool_use_id ?? message.tool_use_id,
+          elapsedSeconds: message.elapsed_time_seconds,
+        });
+        break;
+
       default:
         logger.info('Unhandled SDK message type', {
           type: message.type,
