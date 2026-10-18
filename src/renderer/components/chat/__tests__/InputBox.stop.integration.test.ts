@@ -32,7 +32,8 @@ vi.mock('electron', () => ({
   },
   ipcRenderer: {
     invoke: vi.fn(async (channel: string, ...args: unknown[]) => {
-      invoked.push({ channel, args });
+      // Copied as Electron copies them, which throws on what it cannot copy.
+      invoked.push({ channel, args: structuredClone(args) });
       if (typeof channel === 'string' && /availability/i.test(channel)) {
         return { available: false };
       }
@@ -262,7 +263,7 @@ describe('what Stop stops', () => {
 
     const ipc = (await import('electron')).ipcRenderer.invoke as ReturnType<typeof vi.fn>;
     ipc.mockImplementationOnce(async (channel: string, ...args: unknown[]) => {
-      invoked.push({ channel, args });
+      invoked.push({ channel, args: structuredClone(args) });
       throw new Error('that task cannot be stopped');
     });
 

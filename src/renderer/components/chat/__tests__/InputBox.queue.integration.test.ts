@@ -34,7 +34,8 @@ vi.mock('electron', () => ({
   },
   ipcRenderer: {
     invoke: vi.fn(async (channel: string, ...args: unknown[]) => {
-      invoked.push({ channel, args });
+      // Copied as Electron copies them, which throws on what it cannot copy.
+      invoked.push({ channel, args: structuredClone(args) });
       if (typeof channel === 'string' && /availability/i.test(channel)) {
         // The input asks whether dictation is available during setup and
         // reads `.available` off the answer, so undefined throws.

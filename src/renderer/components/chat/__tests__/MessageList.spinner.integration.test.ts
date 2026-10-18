@@ -39,7 +39,9 @@ vi.mock('electron', () => ({
   ipcRenderer: {
     // Stands in for the main process. Returning undefined for everything is
     // not a realistic boundary — several call sites expect a list.
-    invoke: vi.fn(async (channel: string) => {
+    invoke: vi.fn(async (channel: string, ...args: unknown[]) => {
+      // Electron copies every argument across, and throws on what it cannot.
+      structuredClone(args);
       if (typeof channel === 'string' && /commands|models|list|queries|permissions/i.test(channel)) {
         return [];
       }

@@ -34,11 +34,14 @@ vi.mock('../../utils/logger', () => ({
 import { setupConversationIPC } from '../../../main/ipc/conversations';
 import { ConversationService } from '../../../main/services/ConversationService';
 import '../../../preload/preload';
+import ChatWindow from '../../components/chat/ChatWindow.vue';
 import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
-import { startRealStack, settle, onDisk, files, unmountApp } from './support/real-stack';
+import {
+  startRealStack, settle, onDisk, files, mainHandlers, mountApp, unmountApp,
+} from './support/real-stack';
 
 const CONV = 'conv-with-pictures';
 
@@ -206,6 +209,38 @@ describe('an image through the whole stack', () => {
     for (const path of files.keys()) {
       expect(path).not.toContain(ref.id);
     }
+  });
+
+  it('sends a pasted picture to Claude from the composer', async () => {
+    // The reported failure: "Failed to send message to Claude", and nothing
+    // in the main log. The composer kept its attachments in a ref, so each
+    // one was a reactive proxy, and Electron cannot copy a proxy across the
+    // process boundary — the send threw in the renderer before main ever
+    // saw it. Every piece worked alone; only the whole path shows it.
+    const sends: unknown[][] = [];
+    mainHandlers.set('claude:send', (_event, ...args) => {
+      sends.push(args);
+    });
+    const wrapper = mountApp(ChatWindow);
+
+    const bytes = Uint8Array.from(atob(PNG_BASE64), (c) => c.charCodeAt(0));
+    await wrapper.find('textarea').trigger('paste', {
+      clipboardData: { files: [new File([bytes], 'shot.png', { type: 'image/png' })] },
+    });
+    await vi.waitFor(() => {
+      expect(wrapper.find('[aria-label="Remove shot.png"]').exists(), 'the paste never became an attachment').toBe(true);
+    });
+
+    await wrapper.find('textarea').setValue('what is this?');
+    await wrapper.find('textarea').trigger('keydown', { key: 'Enter' });
+    await settle();
+
+    expect(chatStore.error).toBeNull();
+    expect(sends).toHaveLength(1);
+    const [conversationId, message, , , images] = sends[0] as [string, string, string, string, unknown];
+    expect(conversationId).toBe(CONV);
+    expect(message).toBe('what is this?');
+    expect(images).toEqual([expect.objectContaining({ mediaType: 'image/png', origin: 'user', label: 'shot.png' })]);
   });
 
   it('shows a gap rather than failing when the bytes have gone', async () => {

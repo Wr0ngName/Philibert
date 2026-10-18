@@ -199,8 +199,12 @@ export function useClaudeChat() {
         cwdMatchesGlobal: effectiveCwd === filesStore.workingDirectory,
       });
 
-      // Send message via IPC with conversationId and optional resume session ID
-      await window.electron.claude.send(currentConvId, content, effectiveCwd, resumeSessionId, images);
+      // Send message via IPC with conversationId and optional resume session ID.
+      // The images go as plain copies: callers hand over the composer's
+      // reactive state, and Electron cannot copy a reactive proxy across the
+      // process boundary, so the send threw here before main ever saw it.
+      const plainImages = images?.map((image) => ({ ...image }));
+      await window.electron.claude.send(currentConvId, content, effectiveCwd, resumeSessionId, plainImages);
       // New work means the user has moved past whatever stopped the queue, so
       // queued prompts go back to releasing on their own.
       chatStore.releaseQueueHold(currentConvId);

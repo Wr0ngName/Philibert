@@ -87,7 +87,9 @@ vi.mock('electron', () => ({
     },
   },
   ipcRenderer: {
-    invoke: vi.fn(async (channel: string, ...args: unknown[]) => route(channel, args)),
+    // Copied both ways as Electron copies them, which throws on what it cannot.
+    invoke: vi.fn(async (channel: string, ...args: unknown[]) =>
+      structuredClone(await route(channel, structuredClone(args)))),
     send: vi.fn(),
     on: (channel: string, handler: IpcHandler) => {
       const list = ipcListeners.get(channel) ?? [];

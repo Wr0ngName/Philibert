@@ -181,7 +181,13 @@ export function fakeElectronModule(): Record<string, unknown> {
       },
     },
     ipcRenderer: {
-      invoke: async (channel: string, ...args: unknown[]) => route(channel, args),
+      // Electron copies every argument and every result across the process
+      // boundary with the structured clone algorithm, and throws on anything
+      // it cannot copy — a Vue reactive proxy among them. Passing references
+      // through let a reactive image list reach "main" here while the real
+      // app failed every send carrying a picture.
+      invoke: async (channel: string, ...args: unknown[]) =>
+        structuredClone(await route(channel, structuredClone(args))),
       send: () => {},
       on: (channel: string, handler: (event: unknown, ...args: unknown[]) => void) => {
         const list = ipcListeners.get(channel) ?? [];
