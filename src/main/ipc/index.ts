@@ -12,6 +12,7 @@
  * - config: Application configuration
  * - conversations: Chat history persistence
  * - files: File system operations and watching
+ * - log: Renderer warnings and errors, written to main.log
  * - mcp: Project MCP server definitions and approvals
  * - update: Auto-update functionality
  * - window: Window management (minimize, maximize, close)
@@ -37,6 +38,7 @@ import { setupConfigIPC } from './config';
 import { setupConversationIPC } from './conversations';
 import { setupFilesIPC } from './files';
 import { setupGitIPC } from './git';
+import { setupLogIPC } from './log';
 import { setupMcpIPC } from './mcp';
 import { setupAboutIPC, setupSpeechIPC } from './speech';
 import { setupUpdateIPC } from './update';
@@ -128,6 +130,7 @@ const REGISTERED_CHANNELS = {
     // Answered per close by requestRendererFlush with ipcMain.once, which
     // removes its own listener; listed so IPC teardown clears any stray one.
     IPC_CHANNELS.WINDOW_FLUSH_COMPLETE,
+    IPC_CHANNELS.LOG_WRITE,
   ] as const,
 };
 
@@ -231,6 +234,7 @@ export function setupIPC(
     setupSpeechIPC(getMainWindow);
     setupAboutIPC();
     setupWindowIPC();
+    setupLogIPC();
 
     logger.info('All IPC handlers registered');
 

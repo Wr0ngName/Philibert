@@ -188,7 +188,13 @@ export function fakeElectronModule(): Record<string, unknown> {
       // app failed every send carrying a picture.
       invoke: async (channel: string, ...args: unknown[]) =>
         structuredClone(await route(channel, structuredClone(args))),
-      send: () => {},
+      // Delivered to what the main process registered with `ipcMain.on`,
+      // copied the way `invoke` is, so a fire-and-forget message reaches the
+      // real listener instead of vanishing.
+      send: (channel: string, ...args: unknown[]) => {
+        const copied = structuredClone(args);
+        for (const listener of mainListeners.get(channel) ?? []) listener({}, ...copied);
+      },
       on: (channel: string, handler: (event: unknown, ...args: unknown[]) => void) => {
         const list = ipcListeners.get(channel) ?? [];
         list.push(handler);
@@ -207,11 +213,17 @@ export function fakeElectronModule(): Record<string, unknown> {
       handle: (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => {
         mainHandlers.set(channel, handler);
       },
-      on: () => {},
+      on: (channel: string, listener: (event: unknown, ...args: unknown[]) => void) => {
+        const list = mainListeners.get(channel) ?? [];
+        list.push(listener);
+        mainListeners.set(channel, list);
+      },
       removeHandler: (channel: string) => {
         mainHandlers.delete(channel);
       },
-      removeAllListeners: () => {},
+      removeAllListeners: (channel: string) => {
+        mainListeners.delete(channel);
+      },
     },
     BrowserWindow: class {},
     app: { getPath: () => '/tmp', getName: () => 'philibert', getVersion: () => '0.0.0' },
@@ -227,6 +239,9 @@ export function fakeElectronModule(): Record<string, unknown> {
 
 /** Channel → the real main-process handler, as registered by ipcMain.handle. */
 export const mainHandlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
+
+/** Channel → the real main-process listeners, as registered by ipcMain.on. */
+export const mainListeners = new Map<string, ((event: unknown, ...args: unknown[]) => void)[]>();
 
 /** The real main-process service, constructed by `startRealStack`. */
 let conversationService: {
@@ -363,6 +378,7 @@ export async function startRealStack(options: {
   (globalThis as unknown as { window: Record<string, unknown> }).window.electron = exposed.api;
 
   mainHandlers.clear();
+  mainListeners.clear();
   conversationService = new options.ConversationService() as unknown as typeof conversationService;
   // Register the real conversation handlers against it, when the caller
   // supplied them.

@@ -7,7 +7,7 @@ import { createApp } from 'vue';
 
 import App from './App.vue';
 import './assets/styles/main.css';
-import { logger } from './utils/logger';
+import { installGlobalErrorLogging, logger } from './utils/logger';
 
 // Create Vue app
 const app = createApp(App);
@@ -25,6 +25,9 @@ app.config.errorHandler = (err, instance, info) => {
     component: instance?.$options?.name || 'Unknown',
   });
 };
+
+// And what it never sees: errors outside a component, and unawaited promises.
+installGlobalErrorLogging(window);
 
 // Global warning handler (development only)
 app.config.warnHandler = (msg, instance, trace) => {

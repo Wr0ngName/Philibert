@@ -5,7 +5,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type { ElectronAPI } from '../shared/preload-api';
-import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type MessageImage, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData } from '../shared/types';
+import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type MessageImage, type RendererLogEntry, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData } from '../shared/types';
 
 // Create the API object that will be exposed to the renderer
 const electronAPI: ElectronAPI = {
@@ -501,6 +501,10 @@ const electronAPI: ElectronAPI = {
     },
 
     flushComplete: () => ipcRenderer.send(IPC_CHANNELS.WINDOW_FLUSH_COMPLETE),
+  },
+
+  log: {
+    write: (entry: RendererLogEntry) => ipcRenderer.send(IPC_CHANNELS.LOG_WRITE, entry),
   },
 
   clipboard: {

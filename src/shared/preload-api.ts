@@ -42,6 +42,7 @@ import type {
   WhisperModelId,
   ConversationUpdate,
   ConversationWindow,
+  RendererLogEntry,
 } from './types';
 
 /** Active query status info */
@@ -381,6 +382,11 @@ export interface ElectronAPI {
     onFlushBeforeClose: (callback: () => void) => () => void;
     /** Tell the main process the pre-close flush has finished. */
     flushComplete: () => void;
+  };
+
+  /** Writing renderer warnings and errors to main.log. Fire and forget. */
+  log: {
+    write: (entry: RendererLogEntry) => void;
   };
 
   /**

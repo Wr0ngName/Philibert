@@ -680,6 +680,14 @@ export type ThemeMode = 'light' | 'dark' | 'system';
  */
 export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 
+/** A renderer log line on its way to main.log. */
+export interface RendererLogEntry {
+  level: 'warn' | 'error';
+  message: string;
+  /** Already serialised, so nothing in it can fail to cross IPC. */
+  data?: string;
+}
+
 /**
  * Update channel for auto-updates
  * - stable: Only stable releases (e.g., v1.0.0)
@@ -1735,6 +1743,16 @@ export const IPC_CHANNELS = {
   WINDOW_FLUSH_BEFORE_CLOSE: 'window:flush-before-close',
   /** Renderer → main: finished persisting; the close may proceed. */
   WINDOW_FLUSH_COMPLETE: 'window:flush-complete',
+
+  // Logging
+  /**
+   * Renderer → main: a warning or error, written to main.log.
+   *
+   * The renderer's console is only visible with devtools open, so a failure
+   * that happened entirely in the renderer — a send that threw before main
+   * saw it — left nothing in the one log a user can hand over.
+   */
+  LOG_WRITE: 'log:write',
 
   // Clipboard
   /**
