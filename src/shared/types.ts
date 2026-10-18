@@ -153,19 +153,29 @@ export interface ToolResultData {
 
 /**
  * Inline background task indicator shown in the message stream.
- * Links to a BackgroundTask in the store for status tracking.
+ *
+ * The stored record of a task, not its live state: while the app tracks the
+ * task, the row is displayed from the store's BackgroundTask, and it is
+ * brought up to date from it whenever the conversation is saved. The fields
+ * below are what the row still has to say once nothing tracks the task any
+ * more — after a restart.
  */
 export interface BackgroundTaskInfo {
   /** The task ID (links to BackgroundTask in store) */
   taskId: string;
   /** Short description of the task */
   description: string;
-  /** Current status */
+  /** Status as of the last save */
   status: BackgroundTaskStatus;
   /** Summary text when completed */
   summary?: string;
   /** Error message when failed */
   error?: string;
+  /** Output file path, so the details can still show the output */
+  outputFile?: string;
+  /** Unix timestamps bounding the task, so the details can give its duration */
+  startedAt?: number;
+  completedAt?: number;
   /**
    * tool_use block id of the tool that spawned this task, when it had one.
    *
@@ -1068,6 +1078,13 @@ export interface TaskListItem {
 export interface BackgroundTask {
   /** Unique identifier for the task */
   id: string;
+  /**
+   * Ids this task was tracked under before being re-keyed — its tool_use id,
+   * typically, until the SDK's own id is known. A row in the discussion keeps
+   * the id it was created with, so these are what still connect it to the
+   * task.
+   */
+  formerIds?: string[];
   /** Short description of the task */
   description: string;
   /** Current status of the task */

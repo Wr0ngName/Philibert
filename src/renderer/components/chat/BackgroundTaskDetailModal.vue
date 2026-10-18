@@ -117,8 +117,14 @@ watch(
  */
 const now = useNowTicker(() => props.open && props.task?.status === 'running');
 
+/**
+ * Null when it is not known: an ended task with no completion time — one
+ * recorded before rows stored it — would otherwise be measured up to now and
+ * read as having run for days.
+ */
 const duration = computed(() => {
-  if (!props.task) return '';
+  if (!props.task) return null;
+  if (props.task.status !== 'running' && props.task.completedAt === undefined) return null;
   return formatTaskDuration(props.task, now.value);
 });
 
@@ -226,7 +232,7 @@ const statusDisplay = computed(() => {
           </h3>
           <div class="flex items-center gap-3 mt-1 text-xs text-surface-500 dark:text-surface-400">
             <span :class="statusDisplay.colorClass">{{ statusDisplay.label }}</span>
-            <span>Duration: {{ duration }}</span>
+            <span v-if="duration">Duration: {{ duration }}</span>
             <!-- This agent's own model. A sub-agent runs the model named in
                  its definition when it has one and otherwise inherits the
                  main model, so it can legitimately differ from the

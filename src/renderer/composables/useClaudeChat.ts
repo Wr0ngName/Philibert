@@ -468,6 +468,26 @@ export function useClaudeChat() {
   }
 
   /**
+   * Store a background task's outcome as soon as it is known.
+   *
+   * A task usually ends after the turn that started it, and that turn's save
+   * has already recorded its row as running. Nothing else saved the
+   * conversation until the user next did something in it, so quitting first
+   * left the row stored as running for good.
+   *
+   * Only for the conversation on screen: one off screen holds its rows on
+   * disk, not in memory, so saving would write nothing of them — and the save
+   * at hand is the current conversation's, which would be a pointless write
+   * of another one.
+   */
+  function storeTaskOutcome(conversationId: string): void {
+    if (conversationId !== conversationsStore.currentConversationId) return;
+    conversationsStore.saveCurrentConversation().catch((err) => {
+      logger.error('Failed to save a background task outcome', err);
+    });
+  }
+
+  /**
    * Set up IPC event listeners (singleton - only registers once)
    */
   function setupListeners() {
@@ -656,6 +676,7 @@ export function useClaudeChat() {
         description: notification.description,
       });
       chatStore.handleTaskNotification(conversationId, notification);
+      if (notification.status !== 'running') storeTaskOutcome(conversationId);
     });
 
     // The SDK's authoritative live-task set. The notifications above carry the
@@ -667,7 +688,7 @@ export function useClaudeChat() {
         conversationId,
         count: tasks.length,
       });
-      chatStore.reconcileBackgroundTasks(conversationId, tasks);
+      if (chatStore.reconcileBackgroundTasks(conversationId, tasks)) storeTaskOutcome(conversationId);
     });
 
     // Handle usage updates (token counts, cost, context info) - route to correct conversation

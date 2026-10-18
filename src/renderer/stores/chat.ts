@@ -8,7 +8,7 @@ import { ref, computed } from 'vue';
 
 import { modifiedPathsForTool } from '@shared/file-modifications';
 import { primaryModelUsage } from '@shared/model-usage';
-import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskStatus, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData, MessageImage } from '@shared/types';
+import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData, MessageImage } from '@shared/types';
 
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
@@ -2062,21 +2062,7 @@ export const useChatStore = defineStore('chat', () => {
         updatedTask.completedAt = Date.now();
       }
 
-      // Remove old key and set with the notification's task_id (canonical)
-      if (existingTaskId !== notification.taskId) {
-        state.backgroundTasks.delete(existingTaskId);
-      }
-      state.backgroundTasks.set(notification.taskId, updatedTask);
-
-      // Update inline chat message (search by old id, remap to new id if changed)
-      updateBackgroundTaskMessage(
-        conversationId,
-        existingTaskId,
-        notification.status,
-        notification.summary,
-        notification.error,
-        existingTaskId !== notification.taskId ? notification.taskId : undefined,
-      );
+      storeBackgroundTask(state, existingTaskId, updatedTask);
     } else {
       const task: BackgroundTask = {
         id: notification.taskId,
@@ -2138,47 +2124,131 @@ export const useChatStore = defineStore('chat', () => {
       role: 'assistant',
       content: '',
       timestamp: Date.now(),
-      backgroundTask: {
-        taskId: task.id,
-        description: task.description,
-        status: task.status,
-        summary: task.summary,
-        error: task.error,
-        // Carried so this row can act as the parent for tool calls the task
-        // makes. They reference the spawning tool_use id, and when no message
-        // provides it they are orphaned and end up in the main conversation.
-        ...(task.toolUseId && { toolUseId: task.toolUseId }),
-      },
+      backgroundTask: taskRecord(task.id, task),
     };
     addMessageTo(sink, message);
   }
 
   /**
-   * Update the status of an inline background task message.
-   * @param newTaskId - If provided, also updates the taskId (for ID remapping)
+   * Track a task under its id, after a change to it — the one way a task's
+   * entry is written once it exists.
+   *
+   * The row in the discussion is NOT updated here, and that is deliberate. It
+   * used to hold its own copy of the status, kept in step by whichever code
+   * path remembered to: the notification path did, for rows it could find in
+   * memory; the live-set reconciler did not; and a row whose conversation was
+   * off screen when its task ended was not in memory to update at all. Each
+   * gap left a row saying Running forever while the background tasks list
+   * said the task was long gone. The row is now displayed from this entry
+   * ({@link taskForRow}) and stored from it ({@link withTasksAsTracked}), so
+   * there is no copy to forget.
+   *
+   * @param previousKey - The key the task was tracked under before this
+   *   change. When it differs, it is remembered in `formerIds`: a row keeps
+   *   the id it was created with, and that is what still leads it here.
    */
-  function updateBackgroundTaskMessage(
-    conversationId: string,
-    taskId: string,
-    status: BackgroundTaskStatus,
-    summary?: string,
-    error?: string,
-    newTaskId?: string,
-  ): void {
-    const sink = messageSink(conversationId);
-    if (!sink) return;
-
-    const msg = sink.find((m) => m.backgroundTask?.taskId === taskId);
-    if (msg?.backgroundTask) {
-      // Replace the object (not just mutate) so Vue's reactivity detects the change
-      msg.backgroundTask = {
-        ...msg.backgroundTask,
-        status,
-        ...(newTaskId && { taskId: newTaskId }),
-        ...(summary && { summary }),
-        ...(error && { error }),
-      };
+  function storeBackgroundTask(state: ConversationState, previousKey: string, task: BackgroundTask): void {
+    if (previousKey !== task.id) {
+      state.backgroundTasks.delete(previousKey);
+      task = { ...task, formerIds: [...new Set([...(task.formerIds ?? []), previousKey])] };
     }
+    state.backgroundTasks.set(task.id, task);
+  }
+
+  /**
+   * The task a conversation tracks under `taskId` — its current id or one it
+   * was tracked under before being re-keyed.
+   */
+  function trackedTask(conversationId: string, taskId: string): BackgroundTask | undefined {
+    const tasks = conversationStates.value.get(conversationId)?.backgroundTasks;
+    if (!tasks) return undefined;
+    const direct = tasks.get(taskId);
+    if (direct) return direct;
+    for (const task of tasks.values()) {
+      if (task.formerIds?.includes(taskId)) return task;
+    }
+    return undefined;
+  }
+
+  /** What a row stores about a task: the task, as of now, under the row's id. */
+  function taskRecord(rowTaskId: string, task: BackgroundTask): BackgroundTaskInfo {
+    return {
+      taskId: rowTaskId,
+      description: task.description,
+      status: task.status,
+      startedAt: task.startedAt,
+      ...(task.completedAt !== undefined && { completedAt: task.completedAt }),
+      ...(task.summary && { summary: task.summary }),
+      ...(task.error && { error: task.error }),
+      ...(task.outputFile && { outputFile: task.outputFile }),
+      // Carried so this row can act as the parent for tool calls the task
+      // makes. They reference the spawning tool_use id, and when no message
+      // provides it they are orphaned and end up in the main conversation.
+      ...(task.toolUseId && { toolUseId: task.toolUseId }),
+    };
+  }
+
+  /**
+   * The task a row in the discussion stands for, as it should be displayed.
+   *
+   * The tracked task when there is one. Otherwise the row's own record — a
+   * task from before the app was last started, since every task of this run
+   * is tracked from its first notification. A record saying 'running' is not
+   * believed then: the sessions that ran it ended with the app, and nothing
+   * will ever report on it again. It shows as 'stopped', the status the
+   * live-set reconciler gives a task known only to be gone — not 'completed',
+   * which would be inventing an outcome.
+   */
+  function taskForRow(conversationId: string, row: BackgroundTaskInfo, timestamp: number): BackgroundTask {
+    const tracked = trackedTask(conversationId, row.taskId);
+    if (tracked) return tracked;
+    return {
+      id: row.taskId,
+      description: row.description,
+      status: row.status === 'running' ? 'stopped' : row.status,
+      startedAt: row.startedAt ?? timestamp,
+      ...(row.completedAt !== undefined && { completedAt: row.completedAt }),
+      ...(row.summary && { summary: row.summary }),
+      ...(row.error && { error: row.error }),
+      ...(row.outputFile && { outputFile: row.outputFile }),
+      ...(row.toolUseId && { toolUseId: row.toolUseId }),
+    };
+  }
+
+  /**
+   * The task behind `taskId` in the current conversation, for its detail
+   * view: the tracked task, or the record of the row that names it.
+   *
+   * The detail view used to accept only tracked tasks, so clicking a row of a
+   * re-keyed task, or of one from before a restart, silently did nothing.
+   */
+  function findBackgroundTask(taskId: string): BackgroundTask | null {
+    const conversationId = currentConversationId.value;
+    if (!conversationId) return null;
+    const tracked = trackedTask(conversationId, taskId);
+    if (tracked) return tracked;
+    const state = conversationStates.value.get(conversationId);
+    for (const list of [messages.value, state?.detachedTurn ?? []]) {
+      const message = list.find((m) => m.backgroundTask?.taskId === taskId);
+      if (message?.backgroundTask) return taskForRow(conversationId, message.backgroundTask, message.timestamp);
+    }
+    return null;
+  }
+
+  /**
+   * Messages about to be stored, with each task row brought up to date from
+   * its tracked task, so the stored record says how the task really stands.
+   * Rows of untracked tasks are left exactly as they were: nothing new is
+   * known about them, and the store is no place to guess. Returns new
+   * objects only for the rows it changes.
+   */
+  function withTasksAsTracked(conversationId: string, list: ChatMessage[]): ChatMessage[] {
+    return list.map((message) => {
+      if (!message.backgroundTask) return message;
+      const tracked = trackedTask(conversationId, message.backgroundTask.taskId);
+      if (!tracked) return message;
+      return { ...message, backgroundTask: taskRecord(message.backgroundTask.taskId, tracked) };
+    });
   }
 
 
@@ -2222,10 +2292,12 @@ export const useChatStore = defineStore('chat', () => {
    * task of ours matching one is never retired, but are not adopted as new
    * visible entries — the SDK asks hosts to keep them out of activity
    * indicators.
+   *
+   * @returns Whether any task was retired, which is an outcome to store.
    */
-  function reconcileBackgroundTasks(conversationId: string, live: LiveBackgroundTask[]): void {
+  function reconcileBackgroundTasks(conversationId: string, live: LiveBackgroundTask[]): boolean {
     const state = conversationStates.value.get(conversationId);
-    if (!state) return;
+    if (!state) return false;
 
     const liveIds = new Set(live.map(t => t.taskId));
 
@@ -2248,20 +2320,22 @@ export const useChatStore = defineStore('chat', () => {
       if (staleKey === null) continue;
 
       const adopted = state.backgroundTasks.get(staleKey)!;
-      state.backgroundTasks.delete(staleKey);
-      state.backgroundTasks.set(liveTask.taskId, { ...adopted, id: liveTask.taskId });
+      storeBackgroundTask(state, staleKey, { ...adopted, id: liveTask.taskId });
       liveIds.add(liveTask.taskId);
     }
 
     // Step 2 — retire running tasks the SDK no longer lists.
+    let retired = false;
     for (const [key, task] of state.backgroundTasks.entries()) {
       if (task.status !== 'running' || liveIds.has(key)) continue;
-      state.backgroundTasks.set(key, {
+      storeBackgroundTask(state, key, {
         ...task,
         status: 'stopped',
         completedAt: task.completedAt ?? Date.now(),
       });
+      retired = true;
     }
+    return retired;
   }
 
   // ============================================
@@ -2634,7 +2708,9 @@ export const useChatStore = defineStore('chat', () => {
     // Background task actions
     handleTaskNotification,
     addBackgroundTaskMessage,
-    updateBackgroundTaskMessage,
+    taskForRow,
+    findBackgroundTask,
+    withTasksAsTracked,
     beginMessageBuffer,
     getBufferedMessages,
     retainUnsavedMessages,

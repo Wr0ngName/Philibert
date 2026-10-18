@@ -351,8 +351,12 @@ export const useConversationsStore = defineStore('conversations', () => {
     const truncation = chatStore.pendingTruncationFor(conversationId);
     const options = truncation ? { truncateFromId: truncation.fromId } : {};
     // Deep clone messages to strip ALL Vue reactivity (including nested objects)
-    // Vue proxies can't be cloned across IPC - use JSON round-trip for complete deproxification
-    const rawMessages: ChatMessage[] = JSON.parse(JSON.stringify(messages));
+    // Vue proxies can't be cloned across IPC - use JSON round-trip for complete deproxification.
+    // Task rows are written as their tasks stand now, not as they stood when
+    // the row was added.
+    const rawMessages: ChatMessage[] = JSON.parse(
+      JSON.stringify(chatStore.withTasksAsTracked(conversationId, messages)),
+    );
     const existingConv = conversations.value.find((c: Conversation) => c.id === conversationId);
 
     // Only when the window is the whole conversation; see above.

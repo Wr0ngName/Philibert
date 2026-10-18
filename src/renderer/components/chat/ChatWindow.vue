@@ -61,7 +61,7 @@ const taskDetailOpen = ref(false);
  */
 const taskDetailTaskId = ref<string | null>(null);
 const taskDetailTask = computed<BackgroundTask | null>(() =>
-  taskDetailTaskId.value ? chatStore.backgroundTasks.get(taskDetailTaskId.value) ?? null : null,
+  taskDetailTaskId.value ? chatStore.findBackgroundTask(taskDetailTaskId.value) : null,
 );
 const stoppingTask = ref(false);
 const stopTaskError = ref<string | null>(null);
@@ -230,7 +230,7 @@ function clearError() {
 }
 
 function openTaskDetail(taskId: string) {
-  if (!chatStore.backgroundTasks.has(taskId)) return;
+  if (!chatStore.findBackgroundTask(taskId)) return;
   taskDetailTaskId.value = taskId;
   taskDetailOpen.value = true;
 }

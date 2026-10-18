@@ -192,6 +192,7 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
   <BackgroundTaskMessage
     v-else-if="message.backgroundTask"
     :background-task="message.backgroundTask"
+    :timestamp="message.timestamp"
     @open-detail="emit('open-task-detail', $event)"
   />
 

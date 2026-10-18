@@ -2,17 +2,24 @@
 /**
  * Inline background task indicator displayed in the message stream.
  * Clickable — opens task detail modal via emitted event.
+ *
+ * Displays the task as the store tracks it, not the row's stored record: the
+ * record is a snapshot from the last save, and showing it is how a row came
+ * to say Running long after its task had ended.
  */
 
 import { computed } from 'vue';
 
 import type { BackgroundTaskInfo } from '@shared/types';
 
+import { useChatStore } from '../../stores/chat';
 import Icon from '../shared/Icon.vue';
 import Spinner from '../shared/Spinner.vue';
 
 interface Props {
   backgroundTask: BackgroundTaskInfo;
+  /** When the row was added; the start time of a record that has none. */
+  timestamp: number;
 }
 
 const props = defineProps<Props>();
@@ -21,8 +28,14 @@ const emit = defineEmits<{
   (e: 'open-detail', taskId: string): void;
 }>();
 
+const chatStore = useChatStore();
+
+const task = computed(() =>
+  chatStore.taskForRow(chatStore.currentConversationId ?? '', props.backgroundTask, props.timestamp),
+);
+
 const statusConfig = computed(() => {
-  switch (props.backgroundTask.status) {
+  switch (task.value.status) {
     case 'running':
       return { label: 'Running', colorClass: 'text-blue-500 dark:text-blue-400' };
     case 'completed':
@@ -36,10 +49,10 @@ const statusConfig = computed(() => {
   }
 });
 
-const showSpinner = computed(() => props.backgroundTask.status === 'running');
-const showCheckIcon = computed(() => props.backgroundTask.status === 'completed');
+const showSpinner = computed(() => task.value.status === 'running');
+const showCheckIcon = computed(() => task.value.status === 'completed');
 const showErrorIcon = computed(() =>
-  props.backgroundTask.status === 'failed' || props.backgroundTask.status === 'stopped'
+  task.value.status === 'failed' || task.value.status === 'stopped'
 );
 </script>
 
@@ -50,8 +63,8 @@ const showErrorIcon = computed(() =>
     role="button"
     tabindex="0"
     title="Click to view task details"
-    @click="emit('open-detail', backgroundTask.taskId)"
-    @keydown.enter="emit('open-detail', backgroundTask.taskId)"
+    @click="emit('open-detail', task.id)"
+    @keydown.enter="emit('open-detail', task.id)"
   >
     <!-- Task icon -->
     <Icon
@@ -67,16 +80,16 @@ const showErrorIcon = computed(() =>
 
     <!-- Description -->
     <span class="text-xs text-surface-400 dark:text-surface-500 truncate">
-      {{ backgroundTask.description }}
+      {{ task.description }}
     </span>
 
     <!-- Summary snippet (completed) -->
     <span
-      v-if="backgroundTask.summary && backgroundTask.status === 'completed'"
+      v-if="task.summary && task.status === 'completed'"
       class="text-xs text-surface-400 dark:text-surface-500 truncate max-w-[200px] hidden sm:inline"
-      :title="backgroundTask.summary"
+      :title="task.summary"
     >
-      — {{ backgroundTask.summary }}
+      — {{ task.summary }}
     </span>
 
     <!-- Status indicator -->
