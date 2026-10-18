@@ -40,14 +40,17 @@ vi.mock('../../utils/logger', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+import { setupConversationIPC } from '../../../main/ipc/conversations';
 import { ConversationService } from '../../../main/services/ConversationService';
 import '../../../preload/preload';
+import { CONSTANTS } from '../../constants/app';
+import { logger } from '../../utils/logger';
 import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
 import {
-  startRealStack, settle, onDisk, disk, releaseWrites, unmountApp,
+  startRealStack, settle, onDisk, disk, releaseWrites, unmountApp, mainHandlers,
 } from './support/real-stack';
 
 const CONV = 'conv-save-queue';
@@ -305,5 +308,120 @@ describe('closing the app with a turn running out of sight', () => {
     const stored = ['conv-background', 'conv-second-bg', CONV]
       .filter((id) => onDisk(id) !== null);
     expect(stored.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+/**
+ * A save says whether ITS write landed, and a stopped queue is said out loud.
+ *
+ * Every save used to resolve with the promise of the whole pass. When a pass
+ * finished without ever being recorded as finished, that same resolved
+ * promise answered every later save — "saved" — while nothing was written
+ * for the rest of the session, and the first anyone knew of it was a
+ * conversation missing after a restart.
+ */
+describe('what a save reports', () => {
+  let store: ReturnType<typeof useConversationsStore>;
+  let chatStore: ReturnType<typeof useChatStore>;
+
+  beforeEach(async () => {
+    await startRealStack({
+      ConversationService: ConversationService as unknown as new () => never,
+      setupConversationIPC: setupConversationIPC as unknown as (service: never) => void,
+    });
+    vi.mocked(logger.error).mockClear();
+    store = useConversationsStore();
+    chatStore = useChatStore();
+    const settings = useSettingsStore();
+    settings.config.workingDirectory = '/home/user/project';
+    settings.config.apiKey = 'test-key';
+    await store.loadConversationList();
+    await settle();
+    store.currentConversationId = CONV;
+    chatStore.setCurrentConversation(CONV);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    unmountApp();
+  });
+
+  it('tells each caller the outcome of its own write', async () => {
+    // Two conversations in one pass; only the first write fails. Each
+    // caller hears about its own — the pass as a whole failing is not the
+    // other conversation's failure.
+    const realUpdate = mainHandlers.get('conversation:update')!;
+    mainHandlers.set('conversation:update', (event, update) => {
+      if ((update as { id: string }).id === CONV) throw new Error('ENOSPC: no space left on device');
+      return realUpdate(event, update);
+    });
+    chatStore.messages.push(message('m1'));
+    const failing = store.saveCurrentConversation();
+    const other = store.saveConversation('conv-other', [message('o1')]);
+
+    expect(await failing).toBe(false);
+    expect(await other).toBe(true);
+    expect(storedIds('conv-other')).toEqual(['o1']);
+  });
+
+  it('says on screen and in the log when a save never completes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    // A conversation longer than the window, opened, then rewound to the
+    // oldest turn on screen: the save that carries the rewind empties the
+    // window, and refilling it reads from the main process. That read hangs.
+    const all: ChatMessage[] = [];
+    for (let i = 0; i < 520; i += 1) {
+      all.push(i % 2 === 0
+        ? { ...message(`u${i}`), turnUuid: `turn-${i}` }
+        : { ...message(`a${i}`), role: 'assistant' });
+    }
+    chatStore.loadMessages(all);
+    expect(await store.saveCurrentConversation()).toBe(true);
+    await store.loadConversation(CONV);
+    await settle();
+    expect(chatStore.olderMessageCount).toBeGreaterThan(0);
+    const oldestOnScreen = chatStore.messages[0];
+    expect(oldestOnScreen.role).toBe('user');
+    chatStore.truncateAfterUserTurn(CONV, oldestOnScreen.turnUuid!);
+    expect(chatStore.messages).toEqual([]);
+    mainHandlers.set('conversation:get-window', () => new Promise(() => {}));
+    void store.saveCurrentConversation();
+    await settle(20);
+
+    // Another conversation's save, stuck behind it.
+    let answered: boolean | null = null;
+    void store.saveConversation('conv-other', [message('o1')]).then((saved) => {
+      answered = saved;
+    });
+    await settle(20);
+    expect(store.error).toBeNull();
+
+    vi.advanceTimersByTime(CONSTANTS.CONVERSATION.SAVE_STALL_MS);
+    await settle();
+
+    // Not "saved": it was not.
+    expect(answered).toBeNull();
+    expect(store.error).toMatch(/Saving has stopped working/);
+    expect(logger.error).toHaveBeenCalledWith(
+      'A save has not completed; saving may have stopped',
+      expect.objectContaining({ conversationId: 'conv-other', queued: ['conv-other'], passRunning: true }),
+    );
+  });
+
+  it('raises nothing for saves that complete', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    for (const n of [1, 2, 3]) {
+      chatStore.messages.push(message(`m${n}`));
+      expect(await store.saveCurrentConversation()).toBe(true);
+    }
+
+    vi.advanceTimersByTime(CONSTANTS.CONVERSATION.SAVE_STALL_MS * 2);
+    await settle();
+
+    expect(store.error).toBeNull();
+    expect(logger.error).not.toHaveBeenCalledWith(
+      'A save has not completed; saving may have stopped', expect.anything(),
+    );
   });
 });

@@ -618,9 +618,26 @@ export const useConversationsStore = defineStore('conversations', () => {
     return chatStore.detachLiveTurn(conversationId, keepThroughId);
   }
 
-  let saveWriting: Promise<boolean> | null = null;
+  const SAVE_STALL_MS = CONSTANTS.CONVERSATION.SAVE_STALL_MS;
+  const SAVE_STALLED_MESSAGE =
+    'Saving has stopped working: recent messages may not be stored. '
+    + 'Copy anything important, then restart the app.';
+  /** The pass writing the queue out, while one runs. */
+  let saveWriting: Promise<void> | null = null;
+  /**
+   * A write waiting to go out, and everyone waiting on it.
+   *
+   * Each caller is told the outcome of the write that carries ITS snapshot —
+   * never of the pass as a whole. Handing back the pass's promise is how a
+   * stuck queue once reported every save as done while writing nothing at
+   * all: a save is only ever "saved" because its own write landed.
+   */
+  interface QueuedSave {
+    update: ConversationUpdate;
+    settle: ((saved: boolean) => void)[];
+  }
   /** Writes waiting to go out, newest per conversation, in order. */
-  const saveQueue = new Map<string, ConversationUpdate>();
+  const saveQueue = new Map<string, QueuedSave>();
   /**
    * Conversations deleted this session, which nothing may write again.
    *
@@ -690,15 +707,45 @@ export const useConversationsStore = defineStore('conversations', () => {
     // contain everything that needs saving. That was what forced an arriving
     // turn into a list it did not belong to.
     const detached = chatStore.detachedTurnFor(conversationId);
-    saveQueue.set(
+    return queueSave(buildConversationUpdate(
       conversationId,
-      buildConversationUpdate(
-        conversationId,
-        detached ?? chatStore.messages,
-        settingsStore.workingDirectory,
-      ),
-    );
-    return drainSaveQueue();
+      detached ?? chatStore.messages,
+      settingsStore.workingDirectory,
+    ));
+  }
+
+  /**
+   * Queue a write, and resolve with whether THAT write landed.
+   *
+   * A newer snapshot of a conversation replaces an older one still waiting —
+   * the newer is a superset — and whoever waited on the older one is told
+   * the outcome of the newer.
+   *
+   * Watched, too. A save that has neither landed nor failed long after any
+   * single write would have timed out means the queue itself has stopped,
+   * and that is said loudly — on screen and in main.log — instead of being
+   * discovered later as lost conversations.
+   */
+  function queueSave(update: ConversationUpdate): Promise<boolean> {
+    const outcome = new Promise<boolean>((resolve) => {
+      const stalled = setTimeout(() => {
+        logger.error('A save has not completed; saving may have stopped', {
+          conversationId: update.id,
+          waitedMs: SAVE_STALL_MS,
+          queued: [...saveQueue.keys()],
+          passRunning: saveWriting !== null,
+        });
+        error.value = SAVE_STALLED_MESSAGE;
+      }, SAVE_STALL_MS);
+      const settle = (saved: boolean) => {
+        clearTimeout(stalled);
+        resolve(saved);
+      };
+      const waiting = saveQueue.get(update.id)?.settle ?? [];
+      saveQueue.set(update.id, { update, settle: [...waiting, settle] });
+    });
+    void drainSaveQueue();
+    return outcome;
   }
 
   /**
@@ -708,21 +755,36 @@ export const useConversationsStore = defineStore('conversations', () => {
    * caller awaiting a save knows the bytes are down before it continues —
    * `switchConversation` replaces the message list immediately afterwards.
    */
-  function drainSaveQueue(): Promise<boolean> {
+  function drainSaveQueue(): Promise<void> {
     if (saveWriting) return saveWriting;
 
     saveWriting = (async () => {
-      let ok = true;
+      // Yield before anything else. An async function runs synchronously up
+      // to its first await, so a pass that writes nothing — every entry for a
+      // deleted conversation — reached the `finally` below and cleared
+      // `saveWriting` BEFORE this very assignment stored the promise. The
+      // finished promise then stayed in `saveWriting` for good, every later
+      // save returned it without writing a thing, and nothing was saved again
+      // until a restart.
+      await Promise.resolve();
       isSaving.value = true;
       error.value = null;
       try {
         while (saveQueue.size > 0) {
-          const [id, conversation] = saveQueue.entries().next().value as [string, ConversationUpdate];
+          const [id, queued] = saveQueue.entries().next().value as [string, QueuedSave];
           saveQueue.delete(id);
+          const conversation = queued.update;
+          const report = (saved: boolean) => {
+            for (const settle of queued.settle) settle(saved);
+          };
           // Gone, so there is nothing left to write for it — which is not a
           // failure, and is not reported as one: the caller's copy is of a
-          // conversation that no longer exists.
-          if (deletedConversationIds.has(id)) continue;
+          // conversation that no longer exists, and keeping it would only
+          // keep a copy of something deleted.
+          if (deletedConversationIds.has(id)) {
+            report(true);
+            continue;
+          }
           try {
             await executeSave(conversation, { useTimeout: true, logPrefix: '' });
             logger.info('Conversation saved successfully', {
@@ -742,6 +804,7 @@ export const useConversationsStore = defineStore('conversations', () => {
             // messages" count means. Held no longer.
             chatStore.detachedTurnStored(id);
             trimAfterSave(id);
+            report(true);
           } catch (err) {
             const errorMessage = err instanceof Error ? err.message : String(err);
             logger.error('Failed to save conversation', { error: errorMessage, conversationId: id });
@@ -750,14 +813,13 @@ export const useConversationsStore = defineStore('conversations', () => {
             // awaited this save is very often about to replace the list
             // holding them. Keep them reachable; see retainUnsavedMessages.
             chatStore.retainUnsavedMessages(id, conversation.upsert);
-            ok = false;
+            report(false);
           }
         }
       } finally {
         isSaving.value = false;
         saveWriting = null;
       }
-      return ok;
     })();
 
     return saveWriting;
@@ -787,11 +849,9 @@ export const useConversationsStore = defineStore('conversations', () => {
     // and two interleaved writes to one JSON file is not a race worth
     // leaving open. Snapshotted here, for this conversation, for the same
     // reason the other one is.
-    saveQueue.set(
-      conversationId,
+    return queueSave(
       buildConversationUpdate(conversationId, messages, settingsStore.workingDirectory),
     );
-    return drainSaveQueue();
   }
 
   /**

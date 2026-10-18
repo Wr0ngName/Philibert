@@ -102,6 +102,82 @@ describe('deleting a conversation from the list', () => {
     unmountApp();
   });
 
+  it('lists a new conversation once it has been prompted', async () => {
+    mainHandlers.set('claude:send', () => undefined);
+    await history!.find('button[title="New conversation"]').trigger('click');
+    await settle();
+    const id = store.currentConversationId!;
+
+    await send(app!, 'a brand new question');
+    emitIpc('claude:chunk', id, 'an answer');
+    emitIpc('claude:done', id);
+    await settle(20);
+
+    expect(onDisk(id)?.messages.map((m) => m.content)).toEqual(['a brand new question', 'an answer']);
+    expect(store.conversations.map((c) => c.id)).toContain(id);
+    expect(history!.text()).toContain('a brand new question');
+    expect(await listedAfterRestart()).toContain(id);
+  });
+
+  it('lists a new conversation started while another one is still answering', async () => {
+    mainHandlers.set('claude:send', () => undefined);
+    const busy = await makeConversation('the busy one');
+    await send(app!, 'keep going');
+    emitIpc('claude:chunk', busy, 'still ans');
+    await settle();
+
+    await history!.find('button[title="New conversation"]').trigger('click');
+    // The busy conversation is saved before the new one opens.
+    await vi.waitFor(() => expect(store.currentConversationId).not.toBe(busy));
+    const id = store.currentConversationId!;
+    await send(app!, 'a brand new question');
+    emitIpc('claude:chunk', id, 'an answer');
+    emitIpc('claude:done', id);
+    emitIpc('claude:chunk', busy, 'wering');
+    emitIpc('claude:done', busy);
+    await settle(20);
+
+    expect(onDisk(id)?.messages.map((m) => m.content)).toEqual(['a brand new question', 'an answer']);
+    expect(await listedAfterRestart()).toContain(id);
+    expect(history!.text()).toContain('a brand new question');
+  });
+
+  it('lists the new conversation opened by deleting the open one, once prompted', async () => {
+    mainHandlers.set('claude:send', () => undefined);
+    // The reported failure: deleting the open conversation stopped every save
+    // after it, so this one — and anything else written that session — was
+    // never stored, and never listed.
+    await makeConversation('to be deleted');
+    await deleteFromList('to be deleted');
+    const id = store.currentConversationId!;
+
+    await send(app!, 'a brand new question');
+    emitIpc('claude:chunk', id, 'an answer');
+    emitIpc('claude:done', id);
+    await settle(20);
+
+    expect(onDisk(id)?.messages.map((m) => m.content)).toEqual(['a brand new question', 'an answer']);
+    expect(await listedAfterRestart()).toContain(id);
+    expect(history!.text()).toContain('a brand new question');
+  });
+
+  it('keeps saving after a save pass that had nothing left to write', async () => {
+    // The mechanism under the report, on its own: a pass made only of
+    // writes for a deleted conversation writes nothing, and must not leave
+    // the queue believing it is still busy.
+    const closed = await makeConversation('the closed one');
+    const open = await makeConversation('the open one');
+    await store.deleteConversation(closed);
+    expect(await store.saveConversation(closed, [message('ghost')])).toBe(true);
+
+    for (const n of [1, 2, 3]) {
+      chatStore.messages.push(message(`after-${n}`));
+      expect(await store.saveCurrentConversation()).toBe(true);
+      expect((onDisk(open)?.messages ?? []).map((m) => m.id)).toContain(`after-${n}`);
+    }
+    expect(onDisk(closed)).toBeNull();
+  });
+
   it('deletes the conversation that is open', async () => {
     const other = await makeConversation('the other one');
     const open = await makeConversation('the open one');

@@ -25,6 +25,13 @@ export const CONSTANTS = {
     /** Timeout for save operations - 30 seconds */
     SAVE_TIMEOUT_MS: 30000,
     /**
+     * How long a queued save may go without landing or failing before saving
+     * is reported as stopped. Three write timeouts: one for the write ahead
+     * of it, one for its own, and the rest as margin — any longer and the
+     * queue is not slow, it has stopped.
+     */
+    SAVE_STALL_MS: 90000,
+    /**
      * Messages held in memory when a conversation is opened, and fetched per
      * page when the user scrolls back for more.
      *
