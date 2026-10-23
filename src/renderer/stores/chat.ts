@@ -272,12 +272,14 @@ export const useChatStore = defineStore('chat', () => {
    * Get or create state for a conversation
    */
   function getConversationState(conversationId: string): ConversationState {
-    let state = conversationStates.value.get(conversationId);
-    if (!state) {
-      state = createConversationState();
-      conversationStates.value.set(conversationId, state);
-    }
-    return state;
+    const existing = conversationStates.value.get(conversationId);
+    if (existing) return existing;
+    conversationStates.value.set(conversationId, createConversationState());
+    // Read it back rather than returning the object just created: the Map
+    // hands out its reactive proxy, while the plain object is untracked — an
+    // effect (e.g. a render) that happened to create the state would never
+    // re-run on later changes to it.
+    return conversationStates.value.get(conversationId)!;
   }
 
   /**
