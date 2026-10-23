@@ -37,8 +37,9 @@ import type {
   McpServerInput,
   McpTransport,
 } from '../../shared/types';
-import { ConfigurationError, ValidationError, ERROR_CODES } from '../errors';
+import { ValidationError, ERROR_CODES } from '../errors';
 import logger from '../utils/logger';
+import { getLocalSettingsPath, readJsonFile, writeJsonFile } from '../utils/projectSettings';
 import { WindowsPaths } from '../utils/resourcePaths';
 
 /** Server names are used verbatim in `mcp__<name>__<tool>` tool identifiers. */
@@ -75,7 +76,7 @@ export class McpConfigService {
 
   /** Absolute path of the project's `.claude/settings.local.json`. */
   getApprovalsPath(workingDirectory: string): string {
-    return path.join(workingDirectory, '.claude', 'settings.local.json');
+    return getLocalSettingsPath(workingDirectory);
   }
 
   /**
@@ -104,8 +105,8 @@ export class McpConfigService {
    * normal state for a project with no servers, not an error.
    */
   list(workingDirectory: string): McpServerEntry[] {
-    const config = this.readJson<RawMcpConfig>(this.getConfigPath(workingDirectory));
-    const settings = this.readJson<RawSettings>(this.getApprovalsPath(workingDirectory));
+    const config = readJsonFile<RawMcpConfig>(this.getConfigPath(workingDirectory));
+    const settings = readJsonFile<RawSettings>(this.getApprovalsPath(workingDirectory));
     const servers = config.mcpServers ?? {};
 
     return Object.entries(servers).map(([name, raw]) =>
@@ -127,7 +128,7 @@ export class McpConfigService {
   ): McpServerEntry[] {
     const server = this.validateInput(input);
     const configPath = this.getConfigPath(workingDirectory);
-    const config = this.readJson<RawMcpConfig>(configPath);
+    const config = readJsonFile<RawMcpConfig>(configPath);
     const servers = { ...(config.mcpServers ?? {}) };
 
     const renaming = previousName !== null && previousName !== server.name;
@@ -159,7 +160,7 @@ export class McpConfigService {
     }
 
     servers[server.name] = this.toRawServer(server);
-    this.writeJson(configPath, { ...config, mcpServers: servers });
+    writeJsonFile(configPath, { ...config, mcpServers: servers });
 
     // A server the user just added is meant to be used, so approve it in the
     // same operation. Without this the definition is inert and, in channel
@@ -186,7 +187,7 @@ export class McpConfigService {
    */
   remove(workingDirectory: string, name: string): McpServerEntry[] {
     const configPath = this.getConfigPath(workingDirectory);
-    const config = this.readJson<RawMcpConfig>(configPath);
+    const config = readJsonFile<RawMcpConfig>(configPath);
     const servers = { ...(config.mcpServers ?? {}) };
 
     if (!(name in servers)) {
@@ -198,7 +199,7 @@ export class McpConfigService {
     }
 
     delete servers[name];
-    this.writeJson(configPath, { ...config, mcpServers: servers });
+    writeJsonFile(configPath, { ...config, mcpServers: servers });
     this.updateApprovals(workingDirectory, (settings) => this.removeName(settings, name));
 
     logger.info('Removed MCP server', { name });
@@ -212,7 +213,7 @@ export class McpConfigService {
    * that also overrides a blanket `enableAllProjectMcpServers: true`.
    */
   setEnabled(workingDirectory: string, name: string, enabled: boolean): McpServerEntry[] {
-    const config = this.readJson<RawMcpConfig>(this.getConfigPath(workingDirectory));
+    const config = readJsonFile<RawMcpConfig>(this.getConfigPath(workingDirectory));
     if (!(config.mcpServers ?? {})[name]) {
       throw new ValidationError(
         `There is no server named "${name}" in this project.`,
@@ -544,57 +545,9 @@ export class McpConfigService {
   /** Read-modify-write the approvals file, preserving every unrelated key. */
   private updateApprovals(workingDirectory: string, mutate: (settings: RawSettings) => void): void {
     const approvalsPath = this.getApprovalsPath(workingDirectory);
-    const settings = this.readJson<RawSettings>(approvalsPath);
+    const settings = readJsonFile<RawSettings>(approvalsPath);
     mutate(settings);
-    this.writeJson(approvalsPath, settings);
-  }
-
-  /**
-   * Parse a JSON file, treating "missing" as "empty".
-   *
-   * A file that exists but does not parse is an error: overwriting it would
-   * destroy hand-written configuration, so the user is told to fix it instead.
-   */
-  private readJson<T extends object>(filePath: string): T {
-    if (!fs.existsSync(filePath)) return {} as T;
-
-    let text: string;
-    try {
-      text = fs.readFileSync(filePath, 'utf-8');
-    } catch (error) {
-      throw new ConfigurationError(
-        `Could not read ${path.basename(filePath)}.`,
-        ERROR_CODES.CONFIG_LOAD_FAILED,
-        error
-      );
-    }
-
-    if (text.trim().length === 0) return {} as T;
-
-    try {
-      const parsed = JSON.parse(text);
-      return (parsed && typeof parsed === 'object' ? parsed : {}) as T;
-    } catch (error) {
-      throw new ConfigurationError(
-        `${path.basename(filePath)} is not valid JSON, so Philibert will not overwrite it. ` +
-          `Fix or delete the file at ${filePath} and try again.`,
-        ERROR_CODES.CONFIG_INVALID,
-        error
-      );
-    }
-  }
-
-  private writeJson(filePath: string, value: object): void {
-    try {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + '\n', 'utf-8');
-    } catch (error) {
-      throw new ConfigurationError(
-        `Could not save ${path.basename(filePath)}.`,
-        ERROR_CODES.CONFIG_SAVE_FAILED,
-        error
-      );
-    }
+    writeJsonFile(approvalsPath, settings);
   }
 }
 

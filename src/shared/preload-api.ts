@@ -26,6 +26,7 @@ import type {
   ModelInfo,
   PendingAction,
   PermissionScope,
+  ProjectPermissionEntry,
   SessionPermissionEntry,
   SessionUsage,
   AgentInfo,
@@ -163,6 +164,14 @@ export interface ElectronAPI {
     seedSessionPermissions: (conversationId: string, entries: SessionPermissionEntry[]) => Promise<void>;
     /** Listen for session permission changes */
     onSessionPermissionsChanged: (callback: (conversationId: string, permissions: SessionPermissionEntry[]) => void) => () => void;
+    /** Allow rules and directories from the project's settings files */
+    getProjectPermissions: (workingDirectory: string) => Promise<ProjectPermissionEntry[]>;
+    /** Remove an entry from `.claude/settings.local.json`; resolves to the updated list */
+    revokeProjectPermission: (
+      workingDirectory: string,
+      kind: ProjectPermissionEntry['kind'],
+      value: string,
+    ) => Promise<ProjectPermissionEntry[]>;
     /** Tool execution completed (approved and SDK proceeded) */
     onToolExecuted: (callback: (conversationId: string, actionId: string) => void) => () => void;
     /** Tool use captured from assistant message (all tools, including auto-approved) */

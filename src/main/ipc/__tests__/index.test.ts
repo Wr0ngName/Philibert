@@ -75,6 +75,7 @@ describe('IPC teardown', () => {
       fileWatcher: standIn(),
       gitService: standIn(),
       mcpService: standIn(),
+      projectPermissionService: standIn(),
       conversationService: standIn(),
       updateService: standIn(),
     }, () => null);

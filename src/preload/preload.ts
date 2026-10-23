@@ -5,7 +5,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type { ElectronAPI } from '../shared/preload-api';
-import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type MessageImage, type RendererLogEntry, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData } from '../shared/types';
+import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type MessageImage, type ProjectPermissionEntry, type RendererLogEntry, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData } from '../shared/types';
 
 // Create the API object that will be exposed to the renderer
 const electronAPI: ElectronAPI = {
@@ -223,6 +223,12 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_SESSION_PERMISSIONS_CHANGED, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_SESSION_PERMISSIONS_CHANGED, handler);
     },
+
+    getProjectPermissions: (workingDirectory: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_PROJECT_PERMISSIONS, workingDirectory),
+
+    revokeProjectPermission: (workingDirectory: string, kind: ProjectPermissionEntry['kind'], value: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_REVOKE_PROJECT_PERMISSION, workingDirectory, kind, value),
 
     onToolExecuted: (callback) => {
       const handler = (

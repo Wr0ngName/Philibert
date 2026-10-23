@@ -29,6 +29,7 @@ import ConversationService from '../services/ConversationService';
 import FileWatcherService from '../services/FileWatcherService';
 import GitService from '../services/GitService';
 import McpConfigService from '../services/McpConfigService';
+import ProjectPermissionService from '../services/ProjectPermissionService';
 import UpdateService from '../services/UpdateService';
 import logger from '../utils/logger';
 
@@ -40,6 +41,7 @@ import { setupFilesIPC } from './files';
 import { setupGitIPC } from './git';
 import { setupLogIPC } from './log';
 import { setupMcpIPC } from './mcp';
+import { setupProjectPermissionsIPC } from './projectPermissions';
 import { setupAboutIPC, setupSpeechIPC } from './speech';
 import { setupUpdateIPC } from './update';
 import { setupWindowIPC } from './window';
@@ -74,6 +76,8 @@ const REGISTERED_CHANNELS = {
     IPC_CHANNELS.CLAUDE_REVOKE_SESSION_PERMISSION,
     IPC_CHANNELS.CLAUDE_CLEAR_SESSION_PERMISSIONS,
     IPC_CHANNELS.CLAUDE_SEED_SESSION_PERMISSIONS,
+    IPC_CHANNELS.CLAUDE_GET_PROJECT_PERMISSIONS,
+    IPC_CHANNELS.CLAUDE_REVOKE_PROJECT_PERMISSION,
     IPC_CHANNELS.CLAUDE_USER_QUESTION_ANSWER,
     IPC_CHANNELS.CLAUDE_GET_MODELS,
     IPC_CHANNELS.CLAUDE_GET_ACTIVE_QUERIES,
@@ -152,6 +156,8 @@ interface Services {
   gitService: GitService;
   /** Project MCP server definitions and approvals */
   mcpService: McpConfigService;
+  /** Project-scoped tool permissions in the project settings files */
+  projectPermissionService: ProjectPermissionService;
   /** Conversation history storage */
   conversationService: ConversationService;
   /** Auto-update functionality */
@@ -192,6 +198,7 @@ export function setupIPC(
       fileWatcher,
       gitService,
       mcpService,
+      projectPermissionService,
       conversationService,
       updateService,
     } = services;
@@ -214,6 +221,9 @@ export function setupIPC(
     if (!mcpService) {
       throw new ValidationError('McpConfigService is required', 'mcpService', ERROR_CODES.VALIDATION_REQUIRED);
     }
+    if (!projectPermissionService) {
+      throw new ValidationError('ProjectPermissionService is required', 'projectPermissionService', ERROR_CODES.VALIDATION_REQUIRED);
+    }
     if (!conversationService) {
       throw new ValidationError('ConversationService is required', 'conversationService', ERROR_CODES.VALIDATION_REQUIRED);
     }
@@ -230,6 +240,7 @@ export function setupIPC(
     setupGitIPC(gitService, configService, fileWatcher, getMainWindow);
     setupConfigIPC(configService, getMainWindow);
     setupMcpIPC(mcpService, getMainWindow);
+    setupProjectPermissionsIPC(projectPermissionService);
     setupConversationIPC(conversationService);
     setupUpdateIPC(updateService);
     setupSpeechIPC(getMainWindow);

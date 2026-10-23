@@ -4,7 +4,7 @@
 
 import type { BrowserWindow } from 'electron';
 
-import { ValidationError, ERROR_CODES } from '../errors';
+import { ConfigurationError, ValidationError, ERROR_CODES } from '../errors';
 
 import logger from './logger';
 
@@ -183,6 +183,21 @@ export function getErrorMessage(error: unknown): string {
  */
 export function formatErrorMessage(prefix: string, error: unknown): string {
   return `${prefix}: ${getErrorMessage(error)}`;
+}
+
+/**
+ * Error to throw from a handler that reads or writes project settings files.
+ * Preserves the message of errors the service raised deliberately — they are
+ * written for the user and shown verbatim — and wraps anything else.
+ */
+export function toSettingsIpcError(prefix: string, error: unknown): Error {
+  if (error instanceof ConfigurationError) return error;
+  if (error instanceof ValidationError) return error;
+  return new ConfigurationError(
+    formatErrorMessage(prefix, error),
+    ERROR_CODES.CONFIG_SAVE_FAILED,
+    error
+  );
 }
 
 /**

@@ -9,9 +9,8 @@
 import { dialog, ipcMain, BrowserWindow } from 'electron';
 
 import { IPC_CHANNELS, type McpServerInput } from '../../shared/types';
-import { ConfigurationError, ValidationError, ERROR_CODES } from '../errors';
 import McpConfigService from '../services/McpConfigService';
-import { validateString, validatePath, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
+import { validateString, validatePath, ensureService, toSettingsIpcError } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
 export function setupMcpIPC(
@@ -30,7 +29,7 @@ export function setupMcpIPC(
       return mcpService.list(requireProject(workingDirectory));
     } catch (error) {
       logger.error('Failed to list MCP servers', { error });
-      throw toIpcError('Failed to read the project MCP servers', error);
+      throw toSettingsIpcError('Failed to read the project MCP servers', error);
     }
   });
 
@@ -42,7 +41,7 @@ export function setupMcpIPC(
         return mcpService.save(requireProject(workingDirectory), previousName ?? null, server);
       } catch (error) {
         logger.error('Failed to save MCP server', { error, name: server?.name });
-        throw toIpcError('Failed to save the MCP server', error);
+        throw toSettingsIpcError('Failed to save the MCP server', error);
       }
     }
   );
@@ -54,7 +53,7 @@ export function setupMcpIPC(
       return mcpService.remove(requireProject(workingDirectory), name);
     } catch (error) {
       logger.error('Failed to remove MCP server', { error, name });
-      throw toIpcError('Failed to remove the MCP server', error);
+      throw toSettingsIpcError('Failed to remove the MCP server', error);
     }
   });
 
@@ -67,7 +66,7 @@ export function setupMcpIPC(
         return mcpService.setEnabled(requireProject(workingDirectory), name, enabled === true);
       } catch (error) {
         logger.error('Failed to change MCP server approval', { error, name });
-        throw toIpcError('Failed to change the MCP server', error);
+        throw toSettingsIpcError('Failed to change the MCP server', error);
       }
     }
   );
@@ -78,7 +77,7 @@ export function setupMcpIPC(
       return mcpService.checkCommand(typeof command === 'string' ? command : '');
     } catch (error) {
       logger.error('Failed to check MCP command', { error });
-      throw toIpcError('Failed to check the program', error);
+      throw toSettingsIpcError('Failed to check the program', error);
     }
   });
 
@@ -88,7 +87,7 @@ export function setupMcpIPC(
       return mcpService.getRuntimeInfo(requireProject(workingDirectory));
     } catch (error) {
       logger.error('Failed to read MCP runtime info', { error });
-      throw toIpcError('Failed to read the MCP settings', error);
+      throw toSettingsIpcError('Failed to read the MCP settings', error);
     }
   });
 
@@ -137,18 +136,4 @@ export function setupMcpIPC(
   });
 
   logger.info('MCP IPC handlers registered');
-}
-
-/**
- * Preserve the message of errors the service raised deliberately — they are
- * written for the user and shown verbatim — and wrap anything else.
- */
-function toIpcError(prefix: string, error: unknown): Error {
-  if (error instanceof ConfigurationError) return error;
-  if (error instanceof ValidationError) return error;
-  return new ConfigurationError(
-    formatErrorMessage(prefix, error),
-    ERROR_CODES.CONFIG_SAVE_FAILED,
-    error
-  );
 }

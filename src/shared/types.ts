@@ -501,6 +501,30 @@ export interface SessionPermissionEntry {
 }
 
 /**
+ * Which project settings file a project permission lives in.
+ * - local: `.claude/settings.local.json` — per-user, where "Allow in project" writes
+ * - shared: `.claude/settings.json` — usually committed, so it is shown but not edited
+ */
+export type ProjectPermissionSource = 'local' | 'shared';
+
+/**
+ * A project-scoped allow entry read from a project settings file.
+ * `value` is the string exactly as stored, and together with `kind` and
+ * `source` it identifies the entry for revocation.
+ */
+export interface ProjectPermissionEntry {
+  /** `rule` comes from `permissions.allow`, `directory` from `permissions.additionalDirectories` */
+  kind: 'rule' | 'directory';
+  /** Raw stored value, e.g. `Bash(npm test)`, `Write` or `/srv/data` */
+  value: string;
+  /** Tool the rule applies to (rules only) */
+  toolName?: string;
+  /** Rule specifier inside the parentheses, if any (rules only) */
+  ruleContent?: string;
+  source: ProjectPermissionSource;
+}
+
+/**
  * Context about WHY a permission was requested (from SDK CanUseTool options).
  * Helps the user understand what triggered the permission prompt.
  */
@@ -1623,6 +1647,10 @@ export const IPC_CHANNELS = {
   CLAUDE_SEED_SESSION_PERMISSIONS: 'claude:seed-session-permissions',
   /** Session permissions changed event */
   CLAUDE_SESSION_PERMISSIONS_CHANGED: 'claude:session-permissions-changed',
+  /** List allow rules and directories from the project's settings files */
+  CLAUDE_GET_PROJECT_PERMISSIONS: 'claude:get-project-permissions',
+  /** Remove an allow rule or directory from `.claude/settings.local.json` */
+  CLAUDE_REVOKE_PROJECT_PERMISSION: 'claude:revoke-project-permission',
   /** System status note (compaction, model change, etc.) — rendered as a separator, not inline text */
   CLAUDE_SYSTEM_NOTE: 'claude:system-note',
   /** Tool use captured from assistant message (all tools, including auto-approved) */
