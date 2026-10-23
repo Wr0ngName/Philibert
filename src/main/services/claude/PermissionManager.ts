@@ -160,7 +160,8 @@ export class PermissionManager {
       }
 
       // Create pending action for UI (include permission info from SDK suggestions)
-      const permissionInfo = this.describePermissionSuggestions(toolName, options.suggestions);
+      const suggestions = this.withProjectScopeSuggestions(toolName, options.suggestions);
+      const permissionInfo = this.describePermissionSuggestions(toolName, suggestions);
       const permissionContext: PermissionContext | undefined =
         (options.blockedPath || options.decisionReason)
           ? {
@@ -188,7 +189,7 @@ export class PermissionManager {
           input,
           resolve,
           reject,
-          suggestions: options.suggestions,
+          suggestions,
         };
 
         // Set up named abort handler so it can be removed after resolution
@@ -468,6 +469,65 @@ export class PermissionManager {
       default:
         return 'session';
     }
+  }
+
+  /**
+   * Add a project-scope equivalent of the SDK's session grant when the SDK
+   * offered no project-scope suggestion of its own.
+   *
+   * The CLI only suggests `localSettings` rules for some tools (Bash commands,
+   * web domains, MCP tools, skills). Everything else gets session-only
+   * suggestions — generic tools an `addRules` with destination `session`, file
+   * edits a `setMode: acceptEdits` — so the modal had no way to remember the
+   * choice for the project. The synthesized updates use `localSettings`, the
+   * destination the CLI itself uses for "don't ask again in this project"
+   * (`.claude/settings.local.json`); the SDK writes them to that file when they
+   * come back through `updatedPermissions`.
+   *
+   * Mapping (behaviour verified against the bundled CLI):
+   * - session `addRules` (allow)  → same rules in `localSettings`
+   * - session `addDirectories`    → same directories in `localSettings`
+   * - session `setMode: acceptEdits` and no rule → an allow rule for the
+   *   requesting (file-edit) tool. A persisted mode would change the project's
+   *   default mode for every tool, while a bare `Write` rule allows Write and
+   *   still asks for Edit. Other modes (e.g. the plan-mode exits) are not
+   *   tool grants and get no project option.
+   *
+   * Nothing is synthesized when the SDK made no suggestion at all: it does that
+   * for requests it deliberately won't generalize (e.g. compound Bash commands),
+   * and a blanket tool rule written to disk would outlive the session.
+   */
+  private withProjectScopeSuggestions(
+    toolName: string,
+    suggestions?: PermissionUpdate[]
+  ): PermissionUpdate[] | undefined {
+    if (!suggestions || suggestions.length === 0) return suggestions;
+    if (suggestions.some((s) => this.mapDestinationToScope(s.destination) !== 'session')) {
+      return suggestions;
+    }
+
+    const projectSuggestions: PermissionUpdate[] = [];
+    for (const suggestion of suggestions) {
+      // Empty updates are skipped: they would yield a project option that
+      // persists nothing.
+      if (suggestion.type === 'addRules' && suggestion.behavior === 'allow' && suggestion.rules.length > 0) {
+        projectSuggestions.push({ ...suggestion, destination: 'localSettings' });
+      } else if (suggestion.type === 'addDirectories' && suggestion.directories.length > 0) {
+        projectSuggestions.push({ ...suggestion, destination: 'localSettings' });
+      }
+    }
+
+    const grantsTool = projectSuggestions.some((s) => s.type === 'addRules');
+    if (!grantsTool && suggestions.some((s) => s.type === 'setMode' && s.mode === 'acceptEdits')) {
+      projectSuggestions.push({
+        type: 'addRules',
+        rules: [{ toolName }],
+        behavior: 'allow',
+        destination: 'localSettings',
+      });
+    }
+
+    return [...suggestions, ...projectSuggestions];
   }
 
   /**

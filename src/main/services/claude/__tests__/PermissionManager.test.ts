@@ -10,7 +10,7 @@
  * - Edge cases (no suggestions, empty arrays, etc.)
  */
 
-import type { PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
+import type { PermissionResult, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import type { PendingAction } from '../../../../shared/types';
@@ -129,10 +129,13 @@ describe('PermissionManager', () => {
 
       expect(capturedAction).not.toBeNull();
       expect(capturedAction?.permissionInfo).toEqual({
-        alwaysAllowLabel: 'Allow Bash this session',
-        description: 'Allow Bash for this session',
-        scope: 'session',
-        scopeOptions: [{ scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' }],
+        alwaysAllowLabel: 'Allow Bash in this project',
+        description: 'Allow Bash for this session; Allow Bash for this project',
+        scope: 'project',
+        scopeOptions: [
+          { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
+          { scope: 'project', label: 'Allow Bash in project', description: 'Allow Bash for this project' },
+        ],
       });
     });
 
@@ -160,10 +163,13 @@ describe('PermissionManager', () => {
 
       expect(capturedAction).not.toBeNull();
       expect(capturedAction?.permissionInfo).toEqual({
-        alwaysAllowLabel: 'Allow Bash this session',
-        description: 'Allow Bash for this session',
-        scope: 'session',
-        scopeOptions: [{ scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' }],
+        alwaysAllowLabel: 'Allow Bash in this project',
+        description: 'Allow Bash for this session; Allow Bash for this project',
+        scope: 'project',
+        scopeOptions: [
+          { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
+          { scope: 'project', label: 'Allow Bash in project', description: 'Allow Bash for this project' },
+        ],
       });
     });
 
@@ -295,8 +301,9 @@ describe('PermissionManager', () => {
       await new Promise(resolve => setImmediate(resolve));
 
       expect(capturedAction).not.toBeNull();
-      expect(capturedAction?.permissionInfo?.alwaysAllowLabel).toBe('Allow 2 tools this session');
-      expect(capturedAction?.permissionInfo?.scope).toBe('session');
+      expect(capturedAction?.permissionInfo?.scopeOptions[0]?.label).toBe('Allow 2 tools this session');
+      expect(capturedAction?.permissionInfo?.alwaysAllowLabel).toBe('Allow 2 tools in this project');
+      expect(capturedAction?.permissionInfo?.scope).toBe('project');
     });
 
     it('should handle multiple tools across multiple rules', async () => {
@@ -328,8 +335,9 @@ describe('PermissionManager', () => {
       await new Promise(resolve => setImmediate(resolve));
 
       expect(capturedAction).not.toBeNull();
-      expect(capturedAction?.permissionInfo?.alwaysAllowLabel).toBe('Allow 3 tools this session');
-      expect(capturedAction?.permissionInfo?.scope).toBe('session');
+      expect(capturedAction?.permissionInfo?.scopeOptions[0]?.label).toBe('Allow 3 tools this session');
+      expect(capturedAction?.permissionInfo?.alwaysAllowLabel).toBe('Allow 3 tools in this project');
+      expect(capturedAction?.permissionInfo?.scope).toBe('project');
     });
 
     it('should include directory info in description for addDirectories', async () => {
@@ -489,7 +497,11 @@ describe('PermissionManager', () => {
       await new Promise(resolve => setImmediate(resolve));
 
       expect(capturedAction).not.toBeNull();
-      expect(capturedAction?.permissionInfo?.alwaysAllowLabel).toBe('Allow Bash this session');
+      expect(capturedAction?.permissionInfo?.scopeOptions.map(o => o.label)).toEqual([
+        'Allow Bash (/home/user/project) this session',
+        'Allow Bash (/home/user/project) in project',
+      ]);
+      expect(capturedAction?.permissionInfo?.alwaysAllowLabel).toBe('Allow Bash in this project');
     });
 
     it('should handle rules with ruleContent field', async () => {
@@ -810,10 +822,13 @@ describe('PermissionManager', () => {
       expect(capturedAction?.type).toBe('file-edit');
       expect(capturedAction?.toolName).toBe('Edit');
       expect(capturedAction?.permissionInfo).toEqual({
-        alwaysAllowLabel: 'Allow Edit this session',
-        description: 'Allow Edit for this session',
-        scope: 'session',
-        scopeOptions: [{ scope: 'session', label: 'Allow Edit this session', description: 'Allow Edit for this session' }],
+        alwaysAllowLabel: 'Allow Edit in this project',
+        description: 'Allow Edit for this session; Allow Edit for this project',
+        scope: 'project',
+        scopeOptions: [
+          { scope: 'session', label: 'Allow Edit this session', description: 'Allow Edit for this session' },
+          { scope: 'project', label: 'Allow Edit in project', description: 'Allow Edit for this project' },
+        ],
       });
     });
 
@@ -874,6 +889,8 @@ describe('PermissionManager', () => {
       expect(capturedAction).not.toBeNull();
       // Should fall back to requesting tool name
       expect(capturedAction?.permissionInfo?.alwaysAllowLabel).toBe('Allow Bash this session');
+      // An empty rule list persists nothing, so it must not become a project option
+      expect(capturedAction?.permissionInfo?.scopeOptions.map(o => o.scope)).toEqual(['session']);
     });
 
     it('should handle empty directories array', async () => {
@@ -900,6 +917,7 @@ describe('PermissionManager', () => {
       expect(capturedAction).not.toBeNull();
       expect(capturedAction?.permissionInfo).toBeDefined();
       expect(capturedAction?.permissionInfo?.description).toContain('Add directories');
+      expect(capturedAction?.permissionInfo?.scopeOptions.map(o => o.scope)).toEqual(['session']);
     });
 
     it('should deduplicate tool names across suggestions', async () => {
@@ -932,7 +950,126 @@ describe('PermissionManager', () => {
 
       expect(capturedAction).not.toBeNull();
       // Should show single tool, not "2 tools"
-      expect(capturedAction?.permissionInfo?.alwaysAllowLabel).toBe('Allow Bash this session');
+      expect(capturedAction?.permissionInfo?.scopeOptions.map(o => o.label)).toEqual([
+        'Allow Bash this session',
+        'Allow Bash in project',
+      ]);
+    });
+  });
+
+  describe('project scope for session-only suggestions', () => {
+    /** Raise a permission request, then approve it; returns the emitted action and the allow result. */
+    async function requestAndApprove(
+      toolName: string,
+      input: Record<string, unknown>,
+      suggestions: PermissionUpdate[] | undefined,
+      chosenScope: 'session' | 'project',
+    ): Promise<{ action: PendingAction; result: Extract<PermissionResult, { behavior: 'allow' }> }> {
+      const canUseTool = permissionManager.createCanUseToolCallback();
+      const pending = canUseTool(toolName, input, {
+        signal: new AbortController().signal,
+        toolUseID: 'test-id',
+        requestId: 'test-request-id',
+        suggestions,
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      const action = capturedAction!;
+      permissionManager.handleActionResponse({
+        actionId: action.id,
+        conversationId: 'conv-1',
+        approved: true,
+        alwaysAllow: true,
+        chosenScope,
+      });
+      const result = await pending;
+      if (result?.behavior !== 'allow') {
+        throw new Error(`Expected an allow result, got ${JSON.stringify(result)}`);
+      }
+      return { action, result };
+    }
+
+    // Shapes below are what the bundled CLI actually sent (scratch probe against SDK 0.3.280).
+    const WRITE_SUGGESTIONS: PermissionUpdate[] = [
+      { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+    ];
+    const BASH_SUGGESTIONS: PermissionUpdate[] = [
+      { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'touch probe-one.txt' }], behavior: 'allow', destination: 'localSettings' },
+      { type: 'addDirectories', directories: ['/tmp/project'], destination: 'session' },
+      { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+    ];
+
+    it('offers a project option for a file edit whose only suggestion is acceptEdits', async () => {
+      const { action } = await requestAndApprove('Write', { file_path: '/tmp/project/a.txt', content: 'x' }, WRITE_SUGGESTIONS, 'project');
+
+      expect(action.permissionInfo?.scopeOptions).toEqual([
+        { scope: 'session', label: 'Allow Write this session', description: 'Set mode: acceptEdits' },
+        { scope: 'project', label: 'Allow Write in project', description: 'Allow Write for this project' },
+      ]);
+    });
+
+    it('persists a rule for the requesting tool, not the mode, when project is chosen', async () => {
+      const { result } = await requestAndApprove('Write', { file_path: '/tmp/project/a.txt', content: 'x' }, WRITE_SUGGESTIONS, 'project');
+
+      const persisted = result.updatedPermissions?.filter(u => u.destination === 'localSettings');
+      expect(persisted).toEqual([
+        { type: 'addRules', rules: [{ toolName: 'Write' }], behavior: 'allow', destination: 'localSettings' },
+      ]);
+    });
+
+    it('persists nothing to disk when session is chosen', async () => {
+      const { result } = await requestAndApprove('Write', { file_path: '/tmp/project/a.txt', content: 'x' }, WRITE_SUGGESTIONS, 'session');
+
+      const destinations = (result.updatedPermissions ?? []).map(u => u.destination);
+      expect(destinations).not.toContain('localSettings');
+    });
+
+    it('clones a session rule and a session directory into localSettings', async () => {
+      const suggestions: PermissionUpdate[] = [
+        { type: 'addRules', rules: [{ toolName: 'WebSearch' }], behavior: 'allow', destination: 'session' },
+        { type: 'addDirectories', directories: ['/tmp/other'], destination: 'session' },
+      ];
+      const { result } = await requestAndApprove('WebSearch', { query: 'x' }, suggestions, 'project');
+
+      const persisted = result.updatedPermissions?.filter(u => u.destination === 'localSettings');
+      expect(persisted).toEqual([
+        { type: 'addRules', rules: [{ toolName: 'WebSearch' }], behavior: 'allow', destination: 'localSettings' },
+        { type: 'addDirectories', directories: ['/tmp/other'], destination: 'localSettings' },
+      ]);
+    });
+
+    it('leaves suggestions untouched when the SDK already offers a project scope', async () => {
+      const { action, result } = await requestAndApprove('Bash', { command: 'touch probe-one.txt' }, BASH_SUGGESTIONS, 'project');
+
+      expect(action.permissionInfo?.scopeOptions.map(o => o.scope)).toEqual(['session', 'project']);
+      expect(result.updatedPermissions).toEqual(BASH_SUGGESTIONS);
+    });
+
+    it('offers no project option when the SDK made no suggestion', async () => {
+      const { action } = await requestAndApprove('Bash', { command: 'a && b' }, undefined, 'session');
+
+      expect(action.permissionInfo?.scopeOptions.map(o => o.scope)).toEqual(['session']);
+    });
+
+    it('offers no project option for a mode that is not a file-edit grant', async () => {
+      const { action } = await requestAndApprove(
+        'ExitPlanMode',
+        {},
+        [{ type: 'setMode', mode: 'default', destination: 'session' }],
+        'session',
+      );
+
+      expect(action.permissionInfo?.scopeOptions.map(o => o.scope)).toEqual(['session']);
+    });
+
+    it('does not turn a session deny rule into a project allow', async () => {
+      const { action } = await requestAndApprove(
+        'Bash',
+        { command: 'ls' },
+        [{ type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'deny', destination: 'session' }],
+        'session',
+      );
+
+      expect(action.permissionInfo?.scopeOptions.map(o => o.scope)).toEqual(['session']);
     });
   });
 
