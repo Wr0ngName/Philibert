@@ -12,6 +12,7 @@
  * has finished its turn.
  */
 
+import { ASK_USER_QUESTION_TOOL } from '../../../shared/ask-user-question';
 import type { EffortResolver } from '../../../shared/effort';
 import type {
   AskUserQuestionAction,
@@ -457,7 +458,7 @@ export class ChannelService {
     const action: AskUserQuestionAction = {
       id: request.requestId,
       type: 'ask-user-question',
-      toolName: 'AskUserQuestion',
+      toolName: ASK_USER_QUESTION_TOOL,
       input: {},
       description,
       status: 'pending',

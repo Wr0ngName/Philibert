@@ -6,9 +6,16 @@
 
 import { ref, watch, computed } from 'vue';
 
+import {
+  ASK_USER_QUESTION_TOOL,
+  parseAskUserQuestionEntries,
+  parseAskUserQuestionResult,
+} from '@shared/ask-user-question';
 import type { ToolUseInfo } from '@shared/types';
 
 import { formatToolInput, type InputParam } from '../../utils/tool-input';
+import { formatToolOutput } from '../../utils/tool-output';
+import AskUserQuestionDetails from './AskUserQuestionDetails.vue';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
@@ -69,6 +76,23 @@ const statusDisplay = computed(() => {
 });
 
 const inputParams = computed((): InputParam[] => formatToolInput(props.toolUse?.input));
+
+/** An AskUserQuestion call's questions; empty for any other tool. */
+const questions = computed(() =>
+  props.toolUse?.toolName === ASK_USER_QUESTION_TOOL ? parseAskUserQuestionEntries(props.toolUse.input) : [],
+);
+
+/** The answers, once the output is loaded and is an answer payload. */
+const questionResult = computed(() =>
+  questions.value.length > 0 && outputContent.value !== null
+    ? parseAskUserQuestionResult(outputContent.value)
+    : null,
+);
+
+/** Output text, pretty-printed when it is JSON. */
+const formattedOutput = computed(() =>
+  outputContent.value === null ? null : formatToolOutput(outputContent.value),
+);
 </script>
 
 <template>
@@ -113,9 +137,27 @@ const inputParams = computed((): InputParam[] => formatToolInput(props.toolUse?.
         </div>
       </div>
 
+      <!-- AskUserQuestion: questions, options and the answers given -->
+      <div
+        v-if="questions.length > 0"
+        class="space-y-3"
+      >
+        <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
+          <Icon
+            name="chat"
+            size="xs"
+          />
+          <span>{{ questions.length === 1 ? 'Question' : 'Questions' }}</span>
+        </div>
+        <AskUserQuestionDetails
+          :questions="questions"
+          :result="questionResult"
+        />
+      </div>
+
       <!-- Input Parameters (structured) -->
       <div
-        v-if="inputParams.length > 0"
+        v-else-if="inputParams.length > 0"
         class="space-y-3"
       >
         <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
@@ -151,9 +193,9 @@ const inputParams = computed((): InputParam[] => formatToolInput(props.toolUse?.
         </div>
       </div>
 
-      <!-- Output Content -->
+      <!-- Output Content (an answered question already shows its answers above) -->
       <div
-        v-if="toolUse.outputFile"
+        v-if="toolUse.outputFile && !questionResult"
         class="space-y-2"
       >
         <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
@@ -178,10 +220,10 @@ const inputParams = computed((): InputParam[] => formatToolInput(props.toolUse?.
           Failed to load output: {{ outputError }}
         </div>
         <div
-          v-else-if="outputContent !== null"
+          v-else-if="formattedOutput !== null"
           class="code-block !p-3 max-h-80 overflow-y-auto"
         >
-          <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap">{{ outputContent }}</pre>
+          <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap">{{ formattedOutput }}</pre>
         </div>
       </div>
 

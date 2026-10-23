@@ -17,6 +17,7 @@ import * as path from 'node:path';
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 
+import { ASK_USER_QUESTION_TOOL } from '../../../shared/ask-user-question';
 import { toPersistedEffort } from '../../../shared/effort';
 import type { TokenCounts } from '../../../shared/model-pricing';
 import { costUsdForModel, roundUsd, tokenCountsFromApiUsage } from '../../../shared/model-pricing';
@@ -248,7 +249,7 @@ export class ChannelSession {
       // questions in its reply — the user can answer in chat. SDK mode keeps
       // the structured picker because the SDK exposes canUseTool as a hook.
       '--disallowedTools',
-      'AskUserQuestion',
+      ASK_USER_QUESTION_TOOL,
       '--mcp-config',
       mcpJsonPath,
       '--verbose',

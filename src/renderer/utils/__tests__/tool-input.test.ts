@@ -54,6 +54,14 @@ describe('formatToolInput', () => {
     expect(param.value).not.toContain('[object Object]');
   });
 
+  it('gives objects and arrays a block, so their pretty-printing survives', () => {
+    // An inline row collapses the JSON's newlines and indentation into one
+    // run — the AskUserQuestion `questions` array read as a wall of JSON.
+    const [object, array] = formatToolInput({ options: { a: 1 }, questions: [{ q: 'x' }] });
+    expect(object.isBlock).toBe(true);
+    expect(array.isBlock).toBe(true);
+  });
+
   it('renders booleans and numbers as text', () => {
     const params = formatToolInput({ run_in_background: true, timeout: 5000 });
     const byKey = Object.fromEntries(params.map(p => [p.key, p]));

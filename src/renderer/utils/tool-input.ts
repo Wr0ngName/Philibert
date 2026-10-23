@@ -47,6 +47,9 @@ const BLOCK_THRESHOLD = 80;
 const ALWAYS_BLOCK = ['content', 'command', 'old_string', 'new_string', 'prompt'];
 
 function isBlockValue(key: string, value: unknown): boolean {
+  // Objects and arrays are pretty-printed over several lines; an inline row
+  // collapses that whitespace into one unreadable run of JSON.
+  if (value !== null && typeof value === 'object') return true;
   if (typeof value !== 'string') return false;
   if (ALWAYS_BLOCK.includes(key)) return true;
   return value.length > BLOCK_THRESHOLD || value.includes('\n');

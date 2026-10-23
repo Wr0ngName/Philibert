@@ -11,6 +11,11 @@ import type {
   PermissionUpdate,
 } from '@anthropic-ai/claude-agent-sdk';
 
+import {
+  ASK_USER_QUESTION_TOOL,
+  parseAskUserQuestionEntries,
+  type AskUserQuestionResultPayload,
+} from '../../../shared/ask-user-question';
 import { generateId, ID_PREFIXES } from '../../../shared/id';
 import {
   PendingAction,
@@ -22,7 +27,6 @@ import {
   AskUserQuestionAction,
   AskUserQuestionDetails,
   AskUserQuestionEntry,
-  AskUserQuestionOption,
   AskUserQuestionResponse,
   AskUserQuestionAnswer,
 } from '../../../shared/types';
@@ -31,9 +35,6 @@ import type ConfigService from '../ConfigService';
 
 import type { SessionPermissionCache } from './SessionPermissionCache';
 import { parseGenericToolInput, buildGenericToolDescription } from './tool-input-parser';
-
-/** Tool name for the SDK's built-in AskUserQuestion */
-export const ASK_USER_QUESTION_TOOL = 'AskUserQuestion';
 
 /** Prefix used by Claude Code for user messages that answer an AskUserQuestion */
 export const ASK_USER_QUESTION_PREFIX = '[User answered AskUserQuestion]:';
@@ -234,7 +235,7 @@ export class PermissionManager {
     input: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<PermissionResult> {
-    const questions = this.parseAskUserQuestionInput(input);
+    const questions = parseAskUserQuestionEntries(input);
 
     if (questions.length === 0) {
       logger.warn('AskUserQuestion called with no parseable questions', { input });
@@ -289,44 +290,6 @@ export class PermissionManager {
       this.pendingQuestions.set(actionId, pending);
       signal.addEventListener('abort', abortHandler);
     });
-  }
-
-  /**
-   * Parse the raw AskUserQuestion input into validated, typed questions.
-   * Silently drops malformed entries; returns an empty array if nothing is usable.
-   */
-  private parseAskUserQuestionInput(input: Record<string, unknown>): AskUserQuestionEntry[] {
-    const rawQuestions = Array.isArray(input.questions) ? input.questions : [];
-    const out: AskUserQuestionEntry[] = [];
-
-    for (const raw of rawQuestions) {
-      if (!raw || typeof raw !== 'object') continue;
-      const q = raw as Record<string, unknown>;
-
-      const question = typeof q.question === 'string' ? q.question : '';
-      const header = typeof q.header === 'string' ? q.header : '';
-      const multiSelect = typeof q.multiSelect === 'boolean' ? q.multiSelect : false;
-      const rawOptions = Array.isArray(q.options) ? q.options : [];
-      if (!question || rawOptions.length === 0) continue;
-
-      const options: AskUserQuestionOption[] = [];
-      for (const rawOpt of rawOptions) {
-        if (!rawOpt || typeof rawOpt !== 'object') continue;
-        const opt = rawOpt as Record<string, unknown>;
-        const label = typeof opt.label === 'string' ? opt.label : '';
-        if (!label) continue;
-        options.push({
-          label,
-          description: typeof opt.description === 'string' ? opt.description : '',
-          ...(typeof opt.preview === 'string' && opt.preview ? { preview: opt.preview } : {}),
-        });
-      }
-      if (options.length === 0) continue;
-
-      out.push({ question, header, multiSelect, options });
-    }
-
-    return out;
   }
 
   /**
@@ -388,11 +351,7 @@ export class PermissionManager {
   private buildSyntheticQuestionResult(
     questions: AskUserQuestionEntry[],
     answers: AskUserQuestionAnswer[],
-  ): {
-    questions: AskUserQuestionEntry[];
-    answers: Record<string, string>;
-    annotations?: Record<string, { preview?: string; notes?: string }>;
-  } {
+  ): AskUserQuestionResultPayload {
     const answersMap: Record<string, string> = {};
     const annotations: Record<string, { preview?: string; notes?: string }> = {};
 
@@ -406,7 +365,7 @@ export class PermissionManager {
       }
     }
 
-    const result: ReturnType<PermissionManager['buildSyntheticQuestionResult']> = {
+    const result: AskUserQuestionResultPayload = {
       questions,
       answers: answersMap,
     };
