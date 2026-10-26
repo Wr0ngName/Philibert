@@ -76,6 +76,9 @@ vi.mock('../../utils/logger', () => ({
 import { MAIN_CONSTANTS } from '../../constants/app';
 import AuthService from '../AuthService';
 
+/** A code of the shape the authorize page shows: `<code>#<state>`. */
+const CODE = 'ba81tYLAwH49cR704ruGj7Jcm4X3oWs08MSMdGp53WjNJJGs#e4gi3YWEmXhZQ6ULj4DDXORIw91yjDK370Eji7Bp5go';
+
 /** An access token of the shape `auth login` writes (sk-ant-oat01-, 108 chars). */
 const LOGIN_TOKEN = 'sk-ant-oat01-' + 'L'.repeat(95);
 
@@ -477,7 +480,7 @@ describe('AuthService', () => {
       });
 
       // Use a code that's >= 10 chars (OAuth code minimum)
-      const testCode = 'test123456';
+      const testCode = CODE;
       const completePromise = service.completeOAuthFlow(testCode);
 
       // Allow the setTimeout callbacks for CR/LF to complete
@@ -498,14 +501,16 @@ describe('AuthService', () => {
       expect(result.success).toBe(true);
     });
 
-    it('should send CR+LF to submit', async () => {
+    it('submits with one line end only — a CR, never a following LF', async () => {
+      // `auth login` reads lines; the terminal makes the CR a line end, and
+      // an LF after it was a second, empty line the CLI answered with
+      // "Invalid code" — which ended a login whose real code was valid.
       const writeCalls: string[] = [];
       mockPty.write.mockImplementation((data: string) => {
         writeCalls.push(data);
       });
 
-      // Use a code that's >= 10 chars
-      const completePromise = service.completeOAuthFlow('testcode12');
+      const completePromise = service.completeOAuthFlow(CODE);
 
       await vi.advanceTimersByTimeAsync(200);
 
@@ -515,13 +520,20 @@ describe('AuthService', () => {
 
       await completePromise;
 
-      // Should send carriage return and line feed
-      expect(writeCalls).toContain('\r');
-      expect(writeCalls).toContain('\n');
+      expect(writeCalls.join('')).toBe(`${CODE}\r`);
+    });
+
+    it('refuses a code without its two #-joined halves before sending it', async () => {
+      // The CLI would print a complaint and go on waiting, leaving the login hanging.
+      const result = await service.completeOAuthFlow('ba81tYLAwH49cR704ruGj7Jcm4X3oWs08MSMdGp53WjNJJGs');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('#');
+      expect(mockPty.write).not.toHaveBeenCalled();
     });
 
     it('takes the login from the credentials file the CLI writes, with its account', async () => {
-      const promise = service.completeOAuthFlow('testcode12');
+      const promise = service.completeOAuthFlow(CODE);
       await vi.advanceTimersByTimeAsync(200);
 
       const { credentialsJson, accountJson } = writeLogin();
@@ -532,7 +544,7 @@ describe('AuthService', () => {
     });
 
     it('refuses a credentials file whose token is malformed, rather than store a token that will 401', async () => {
-      const promise = service.completeOAuthFlow('testcode12');
+      const promise = service.completeOAuthFlow(CODE);
       await vi.advanceTimersByTimeAsync(200);
 
       writeLogin('sk-ant-at01-' + 'A'.repeat(95));
@@ -547,7 +559,7 @@ describe('AuthService', () => {
     it('does not take a token printed in the output: only the credentials file is the login', async () => {
       // `auth login` never prints its token; anything token-shaped in the
       // output is not a login and must not be stored as one.
-      const promise = service.completeOAuthFlow('testcode12');
+      const promise = service.completeOAuthFlow(CODE);
       await vi.advanceTimersByTimeAsync(200);
 
       mockPty.emitData(`sk-ant-oat01-${'Q'.repeat(95)}\n`);
@@ -586,7 +598,7 @@ describe('AuthService', () => {
       // Advance time past expiration (10 minutes)
       await vi.advanceTimersByTimeAsync(11 * 60 * 1000);
 
-      const result = await service.completeOAuthFlow('validcode123');
+      const result = await service.completeOAuthFlow(CODE);
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('expired');
@@ -597,31 +609,44 @@ describe('AuthService', () => {
       mockPty.emitExit(1);
       await vi.advanceTimersByTimeAsync(50);
 
-      const result = await service.completeOAuthFlow('validcode123');
+      const result = await service.completeOAuthFlow(CODE);
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('not running');
     });
 
-    it('should detect error messages in output', async () => {
-      const completePromise = service.completeOAuthFlow('testcode123');
-
+    it("reports the CLI's own reason when it exits without logging in", async () => {
+      // Verbatim from the CLI (2.1.280) for a code the server refused.
+      const completePromise = service.completeOAuthFlow(CODE);
       await vi.advanceTimersByTimeAsync(200);
 
-      mockPty.emitData('Error: Invalid code\n');
+      mockPty.emitData('Login failed: Request failed with status code 400\n');
+      mockPty.emitExit(1);
+      await vi.advanceTimersByTimeAsync(1500);
 
+      const result = await completePromise;
+      expect(result).toEqual({ success: false, error: 'Login failed: Request failed with status code 400' });
+    });
+
+    it('does not end the login on words in the output: only an exit without credentials fails it', async () => {
+      // "Invalid code" in the output used to end the login on the spot, while
+      // the real code was still being exchanged.
+      const completePromise = service.completeOAuthFlow(CODE);
+      await vi.advanceTimersByTimeAsync(200);
+
+      mockPty.emitData('Invalid code. Please make sure the full code was copied.\n');
+      await vi.advanceTimersByTimeAsync(600);
+      writeLogin();
       await vi.advanceTimersByTimeAsync(600);
 
       const result = await completePromise;
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('Invalid code');
+      expect(result.success).toBe(true);
     });
 
     it('completes when the credentials file is already there on the first check', async () => {
       writeLogin();
 
-      const completePromise = service.completeOAuthFlow('testcode123');
+      const completePromise = service.completeOAuthFlow(CODE);
 
       await vi.advanceTimersByTimeAsync(1000);
 
@@ -632,7 +657,7 @@ describe('AuthService', () => {
     });
 
     it('should timeout after max attempts', async () => {
-      const completePromise = service.completeOAuthFlow('testcode123');
+      const completePromise = service.completeOAuthFlow(CODE);
 
       // Advance past max poll attempts (90 * 500ms = 45 seconds)
       await vi.advanceTimersByTimeAsync(50000);

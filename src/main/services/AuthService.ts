@@ -578,8 +578,12 @@ export class AuthService {
       return false;
     }
     const trimmed = code.trim();
-    // Just check it's non-empty and reasonable length - let CLI validate the actual format
-    return trimmed.length >= 10 && trimmed.length <= 500;
+    if (trimmed.length < 10 || trimmed.length > 500) return false;
+    // The page shows `<code>#<state>`, and `auth login` reads it as one line
+    // split on `#`. A line without both halves is not refused: the CLI says
+    // so and goes on waiting, which would leave the login hanging here.
+    const [authorizationCode, state, ...rest] = trimmed.split('#');
+    return !!authorizationCode && !!state && rest.length === 0 && !/\s/.test(trimmed);
   }
 
   /**
@@ -601,23 +605,25 @@ export class AuthService {
 
     return new Promise((resolve) => {
       const handlers = this.createResourceHandlers();
-      let output = this.pendingOAuthFlow!.output;
+      // What the CLI says after this code was sent: on a failure, its last
+      // line is the reason, shown to the user as it is.
+      let reply = '';
 
       try {
         // Listen for PTY output
         handlers.dataHandler = ptyProcess!.onData((data: string) => {
-          output += data;
-          this.checkOAuthResult(output, configDir, handlers, resolve);
+          reply += data;
+          this.checkOAuthResult(configDir, handlers, resolve);
         });
 
         // Send code to PTY
         this.sendCodeToPty(ptyProcess!, code.trim());
 
         // Setup polling for result
-        this.setupOAuthPolling(handlers, () => output, configDir, resolve);
+        this.setupOAuthPolling(handlers, configDir, resolve);
 
         // Handle PTY exit
-        this.setupPtyExitHandler(ptyProcess!, handlers, () => output, configDir, resolve);
+        this.setupPtyExitHandler(ptyProcess!, handlers, () => reply, configDir, resolve);
       } catch (error) {
         handlers.cleanup();
         logger.error('Error completing OAuth flow:', error);
@@ -641,7 +647,7 @@ export class AuthService {
         codeLength: code?.length ?? 0,
         codeType: typeof code,
       });
-      return { success: false, error: 'Invalid authorization code format. Please copy the full code from the browser.' };
+      return { success: false, error: 'Invalid authorization code format. Please copy the full code from the browser — it has two parts joined by #.' };
     }
 
     const { pty: ptyProcess, createdAt } = this.pendingOAuthFlow;
@@ -690,31 +696,32 @@ export class AuthService {
       ptyProcess.write(char);
     }
 
-    // Send CR+LF to submit (like mautrix-claude sidecar)
+    // One line end, and only one. `auth login` reads stdin line by line, and
+    // the terminal turns this CR into a line end; the LF that used to follow
+    // it arrived as a second, empty line, which the CLI answers with "Invalid
+    // code" — and that reply ended the login while the real code was still
+    // being exchanged. Measured against the CLI (2.1.280): CR+LF prints the
+    // invalid-code line at once, CR alone does not.
     setTimeout(() => {
       ptyProcess.write('\r');
-      setTimeout(() => {
-        ptyProcess.write('\n');
-      }, MAIN_CONSTANTS.AUTH.OAUTH_POLL_INTERVAL_MS / 5);
     }, MAIN_CONSTANTS.AUTH.OAUTH_POLL_INTERVAL_MS / 10);
   }
 
   /**
-   * Check whether the login has finished.
+   * Check whether the login has succeeded.
    *
    * The CLI's credentials file is the result: `auth login` writes it once the
-   * code is accepted, and it carries no token in its output. Errors are read
-   * from the output.
+   * code is accepted. Failure is the CLI exiting without having written it —
+   * see setupPtyExitHandler. Words in its output are not taken as either: an
+   * "invalid code" or "failed" anywhere in it used to end the login, which is
+   * how a valid code was reported invalid.
    */
   private checkOAuthResult(
-    output: string,
     configDir: string,
     handlers: OAuthResourceHandlers,
     resolve: (result: OAuthFlowResult) => void
   ): boolean {
     if (handlers.resolved) return true;
-
-    const clean = stripAnsi(output);
 
     const login = this.readLogin(configDir);
     if (login) {
@@ -726,17 +733,16 @@ export class AuthService {
       return true;
     }
 
-    // Check for error indicators
-    if (this.hasErrorIndicators(clean)) {
-      handlers.resolved = true;
-      handlers.cleanup();
-      logger.error('OAuth error detected in output');
-      this.cleanupOAuthFlow();
-      resolve({ success: false, error: 'Invalid code. Please try again.' });
-      return true;
-    }
-
     return false;
+  }
+
+  /**
+   * The CLI's last line of output, as it wrote it — its reason, when it
+   * exits without logging in ("Login failed: …"). Relayed, not interpreted.
+   */
+  private lastLine(output: string): string | null {
+    const lines = stripAnsi(output).split(/\r?\n|\r/).map((line) => line.trim()).filter(Boolean);
+    return lines.at(-1) ?? null;
   }
 
   /**
@@ -762,31 +768,17 @@ export class AuthService {
   }
 
   /**
-   * Check if output contains error indicators.
-   */
-  private hasErrorIndicators(cleanOutput: string): boolean {
-    const lowerClean = cleanOutput.toLowerCase();
-    return (
-      (lowerClean.includes('invalid code') ||
-        lowerClean.includes('error:') ||
-        lowerClean.includes('failed')) &&
-      !lowerClean.includes('no error')
-    );
-  }
-
-  /**
    * Setup polling interval for OAuth result.
    */
   private setupOAuthPolling(
     handlers: OAuthResourceHandlers,
-    getOutput: () => string,
     configDir: string,
     resolve: (result: OAuthFlowResult) => void
   ): void {
     let attempts = 0;
     handlers.pollInterval = setInterval(() => {
       attempts++;
-      if (this.checkOAuthResult(getOutput(), configDir, handlers, resolve)) {
+      if (this.checkOAuthResult(configDir, handlers, resolve)) {
         handlers.cleanup();
         return;
       }
@@ -804,12 +796,13 @@ export class AuthService {
 
   /**
    * Setup PTY exit handler: a last look for the credentials file, which the
-   * CLI may write as it exits, then cleanup either way.
+   * CLI may write as it exits; without one, the login failed, for the reason
+   * the CLI gave last. Cleanup either way.
    */
   private setupPtyExitHandler(
     ptyProcess: IPty,
     handlers: OAuthResourceHandlers,
-    getOutput: () => string,
+    getReply: () => string,
     configDir: string,
     resolve: (result: OAuthFlowResult) => void
   ): void {
@@ -817,11 +810,13 @@ export class AuthService {
       logger.info(`OAuth PTY exited with code ${exitCode}`);
       setTimeout(() => {
         if (!handlers.resolved) {
-          this.checkOAuthResult(getOutput(), configDir, handlers, resolve);
+          this.checkOAuthResult(configDir, handlers, resolve);
           if (!handlers.resolved) {
             handlers.resolved = true;
             handlers.cleanup();
-            resolve({ success: false, error: 'Authentication failed. Please try again.' });
+            const reason = this.lastLine(getReply());
+            logger.warn('Login ended without credentials', { exitCode, reason });
+            resolve({ success: false, error: reason ?? 'Authentication failed. Please try again.' });
           }
         }
         this.cleanupOAuthFlow();
