@@ -11,7 +11,7 @@ import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
 import { useClaudeChat } from '../../composables/useClaudeChat';
-import { descendantsOf, toolUseIdForTask, type ActivityRow } from '../../utils/message-tree';
+import { toolUseIdForTask } from '../../utils/message-tree';
 import ActionApproval from './ActionApproval.vue';
 import AskUserQuestionMessage from './AskUserQuestionMessage.vue';
 import BackgroundTaskDetailModal from './BackgroundTaskDetailModal.vue';
@@ -98,17 +98,10 @@ const taskDetailSpawningTool = computed<ToolUseInfo | null>(() => {
   return message?.toolUse ?? null;
 });
 
-/**
- * The tool calls the open task has made.
- *
- * Read from the message stream rather than the task record, because the task
- * record carries no history of what it did — only its final summary. While a
- * task runs this is the only thing the detail modal has to show.
- */
-const taskDetailActivity = computed<ActivityRow[]>(() => {
-  const task = taskDetailTask.value;
-  if (!task) return [];
-  return descendantsOf(chatStore.messages, toolUseIdForTask(task));
+/** The agent that started the open task, when an agent did. */
+const taskDetailParent = computed<BackgroundTask | null>(() => {
+  const parentId = taskDetailTask.value?.parentTaskId;
+  return parentId ? chatStore.findBackgroundTask(parentId) : null;
 });
 
 // Tool detail modal state
@@ -414,13 +407,15 @@ function closeToolDetail() {
     <BackgroundTaskDetailModal
       :open="taskDetailOpen"
       :task="taskDetailTask"
+      :conversation-id="conversationsStore.currentConversationId ?? ''"
+      :parent-task="taskDetailParent"
       :spawning-tool="taskDetailSpawningTool"
-      :activity="taskDetailActivity"
       :stopping="stoppingTask"
       :stop-error="stopTaskError"
       @close="closeTaskDetail"
       @stop="stopTaskFromDetail"
       @open-tool-detail="openToolDetailFor"
+      @open-task-detail="openTaskDetail"
     />
 
     <!-- Tool use detail modal -->

@@ -207,6 +207,22 @@ export interface ConversationState {
 /**
  * Create a fresh conversation state object
  */
+/**
+ * The fields of a task notification that describe the task as it runs —
+ * its kind as the CLI states it, the agent's type, what it is doing now,
+ * how far it has got, and the agent that started it — for the ones present.
+ */
+function liveTaskFields(notification: TaskNotification): Partial<BackgroundTask> {
+  return {
+    ...(notification.taskType && { taskType: notification.taskType }),
+    ...(notification.agentType && { agentType: notification.agentType }),
+    ...(notification.activity && { activity: notification.activity }),
+    ...(notification.totalTokens !== undefined && { totalTokens: notification.totalTokens }),
+    ...(notification.toolUses !== undefined && { toolUses: notification.toolUses }),
+    ...(notification.parentTaskId && { parentTaskId: notification.parentTaskId }),
+  };
+}
+
 function createConversationState(): ConversationState {
   return {
     isLoading: false,
@@ -2120,6 +2136,7 @@ export const useChatStore = defineStore('chat', () => {
         ...(typeof notification.timedOutAfterMs === 'number'
           ? { timedOutAfterMs: notification.timedOutAfterMs }
           : {}),
+        ...liveTaskFields(notification),
       };
 
       // `completedAt` is what the duration is measured to, so it has to track
@@ -2155,6 +2172,7 @@ export const useChatStore = defineStore('chat', () => {
         // `toolUseId`. Keying only on toolUseId classified every background
         // task as a plain command, including backgrounded agents.
         taskType: resolveTaskType(conversationId, notification.toolUseId ?? notification.taskId),
+        ...liveTaskFields(notification),
       };
       if (notification.status !== 'running') {
         task.completedAt = Date.now();

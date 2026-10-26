@@ -1003,19 +1003,87 @@ describe('SDKMessageHandler', () => {
 
   describe('native task lifecycle messages', () => {
     it('should emit running notification for task_started', async () => {
+      // Captured from CLI 2.1.280, trimmed.
       await handler.handleMessage({
         type: 'system',
         subtype: 'task_started',
-        task_id: 'task-abc',
-        description: 'Running unit tests',
-        task_type: 'agent',
+        task_id: 'a47ef0f60a29e8d14',
+        tool_use_id: 'toolu_agent',
+        description: 'Agent reads notes.txt',
+        subagent_type: 'general-purpose',
+        is_backgrounded: true,
+        spawn_depth: 1,
+        task_type: 'local_agent',
       } as never);
 
       expect(callbacks.onTaskNotification).toHaveBeenCalledWith({
-        taskId: 'task-abc',
+        taskId: 'a47ef0f60a29e8d14',
         status: 'running',
-        description: 'Running unit tests',
+        description: 'Agent reads notes.txt',
+        toolUseId: 'toolu_agent',
+        taskType: 'agent',
+        agentType: 'general-purpose',
       });
+    });
+
+    it('names the agent that started a command, and none for the main conversation', async () => {
+      // The agent, then a frame of the agent's that starts a background
+      // command, then that command — the order the CLI sends them in.
+      await handler.handleMessage({
+        type: 'system', subtype: 'task_started', task_id: 'agent-1', tool_use_id: 'toolu_agent',
+        description: 'Agent', task_type: 'local_agent',
+      } as never);
+      await handler.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'toolu_cmd', name: 'Bash', input: { command: 'make', run_in_background: true } }] },
+        parent_tool_use_id: 'toolu_agent',
+      } as never);
+      await handler.handleMessage({
+        type: 'system', subtype: 'task_started', task_id: 'bash-1', tool_use_id: 'toolu_cmd',
+        owned_by_subagent: true, description: 'make', task_type: 'local_bash',
+      } as never);
+      await handler.handleMessage({
+        type: 'system', subtype: 'task_started', task_id: 'bash-2', tool_use_id: 'toolu_main_cmd',
+        description: 'npm test', task_type: 'local_bash',
+      } as never);
+
+      const notified = vi.mocked(callbacks.onTaskNotification).mock.calls.map(([n]) => n);
+      expect(notified.find((n) => n.taskId === 'bash-1')).toMatchObject({ taskType: 'command', parentTaskId: 'agent-1' });
+      expect(notified.find((n) => n.taskId === 'bash-2')?.parentTaskId).toBeUndefined();
+    });
+
+    it("knows a background command's output file as soon as it starts", async () => {
+      const file = '/tmp/claude-1000/proj/sess/tasks/b3q51bvd7.output';
+      await handler.handleMessage({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_cmd',
+            content: `Command running in background with ID: b3q51bvd7. Output is being written to: ${file}. You will be notified when it completes.`,
+          }],
+        },
+        tool_use_result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b3q51bvd7' },
+        parent_tool_use_id: null,
+      } as never);
+
+      expect(handler.getTaskOutputFile('b3q51bvd7')).toBe(file);
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: 'b3q51bvd7', previousTaskId: 'toolu_cmd', outputFile: file,
+      }));
+    });
+
+    it("knows a background agent's transcript file as soon as it starts", async () => {
+      const file = '/tmp/claude-1000/proj/sess/tasks/a47ef0f60a29e8d14.output';
+      await handler.handleMessage({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_agent', content: [{ type: 'text', text: 'Async agent launched successfully.' }] }] },
+        tool_use_result: { isAsync: true, status: 'async_launched', agentId: 'a47ef0f60a29e8d14', outputFile: file },
+        parent_tool_use_id: null,
+      } as never);
+
+      expect(handler.getTaskOutputFile('a47ef0f60a29e8d14')).toBe(file);
     });
 
     it('should skip task_started with skip_transcript flag', async () => {
@@ -1030,22 +1098,46 @@ describe('SDKMessageHandler', () => {
       expect(callbacks.onTaskNotification).not.toHaveBeenCalled();
     });
 
-    it('should emit progress notification for task_progress', async () => {
+    it('reports progress as the live activity, not as the description or summary', async () => {
+      // Captured from CLI 2.1.280. `description` is what the agent is doing
+      // now; writing it over the task's description lost what the task is for.
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'task_progress',
+        task_id: 'a47ef0f60a29e8d14',
+        tool_use_id: 'toolu_agent',
+        description: 'Reading notes.txt',
+        subagent_type: 'general-purpose',
+        usage: { total_tokens: 14063, tool_uses: 1, duration_ms: 2344 },
+        last_tool_name: 'Read',
+      } as never);
+
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith({
+        taskId: 'a47ef0f60a29e8d14',
+        status: 'running',
+        activity: 'Reading notes.txt',
+        agentType: 'general-purpose',
+        totalTokens: 14063,
+        toolUses: 1,
+        toolUseId: 'toolu_agent',
+      });
+    });
+
+    it('prefers the model-written progress summary for the activity', async () => {
       await handler.handleMessage({
         type: 'system',
         subtype: 'task_progress',
         task_id: 'task-abc',
         description: 'Running tests',
         summary: 'Analyzing authentication module',
-        last_tool_name: 'Bash',
+        usage: { total_tokens: 1, tool_uses: 0, duration_ms: 1 },
       } as never);
 
-      expect(callbacks.onTaskNotification).toHaveBeenCalledWith({
-        taskId: 'task-abc',
-        status: 'running',
-        description: 'Running tests',
-        summary: 'Analyzing authentication module',
-      });
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith(expect.objectContaining({
+        activity: 'Analyzing authentication module',
+      }));
+      expect(vi.mocked(callbacks.onTaskNotification).mock.calls[0][0]).not.toHaveProperty('summary');
+      expect(vi.mocked(callbacks.onTaskNotification).mock.calls[0][0]).not.toHaveProperty('description');
     });
 
     it('should emit completion for task_updated with completed status', async () => {

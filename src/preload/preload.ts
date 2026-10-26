@@ -45,6 +45,12 @@ const electronAPI: ElectronAPI = {
     stopTask: (conversationId: string, taskId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_STOP_TASK, conversationId, taskId),
 
+    readTaskOutput: (conversationId: string, taskId: string, outputFile: string | undefined, fromByte: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_READ_TASK_OUTPUT, conversationId, taskId, outputFile, fromByte),
+
+    getAgentTranscript: (conversationId: string, agentId: string, sdkSessionId: string | undefined) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_AGENT_TRANSCRIPT, conversationId, agentId, sdkSessionId),
+
     getCommands: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_COMMANDS),
 
     getAgents: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_AGENTS),

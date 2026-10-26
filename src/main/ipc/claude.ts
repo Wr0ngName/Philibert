@@ -261,6 +261,50 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
     },
   );
 
+  ipcMain.handle(
+    IPC_CHANNELS.CLAUDE_READ_TASK_OUTPUT,
+    async (_event, conversationId: string, taskId: string, outputFile: unknown, fromByte: unknown) => {
+      try {
+        ensureService(claudeService, 'ClaudeCodeService');
+        validateString(conversationId, 'Conversation ID');
+        validateString(taskId, 'Task ID');
+        if (outputFile !== undefined && outputFile !== null) validateString(outputFile, 'Output file');
+        const from = typeof fromByte === 'number' && Number.isInteger(fromByte) && fromByte >= 0 ? fromByte : 0;
+
+        return await claudeService.readTaskOutput(
+          conversationId,
+          taskId,
+          (outputFile as string | null | undefined) ?? undefined,
+          from,
+        );
+      } catch (error) {
+        logger.error('Failed to read task output', { error, conversationId, taskId });
+        throw new Error(formatErrorMessage('Failed to read task output', error), { cause: error });
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.CLAUDE_GET_AGENT_TRANSCRIPT,
+    async (_event, conversationId: string, agentId: string, sdkSessionId: unknown) => {
+      try {
+        ensureService(claudeService, 'ClaudeCodeService');
+        validateString(conversationId, 'Conversation ID');
+        validateString(agentId, 'Agent ID');
+        if (sdkSessionId !== undefined && sdkSessionId !== null) validateString(sdkSessionId, 'Session ID');
+
+        return await claudeService.getAgentTranscript(
+          conversationId,
+          agentId,
+          (sdkSessionId as string | null | undefined) ?? undefined,
+        );
+      } catch (error) {
+        logger.error('Failed to read agent transcript', { error, conversationId, agentId });
+        throw new Error(formatErrorMessage('Failed to read agent transcript', error), { cause: error });
+      }
+    },
+  );
+
   // Get available slash commands
   ipcMain.handle(IPC_CHANNELS.CLAUDE_GET_COMMANDS, async () => {
     try {

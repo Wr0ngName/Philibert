@@ -1,45 +1,44 @@
 <script setup lang="ts">
 /**
  * Background task detail modal (equivalent of Ctrl+O in Claude Code CLI).
- * Shows task description, status, duration, summary, error, and output file content.
+ *
+ * An agent is shown the way the discussion is — its prompt, what it said, the
+ * calls it made and their results — by the same message list, read from its
+ * transcript and followed while it runs. A command is shown as its command
+ * line and its output, followed the same way.
  */
 
-import { ref, watch, computed } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 
 import type { BackgroundTask, ToolUseInfo } from '@shared/types';
 
 import { useNowTicker } from '../../composables/useNowTicker';
-import type { ActivityRow } from '../../utils/message-tree';
+import { useAgentTranscript, useCommandOutput } from '../../composables/useTaskDetailFeed';
+import { useConversationsStore } from '../../stores/conversations';
 import { formatModelId } from '../../utils/model';
 import { formatTaskDuration } from '../../utils/task-duration';
-import { parseTaskOutput } from '../../utils/task-output';
+import { formatTokenCount } from '../../utils/token-count';
 import { formatToolInput, type InputParam } from '../../utils/tool-input';
 import Button from '../shared/Button.vue';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
+import { heldListSource } from './message-list-source';
+import MessageList from './MessageList.vue';
 
 interface Props {
   open: boolean;
   task: BackgroundTask | null;
+  /** The conversation the task belongs to. */
+  conversationId: string;
+  /** The agent that started this task, when an agent did. */
+  parentTask?: BackgroundTask | null;
   /**
-   * The tool call that spawned this task, when there is one.
-   *
-   * Its input is the detail worth reading — the shell command, or a
-   * sub-agent's prompt and type. Without it a running task showed only its
-   * description, status and duration, because every other field this modal
-   * has (summary, output file, model, tokens) only arrives at the end.
+   * The tool call that spawned this task, when there is one. For a command
+   * its input is the command line; an agent's prompt is the first message of
+   * its transcript instead.
    */
   spawningTool?: ToolUseInfo | null;
-  /**
-   * Tool calls this task has made, flattened, deepest-nested indented.
-   *
-   * The task's own fields — summary, output file, model, tokens — are only
-   * filled in once it finishes, so for the whole time a task is live this is
-   * the only thing there is to show. Without it the modal was an empty
-   * "Output:" box.
-   */
-  activity?: ActivityRow[];
   /** Whether a stop request is in flight. */
   stopping?: boolean;
   /** Why the last stop attempt failed, if it did. */
@@ -47,75 +46,93 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  parentTask: null,
   spawningTool: null,
-  activity: () => [],
   stopping: false,
   stopError: null,
 });
-
-/** The spawning tool's input, formatted the same way the tool modal shows it. */
-const inputParams = computed((): InputParam[] => formatToolInput(props.spawningTool?.input));
 
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'stop', taskId: string): void;
   /** Show one of the task's tool calls in the tool detail modal. */
   (e: 'open-tool-detail', toolUse: ToolUseInfo): void;
+  /** Show another task — the agent that started this one, or one it started. */
+  (e: 'open-task-detail', taskId: string): void;
 }>();
 
-/** Open a tool call's own detail. Guarded: a row without one is not clickable. */
-function openToolDetail(toolUse: ToolUseInfo | undefined): void {
+const conversationsStore = useConversationsStore();
+
+const isAgent = computed(() => props.task?.taskType === 'agent');
+const isRunning = computed(() => props.task?.status === 'running');
+
+const feed = {
+  open: () => props.open,
+  task: () => props.task,
+  conversationId: () => props.conversationId,
+};
+const transcript = useAgentTranscript(feed);
+const output = useCommandOutput(feed);
+
+/** The agent's transcript, for the same list the discussion uses. */
+const transcriptSource = heldListSource(() => ({
+  key: `agent:${props.task?.id ?? ''}`,
+  conversationId: props.conversationId,
+  messages: transcript.messages.value,
+  isLoading: isRunning.value,
+  workingDirectory: conversationsStore.getConversationWorkingDirectory(props.conversationId) ?? '',
+}));
+
+/** Who the transcript's assistant turns are from. */
+const agentLabel = computed(() => props.task?.agentType ?? 'Agent');
+
+/** A call in the transcript, opened in the tool detail modal. */
+function openTranscriptTool(toolUseBlockId: string): void {
+  const toolUse = transcript.messages.value.find((m) => m.toolUse?.toolUseBlockId === toolUseBlockId)?.toolUse;
   if (toolUse) emit('open-tool-detail', toolUse);
 }
 
-/**
- * The output file, read as what it actually is.
- *
- * An agent's file is a JSONL transcript (measured: 55,597 bytes for a
- * one-word answer); a shell task's is the command's own output. See
- * parseTaskOutput.
- */
-const parsedOutput = computed(() => parseTaskOutput(outputContent.value));
-
-// Output file content (lazy-loaded when modal opens)
-const outputContent = ref<string | null>(null);
-const outputLoading = ref(false);
-const outputError = ref<string | null>(null);
-
-// Load output file when modal opens and task has outputFile
-watch(
-  () => ({ open: props.open, outputFile: props.task?.outputFile }),
-  async ({ open, outputFile }) => {
-    if (open && outputFile) {
-      outputLoading.value = true;
-      outputError.value = null;
-      outputContent.value = null;
-      try {
-        outputContent.value = await window.electron.files.read(outputFile);
-      } catch (err) {
-        outputError.value = err instanceof Error ? err.message : String(err);
-      } finally {
-        outputLoading.value = false;
-      }
-    } else if (!open) {
-      outputContent.value = null;
-      outputError.value = null;
-    }
-  },
-  { immediate: true },
+/** The command line, formatted the same way the tool modal shows a tool's input. */
+const inputParams = computed((): InputParam[] =>
+  isAgent.value ? [] : formatToolInput(props.spawningTool?.input),
 );
+
+/**
+ * The output view follows the end of a running command — but only while the
+ * reader is there. Scrolled up to read something, they stay put.
+ */
+const outputRef = ref<HTMLElement | null>(null);
+const FOLLOW_THRESHOLD_PX = 24;
+let followingOutput = true;
+
+function onOutputScroll(): void {
+  const el = outputRef.value;
+  if (!el) return;
+  followingOutput = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD_PX;
+}
+
+watch(
+  () => output.text.value,
+  () => {
+    if (!followingOutput) return;
+    void nextTick(() => {
+      const el = outputRef.value;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  },
+);
+
+// A different task starts at its own end.
+watch(() => props.task?.id, () => {
+  followingOutput = true;
+});
 
 /**
  * Ticks only while this modal is open on a task that is still running. A
  * finished task's duration comes from its own `completedAt` and does not
  * move.
- *
- * This used to read `Date.now()` straight from the computed below, which is
- * not a reactive dependency — so the computed cached its first result and the
- * runtime shown here never changed, however long the modal stayed open on a
- * live task.
  */
-const now = useNowTicker(() => props.open && props.task?.status === 'running');
+const now = useNowTicker(() => props.open && isRunning.value);
 
 /**
  * Null when it is not known: an ended task with no completion time — one
@@ -124,7 +141,7 @@ const now = useNowTicker(() => props.open && props.task?.status === 'running');
  */
 const duration = computed(() => {
   if (!props.task) return null;
-  if (props.task.status !== 'running' && props.task.completedAt === undefined) return null;
+  if (!isRunning.value && props.task.completedAt === undefined) return null;
   return formatTaskDuration(props.task, now.value);
 });
 
@@ -152,27 +169,23 @@ const agentModel = computed(() =>
   props.task?.model ? formatModelId(props.task.model) : null,
 );
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
-
 /**
- * Tokens this agent consumed, accumulated across its own frames — attributable
- * to the agent rather than folded into the conversation totals.
+ * Tokens this agent has used. The CLI's own count when it gave one — the
+ * number its row shows — and otherwise what was added up from the agent's
+ * frames.
  */
 const tokenSummary = computed(() => {
-  const input = props.task?.inputTokens ?? 0;
-  const output = props.task?.outputTokens ?? 0;
-  if (input === 0 && output === 0) return null;
-  return `${formatTokens(input + output)} tokens`;
+  const task = props.task;
+  if (!task) return null;
+  const total = task.totalTokens ?? (task.inputTokens ?? 0) + (task.outputTokens ?? 0);
+  return total > 0 ? `${formatTokenCount(total)} tokens` : null;
 });
 
 const tokenTitle = computed(() => {
   const input = props.task?.inputTokens ?? 0;
-  const output = props.task?.outputTokens ?? 0;
-  return `${input.toLocaleString()} in (including cache reads) / ${output.toLocaleString()} out`;
+  const output_ = props.task?.outputTokens ?? 0;
+  if (input === 0 && output_ === 0) return undefined;
+  return `${input.toLocaleString()} in (including cache reads) / ${output_.toLocaleString()} out`;
 });
 
 const statusDisplay = computed(() => {
@@ -207,7 +220,7 @@ const statusDisplay = computed(() => {
       <div class="flex items-start gap-3">
         <div :class="['shrink-0 mt-0.5', statusDisplay.colorClass]">
           <Spinner
-            v-if="task.status === 'running'"
+            v-if="isRunning"
             size="sm"
           />
           <Icon
@@ -228,9 +241,13 @@ const statusDisplay = computed(() => {
         </div>
         <div class="flex-1 min-w-0">
           <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">
+            <span
+              v-if="isAgent && task.agentType"
+              class="font-mono text-purple-600 dark:text-purple-400 mr-1"
+            >{{ task.agentType }}</span>
             {{ task.description }}
           </h3>
-          <div class="flex items-center gap-3 mt-1 text-xs text-surface-500 dark:text-surface-400">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-surface-500 dark:text-surface-400">
             <span :class="statusDisplay.colorClass">{{ statusDisplay.label }}</span>
             <span v-if="duration">Duration: {{ duration }}</span>
             <!-- This agent's own model. A sub-agent runs the model named in
@@ -245,7 +262,29 @@ const statusDisplay = computed(() => {
               v-if="tokenSummary"
               :title="tokenTitle"
             >{{ tokenSummary }}</span>
+            <span v-if="task.toolUses !== undefined">{{ task.toolUses }} tool {{ task.toolUses === 1 ? 'use' : 'uses' }}</span>
+            <!-- Where this task came from, when an agent rather than the main
+                 conversation started it. -->
+            <button
+              v-if="parentTask"
+              type="button"
+              class="inline-flex items-center gap-1 text-purple-600 dark:text-purple-400 hover:underline"
+              :title="parentTask.description"
+              @click="emit('open-task-detail', parentTask.id)"
+            >
+              <Icon
+                name="cpu"
+                size="xs"
+              />
+              Started by {{ parentTask.agentType ?? 'an agent' }}
+            </button>
           </div>
+          <p
+            v-if="isRunning && task.activity"
+            class="mt-1 text-xs text-surface-600 dark:text-surface-300 truncate"
+          >
+            {{ task.activity }}
+          </p>
           <!-- The timeout in the Input below is what backgrounded this task,
                not a limit it is still under. Said here because otherwise a
                five-minute timeout next to a three-hour duration reads as a
@@ -267,7 +306,7 @@ const statusDisplay = computed(() => {
         <div class="text-xs font-medium text-surface-500 dark:text-surface-400 mb-1">
           Summary
         </div>
-        <div class="text-sm text-surface-800 dark:text-surface-200 whitespace-pre-wrap">
+        <div class="text-sm text-surface-800 dark:text-surface-200 whitespace-pre-wrap max-h-40 overflow-y-auto">
           {{ task.summary }}
         </div>
       </div>
@@ -285,203 +324,109 @@ const statusDisplay = computed(() => {
         </div>
       </div>
 
-      <!-- What the task is actually doing: the input to the tool call that
-           spawned it. For a shell task this is the command; for an agent it is
-           the prompt and sub-agent type. Rendered the same way the tool detail
-           modal renders a tool's input, from the same helper. -->
+      <!-- An agent: its transcript, drawn by the discussion's own list. -->
       <div
-        v-if="inputParams.length > 0"
-        class="space-y-2"
+        v-if="isAgent"
+        class="agent-transcript"
       >
-        <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
-          <Icon
-            name="cpu"
-            size="xs"
-          />
-          <span>Input</span>
-          <span
-            v-if="spawningTool"
-            class="font-mono text-surface-400 dark:text-surface-500"
-          >{{ spawningTool.toolName }}</span>
-        </div>
-
-        <div class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 space-y-2">
-          <div
-            v-for="param in inputParams"
-            :key="param.key"
-          >
-            <div class="text-xs text-surface-500 dark:text-surface-400 mb-0.5">
-              {{ param.label }}
-            </div>
-            <pre
-              v-if="param.isBlock"
-              class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono max-h-60 overflow-y-auto"
-            >{{ param.value }}</pre>
-            <div
-              v-else
-              class="text-xs text-surface-800 dark:text-surface-200 font-mono break-all"
-            >
-              {{ param.value }}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- What the task has actually been doing.
-           This is the substance of the modal while a task runs: the output
-           file, summary, model and token fields are all empty until it
-           finishes, so without this a live task showed an empty box. -->
-      <div
-        v-if="activity.length > 0"
-        class="space-y-2"
-      >
-        <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
-          <Icon
-            name="terminal"
-            size="xs"
-          />
-          <span>Activity:</span>
-          <span>{{ activity.length }} tool {{ activity.length === 1 ? 'call' : 'calls' }}</span>
-        </div>
-
-        <div class="bg-surface-50 dark:bg-surface-900 rounded-lg divide-y divide-surface-200 dark:divide-surface-700 max-h-80 overflow-y-auto">
-          <button
-            v-for="row in activity"
-            :key="row.message.id"
-            type="button"
-            class="w-full text-left px-3 py-2 hover:bg-surface-100 dark:hover:bg-surface-800 transition-colors"
-            :style="row.depth > 0 ? { paddingLeft: 0.75 + row.depth * 0.75 + 'rem' } : undefined"
-            @click="openToolDetail(row.message.toolUse)"
-          >
-            <div class="flex items-baseline gap-2 min-w-0">
-              <span class="font-mono text-xs font-medium text-primary-600 dark:text-primary-400 shrink-0">
-                {{ row.message.toolUse?.toolName }}
-              </span>
-              <span class="text-xs text-surface-600 dark:text-surface-300 truncate">
-                {{ row.message.toolUse?.description }}
-              </span>
-            </div>
-          </button>
-        </div>
-      </div>
-
-      <!-- A running AGENT that has not called a tool yet.
-           Only for agents: a background command runs one shell command and
-           never makes tool calls, so telling the user none were recorded is
-           noise about something that was never going to happen. What a
-           command has to show is its command line and its output, above and
-           below this. -->
-      <div
-        v-else-if="task.status === 'running' && task.taskType === 'agent'"
-        class="text-xs text-surface-500 dark:text-surface-400 italic"
-      >
-        No tool calls recorded for this agent yet.
-      </div>
-
-      <!-- Output File Content -->
-      <div
-        v-if="task.outputFile"
-        class="space-y-2"
-      >
-        <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
-          <Icon
-            name="document"
-            size="xs"
-          />
-          <span>Output:</span>
-          <span class="font-mono truncate">{{ task.outputFile }}</span>
-        </div>
-
         <div
-          v-if="outputLoading"
+          v-if="!transcript.loaded.value"
           class="flex items-center gap-2 p-3 text-xs text-surface-500"
         >
           <Spinner size="xs" />
-          Loading output file...
+          Loading the agent's transcript…
         </div>
+        <MessageList
+          v-else
+          :source="transcriptSource"
+          :assistant-label="agentLabel"
+          empty-title="Nothing yet"
+          empty-text="The agent's prompt, messages and tool calls appear here as it works."
+          @open-tool-detail="openTranscriptTool"
+          @open-task-detail="emit('open-task-detail', $event)"
+        />
+      </div>
+
+      <template v-else>
+        <!-- A command: its command line… -->
         <div
-          v-else-if="outputError"
-          class="text-xs text-red-500 p-3 bg-red-50 dark:bg-red-900/20 rounded-lg"
+          v-if="inputParams.length > 0"
+          class="space-y-2"
         >
-          Failed to load output: {{ outputError }}
-        </div>
-        <!-- An agent's output file is its transcript, one JSON object per
-             line, so showing the file verbatim meant tens of kilobytes of raw
-             JSON. Rendered as the activity it describes instead; a command's
-             output is still shown as the text it is. -->
-        <div
-          v-else-if="parsedOutput.kind === 'transcript'"
-          class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 max-h-80 overflow-y-auto space-y-2"
-        >
-          <div
-            v-for="(step, index) in parsedOutput.steps"
-            :key="index"
-            class="text-xs"
-          >
+          <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
+            <Icon
+              name="terminal"
+              size="xs"
+            />
+            <span>Input</span>
+            <span
+              v-if="spawningTool"
+              class="font-mono text-surface-400 dark:text-surface-500"
+            >{{ spawningTool.toolName }}</span>
+          </div>
+
+          <div class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 space-y-2">
             <div
-              v-if="step.toolName"
-              class="flex items-start gap-1.5 text-surface-600 dark:text-surface-300"
+              v-for="param in inputParams"
+              :key="param.key"
             >
-              <Icon
-                name="terminal"
-                size="xs"
-                class="mt-0.5 shrink-0"
-              />
-              <span class="font-medium">{{ step.toolName }}</span>
-              <span
-                v-if="step.toolInput"
-                class="font-mono text-surface-500 dark:text-surface-400 truncate"
-              >{{ step.toolInput }}</span>
-            </div>
-            <div v-else>
-              <span
-                class="font-medium"
-                :class="step.role === 'user'
-                  ? 'text-surface-500 dark:text-surface-400'
-                  : 'text-primary-600 dark:text-primary-400'"
-              >{{ step.role === 'user' ? 'Prompt' : 'Agent' }}</span>
-              <span class="text-surface-800 dark:text-surface-200 whitespace-pre-wrap">
-                {{ step.text }}
-              </span>
+              <div class="text-xs text-surface-500 dark:text-surface-400 mb-0.5">
+                {{ param.label }}
+              </div>
+              <pre
+                v-if="param.isBlock"
+                class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono max-h-60 overflow-y-auto"
+              >{{ param.value }}</pre>
+              <div
+                v-else
+                class="text-xs text-surface-800 dark:text-surface-200 font-mono break-all"
+              >
+                {{ param.value }}
+              </div>
             </div>
           </div>
+        </div>
 
-          <!-- Said rather than silently dropped: a transcript is mostly
-               machinery, and claiming to show it all would be a lie. -->
+        <!-- …and its output, followed while it runs. -->
+        <div class="space-y-2">
+          <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
+            <Icon
+              name="document"
+              size="xs"
+            />
+            <span>Output</span>
+            <span
+              v-if="output.skippedBytes.value > 0"
+              class="text-surface-400 dark:text-surface-500"
+            >— the last part only; {{ formatTokenCount(output.skippedBytes.value) }}B before it not shown</span>
+          </div>
           <div
-            v-if="parsedOutput.skipped > 0"
-            class="text-[11px] text-surface-400 dark:text-surface-500 italic pt-1"
+            v-if="!output.loaded.value"
+            class="flex items-center gap-2 p-3 text-xs text-surface-500"
           >
-            {{ parsedOutput.skipped }} setup
-            {{ parsedOutput.skipped === 1 ? 'entry' : 'entries' }} not shown
+            <Spinner size="xs" />
+            Loading output…
+          </div>
+          <pre
+            v-else-if="output.text.value"
+            ref="outputRef"
+            class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 max-h-96 overflow-y-auto text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono"
+            @scroll="onOutputScroll"
+          >{{ output.text.value }}</pre>
+          <div
+            v-else
+            class="text-xs text-surface-500 dark:text-surface-400 italic"
+          >
+            {{ isRunning ? 'No output yet.' : 'This command wrote no output.' }}
           </div>
         </div>
-        <div
-          v-else-if="parsedOutput.kind === 'text'"
-          class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 max-h-80 overflow-y-auto"
-        >
-          <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono">{{ parsedOutput.text }}</pre>
-        </div>
-      </div>
-
-      <!-- No output yet. Said explicitly so a running task does not look like
-           it has nothing to show, which is how this modal read before. -->
-      <div
-        v-else-if="task.status === 'running'"
-        class="text-xs text-surface-500 dark:text-surface-400 italic"
-      >
-        Output will appear here once the task writes it.
-      </div>
+      </template>
 
       <!-- Stopping a task. Only offered while it is actually running; the
            status here is live, so the button disappears once the task ends
-           rather than offering to stop something already finished.
-           Deliberately a sibling of the output block, not a child of it — it
-           was nested inside `v-if="task.outputFile"`, so the button was
-           invisible for exactly the common case of a running task that has
-           not produced an output file. -->
+           rather than offering to stop something already finished. -->
       <div
-        v-if="task.status === 'running'"
+        v-if="isRunning"
         class="pt-2 border-t border-surface-200 dark:border-surface-700"
       >
         <div
@@ -513,3 +458,12 @@ const statusDisplay = computed(() => {
     </div>
   </Modal>
 </template>
+
+<style scoped>
+/* The message list fills its parent, so it is given the height to fill. */
+.agent-transcript {
+  display: flex;
+  flex-direction: column;
+  height: 60vh;
+}
+</style>

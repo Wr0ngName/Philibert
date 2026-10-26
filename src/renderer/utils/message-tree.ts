@@ -175,45 +175,6 @@ export function toolUseIdForTask(task: { id: string; toolUseId?: string }): stri
   return task.toolUseId ?? task.id;
 }
 
-/** One tool call made beneath an agent or background task. */
-export interface ActivityRow {
-  message: ChatMessage;
-  /** 0 for a direct child, deeper for a sub-agent's own calls. */
-  depth: number;
-}
-
-/**
- * Every tool call made beneath a parent tool_use, flattened in order.
- *
- * This is what a background task actually did, and it is the thing worth
- * reading while one is running: the task's own fields — summary, output file,
- * model, tokens — are only populated once it finishes, so a modal built from
- * those alone shows an empty box for the entire time the task is live.
- */
-export function descendantsOf(
-  messages: readonly ChatMessage[],
-  parentToolUseId: string,
-): ActivityRow[] {
-  const children = childrenByParent(messages);
-  const rows: ActivityRow[] = [];
-  const visiting = new Set<string>();
-
-  function walk(parentId: string, depth: number): void {
-    if (visiting.has(parentId)) return; // malformed chains must not hang the UI
-    visiting.add(parentId);
-    for (const child of children.get(parentId) ?? []) {
-      if (!child.toolUse) continue;
-      rows.push({ message: child, depth });
-      const childId = child.toolUse.toolUseBlockId;
-      if (childId) walk(childId, depth + 1);
-    }
-    visiting.delete(parentId);
-  }
-
-  walk(parentToolUseId, 0);
-  return rows;
-}
-
 /**
  * Transitive count of tool_use descendants per parent, for the "N actions"
  * pill. Guards against a cycle, which a malformed parent chain could create.

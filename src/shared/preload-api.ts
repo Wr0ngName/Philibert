@@ -40,6 +40,7 @@ import type {
   ToolResultData,
   UpdateInfo,
   UpdateProgress,
+  TaskOutputChunk,
   UsageLimitStop,
   WhisperModelId,
   ConversationUpdate,
@@ -90,6 +91,18 @@ export interface ElectronAPI {
     abort: (conversationId: string) => Promise<void>;
     /** Stop one running background task without ending the turn */
     stopTask: (conversationId: string, taskId: string) => Promise<void>;
+    /**
+     * A background task's output from `fromByte` on (its tail, when that is
+     * more than the cap), or null when it has none to read yet.
+     */
+    readTaskOutput: (
+      conversationId: string,
+      taskId: string,
+      outputFile: string | undefined,
+      fromByte: number,
+    ) => Promise<TaskOutputChunk | null>;
+    /** An agent task's transcript, as chat messages. */
+    getAgentTranscript: (conversationId: string, agentId: string, sdkSessionId: string | undefined) => Promise<ChatMessage[]>;
     /** Get available slash commands */
     getCommands: () => Promise<SlashCommandInfo[]>;
     /** Subagents this session can delegate to, from the SDK. */

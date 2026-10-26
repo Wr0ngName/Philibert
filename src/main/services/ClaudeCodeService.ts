@@ -24,10 +24,8 @@
 import * as fs from 'fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import * as os from 'os';
-import * as path from 'path';
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { getSubagentMessages, query } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AccountInfo,
   AgentInfo as SDKAgentInfo,
@@ -72,7 +70,9 @@ import {
   SessionPermissionEntry,
   MessageImage,
   ImageMediaType,
+  type ChatMessage,
   type ClaudeAccount,
+  type TaskOutputChunk,
 } from '../../shared/types';
 import { AsyncChannel } from '../utils/AsyncChannel';
 import { createSender } from '../utils/ipc-helpers';
@@ -92,6 +92,8 @@ import {
 } from './claude';
 import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
 import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
+import { isTaskOutputPath, readTaskOutput, transcriptToMessages } from './claude/task-output';
+import { writeToolResultFile } from './claude/tool-result-file';
 import type { ExtractedImage } from './claude/tool-result-images';
 
 /**
@@ -764,11 +766,7 @@ export class ClaudeCodeService {
         taskListId?: string;
         images?: ExtractedImage[];
       }) => {
-        const outputDir = path.join(os.tmpdir(), 'claude', 'tool-results');
-        fs.mkdirSync(outputDir, { recursive: true });
-        const safeId = result.toolUseBlockId.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const outputFile = path.join(outputDir, `${conversationId}_${safeId}.txt`);
-        fs.writeFileSync(outputFile, result.content, 'utf-8');
+        const outputFile = writeToolResultFile(conversationId, result.toolUseBlockId, result.content);
         // Forward small results inline so renderer features (task list panel)
         // don't need to read the file. Large results stay on disk only.
         const INLINE_CONTENT_MAX_BYTES = 4096;
@@ -1709,6 +1707,57 @@ export class ClaudeCodeService {
 
     logger.info('Stopping background task', { conversationId, taskId });
     await instance.query.stopTask(taskId);
+  }
+
+  /**
+   * A background task's output from `fromByte` on, or null when there is no
+   * output file to read (yet).
+   *
+   * The file is the one the live session was told about. A path from the
+   * renderer is only taken for a task this process never saw — one recorded
+   * before a restart — and only when it is shaped like a CLI task output file;
+   * see isTaskOutputPath.
+   */
+  async readTaskOutput(
+    conversationId: string,
+    taskId: string,
+    outputFile: string | undefined,
+    fromByte: number,
+  ): Promise<TaskOutputChunk | null> {
+    const known = this.activeSessions.get(conversationId)?.messageHandler.getTaskOutputFile(taskId);
+    const file = known ?? (outputFile && isTaskOutputPath(outputFile, taskId) ? outputFile : undefined);
+    if (!file) return null;
+    try {
+      return await readTaskOutput(file, fromByte);
+    } catch (error) {
+      // Not written yet, or cleaned up since: there is nothing to show.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  /**
+   * An agent task's transcript, as chat messages, read from the file the CLI
+   * keeps it in — live while the agent runs, and still there afterwards.
+   *
+   * The session id is the live session's, or the one the renderer has on
+   * record for the conversation when no session is live.
+   */
+  async getAgentTranscript(
+    conversationId: string,
+    agentId: string,
+    sdkSessionId: string | undefined,
+  ): Promise<ChatMessage[]> {
+    const session = this.activeSessions.get(conversationId);
+    const sessionId = session?.sdkSessionId ?? sdkSessionId;
+    if (!sessionId) return [];
+
+    const entries = await getSubagentMessages(sessionId, agentId, {
+      ...(session ? { dir: session.workingDirectory } : {}),
+    });
+    return transcriptToMessages(entries, (toolUseBlockId, content) =>
+      writeToolResultFile(conversationId, toolUseBlockId, content),
+    );
   }
 
   async abort(conversationId: string): Promise<void> {

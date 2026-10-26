@@ -1159,6 +1159,33 @@ export interface BackgroundTask {
    *  from the conversation totals so an agent's cost is attributable to it. */
   inputTokens?: number;
   outputTokens?: number;
+  /** The agent's type, e.g. 'general-purpose' or a project agent's name. */
+  agentType?: string;
+  /**
+   * What the task is doing right now, in one line — the CLI's progress line
+   * for the task's row ("Reworking fetchItem in useCrudStore.ts"). Kept apart
+   * from `description`, which says what the task is for.
+   */
+  activity?: string;
+  /** Tokens the agent has used so far, as the CLI counts them for its row. */
+  totalTokens?: number;
+  /** Tool calls the agent has made so far. */
+  toolUses?: number;
+  /**
+   * The agent task that started this one, when an agent started it. Absent
+   * for a task the main conversation started.
+   */
+  parentTaskId?: string;
+}
+
+/** A slice of a background task's output, read from a byte offset. */
+export interface TaskOutputChunk {
+  /** The text from the offset asked for (or from where the cap starts) to the end. */
+  text: string;
+  /** Where the next read should start. */
+  nextByte: number;
+  /** Bytes after the offset asked for that were left out to fit the cap. */
+  skippedBytes: number;
 }
 
 /**
@@ -1216,6 +1243,14 @@ export interface TaskNotification {
    * timeout; the timeout value in ms. See BackgroundTask.timedOutAfterMs.
    */
   timedOutAfterMs?: number;
+  /** What kind of task this is, when the CLI said (its `task_type`). */
+  taskType?: 'agent' | 'command';
+  /** Live progress fields; see BackgroundTask. */
+  agentType?: string;
+  activity?: string;
+  totalTokens?: number;
+  toolUses?: number;
+  parentTaskId?: string;
 }
 
 // Channel mode types
@@ -1617,6 +1652,10 @@ export const IPC_CHANNELS = {
   CLAUDE_ABORT: 'claude:abort',
   /** Stop one running background task */
   CLAUDE_STOP_TASK: 'claude:stop-task',
+  /** Read a background task's output, by task id, from a byte offset */
+  CLAUDE_READ_TASK_OUTPUT: 'claude:read-task-output',
+  /** An agent task's transcript, as chat messages */
+  CLAUDE_GET_AGENT_TRANSCRIPT: 'claude:get-agent-transcript',
   /** Send action approval/rejection response */
   CLAUDE_ACTION_RESPONSE: 'claude:action-response',
   /** Available slash commands from SDK */

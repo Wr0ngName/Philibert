@@ -16,7 +16,6 @@ import {
   ORPHAN_PARENT_PREFIX,
   childrenByParent,
   descendantCounts,
-  descendantsOf,
   knownToolUseIds,
   splitTopLevel,
   toolUseIdForTask,
@@ -252,51 +251,6 @@ describe('topLevelSequence', () => {
     expect(
       topLevelSequence(messages).some((m) => m.id.startsWith(ORPHAN_PARENT_PREFIX)),
     ).toBe(false);
-  });
-});
-
-describe('descendantsOf', () => {
-  it('collects what a task actually did, in order', () => {
-    // The background task modal is built from this: while a task runs, its
-    // own summary/output/model fields are all still empty, so its tool calls
-    // are the only thing there is to show.
-    const messages = [
-      backgroundTask('task-1', 'toolu_task'),
-      toolUse('toolu_read', 'Read', 'toolu_task'),
-      toolUse('toolu_bash', 'Bash', 'toolu_task'),
-    ];
-
-    expect(descendantsOf(messages, 'toolu_task').map((r) => r.message.toolUse?.toolName)).toEqual([
-      'Read',
-      'Bash',
-    ]);
-  });
-
-  it('includes a sub-agent\'s own calls, deeper', () => {
-    const messages = [
-      toolUse('toolu_inner', 'Task', 'toolu_outer'),
-      toolUse('toolu_grep', 'Grep', 'toolu_inner'),
-    ];
-
-    expect(descendantsOf(messages, 'toolu_outer')).toEqual([
-      expect.objectContaining({ depth: 0 }),
-      expect.objectContaining({ depth: 1 }),
-    ]);
-  });
-
-  it('returns nothing for a task that has done nothing yet', () => {
-    expect(descendantsOf([backgroundTask('task-1', 'toolu_task')], 'toolu_task')).toEqual([]);
-  });
-
-  it('returns nothing for an unknown parent', () => {
-    expect(descendantsOf([toolUse('toolu_a', 'Read')], 'toolu_nope')).toEqual([]);
-  });
-
-  it('does not hang on a cyclic chain', () => {
-    const a = toolUse('toolu_a', 'Task', 'toolu_b');
-    const b = toolUse('toolu_b', 'Task', 'toolu_a');
-
-    expect(() => descendantsOf([a, b], 'toolu_a')).not.toThrow();
   });
 });
 

@@ -278,6 +278,12 @@ export class SDKMessageHandler {
   /** Maps tool_use IDs to their tool name so tool_result handlers know which
    *  parser to apply (e.g. TaskCreate → extract task list ID from response). */
   private toolUseIdToName = new Map<string, string>();
+  /** tool_use id → the tool_use id of the agent whose frame made the call. */
+  private toolUseParent = new Map<string, string>();
+  /** An agent's spawning tool_use id → its task id. */
+  private agentTaskByToolUse = new Map<string, string>();
+  /** Task id → the file its output is written to, as soon as it is known. */
+  private taskOutputFiles = new Map<string, string>();
   /** The account's latest rate-limit status, as the CLI last reported it. */
   private rateLimitInfo: SDKRateLimitInfo | null = null;
   /** Whether the main thread of the current turn was refused by a rate limit. */
@@ -327,6 +333,29 @@ export class SDKMessageHandler {
       });
     }
     return stop;
+  }
+
+  /**
+   * The file a task writes its output to, when this session has been told.
+   *
+   * Known from the start for both kinds: a background command's from its
+   * tool result, an agent's (its live transcript) from its structured result.
+   * The completion notice names it too, but a reader wants a running task's
+   * output, which is exactly when that notice has not come.
+   */
+  getTaskOutputFile(taskId: string): string | undefined {
+    return this.taskOutputFiles.get(taskId);
+  }
+
+  /**
+   * The agent task that started a task, from the tool_use it was started by:
+   * that call came in a frame of some agent, and that agent's spawning
+   * tool_use names its task. Undefined for the main conversation's own.
+   */
+  private parentTaskOf(toolUseId: string | undefined): string | undefined {
+    if (!toolUseId) return undefined;
+    const parentToolUse = this.toolUseParent.get(toolUseId);
+    return parentToolUse ? this.agentTaskByToolUse.get(parentToolUse) : undefined;
   }
 
   /**
@@ -532,12 +561,13 @@ export class SDKMessageHandler {
         });
 
         this.toolUseIdToName.set(toolBlock.id, toolBlock.name);
+        if (parentToolUseId) this.toolUseParent.set(toolBlock.id, parentToolUseId);
 
         this.callbacks.onToolUseCapture?.({
           toolUseBlockId: toolBlock.id,
           toolName: toolBlock.name,
           input,
-          description: this.generateToolDescription(toolBlock.name, input),
+          description: describeToolUse(toolBlock.name, input),
           ...(parentToolUseId && { parentToolUseId }),
         });
 
@@ -675,10 +705,22 @@ export class SDKMessageHandler {
        * still under.
        */
       timedOutAfterMs?: number;
+      /** A backgrounded agent's id and live transcript file. */
+      agentId?: string;
+      outputFile?: string;
     } | undefined;
+
+    if (toolResult?.agentId && toolResult.outputFile) {
+      this.taskOutputFiles.set(toolResult.agentId, toolResult.outputFile);
+    }
+
     if (toolResult?.backgroundTaskId) {
       const toolUseId = contentBlocks?.[0]?.tool_use_id;
       const backgroundTaskId = toolResult.backgroundTaskId;
+
+      const resultText = toolResultParts(contentBlocks?.[0]?.content, undefined).text;
+      const outputFile = backgroundOutputPath(resultText);
+      if (outputFile) this.taskOutputFiles.set(backgroundTaskId, outputFile);
 
       if (toolUseId) {
         logger.info('Background task ID mapping from user message', {
@@ -696,6 +738,7 @@ export class SDKMessageHandler {
           taskId: backgroundTaskId,
           status: 'running',
           previousTaskId: toolUseId,
+          ...(outputFile && { outputFile }),
           ...(typeof toolResult.timedOutAfterMs === 'number'
             ? { timedOutAfterMs: toolResult.timedOutAfterMs }
             : {}),
@@ -942,6 +985,12 @@ export class SDKMessageHandler {
       };
       // task_progress fields
       last_tool_name?: string;
+      usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
+      // task_started / task_progress fields
+      subagent_type?: string;
+      // task_started: set when an agent, not the main conversation, started
+      // the task. Not in sdk.d.ts; seen on the wire (2.1.280).
+      owned_by_subagent?: boolean;
       // background_tasks_changed: every live task after the change
       tasks?: {
         task_id: string;
@@ -1091,6 +1140,9 @@ export class SDKMessageHandler {
         'stopped': 'stopped',
       };
 
+      // An empty string for a foreground task with no file of its own.
+      if (systemMsg.output_file) this.taskOutputFiles.set(systemMsg.task_id, systemMsg.output_file);
+
       this.callbacks.onTaskNotification({
         taskId: systemMsg.task_id,
         status: statusMap[systemMsg.status || 'completed'] || 'completed',
@@ -1101,6 +1153,8 @@ export class SDKMessageHandler {
         error: systemMsg.error,
         uuid: systemMsg.uuid,
         ...(systemMsg.tool_use_id && { toolUseId: systemMsg.tool_use_id }),
+        ...(systemMsg.usage?.total_tokens !== undefined && { totalTokens: systemMsg.usage.total_tokens }),
+        ...(systemMsg.usage?.tool_uses !== undefined && { toolUses: systemMsg.usage.tool_uses }),
       });
     }
 
@@ -1112,18 +1166,34 @@ export class SDKMessageHandler {
         description: systemMsg.description,
         taskType: systemMsg.task_type,
         skipTranscript: systemMsg.skip_transcript,
+        ownedBySubagent: systemMsg.owned_by_subagent,
       });
+      const isAgent = systemMsg.task_type === 'local_agent';
+      if (isAgent && systemMsg.tool_use_id) {
+        this.agentTaskByToolUse.set(systemMsg.tool_use_id, systemMsg.task_id);
+      }
       if (!systemMsg.skip_transcript) {
+        const parentTaskId = this.parentTaskOf(systemMsg.tool_use_id);
         this.callbacks.onTaskNotification({
           taskId: systemMsg.task_id,
           status: 'running',
           description: systemMsg.description,
           ...(systemMsg.tool_use_id && { toolUseId: systemMsg.tool_use_id }),
+          ...(systemMsg.task_type && { taskType: isAgent ? 'agent' : 'command' }),
+          ...(systemMsg.subagent_type && { agentType: systemMsg.subagent_type }),
+          ...(parentTaskId && { parentTaskId }),
         });
       }
     }
 
-    // Handle task_progress — live progress updates (description, AI summary when agentProgressSummaries enabled)
+    // Handle task_progress — the task's live row: what it is doing now, and
+    // how far it has got.
+    //
+    // `description` here is the activity ("Reading notes.txt"), not what the
+    // task is for, and `summary` is the model-written progress line when
+    // agentProgressSummaries is on. Both used to be written over the task's
+    // own description and summary, so the row lost what the task was and the
+    // final summary slot held a progress line.
     if (systemMsg.subtype === 'task_progress' && systemMsg.task_id) {
       logger.debug('Task progress', {
         taskId: systemMsg.task_id,
@@ -1131,12 +1201,16 @@ export class SDKMessageHandler {
         description: systemMsg.description,
         summary: systemMsg.summary,
         lastToolName: systemMsg.last_tool_name,
+        usage: systemMsg.usage,
       });
+      const activity = systemMsg.summary || systemMsg.description;
       this.callbacks.onTaskNotification({
         taskId: systemMsg.task_id,
         status: 'running',
-        description: systemMsg.description,
-        summary: systemMsg.summary,
+        ...(activity && { activity }),
+        ...(systemMsg.subagent_type && { agentType: systemMsg.subagent_type }),
+        ...(systemMsg.usage?.total_tokens !== undefined && { totalTokens: systemMsg.usage.total_tokens }),
+        ...(systemMsg.usage?.tool_uses !== undefined && { toolUses: systemMsg.usage.tool_uses }),
         ...(systemMsg.tool_use_id && { toolUseId: systemMsg.tool_use_id }),
       });
     }
@@ -1206,18 +1280,35 @@ export class SDKMessageHandler {
     }
   }
 
-  private generateToolDescription(toolName: string, input: Record<string, unknown>): string {
-    switch (toolName) {
-      case 'Bash': return `Run: ${((input.command as string) || '').slice(0, 80)}`;
-      case 'Read': return `Read: ${input.file_path}`;
-      case 'Edit': return `Edit: ${input.file_path}`;
-      case 'Write': return `Write: ${input.file_path}`;
-      case 'Glob': return `Search files: ${input.pattern}`;
-      case 'Grep': return `Search: ${input.pattern}`;
-      case 'Agent': return `Agent: ${((input.prompt as string) || '').slice(0, 80)}`;
-      default: return `Tool: ${toolName}`;
-    }
+}
+
+/**
+ * The one-line description of a tool call shown on its row. Shared by the
+ * live stream and by agent transcripts read back, so a call reads the same
+ * wherever it is shown.
+ */
+export function describeToolUse(toolName: string, input: Record<string, unknown>): string {
+  switch (toolName) {
+    case 'Bash': return `Run: ${((input.command as string) || '').slice(0, 80)}`;
+    case 'Read': return `Read: ${input.file_path}`;
+    case 'Edit': return `Edit: ${input.file_path}`;
+    case 'Write': return `Write: ${input.file_path}`;
+    case 'Glob': return `Search files: ${input.pattern}`;
+    case 'Grep': return `Search: ${input.pattern}`;
+    case 'Agent': return `Agent: ${((input.prompt as string) || '').slice(0, 80)}`;
+    default: return `Tool: ${toolName}`;
   }
+}
+
+/**
+ * Where a background command writes its output, read from the Bash tool's
+ * result. The structured `tool_use_result` of a background Bash carries only
+ * `backgroundTaskId` (2.1.280); the path is in the prose result —
+ * "Output is being written to: <path>. You will be notified…". The completion
+ * notice's `output_file` names it too, but only once the command has ended.
+ */
+export function backgroundOutputPath(resultText: string): string | undefined {
+  return /Output is being written to: (\S+?\.output)\b/.exec(resultText)?.[1];
 }
 
 /**

@@ -12,13 +12,10 @@
  */
 
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
-import { storeToRefs } from 'pinia';
 
 import type { ChatMessage } from '@shared/types';
 
 import { useVirtualList } from '../../composables/useVirtualList';
-import { useChatStore } from '../../stores/chat';
-import { useConversationsStore } from '../../stores/conversations';
 import { formatTime } from '../../utils/date';
 import {
   childrenByParent as buildChildrenByParent,
@@ -30,26 +27,53 @@ import {
   rememberPosition,
   resolveScrollTarget,
 } from '../../utils/scroll-memory';
+import { conversationListSource, type MessageListSource } from './message-list-source';
 import MessageItem from './MessageItem.vue';
 import Icon from '../shared/Icon.vue';
 import Spinner from '../shared/Spinner.vue';
+
+interface Props {
+  /**
+   * What to list. The conversation on screen when omitted; an agent's
+   * transcript in the task detail view. See MessageListSource.
+   */
+  source?: MessageListSource;
+  /** Who the assistant turns are from. */
+  assistantLabel?: string;
+  /** Said when there is nothing to list yet. */
+  emptyTitle?: string;
+  emptyText?: string;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  source: undefined,
+  assistantLabel: 'Claude',
+  emptyTitle: 'Start a conversation',
+  emptyText: 'Ask Claude to help you with coding, explain concepts, or make changes to your files.',
+});
 
 const emit = defineEmits<{
   (e: 'open-task-detail', taskId: string): void;
   (e: 'open-tool-detail', toolUseBlockId: string): void;
 }>();
 
-const chatStore = useChatStore();
-const { messages, hasMessages, currentStreamingContent, isLoading } = storeToRefs(chatStore);
-const conversationsStore = useConversationsStore();
-const { loadingEarlier, loadingNewer } = storeToRefs(conversationsStore);
-const { olderMessageCount, newerMessageCount } = storeToRefs(chatStore);
+// Chosen once: a list does not change what kind of thing it shows.
+const source = props.source ?? conversationListSource();
+
+const messages = computed(() => source.messages);
+const hasMessages = computed(() => messages.value.length > 0);
+const currentStreamingContent = computed(() => source.streamingContent);
+const isLoading = computed(() => source.isLoading);
+const loadingEarlier = computed(() => source.loadingEarlier);
+const loadingNewer = computed(() => source.loadingNewer);
+const olderMessageCount = computed(() => source.olderCount);
+const newerMessageCount = computed(() => source.newerCount);
 
 /** Where this conversation ran, so a relative image path in it can be found. */
-const workingDirectory = computed(() => {
-  const id = chatStore.currentConversationId;
-  return id ? (conversationsStore.getConversationWorkingDirectory(id) ?? '') : '';
-});
+const workingDirectory = computed(() => source.workingDirectory);
+
+/** The first letter of the assistant label, for its avatar. */
+const assistantInitial = computed(() => props.assistantLabel.charAt(0).toUpperCase());
 
 /**
  * How close to an edge of the loaded window the view must come before the
@@ -120,7 +144,7 @@ let pagingInProgress = false;
 async function loadEarlier(): Promise<void> {
   pagingInProgress = true;
   try {
-    const loaded = await conversationsStore.loadEarlierMessages();
+    const loaded = await source.loadEarlier();
     if (loaded > 0) await slideAround();
   } finally {
     pagingInProgress = false;
@@ -130,7 +154,7 @@ async function loadEarlier(): Promise<void> {
 async function loadNewer(): Promise<void> {
   pagingInProgress = true;
   try {
-    const loaded = await conversationsStore.loadNewerMessages();
+    const loaded = await source.loadNewer();
     if (loaded > 0) await slideAround();
   } finally {
     pagingInProgress = false;
@@ -142,11 +166,9 @@ async function loadNewer(): Promise<void> {
  * the message under the viewport. See `slideWindowAround`.
  */
 async function slideAround(): Promise<void> {
-  const conversationId = chatStore.currentConversationId;
-  if (!conversationId) return;
   const anchorMessageId = viewportMessageId();
   if (!anchorMessageId) return;
-  await conversationsStore.slideWindowAround(conversationId, anchorMessageId);
+  await source.slideAround(anchorMessageId);
 }
 
 /** The message under the top of the viewport, for sliding around it. */
@@ -539,10 +561,8 @@ function checkIfPinnedToBottom(): boolean {
  * position.
  */
 watch(
-  [isUserAtBottom, () => chatStore.currentConversationId],
-  ([atBottom, conversationId]) => {
-    if (conversationId) chatStore.setTailPinned(conversationId, atBottom);
-  },
+  [isUserAtBottom, () => source.key],
+  ([atBottom]) => source.setTailPinned(atBottom),
   { immediate: true },
 );
 
@@ -631,7 +651,7 @@ function handleScroll(): void {
  */
 function recordPosition(): void {
   const el = listRef.value;
-  const conversationId = chatStore.currentConversationId;
+  const conversationId = source.key;
   if (!el || !conversationId) return;
 
   if (isUserAtBottom.value) {
@@ -653,7 +673,7 @@ function recordPosition(): void {
 async function handleScrollToBottom(): Promise<void> {
   // With the tail unloaded there is nothing below the window to scroll to.
   if (newerMessageCount.value > 0) {
-    await conversationsStore.jumpToLatest();
+    await source.jumpToLatest();
     await nextTick();
   }
   scrollToBottom();
@@ -801,12 +821,12 @@ let viewportObserver: ResizeObserver | null = null;
 // too, so a conversation entered after one that was scrolled up did not follow
 // its own tail.
 watch(
-  () => chatStore.currentConversationId,
+  () => source.key,
   () => {
     virtual.reset();
 
     const target = resolveScrollTarget(
-      recalledPosition(chatStore.currentConversationId ?? ''),
+      recalledPosition(source.key),
       rowKeys.value,
     );
 
@@ -913,10 +933,10 @@ onUnmounted(() => {
           />
         </div>
         <h3 class="text-lg font-medium text-surface-700 dark:text-surface-300 mb-2">
-          Start a conversation
+          {{ emptyTitle }}
         </h3>
         <p class="text-sm text-surface-500 dark:text-surface-400 max-w-sm">
-          Ask Claude to help you with coding, explain concepts, or make changes to your files.
+          {{ emptyText }}
         </p>
       </div>
 
@@ -976,7 +996,7 @@ onUnmounted(() => {
               <MessageItem
                 v-if="row.kind === 'standalone' && row.msg"
                 :message="row.msg"
-                :conversation-id="chatStore.currentConversationId ?? ''"
+                :conversation-id="source.conversationId"
                 :working-directory="workingDirectory"
                 @open-task-detail="emit('open-task-detail', $event)"
                 @open-tool-detail="emit('open-tool-detail', $event)"
@@ -988,10 +1008,10 @@ onUnmounted(() => {
                 class="flex items-center gap-2 assistant-turn-header"
               >
                 <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200">
-                  C
+                  {{ assistantInitial }}
                 </div>
                 <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
-                  Claude
+                  {{ assistantLabel }}
                 </span>
                 <span class="text-xs text-surface-400 dark:text-surface-500">
                   {{ formatTime(row.timestamp ?? 0) }}
@@ -1006,7 +1026,7 @@ onUnmounted(() => {
               >
                 <MessageItem
                   :message="row.msg"
-                  :conversation-id="chatStore.currentConversationId ?? ''"
+                  :conversation-id="source.conversationId"
                   :working-directory="workingDirectory"
                   :child-count="row.childCount"
                   :is-expanded="row.isExpanded"
@@ -1035,10 +1055,10 @@ onUnmounted(() => {
                 class="flex items-center gap-2"
               >
                 <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200">
-                  C
+                  {{ assistantInitial }}
                 </div>
                 <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
-                  Claude
+                  {{ assistantLabel }}
                 </span>
                 <Spinner
                   size="sm"

@@ -13,6 +13,7 @@ import type { SessionUsage } from '@shared/types';
 
 import { useChatStore } from '../../stores/chat';
 import { formatModelId } from '../../utils/model';
+import { formatTokenCount } from '../../utils/token-count';
 import Icon from '../shared/Icon.vue';
 
 interface Props {
@@ -64,19 +65,6 @@ const usageColorClass = computed(() => {
   if (percent >= 50) return 'bg-blue-500';
   return 'bg-green-500';
 });
-
-/**
- * Format token count for display
- */
-function formatTokens(count: number): string {
-  if (count >= 1000000) {
-    return `${(count / 1000000).toFixed(1)}M`;
-  }
-  if (count >= 1000) {
-    return `${(count / 1000).toFixed(1)}K`;
-  }
-  return count.toString();
-}
 
 /**
  * Format cost for display
@@ -165,12 +153,12 @@ const modelChipTitle = computed(() => {
             name="terminal"
             size="xs"
           />
-          <span>{{ formatTokens(totalTokensUsed) }}</span>
+          <span>{{ formatTokenCount(totalTokensUsed) }}</span>
           <span
             v-if="contextWindowSize > 0"
             class="text-surface-400 dark:text-surface-500"
           >
-            / {{ formatTokens(contextWindowSize) }}
+            / {{ formatTokenCount(contextWindowSize) }}
           </span>
         </div>
 
@@ -179,9 +167,9 @@ const modelChipTitle = computed(() => {
           v-if="usage.usage.inputTokens > 0 || usage.usage.outputTokens > 0"
           class="hidden sm:flex items-center gap-1 text-surface-400 dark:text-surface-500"
         >
-          <span title="Input tokens">{{ formatTokens(usage.usage.inputTokens) }} in</span>
+          <span title="Input tokens">{{ formatTokenCount(usage.usage.inputTokens) }} in</span>
           <span>/</span>
-          <span title="Output tokens">{{ formatTokens(usage.usage.outputTokens) }} out</span>
+          <span title="Output tokens">{{ formatTokenCount(usage.usage.outputTokens) }} out</span>
         </div>
       </div>
 
