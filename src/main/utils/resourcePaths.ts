@@ -223,11 +223,11 @@ export const ChannelPaths = {
 };
 
 /**
- * Get a stable per-app config directory for Claude SDK credentials.
- * Uses Electron's userData so the directory persists across app restarts
- * and the SDK subprocess can read/refresh its own credentials natively.
+ * The CLI config directory 0.25.0-rc.1 and rc.2 gave the Claude CLI
+ * (CLAUDE_CONFIG_DIR). Only read on start, to move out what was put there;
+ * the CLI now runs with its normal directory. See cliCredentials.ts.
  */
-export function getClaudeConfigDir(): string {
+export function getSeparateCliConfigDir(): string {
   return path.join(app.getPath('userData'), 'claude-config');
 }
 

@@ -7,10 +7,9 @@
 
 import { MAIN_CONSTANTS } from '../../constants/app';
 import logger from '../../utils/logger';
-import { getClaudeConfigDir } from '../../utils/resourcePaths';
 import type ConfigService from '../ConfigService';
 
-import { accessTokenOf, readCliCredentials, writeCliCredentials } from './cliCredentials';
+import { hasCliLogin } from './cliCredentials';
 
 /**
  * Validation result
@@ -78,6 +77,8 @@ export class AuthValidator {
    * Check if authentication is configured (OAuth or API key)
    */
   async hasAuth(): Promise<boolean> {
+    // A CLI login is only a login while the CLI still has it.
+    if (await this.configService.usesCliLogin()) return hasCliLogin();
     return await this.configService.hasAuth();
   }
 
@@ -116,34 +117,22 @@ export class AuthValidator {
   async setupAuthEnv(): Promise<Record<string, string>> {
     const env: Record<string, string> = {};
 
-    // Prefer CLAUDE_CONFIG_DIR with full credentials (enables SDK-native token refresh).
-    //
-    // The CLI's file is the truth once it exists: the CLI refreshes the token
-    // in it. The encrypted copy only restores a missing file, and is brought up
-    // to date from the file — never written over it; see cliCredentials.ts.
-    const storedCredentials = await this.configService.getOAuthCredentials();
-    if (storedCredentials) {
-      const claudeConfigDir = getClaudeConfigDir();
-      try {
-        const current = readCliCredentials(claudeConfigDir);
-        if (!current) {
-          writeCliCredentials(storedCredentials, claudeConfigDir);
-          logger.info('Restored the CLI credentials file from the stored copy');
-        } else if (current !== storedCredentials) {
-          await this.configService.setOAuthCredentials(current);
-          const refreshedToken = accessTokenOf(current);
-          if (refreshedToken) await this.configService.setOAuthToken(refreshedToken);
-          logger.info('Stored copy of the credentials updated from the CLI (token refreshed)');
-        }
-        env['CLAUDE_CONFIG_DIR'] = claudeConfigDir;
-        logger.debug('Using CLAUDE_CONFIG_DIR for OAuth with full credentials (refresh-capable)');
-        return env;
-      } catch (err) {
-        logger.warn('Failed to use the credentials file in the config dir, falling back to token-only', { error: err });
+    // A login made with `claude auth login` is the CLI's own: it is in the
+    // CLI's config directory, which the CLI refreshes and which also holds
+    // the sessions, settings and agents. Nothing is passed — no token, no
+    // CLAUDE_CONFIG_DIR — so the CLI runs exactly as it does in a terminal.
+    // See cliCredentials.ts.
+    if (await this.configService.usesCliLogin()) {
+      if (!hasCliLogin()) {
+        logger.warn('The Claude CLI login is gone (logged out elsewhere?)');
+        throw new Error('You are no longer logged in to Claude (the login was removed, for example by `claude auth logout`). Log in again in Settings.');
       }
+      logger.debug('Using the Claude CLI login');
+      return env;
     }
 
-    // Fallback: use access-token-only path (no refresh capability)
+    // A bare token from a `setup-token` login made before `auth login`
+    // (no refresh capability).
     const oauthToken = await this.configService.getOAuthToken();
     if (oauthToken) {
       const validation = this.validateOAuthToken(oauthToken);

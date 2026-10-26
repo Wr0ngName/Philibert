@@ -19,7 +19,10 @@ import logger, { setLogLevel } from '../utils/logger';
 interface StoredConfig {
   encryptedApiKey?: string;
   encryptedOAuthToken?: string;
+  /** Left by 0.25.0-rc.1/rc.2 only; removed on start. See forgetStoredCliCredentials. */
   encryptedOAuthCredentials?: string;
+  /** See usesCliLogin. */
+  oauthViaCliLogin?: boolean;
   authMethod: AuthMethod;
   workingDirectory: string;
   recentProjects: string[];
@@ -249,7 +252,7 @@ export class ConfigService {
    * @param value - The value to encrypt and store
    * @throws Error if encryption is not available
    */
-  private async setEncryptedValue(key: 'encryptedApiKey' | 'encryptedOAuthToken' | 'encryptedOAuthCredentials', value: string): Promise<void> {
+  private async setEncryptedValue(key: 'encryptedApiKey' | 'encryptedOAuthToken', value: string): Promise<void> {
     await this.ensureInitialized();
     if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
 
@@ -305,7 +308,7 @@ export class ConfigService {
    * @param key - Must be 'encryptedApiKey' or 'encryptedOAuthToken'
    * @returns Decrypted value or empty string if not found
    */
-  private async getEncryptedValue(key: 'encryptedApiKey' | 'encryptedOAuthToken' | 'encryptedOAuthCredentials'): Promise<string> {
+  private async getEncryptedValue(key: 'encryptedApiKey' | 'encryptedOAuthToken'): Promise<string> {
     await this.ensureInitialized();
     if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_LOAD_FAILED);
 
@@ -391,32 +394,34 @@ export class ConfigService {
   }
 
   /**
-   * Get full OAuth credentials JSON (decrypted).
-   * Contains accessToken, refreshToken, expiresAt etc. for SDK token refresh.
+   * Whether the OAuth login is the Claude CLI's own (`claude auth login`, in
+   * the CLI's config directory) rather than a bare token Philibert passes to
+   * it (`setup-token`, before). The stored token is then only the record
+   * that Philibert is logged in; the CLI's credentials are the login itself.
    */
-  async getOAuthCredentials(): Promise<string | null> {
-    try {
-      const value = await this.getEncryptedValue('encryptedOAuthCredentials');
-      return value || null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Set full OAuth credentials JSON (encrypted).
-   */
-  async setOAuthCredentials(json: string): Promise<void> {
-    await this.setEncryptedValue('encryptedOAuthCredentials', json);
-  }
-
-  /**
-   * Clear full OAuth credentials.
-   */
-  async clearOAuthCredentials(): Promise<void> {
+  async usesCliLogin(): Promise<boolean> {
     await this.ensureInitialized();
-    if (!this.store) return;
+    if (!this.store) return false;
+    return this.store.get('oauthViaCliLogin') === true;
+  }
+
+  async setUsesCliLogin(value: boolean): Promise<void> {
+    await this.ensureInitialized();
+    if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
+    this.store.set('oauthViaCliLogin', value);
+  }
+
+  /**
+   * Drop the copy of the CLI's credentials that 0.25.0-rc.1 and rc.2 kept
+   * (encrypted) in this store, and say whether there was one. Nothing reads
+   * it any more: the CLI's own file is the login.
+   */
+  async forgetStoredCliCredentials(): Promise<boolean> {
+    await this.ensureInitialized();
+    if (!this.store) return false;
+    const had = !!this.store.get('encryptedOAuthCredentials');
     this.store.delete('encryptedOAuthCredentials');
+    return had;
   }
 
   /**
@@ -459,6 +464,7 @@ export class ConfigService {
     this.store.delete('encryptedApiKey');
     this.store.delete('encryptedOAuthToken');
     this.store.delete('encryptedOAuthCredentials');
+    this.store.delete('oauthViaCliLogin');
     this.store.set('authMethod', 'none');
 
     logger.info('User logged out, credentials cleared');

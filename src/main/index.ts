@@ -97,6 +97,10 @@ async function main(): Promise<void> {
 
     configService = new ConfigService();
     await configService.ensureInitialized();
+    // Before anything reads the login: see migrateFromSeparateCliLogin.
+    const { migrateFromSeparateCliLogin } = await import('./services/claude/cliCredentials');
+    const { getSeparateCliConfigDir } = await import('./utils/resourcePaths');
+    await migrateFromSeparateCliLogin(configService, getSeparateCliConfigDir());
 
     authService = new AuthService();
     notificationService = new NotificationService(configService, getMainWindow);

@@ -67,9 +67,6 @@ vi.mock('fs', () => ({
   unlinkSync: vi.fn(),
 }));
 
-vi.mock('../../../utils/resourcePaths', () => ({
-  getClaudeConfigDir: vi.fn(() => '/tmp/test-claude-config'),
-}));
 
 import ConfigService from '../../ConfigService';
 import { AuthValidator } from '../AuthValidator';
@@ -244,60 +241,40 @@ describe('AuthValidator', () => {
   // setupAuthEnv — CLAUDE_CONFIG_DIR vs CLAUDE_CODE_OAUTH_TOKEN
   // ===========================================================================
   describe('setupAuthEnv', () => {
-    it('should prefer CLAUDE_CONFIG_DIR when full credentials are available, restoring a missing file', async () => {
-      const credsJson = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test', refreshToken: 'rt-123' } });
-      await configService.setOAuthToken('sk-ant-oat01-test');
-      await configService.setOAuthCredentials(credsJson);
-      mockFsReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
-
-      const env = await validator.setupAuthEnv();
-
-      expect(env['CLAUDE_CONFIG_DIR']).toBe('/tmp/test-claude-config');
-      expect(env['CLAUDE_CODE_OAUTH_TOKEN']).toBeUndefined();
-      expect(mockFsMkdirSync).toHaveBeenCalledWith('/tmp/test-claude-config', { recursive: true });
-      expect(mockFsWriteFileSync).toHaveBeenCalledWith(
-        '/tmp/test-claude-config/.credentials.json',
-        credsJson,
-        { encoding: 'utf8', mode: 0o600 },
-      );
-    });
-
-    it('never writes the stored copy over credentials the CLI has refreshed, and follows them instead', async () => {
-      // The CLI refreshed the token in its file. Writing the copy saved at
-      // login back over it handed the CLI a dead token: the next request
-      // 401'd and the user was logged out.
-      const atLogin = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-old', refreshToken: 'rt-1' } });
-      const refreshed = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-new', refreshToken: 'rt-2' } });
-      await configService.setOAuthToken('sk-ant-oat01-old');
-      await configService.setOAuthCredentials(atLogin);
+    /** The CLI's own login, in its config directory. */
+    function cliLoginExists(exists: boolean): void {
       mockFsReadFileSync.mockImplementation((p: string) => {
-        if (p === '/tmp/test-claude-config/.credentials.json') return refreshed;
+        if (exists && p.endsWith('.credentials.json')) {
+          return JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-cli', refreshToken: 'rt' } });
+        }
         throw new Error('ENOENT');
       });
-      mockFsWriteFileSync.mockClear();
+    }
+
+    it('runs the CLI as it is for a CLI login: no token, and no CLAUDE_CONFIG_DIR', async () => {
+      // A CLAUDE_CONFIG_DIR moved the CLI's sessions, settings, CLAUDE.md and
+      // agents too: every older discussion failed to resume.
+      await configService.setOAuthToken('sk-ant-oat01-recorded-at-login');
+      await configService.setUsesCliLogin(true);
+      cliLoginExists(true);
 
       const env = await validator.setupAuthEnv();
 
-      expect(env['CLAUDE_CONFIG_DIR']).toBe('/tmp/test-claude-config');
-      expect(mockFsWriteFileSync).not.toHaveBeenCalledWith('/tmp/test-claude-config/.credentials.json', expect.anything(), expect.anything());
-      expect(await configService.getOAuthCredentials()).toBe(refreshed);
-      expect(await configService.getOAuthToken()).toBe('sk-ant-oat01-new');
+      expect(env).toEqual({});
+      expect(mockFsWriteFileSync).not.toHaveBeenCalled();
+    });
+
+    it('says so when the CLI login is gone, rather than starting a session that cannot authenticate', async () => {
+      await configService.setOAuthToken('sk-ant-oat01-recorded-at-login');
+      await configService.setUsesCliLogin(true);
+      cliLoginExists(false);
+
+      await expect(validator.setupAuthEnv()).rejects.toThrow('Log in again');
+      expect(await validator.hasAuth()).toBe(false);
     });
 
     it('should fall back to CLAUDE_CODE_OAUTH_TOKEN when no full credentials exist', async () => {
       await configService.setOAuthToken('sk-ant-oat01-valid-token-that-is-long-enough');
-
-      const env = await validator.setupAuthEnv();
-
-      expect(env['CLAUDE_CODE_OAUTH_TOKEN']).toBe('sk-ant-oat01-valid-token-that-is-long-enough');
-      expect(env['CLAUDE_CONFIG_DIR']).toBeUndefined();
-    });
-
-    it('should fall back to CLAUDE_CODE_OAUTH_TOKEN when credentials file write fails', async () => {
-      const credsJson = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test' } });
-      await configService.setOAuthToken('sk-ant-oat01-valid-token-that-is-long-enough');
-      await configService.setOAuthCredentials(credsJson);
-      mockFsWriteFileSync.mockImplementation(() => { throw new Error('EACCES: permission denied'); });
 
       const env = await validator.setupAuthEnv();
 

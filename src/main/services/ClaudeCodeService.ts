@@ -92,7 +92,6 @@ import {
 } from './claude';
 import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
 import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
-import { removeCliCredentials } from './claude/cliCredentials';
 import { cliTempRoot, locateTaskOutput, readTaskOutput, transcriptToMessages } from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
 import type { ExtractedImage } from './claude/tool-result-images';
@@ -1859,26 +1858,20 @@ export class ClaudeCodeService {
 
   /**
    * Handle authentication invalidation (e.g. 401 from API).
-   * Clears stored credentials, removes config-dir credentials file,
-   * notifies renderer, and aborts all active sessions.
-   * Idempotent: no-ops if credentials are already cleared.
+   * Clears Philibert's login, notifies renderer, and aborts all active
+   * sessions. Idempotent: no-ops if the login is already cleared.
+   *
+   * A login that is the CLI's own is not deleted from the CLI here: it is the
+   * terminal's login too, and logging in again replaces it anyway.
    */
   private async handleAuthInvalidated(): Promise<void> {
     const token = await this.configService.getOAuthToken();
-    const creds = await this.configService.getOAuthCredentials();
-    if (!token && !creds) return;
+    if (!token) return;
 
     logger.warn('Auth invalidated — clearing credentials and notifying renderer');
     try {
       await this.configService.setConfig({ oauthToken: '', authMethod: 'none' as const });
-      await this.configService.clearOAuthCredentials();
-
-      // Clean up credentials file from stable config dir
-      try {
-        removeCliCredentials();
-      } catch {
-        // Non-critical cleanup
-      }
+      await this.configService.setUsesCliLogin(false);
 
       // Note: we intentionally do NOT bulk-clear persisted sdkSessionIds here.
       // Same-account re-login usually leaves session IDs valid on Anthropic's

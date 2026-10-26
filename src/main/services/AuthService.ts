@@ -12,7 +12,7 @@
  * Uses node-pty for cross-platform PTY support.
  */
 
-import { execSync } from 'child_process';
+import { execFile, execSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -28,15 +28,18 @@ import { getResourcesPath, WindowsPaths, ClaudeCliPaths } from '../utils/resourc
 import { sanitizeForLog } from '../utils/stringUtils';
 
 import { validateOAuthTokenFormat } from './claude/AuthValidator';
-import { accessTokenOf, readCliCredentials, readOAuthAccount } from './claude/cliCredentials';
+import { accessTokenOf, cliConfigDir, readCliCredentials } from './claude/cliCredentials';
 
 /** The CLI command that logs in with a Claude subscription. */
 const LOGIN_ARGS = ['auth', 'login', '--claudeai'];
+/** The CLI command that logs out. */
+const LOGOUT_ARGS = ['auth', 'logout'];
 
 export interface OAuthFlowState {
   pty: IPty | null;
   isPtyAlive: boolean;
-  configDir: string;
+  /** The CLI's credentials when the flow started; a login is a change from these. */
+  baselineCredentials: string | null;
   createdAt: number;
   output: string;
 }
@@ -46,10 +49,8 @@ export interface OAuthFlowState {
  */
 export interface OAuthFlowResult {
   success: boolean;
+  /** The new login's access token — Philibert's record that it is logged in. */
   token?: string;
-  credentialsJson?: string;
-  /** The account the login is for (the CLI's `oauthAccount`), as JSON. */
-  accountJson?: string;
   error?: string;
 }
 
@@ -213,6 +214,109 @@ export class AuthService {
   }
 
   /**
+   * How to run the Claude CLI with `args` on this install: the file to spawn,
+   * its arguments, and the environment it needs on top of the app's. Spawned
+   * directly, not through a shell (like mautrix-claude sidecar), except for
+   * the npx fallback.
+   */
+  private cliCommand(cliArgs: readonly string[]): { file: string; args: string[]; extraEnv: Record<string, string> } {
+    const claudeCli = this.findClaudeCli();
+    const isNpx = claudeCli === 'npx';
+    const isNativeBinary = ClaudeCliPaths.isNativeBinary(claudeCli);
+    const isNodeScript = claudeCli.endsWith('.js') || claudeCli.endsWith('.cjs');
+
+    let file: string;
+    let args: string[];
+    const extraEnv: Record<string, string> = {};
+
+    if (isNpx) {
+      // Fallback: use npx through shell (requires Node.js on system)
+      file = process.platform === 'win32' ? 'cmd.exe' : '/bin/bash';
+      const npxCommand = ['npx @anthropic-ai/claude-code', ...cliArgs].join(' ');
+      args = process.platform === 'win32' ? ['/c', npxCommand] : ['-c', npxCommand];
+    } else if (isNativeBinary) {
+      // v2.1.121+ native binary — spawn directly, no node.exe needed
+      file = claudeCli;
+      args = [...cliArgs];
+      logger.info(`Using native Claude CLI binary: ${file}`);
+    } else if (isNodeScript) {
+      // Legacy cli.js or cli-wrapper.cjs — needs Node.js to execute
+      if (process.platform === 'win32') {
+        const bundledNodeExe = WindowsPaths.getBundledNodeExe();
+        const nodeExeExists = WindowsPaths.hasBundledNode();
+        logger.info('Windows: checking bundled Node.js for script execution', {
+          bundledNodeExe, exists: nodeExeExists,
+        });
+
+        if (nodeExeExists) {
+          file = bundledNodeExe;
+          args = [claudeCli, ...cliArgs];
+        } else {
+          logger.warn('Windows: bundled Node.js not found, falling back to ELECTRON_RUN_AS_NODE');
+          file = 'powershell.exe';
+          const escapeForPowerShell = (s: string): string => s.replace(/'/g, "''");
+          const escapedExePath = escapeForPowerShell(process.execPath);
+          const escapedCliPath = escapeForPowerShell(claudeCli);
+          const quotedArgs = cliArgs.map((arg) => `'${escapeForPowerShell(arg)}'`).join(' ');
+          const psCommand = `$env:ELECTRON_RUN_AS_NODE='1'; & '${escapedExePath}' '${escapedCliPath}' ${quotedArgs}`;
+          args = ['-NoProfile', '-Command', psCommand];
+        }
+      } else {
+        file = process.execPath;
+        args = [claudeCli, ...cliArgs];
+        extraEnv.ELECTRON_RUN_AS_NODE = '1';
+      }
+      logger.info(`Using Node.js script CLI: ${file} ${JSON.stringify(args)}`);
+    } else {
+      // System CLI (e.g. /usr/local/bin/claude): spawn directly
+      file = claudeCli;
+      args = [...cliArgs];
+    }
+
+    // Find bundled Git Bash for Windows (Claude Code CLI requires it)
+    const bundledGitBash = this.findBundledGitBash();
+    if (process.platform === 'win32' && bundledGitBash) {
+      logger.info('Setting CLAUDE_CODE_GIT_BASH_PATH for bundled Git Bash', { path: bundledGitBash });
+      extraEnv.CLAUDE_CODE_GIT_BASH_PATH = bundledGitBash;
+    } else if (process.platform === 'win32') {
+      logger.warn('Windows: No bundled Git Bash found. Claude CLI may require Git Bash to be installed system-wide.');
+    }
+
+    logger.info('CLI spawn configuration', {
+      spawnFile: file,
+      spawnFileBuffer: Buffer.from(file).toString('hex'),
+      spawnArgs: args,
+      claudeCli,
+      claudeCliBuffer: Buffer.from(claudeCli).toString('hex'),
+      cliExists: fs.existsSync(claudeCli),
+      spawnFileExists: fs.existsSync(file),
+      extraEnv,
+    });
+
+    return { file, args, extraEnv };
+  }
+
+  /**
+   * Log the CLI out (`claude auth logout`): the login is the CLI's own, so
+   * logging out of Philibert logs out of it — the credentials and the
+   * account it records. Resolves whether the CLI reported success.
+   */
+  async logoutCli(): Promise<boolean> {
+    const { file, args, extraEnv } = this.cliCommand(LOGOUT_ARGS);
+    return new Promise((resolve) => {
+      execFile(file, args, { env: { ...process.env, ...extraEnv }, timeout: MAIN_CONSTANTS.AUTH.OAUTH_URL_DETECTION_TIMEOUT_MS }, (error, _stdout, stderr) => {
+        if (error) {
+          logger.warn('claude auth logout failed', { error: error.message, stderr: String(stderr).slice(0, 500) });
+          resolve(false);
+          return;
+        }
+        logger.info('Logged the Claude CLI out');
+        resolve(true);
+      });
+    });
+  }
+
+  /**
    * Start the OAuth login flow using node-pty.
    * Returns the authorization URL that the user should visit.
    *
@@ -246,93 +350,24 @@ export class AuthService {
       appPath: app.getAppPath(),
     });
 
-    // Create temp config directory
-    const configDir = path.join(tmpDir, `claude-oauth-${Date.now()}`);
-    logger.info('Creating config directory', { configDir, configDirBuffer: Buffer.from(configDir).toString('hex') });
-    fs.mkdirSync(configDir, { recursive: true });
+    // The login goes where the CLI keeps it: its own config directory, the
+    // one sessions run with too (see cliCredentials.ts). What is there now is
+    // the baseline — a login is a change from it, so an existing login (the
+    // terminal's, or the one being replaced) is not mistaken for this one.
+    const baselineCredentials = readCliCredentials();
+    logger.info('Logging in to the CLI config directory', { configDir: cliConfigDir(), hasExistingLogin: baselineCredentials !== null });
 
-    const claudeCli = this.findClaudeCli();
-    const isNpx = claudeCli === 'npx';
-    const isNativeBinary = ClaudeCliPaths.isNativeBinary(claudeCli);
-    const isNodeScript = claudeCli.endsWith('.js') || claudeCli.endsWith('.cjs');
+    const { file: spawnFile, args: spawnArgs, extraEnv } = this.cliCommand(LOGIN_ARGS);
 
-    // Build command and args - spawn DIRECTLY, not through a shell (like mautrix-claude sidecar)
-    let spawnFile: string;
-    let spawnArgs: string[];
-    let extraEnv: Record<string, string> = {};
-
-    if (isNpx) {
-      // Fallback: use npx through shell (requires Node.js on system)
-      spawnFile = process.platform === 'win32' ? 'cmd.exe' : '/bin/bash';
-      const npxCommand = ['npx @anthropic-ai/claude-code', ...LOGIN_ARGS].join(' ');
-      spawnArgs = process.platform === 'win32' ? ['/c', npxCommand] : ['-c', npxCommand];
-    } else if (isNativeBinary) {
-      // v2.1.121+ native binary — spawn directly, no node.exe needed
-      spawnFile = claudeCli;
-      spawnArgs = [...LOGIN_ARGS];
-      logger.info(`Using native Claude CLI binary: ${spawnFile}`);
-    } else if (isNodeScript) {
-      // Legacy cli.js or cli-wrapper.cjs — needs Node.js to execute
-      if (process.platform === 'win32') {
-        const bundledNodeExe = WindowsPaths.getBundledNodeExe();
-        const nodeExeExists = WindowsPaths.hasBundledNode();
-        logger.info('Windows: checking bundled Node.js for script execution', {
-          bundledNodeExe, exists: nodeExeExists,
-        });
-
-        if (nodeExeExists) {
-          spawnFile = bundledNodeExe;
-          spawnArgs = [claudeCli, ...LOGIN_ARGS];
-        } else {
-          logger.warn('Windows: bundled Node.js not found, falling back to ELECTRON_RUN_AS_NODE');
-          spawnFile = 'powershell.exe';
-          const escapeForPowerShell = (s: string): string => s.replace(/'/g, "''");
-          const escapedExePath = escapeForPowerShell(process.execPath);
-          const escapedCliPath = escapeForPowerShell(claudeCli);
-          const loginArgs = LOGIN_ARGS.map((arg) => `'${escapeForPowerShell(arg)}'`).join(' ');
-          const psCommand = `$env:ELECTRON_RUN_AS_NODE='1'; & '${escapedExePath}' '${escapedCliPath}' ${loginArgs}`;
-          spawnArgs = ['-NoProfile', '-Command', psCommand];
-        }
-      } else {
-        spawnFile = process.execPath;
-        spawnArgs = [claudeCli, ...LOGIN_ARGS];
-        extraEnv = { ELECTRON_RUN_AS_NODE: '1' };
-      }
-      logger.info(`Using Node.js script CLI: ${spawnFile} ${JSON.stringify(spawnArgs)}`);
-    } else {
-      // System CLI (e.g. /usr/local/bin/claude): spawn directly
-      spawnFile = claudeCli;
-      spawnArgs = [...LOGIN_ARGS];
-    }
-
-    logger.info('OAuth spawn configuration', {
-      spawnFile,
-      spawnFileBuffer: Buffer.from(spawnFile).toString('hex'),
-      spawnArgs,
-      claudeCli,
-      claudeCliBuffer: Buffer.from(claudeCli).toString('hex'),
-      cliExists: fs.existsSync(claudeCli),
-      spawnFileExists: fs.existsSync(spawnFile),
-      extraEnv,
-    });
-
-    // Find bundled Git Bash for Windows (Claude Code CLI requires it)
-    const bundledGitBash = this.findBundledGitBash();
-    if (process.platform === 'win32' && bundledGitBash) {
-      logger.info('Setting CLAUDE_CODE_GIT_BASH_PATH for bundled Git Bash', { path: bundledGitBash });
-      extraEnv.CLAUDE_CODE_GIT_BASH_PATH = bundledGitBash;
-    } else if (process.platform === 'win32') {
-      logger.warn('Windows: No bundled Git Bash found. Claude CLI may require Git Bash to be installed system-wide.');
-    }
-
-    // Environment without browser auto-open (like mautrix-claude sidecar)
+    // Environment without browser auto-open (like mautrix-claude sidecar).
+    // CLAUDE_CONFIG_DIR is not set: the CLI picks its config directory as it
+    // always does — including a CLAUDE_CONFIG_DIR the user set themselves.
     const env: Record<string, string> = {
       ...process.env as Record<string, string>,
       ...extraEnv,
       // Prevent browser auto-open: use a command that does nothing
       // On Windows, 'echo' doesn't work as BROWSER - use empty string or cmd /c echo
       BROWSER: process.platform === 'win32' ? 'cmd /c echo' : '/bin/false',
-      CLAUDE_CONFIG_DIR: configDir,
       TERM: 'xterm-256color',
       NO_COLOR: '1',
     };
@@ -431,7 +466,7 @@ export class AuthService {
             this.pendingOAuthFlow = {
               pty: ptyProcess,
               isPtyAlive: true,
-              configDir,
+              baselineCredentials,
               createdAt: startTime,
               output,
             };
@@ -560,7 +595,6 @@ export class AuthService {
         const err = error as Error;
         logger.error('Failed to start OAuth flow:', err.message);
         logger.error('Stack:', err.stack);
-        fs.rmSync(configDir, { recursive: true, force: true });
         resolve({ authUrl: '', error: `Failed to start authentication: ${err.message}` });
       }
     });
@@ -601,7 +635,7 @@ export class AuthService {
       return validationError;
     }
 
-    const { pty: ptyProcess, configDir } = this.pendingOAuthFlow!;
+    const { pty: ptyProcess, baselineCredentials: baseline } = this.pendingOAuthFlow!;
 
     return new Promise((resolve) => {
       const handlers = this.createResourceHandlers();
@@ -613,17 +647,17 @@ export class AuthService {
         // Listen for PTY output
         handlers.dataHandler = ptyProcess!.onData((data: string) => {
           reply += data;
-          this.checkOAuthResult(configDir, handlers, resolve);
+          this.checkOAuthResult(baseline, handlers, resolve);
         });
 
         // Send code to PTY
         this.sendCodeToPty(ptyProcess!, code.trim());
 
         // Setup polling for result
-        this.setupOAuthPolling(handlers, configDir, resolve);
+        this.setupOAuthPolling(handlers, baseline, resolve);
 
         // Handle PTY exit
-        this.setupPtyExitHandler(ptyProcess!, handlers, () => reply, configDir, resolve);
+        this.setupPtyExitHandler(ptyProcess!, handlers, () => reply, baseline, resolve);
       } catch (error) {
         handlers.cleanup();
         logger.error('Error completing OAuth flow:', error);
@@ -717,19 +751,19 @@ export class AuthService {
    * how a valid code was reported invalid.
    */
   private checkOAuthResult(
-    configDir: string,
+    baseline: string | null,
     handlers: OAuthResourceHandlers,
     resolve: (result: OAuthFlowResult) => void
   ): boolean {
     if (handlers.resolved) return true;
 
-    const login = this.readLogin(configDir);
-    if (login) {
+    const token = this.readNewLogin(baseline);
+    if (token) {
       handlers.resolved = true;
       handlers.cleanup();
-      logger.info('OAuth authentication successful via credentials file', { hasAccount: !!login.accountJson });
+      logger.info('OAuth authentication successful via credentials file');
       this.cleanupOAuthFlow();
-      resolve({ success: true, ...login });
+      resolve({ success: true, token });
       return true;
     }
 
@@ -746,12 +780,12 @@ export class AuthService {
   }
 
   /**
-   * The login the CLI wrote to the flow's config directory, once it has: the
-   * credentials, their access token, and the account they are for.
+   * The access token of the login this flow wrote, once it has: the CLI's
+   * credentials, changed from what they were when the flow started.
    */
-  private readLogin(configDir: string): Pick<OAuthFlowResult, 'token' | 'credentialsJson' | 'accountJson'> | null {
-    const credentialsJson = readCliCredentials(configDir);
-    if (!credentialsJson) return null;
+  private readNewLogin(baseline: string | null): string | null {
+    const credentialsJson = readCliCredentials();
+    if (!credentialsJson || credentialsJson === baseline) return null;
     const token = accessTokenOf(credentialsJson);
     // Strict-validate even though the file is the CLI's own: storing a token
     // that will 401 is how users used to get logged out on every request.
@@ -763,8 +797,7 @@ export class AuthService {
       });
       return null;
     }
-    const accountJson = readOAuthAccount(configDir);
-    return { token, credentialsJson, ...(accountJson ? { accountJson } : {}) };
+    return token;
   }
 
   /**
@@ -772,13 +805,13 @@ export class AuthService {
    */
   private setupOAuthPolling(
     handlers: OAuthResourceHandlers,
-    configDir: string,
+    baseline: string | null,
     resolve: (result: OAuthFlowResult) => void
   ): void {
     let attempts = 0;
     handlers.pollInterval = setInterval(() => {
       attempts++;
-      if (this.checkOAuthResult(configDir, handlers, resolve)) {
+      if (this.checkOAuthResult(baseline, handlers, resolve)) {
         handlers.cleanup();
         return;
       }
@@ -803,14 +836,14 @@ export class AuthService {
     ptyProcess: IPty,
     handlers: OAuthResourceHandlers,
     getReply: () => string,
-    configDir: string,
+    baseline: string | null,
     resolve: (result: OAuthFlowResult) => void
   ): void {
     ptyProcess.onExit(({ exitCode }) => {
       logger.info(`OAuth PTY exited with code ${exitCode}`);
       setTimeout(() => {
         if (!handlers.resolved) {
-          this.checkOAuthResult(configDir, handlers, resolve);
+          this.checkOAuthResult(baseline, handlers, resolve);
           if (!handlers.resolved) {
             handlers.resolved = true;
             handlers.cleanup();
@@ -847,7 +880,7 @@ export class AuthService {
       return;
     }
 
-    const { pty: ptyProcess, configDir } = this.pendingOAuthFlow;
+    const { pty: ptyProcess } = this.pendingOAuthFlow;
 
     // Kill PTY process first
     if (ptyProcess) {
@@ -858,22 +891,9 @@ export class AuthService {
       }
     }
 
-    // Clear state immediately to prevent duplicate cleanup
+    // Clear state immediately to prevent duplicate cleanup. Nothing on disk
+    // to remove: the login runs in the CLI's own config directory.
     this.pendingOAuthFlow = null;
-
-    // Clean up temp directory after a delay to ensure PTY has released files
-    if (configDir) {
-      setTimeout(() => {
-        try {
-          if (fs.existsSync(configDir)) {
-            fs.rmSync(configDir, { recursive: true, force: true });
-            logger.debug('Temp config directory cleaned up', { configDir });
-          }
-        } catch (err) {
-          logger.debug('Temp config directory already removed or inaccessible', err);
-        }
-      }, MAIN_CONSTANTS.AUTH.PTY_CLEANUP_DELAY_MS);
-    }
 
     logger.info('OAuth flow cleaned up');
   }

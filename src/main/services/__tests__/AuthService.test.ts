@@ -73,7 +73,6 @@ vi.mock('../../utils/logger', () => ({
 }));
 
 // Import after mocks
-import { MAIN_CONSTANTS } from '../../constants/app';
 import AuthService from '../AuthService';
 
 /** A code of the shape the authorize page shows: `<code>#<state>`. */
@@ -83,20 +82,18 @@ const CODE = 'ba81tYLAwH49cR704ruGj7Jcm4X3oWs08MSMdGp53WjNJJGs#e4gi3YWEmXhZQ6ULj
 const LOGIN_TOKEN = 'sk-ant-oat01-' + 'L'.repeat(95);
 
 /**
- * Make the files `claude auth login` writes appear in the flow's config dir:
- * `.credentials.json` and the account in `.claude.json`.
+ * Make the credentials `claude auth login` writes appear in the CLI's config
+ * directory.
  */
-function writeLogin(accessToken = LOGIN_TOKEN): { credentialsJson: string; accountJson: string } {
+function writeLogin(accessToken = LOGIN_TOKEN): string {
   const credentialsJson = JSON.stringify({
     claudeAiOauth: { accessToken, refreshToken: 'sk-ant-ort01-r', expiresAt: 1, scopes: ['user:inference', 'user:profile'], subscriptionType: 'max' },
   });
-  const account = { emailAddress: 'someone@example.com', organizationName: 'Example' };
   mockFsReadFileSync.mockImplementation((p: string) => {
     if (typeof p === 'string' && p.endsWith('.credentials.json')) return credentialsJson;
-    if (typeof p === 'string' && p.endsWith('.claude.json')) return JSON.stringify({ oauthAccount: account, userID: 'u' });
     throw new Error('ENOENT');
   });
-  return { credentialsJson, accountJson: JSON.stringify(account) };
+  return credentialsJson;
 }
 
 describe('AuthService', () => {
@@ -536,11 +533,33 @@ describe('AuthService', () => {
       const promise = service.completeOAuthFlow(CODE);
       await vi.advanceTimersByTimeAsync(200);
 
-      const { credentialsJson, accountJson } = writeLogin();
+      writeLogin();
       await vi.advanceTimersByTimeAsync(600);
 
       const result = await promise;
-      expect(result).toEqual({ success: true, token: LOGIN_TOKEN, credentialsJson, accountJson });
+      expect(result).toEqual({ success: true, token: LOGIN_TOKEN });
+    });
+
+    it('does not take a login that was already there (the terminal one) for the new one', async () => {
+      // The CLI's config directory is shared: it may hold a login before this
+      // one is made. Only a change from it is this login.
+      service.cleanupOAuthFlow();
+      writeLogin('sk-ant-oat01-' + 'T'.repeat(95));
+      const flowPromise = service.startOAuthFlow();
+      await vi.advanceTimersByTimeAsync(50);
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test\n');
+      mockPty.emitData('Paste code here if prompted > ');
+      await vi.advanceTimersByTimeAsync(100);
+      await flowPromise;
+
+      let settled = false;
+      const promise = service.completeOAuthFlow(CODE).then((r) => { settled = true; return r; });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(settled).toBe(false);
+
+      writeLogin();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(await promise).toEqual({ success: true, token: LOGIN_TOKEN });
     });
 
     it('refuses a credentials file whose token is malformed, rather than store a token that will 401', async () => {
@@ -714,7 +733,25 @@ describe('AuthService', () => {
       expect(service.hasPendingFlow()).toBe(false);
     });
 
-    it('should schedule temp directory cleanup', async () => {
+    it("removes nothing from disk: the login ran in the CLI's own config directory", async () => {
+      // There is no temporary directory any more. Removing "the flow's
+      // directory" would now delete the user's whole CLI configuration.
+      const flowPromise = service.startOAuthFlow();
+      await vi.advanceTimersByTimeAsync(50);
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test\n');
+      mockPty.emitData('Paste:\n');
+      await vi.advanceTimersByTimeAsync(100);
+      await flowPromise;
+      mockFsRmSync.mockClear();
+      mockFsMkdirSync.mockClear();
+
+      service.cleanupOAuthFlow();
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(mockFsRmSync).not.toHaveBeenCalled();
+    });
+
+    it('does not override the CLI config directory when logging in', async () => {
       const flowPromise = service.startOAuthFlow();
       await vi.advanceTimersByTimeAsync(50);
       mockPty.emitData('https://claude.com/cai/oauth/authorize?code=test\n');
@@ -722,30 +759,8 @@ describe('AuthService', () => {
       await vi.advanceTimersByTimeAsync(100);
       await flowPromise;
 
-      // cleanupOAuthFlow guards the rmSync behind existsSync. The suite's
-      // default mock reports false for everything except the bundled CLI, so
-      // the temp OAuth dir has to be reported as present for the removal to
-      // be reachable at all.
-      mockFsExistsSync.mockImplementation((path: string) => {
-        if (path.includes('cli.js')) return true;
-        if (path.includes('node.exe')) return true;
-        if (path.includes('claude-oauth-')) return true;
-        return false;
-      });
-      mockFsRmSync.mockClear();
-
-      service.cleanupOAuthFlow();
-
-      // Nothing should be removed before the delay elapses — the PTY needs to
-      // release its file handles first.
-      await vi.advanceTimersByTimeAsync(MAIN_CONSTANTS.AUTH.PTY_CLEANUP_DELAY_MS - 1);
-      expect(mockFsRmSync).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(1);
-      expect(mockFsRmSync).toHaveBeenCalledWith(
-        expect.stringContaining('claude-oauth-'),
-        { recursive: true, force: true },
-      );
+      const env = mockPtySpawn.mock.calls[0][2].env as Record<string, string>;
+      expect(env.CLAUDE_CONFIG_DIR).toBe(process.env.CLAUDE_CONFIG_DIR);
     });
 
     it('should be safe to call multiple times', () => {

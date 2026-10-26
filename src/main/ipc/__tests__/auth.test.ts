@@ -77,15 +77,13 @@ vi.mock('fs', () => ({
   rmSync: vi.fn(),
 }));
 
-vi.mock('../../utils/resourcePaths', () => ({
-  getClaudeConfigDir: vi.fn(() => '/tmp/test-claude-config'),
-}));
 
 const mockAuthService = {
   startOAuthFlow: vi.fn(),
   completeOAuthFlow: vi.fn(),
   openAuthUrl: vi.fn(),
   cleanupOAuthFlow: vi.fn(),
+  logoutCli: vi.fn(async () => true),
 };
 
 /**
@@ -175,6 +173,33 @@ describe('Auth IPC handlers', () => {
 
     beforeEach(() => {
       handler = handlers.get(IPC_CHANNELS.AUTH_GET_STATUS)!;
+    });
+
+    it("logs Philibert out when the CLI login it uses is gone (logged out in a terminal)", async () => {
+      await configService.setOAuthToken('sk-ant-oat01-stored-token');
+      await configService.setUsesCliLogin(true);
+      // fs is mocked: there is no CLI credentials file.
+
+      const result = await handler({});
+
+      expect(result).toMatchObject({ isAuthenticated: false });
+      expect(await configService.getOAuthToken()).toBe('');
+      expect(await configService.usesCliLogin()).toBe(false);
+    });
+
+    it('stays logged in while the CLI login it uses is there', async () => {
+      const fs = await import('fs');
+      vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+        if (String(p).endsWith('.credentials.json')) return JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-cli' } });
+        throw new Error('ENOENT');
+      }) as typeof fs.readFileSync);
+      await configService.setOAuthToken('sk-ant-oat01-stored-token');
+      await configService.setUsesCliLogin(true);
+
+      const result = await handler({});
+
+      expect(result).toMatchObject({ isAuthenticated: true, method: 'oauth' });
+      vi.mocked(fs.readFileSync).mockImplementation((() => { throw new Error('ENOENT'); }) as typeof fs.readFileSync);
     });
 
     it('should return OAuth authenticated status when oauthToken is stored', async () => {
@@ -352,40 +377,19 @@ describe('Auth IPC handlers', () => {
       );
     });
 
-    it('should store full credentials JSON when available', async () => {
-      const credsJson = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test', refreshToken: 'rt-123' } });
+    it("records that the login is the CLI's own, and writes no credentials of its own", async () => {
+      // `auth login` already put the login in the CLI's config directory;
+      // a copy elsewhere is what went stale and hid the user's sessions.
       mockAuthService.completeOAuthFlow.mockResolvedValue({
         success: true,
         token: 'sk-ant-oat01-test-token-for-auth-tests',
-        credentialsJson: credsJson,
       });
 
       await handler({}, 'valid_code_12345');
 
-      const storedCreds = await configService.getOAuthCredentials();
-      expect(storedCreds).toBe(credsJson);
-    });
-
-    it('puts the credentials and the account where the CLI reads them', async () => {
-      // Without the account, the CLI has credentials but cannot say whose:
-      // the settings would go on saying it could not read the account.
-      const credsJson = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test', refreshToken: 'rt-123' } });
-      const accountJson = JSON.stringify({ emailAddress: 'someone@example.com' });
-      mockAuthService.completeOAuthFlow.mockResolvedValue({
-        success: true,
-        token: 'sk-ant-oat01-test-token-for-auth-tests',
-        credentialsJson: credsJson,
-        accountJson,
-      });
-
-      await handler({}, 'valid_code_12345');
-
+      expect(await configService.usesCliLogin()).toBe(true);
       const fs = await import('fs');
-      expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
-        '/tmp/test-claude-config/.credentials.json', credsJson, { encoding: 'utf8', mode: 0o600 },
-      );
-      const accountWrite = vi.mocked(fs.writeFileSync).mock.calls.find(([file]) => file === '/tmp/test-claude-config/.claude.json');
-      expect(JSON.parse(accountWrite?.[1] as string).oauthAccount).toEqual({ emailAddress: 'someone@example.com' });
+      expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled();
     });
 
     it('should return error for invalid code format (too short)', async () => {
@@ -480,6 +484,21 @@ describe('Auth IPC handlers', () => {
       expect(token).toBe('');
       const key = await configService.getApiKey();
       expect(key).toBe('');
+    });
+
+    it('logs the CLI out for a CLI login — the login is the same one', async () => {
+      await configService.setUsesCliLogin(true);
+
+      await handler({});
+
+      expect(mockAuthService.logoutCli).toHaveBeenCalledTimes(1);
+      expect(await configService.usesCliLogin()).toBe(false);
+    });
+
+    it("leaves the CLI alone for an older token login, which was never the CLI's", async () => {
+      await handler({});
+
+      expect(mockAuthService.logoutCli).not.toHaveBeenCalled();
     });
 
     it('should cleanup pending OAuth flows', async () => {

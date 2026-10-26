@@ -11,7 +11,7 @@ import { AuthenticationError, ERROR_CODES } from '../errors';
 import AuthService from '../services/AuthService';
 import type { ClaudeCodeService } from '../services/ClaudeCodeService';
 import ConfigService from '../services/ConfigService';
-import { mergeOAuthAccount, removeCliCredentials, writeCliCredentials } from '../services/claude/cliCredentials';
+import { dropVanishedCliLogin } from '../services/claude/cliCredentials';
 import { validateString, sendToRenderer, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
@@ -29,6 +29,13 @@ export function setupAuthHandlers(
       // Validate services
       ensureService(authService, 'AuthService');
       ensureService(configService, 'ConfigService');
+
+      // A login that is the CLI's own lasts as long as the CLI has it: logged
+      // out in a terminal (`claude auth logout`), Philibert is logged out too,
+      // rather than claiming a login every request would then fail on.
+      if (await dropVanishedCliLogin(configService)) {
+        sendToRenderer(getMainWindow, IPC_CHANNELS.CONFIG_CHANGED, { oauthToken: '', authMethod: 'none' });
+      }
 
       const config = await configService.getConfig();
 
@@ -172,20 +179,10 @@ export function setupAuthHandlers(
             return { success: false, error: 'Failed to verify stored token. Your system keyring may not be working. Please try again.' };
           }
 
-          // The full credentials, for the CLI to use and refresh, and the
-          // account they are for, which is where the CLI reads the email and
-          // plan from. Into the config directory sessions run with; the
-          // encrypted copy only restores a lost file (see cliCredentials.ts).
-          if (result.credentialsJson) {
-            try {
-              await configService.setOAuthCredentials(result.credentialsJson);
-              writeCliCredentials(result.credentialsJson);
-              if (result.accountJson) mergeOAuthAccount(result.accountJson);
-              logger.info('OAuth credentials saved to the stable config dir', { hasAccount: !!result.accountJson });
-            } catch (err) {
-              logger.warn('Failed to store full OAuth credentials', { error: err });
-            }
-          }
+          // The login itself is the CLI's own, in its config directory, where
+          // it refreshes it and records the account. Philibert only notes that
+          // its OAuth login is that one (see cliCredentials.ts).
+          await configService.setUsesCliLogin(true);
 
           // Conversations that are already open run their own CLI
           // subprocess, each holding the credentials it was spawned with.
@@ -230,6 +227,12 @@ export function setupAuthHandlers(
       ensureService(authService, 'AuthService');
       ensureService(configService, 'ConfigService');
 
+      // A login that is the CLI's own is logged out with the CLI, which also
+      // clears the account it records; the terminal is logged out with it.
+      if (await configService.usesCliLogin()) {
+        await authService.logoutCli();
+      }
+
       // Clear both OAuth token and API key
       const configUpdate = {
         oauthToken: '',
@@ -237,15 +240,7 @@ export function setupAuthHandlers(
         authMethod: 'none' as const,
       };
       await configService.setConfig(configUpdate);
-      await configService.clearOAuthCredentials();
-
-      // Clean up stable config dir credentials file
-      try {
-        removeCliCredentials();
-        logger.debug('Cleaned up credentials file from stable config dir');
-      } catch (err) {
-        logger.debug('Failed to clean up credentials file', { error: err });
-      }
+      await configService.setUsesCliLogin(false);
 
       // Same reason as on login, and more pressing: a session left running
       // keeps a working token for an account the user has just signed out of.

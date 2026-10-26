@@ -91,7 +91,6 @@ vi.mock('../../utils/resourcePaths', () => ({
     getBashExe: vi.fn(() => ''),
     buildEnhancedPath: vi.fn(() => ''),
   },
-  getClaudeConfigDir: vi.fn(() => '/tmp/test-claude-config'),
 }));
 
 // Mock logger
