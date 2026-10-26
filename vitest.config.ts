@@ -31,7 +31,14 @@ import { resolve } from 'path';
 //  - NODE_OPTIONS reaches them, and the workers inherit it from this process.
 //    Set here rather than as a prefix in the npm script so `npm test` keeps
 //    working on Windows, where `NODE_OPTIONS=... vitest` is not valid.
-process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, '--no-experimental-webstorage']
+//
+// The heap cap is for the CI runner (5.7GB, shared with other projects). The
+// largest file holds at most ~130MB live once release-kept-objects.ts lets V8
+// drop what it kept per job, but with no limit near V8 collects lazily: that
+// file peaked at 1.6GB RSS of garbage, and 2GB before the fix, which timed the
+// worker out on a runner with 1.7GB free. Capped, it peaks at 1.2GB with the
+// same run time.
+process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, '--no-experimental-webstorage', '--max-old-space-size=1024']
   .filter(Boolean)
   .join(' ');
 
@@ -46,6 +53,9 @@ export default defineConfig({
     // the include pattern and fail on happy-dom's zero heights, which is
     // exactly the false signal those tests exist to replace.
     exclude: ['node_modules', 'dist', 'src/**/*.browser.test.ts'],
+    // See the file: without it, documents parsed in a test are kept alive
+    // until its whole file ends.
+    setupFiles: ['src/test-setup/release-kept-objects.ts'],
     coverage: {
       reporter: ['text', 'json', 'html'],
       exclude: ['node_modules/', 'src/**/*.d.ts'],

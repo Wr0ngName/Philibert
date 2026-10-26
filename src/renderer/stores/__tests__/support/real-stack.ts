@@ -306,9 +306,23 @@ export async function route(channel: string, args: unknown[]): Promise<unknown> 
   }
 }
 
-/** Let promise callbacks run. */
+/** Captured at load: tests replace the global one with fake timers. */
+const realSetImmediate = globalThis.setImmediate;
+
+/**
+ * Let promise callbacks run, then return to the event loop once — as the app
+ * does between IPC messages, which arrive as separate tasks.
+ *
+ * The return matters for memory, not only for realism: V8 keeps every WeakRef
+ * target of a job alive until the job ends, and happy-dom holds WeakRefs into
+ * each document DOMPurify parses (one per rendered message). Without a task
+ * boundary a test that slides a long conversation's window kept every
+ * document it ever parsed — 1.2GB in one test. See
+ * src/test-setup/release-kept-objects.ts.
+ */
 export async function settle(times = 8): Promise<void> {
   for (let i = 0; i < times; i += 1) await nextTick();
+  await new Promise<void>((resolve) => realSetImmediate(() => resolve()));
 }
 
 /** Let every held write complete. */
