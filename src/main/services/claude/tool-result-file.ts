@@ -7,9 +7,9 @@
  * for the same call, so a call's detail reads the same wherever it is opened.
  */
 
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 /** The directory results are written to. Readable by `files:read`. */
 export function toolResultsDir(): string {

@@ -263,18 +263,18 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
 
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_READ_TASK_OUTPUT,
-    async (_event, conversationId: string, taskId: string, outputFile: unknown, fromByte: unknown) => {
+    async (_event, conversationId: string, taskId: string, sdkSessionId: unknown, fromByte: unknown) => {
       try {
         ensureService(claudeService, 'ClaudeCodeService');
         validateString(conversationId, 'Conversation ID');
         validateString(taskId, 'Task ID');
-        if (outputFile !== undefined && outputFile !== null) validateString(outputFile, 'Output file');
+        if (sdkSessionId !== undefined && sdkSessionId !== null) validateString(sdkSessionId, 'Session ID');
         const from = typeof fromByte === 'number' && Number.isInteger(fromByte) && fromByte >= 0 ? fromByte : 0;
 
         return await claudeService.readTaskOutput(
           conversationId,
           taskId,
-          (outputFile as string | null | undefined) ?? undefined,
+          (sdkSessionId as string | null | undefined) ?? undefined,
           from,
         );
       } catch (error) {

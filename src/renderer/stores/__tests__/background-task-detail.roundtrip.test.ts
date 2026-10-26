@@ -174,8 +174,11 @@ describe('background tasks, panel and detail', () => {
     expect(modal.querySelectorAll('.chat-row').length).toBeGreaterThan(0);
     expect(modal.textContent).toContain('Read notes.txt, then use the Bash tool');
     expect(modal.querySelector('.tool-use-entry')?.textContent).toContain('Read');
-    // Its turns are the agent's, not Claude's.
+    // Its turns are the agent's, and its prompt is Claude's — not the user's.
     expect(modal.querySelector('.assistant-turn-header')?.textContent).toContain('builder');
+    const prompt = modal.querySelector('.message-user .message-header')?.textContent ?? '';
+    expect(prompt).toContain('Claude');
+    expect(prompt).not.toContain('You');
   });
 
   it("follows a running agent, adding to what is shown rather than reloading it", async () => {

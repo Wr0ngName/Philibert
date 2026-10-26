@@ -98,7 +98,7 @@ export interface ElectronAPI {
     readTaskOutput: (
       conversationId: string,
       taskId: string,
-      outputFile: string | undefined,
+      sdkSessionId: string | undefined,
       fromByte: number,
     ) => Promise<TaskOutputChunk | null>;
     /** An agent task's transcript, as chat messages. */

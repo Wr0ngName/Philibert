@@ -2,13 +2,11 @@
  * Reading a background task's output, and an agent's transcript, for the
  * task detail view.
  *
- * Both are asked for by task id rather than by path. The path comes from the
- * CLI — a command's from its tool result, an agent's from its structured
- * result, either from the completion notice — so the main process already
- * knows it, and a renderer that could name any path to read would be a file
- * reader for anything. A path is accepted from the renderer only for a task
- * this process never saw (one from before a restart), and only when it has
- * the exact shape the CLI gives task output files.
+ * Both are asked for by task id rather than by path: a renderer that could
+ * name any path to read would be a file reader for anything. The main process
+ * has the path from the CLI's structured fields when it was told one — an
+ * agent's `outputFile`, a completion notice's `output_file` — and otherwise
+ * finds it by the session and task ids; see locateTaskOutput.
  */
 
 import fs from 'node:fs';
@@ -26,16 +24,61 @@ import { toolResultParts } from './tool-result-images';
 export const MAX_TASK_OUTPUT_BYTES = 512 * 1024;
 
 /**
- * Whether a path the renderer named is a task output file of the given task:
- * `<tmpdir>/…/tasks/<taskId>.output`, as the CLI writes them (2.1.280:
- * `/tmp/claude-<uid>/<project>/<session>/tasks/<id>.output`).
+ * The temp directory the CLI is given (`CLAUDE_CODE_TMPDIR`), so that its task
+ * output files are under a directory this app knows rather than one it would
+ * have to work out.
+ *
+ * Needed because nothing in the protocol names a running command's output
+ * file: the Bash tool's structured result carries only `backgroundTaskId`
+ * (BashOutput, sdk-tools.d.ts), the completion notice's `output_file` arrives
+ * only once the command has ended, and no control request reads task output.
+ * A user who set CLAUDE_CODE_TMPDIR themselves keeps theirs.
  */
-export function isTaskOutputPath(candidate: string, taskId: string): boolean {
-  const resolved = path.resolve(candidate);
-  const tmp = path.resolve(os.tmpdir()) + path.sep;
-  return resolved.startsWith(tmp)
-    && path.basename(resolved) === `${taskId}.output`
-    && path.basename(path.dirname(resolved)) === 'tasks';
+export function cliTempRoot(): string {
+  return process.env.CLAUDE_CODE_TMPDIR || path.join(os.tmpdir(), 'philibert-cli');
+}
+
+/** How deep under the temp root a session's directory sits: `claude-<uid>/<project>/<session>`. */
+const SESSION_DIR_DEPTH = 3;
+
+/**
+ * A task's output file, found under the CLI's temp root by the session and
+ * task ids — the two things the protocol does state. Measured layout (CLI
+ * 2.1.280): `<root>/claude-<uid>/<project>/<sessionId>/tasks/<taskId>.output`.
+ * Looked for by the ids rather than built from that layout, so a change in the
+ * levels above the session does not lose it.
+ *
+ * Symbolic links are not followed into: the tree is the CLI's, and a planted
+ * link must not turn this into a reader of somewhere else.
+ */
+export async function locateTaskOutput(root: string, sessionId: string, taskId: string): Promise<string | undefined> {
+  async function search(dir: string, depth: number): Promise<string | undefined> {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return undefined;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const child = path.join(dir, entry.name);
+      if (entry.name === sessionId) {
+        const file = path.join(child, 'tasks', `${taskId}.output`);
+        try {
+          await fs.promises.access(file);
+          return file;
+        } catch {
+          continue;
+        }
+      }
+      if (depth < SESSION_DIR_DEPTH) {
+        const found = await search(child, depth + 1);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  }
+  return search(root, 1);
 }
 
 /**

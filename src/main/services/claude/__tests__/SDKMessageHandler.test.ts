@@ -1052,8 +1052,10 @@ describe('SDKMessageHandler', () => {
       expect(notified.find((n) => n.taskId === 'bash-2')?.parentTaskId).toBeUndefined();
     });
 
-    it("knows a background command's output file as soon as it starts", async () => {
-      const file = '/tmp/claude-1000/proj/sess/tasks/b3q51bvd7.output';
+    it("takes a command's output file only from a structured field, never from the result's prose", async () => {
+      // The prose names the file; the structured result does not. Reading it
+      // out of the wording would break the day the wording changes, so a
+      // running command's file is found by its ids instead (locateTaskOutput).
       await handler.handleMessage({
         type: 'user',
         message: {
@@ -1061,17 +1063,19 @@ describe('SDKMessageHandler', () => {
           content: [{
             type: 'tool_result',
             tool_use_id: 'toolu_cmd',
-            content: `Command running in background with ID: b3q51bvd7. Output is being written to: ${file}. You will be notified when it completes.`,
+            content: 'Command running in background with ID: b3q51bvd7. Output is being written to: /tmp/x/tasks/b3q51bvd7.output.',
           }],
         },
         tool_use_result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b3q51bvd7' },
         parent_tool_use_id: null,
       } as never);
+      expect(handler.getTaskOutputFile('b3q51bvd7')).toBeUndefined();
 
-      expect(handler.getTaskOutputFile('b3q51bvd7')).toBe(file);
-      expect(callbacks.onTaskNotification).toHaveBeenCalledWith(expect.objectContaining({
-        taskId: 'b3q51bvd7', previousTaskId: 'toolu_cmd', outputFile: file,
-      }));
+      await handler.handleMessage({
+        type: 'system', subtype: 'task_notification', task_id: 'b3q51bvd7', status: 'completed',
+        output_file: '/tmp/claude-1000/proj/sess/tasks/b3q51bvd7.output', summary: 'done',
+      } as never);
+      expect(handler.getTaskOutputFile('b3q51bvd7')).toBe('/tmp/claude-1000/proj/sess/tasks/b3q51bvd7.output');
     });
 
     it("knows a background agent's transcript file as soon as it starts", async () => {

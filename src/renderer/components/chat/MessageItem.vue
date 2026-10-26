@@ -37,6 +37,12 @@ interface Props {
   conversationId?: string;
   /** What a relative image path in the text is relative to. */
   workingDirectory?: string;
+  /**
+   * Who the user and assistant messages are from. In an agent's transcript
+   * the prompt is Claude's, not the user's, and the replies are the agent's.
+   */
+  userLabel?: string;
+  assistantLabel?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -45,7 +51,19 @@ const props = withDefaults(defineProps<Props>(), {
   isExpanded: false,
   conversationId: '',
   workingDirectory: '',
+  userLabel: 'You',
+  assistantLabel: 'Claude',
 });
+
+/**
+ * Who this message is from, and the letter on its avatar — the label's
+ * initial, except that the user's own messages keep their "U" ("You" would
+ * give "Y").
+ */
+const authorLabel = computed(() => (props.message.role === 'user' ? props.userLabel : props.assistantLabel));
+const authorInitial = computed(() =>
+  props.message.role === 'user' && props.userLabel === 'You' ? 'U' : authorLabel.value.charAt(0).toUpperCase(),
+);
 
 /**
  * Whether there is anything to draw for this message's images.
@@ -233,10 +251,10 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
             : 'bg-surface-300 dark:bg-surface-600 text-surface-700 dark:text-surface-200',
         ]"
       >
-        {{ isUser ? 'U' : 'C' }}
+        {{ authorInitial }}
       </div>
       <span class="font-medium text-sm text-surface-700 dark:text-surface-300">
-        {{ isUser ? 'You' : 'Claude' }}
+        {{ authorLabel }}
       </span>
       <span class="text-xs text-surface-400 dark:text-surface-500">
         {{ formattedTime }}

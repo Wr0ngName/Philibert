@@ -339,6 +339,7 @@ const statusDisplay = computed(() => {
         <MessageList
           v-else
           :source="transcriptSource"
+          user-label="Claude"
           :assistant-label="agentLabel"
           empty-title="Nothing yet"
           empty-text="The agent's prompt, messages and tool calls appear here as it works."

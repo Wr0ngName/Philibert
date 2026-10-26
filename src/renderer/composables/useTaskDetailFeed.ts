@@ -122,6 +122,7 @@ export function useCommandOutput(options: FeedOptions): {
   skippedBytes: Ref<number>;
   loaded: Ref<boolean>;
 } {
+  const conversationsStore = useConversationsStore();
   const text = ref('');
   const skippedBytes = ref(0);
   const loaded = ref(false);
@@ -135,10 +136,11 @@ export function useCommandOutput(options: FeedOptions): {
       loaded.value = false;
       nextByte = 0;
     }
+    const conversationId = options.conversationId();
     const chunk = await window.electron.claude.readTaskOutput(
-      options.conversationId(),
+      conversationId,
       task.id,
-      task.outputFile,
+      conversationsStore.getSdkSessionId(conversationId),
       nextByte,
     );
     loaded.value = true;

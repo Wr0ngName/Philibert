@@ -92,7 +92,7 @@ import {
 } from './claude';
 import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
 import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
-import { isTaskOutputPath, readTaskOutput, transcriptToMessages } from './claude/task-output';
+import { cliTempRoot, locateTaskOutput, readTaskOutput, transcriptToMessages } from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
 import type { ExtractedImage } from './claude/tool-result-images';
 
@@ -908,9 +908,18 @@ export class ClaudeCodeService {
 
       // Set up authentication environment, plus any model enforcement that
       // has to travel as an env var rather than a setting.
+      //
+      // CLAUDE_CODE_TMPDIR puts the CLI's task output files under a directory
+      // this app knows, which is the only way to find a running command's
+      // output: no message names its file until it has finished. See
+      // cliTempRoot. The CLI refuses a temp root it cannot verify as a
+      // directory, so it is created first.
+      const tempRoot = cliTempRoot();
+      fs.mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
       const authEnv = {
         ...(await this.authValidator.setupAuthEnv()),
         ...(await this.buildModelEnforcementEnv(selectedModel)),
+        CLAUDE_CODE_TMPDIR: tempRoot,
       };
 
       // CRITICAL: Set auth env vars in actual process.env BEFORE calling query()
@@ -1713,19 +1722,21 @@ export class ClaudeCodeService {
    * A background task's output from `fromByte` on, or null when there is no
    * output file to read (yet).
    *
-   * The file is the one the live session was told about. A path from the
-   * renderer is only taken for a task this process never saw — one recorded
-   * before a restart — and only when it is shaped like a CLI task output file;
-   * see isTaskOutputPath.
+   * The file is the one the CLI named in a structured field when it did, and
+   * otherwise the one found under its temp root by the session and task ids.
+   * The session id is the live session's, or the one the renderer has on
+   * record for a conversation with no live session.
    */
   async readTaskOutput(
     conversationId: string,
     taskId: string,
-    outputFile: string | undefined,
+    sdkSessionId: string | undefined,
     fromByte: number,
   ): Promise<TaskOutputChunk | null> {
-    const known = this.activeSessions.get(conversationId)?.messageHandler.getTaskOutputFile(taskId);
-    const file = known ?? (outputFile && isTaskOutputPath(outputFile, taskId) ? outputFile : undefined);
+    const session = this.activeSessions.get(conversationId);
+    const sessionId = session?.sdkSessionId ?? sdkSessionId;
+    const file = session?.messageHandler.getTaskOutputFile(taskId)
+      ?? (sessionId ? await locateTaskOutput(cliTempRoot(), sessionId, taskId) : undefined);
     if (!file) return null;
     try {
       return await readTaskOutput(file, fromByte);

@@ -336,12 +336,10 @@ export class SDKMessageHandler {
   }
 
   /**
-   * The file a task writes its output to, when this session has been told.
-   *
-   * Known from the start for both kinds: a background command's from its
-   * tool result, an agent's (its live transcript) from its structured result.
-   * The completion notice names it too, but a reader wants a running task's
-   * output, which is exactly when that notice has not come.
+   * The file a task writes its output to, when the CLI has said so in a
+   * structured field: an agent's `outputFile` (its live transcript) when it
+   * starts, any task's `output_file` when it ends. A running command's is
+   * stated nowhere; see locateTaskOutput.
    */
   getTaskOutputFile(taskId: string): string | undefined {
     return this.taskOutputFiles.get(taskId);
@@ -718,10 +716,6 @@ export class SDKMessageHandler {
       const toolUseId = contentBlocks?.[0]?.tool_use_id;
       const backgroundTaskId = toolResult.backgroundTaskId;
 
-      const resultText = toolResultParts(contentBlocks?.[0]?.content, undefined).text;
-      const outputFile = backgroundOutputPath(resultText);
-      if (outputFile) this.taskOutputFiles.set(backgroundTaskId, outputFile);
-
       if (toolUseId) {
         logger.info('Background task ID mapping from user message', {
           toolUseId,
@@ -738,7 +732,6 @@ export class SDKMessageHandler {
           taskId: backgroundTaskId,
           status: 'running',
           previousTaskId: toolUseId,
-          ...(outputFile && { outputFile }),
           ...(typeof toolResult.timedOutAfterMs === 'number'
             ? { timedOutAfterMs: toolResult.timedOutAfterMs }
             : {}),
@@ -1298,17 +1291,6 @@ export function describeToolUse(toolName: string, input: Record<string, unknown>
     case 'Agent': return `Agent: ${((input.prompt as string) || '').slice(0, 80)}`;
     default: return `Tool: ${toolName}`;
   }
-}
-
-/**
- * Where a background command writes its output, read from the Bash tool's
- * result. The structured `tool_use_result` of a background Bash carries only
- * `backgroundTaskId` (2.1.280); the path is in the prose result —
- * "Output is being written to: <path>. You will be notified…". The completion
- * notice's `output_file` names it too, but only once the command has ended.
- */
-export function backgroundOutputPath(resultText: string): string | undefined {
-  return /Output is being written to: (\S+?\.output)\b/.exec(resultText)?.[1];
 }
 
 /**

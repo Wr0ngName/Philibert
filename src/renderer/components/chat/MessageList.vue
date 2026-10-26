@@ -38,6 +38,8 @@ interface Props {
    * transcript in the task detail view. See MessageListSource.
    */
   source?: MessageListSource;
+  /** Who the user messages are from. */
+  userLabel?: string;
   /** Who the assistant turns are from. */
   assistantLabel?: string;
   /** Said when there is nothing to list yet. */
@@ -47,6 +49,7 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   source: undefined,
+  userLabel: 'You',
   assistantLabel: 'Claude',
   emptyTitle: 'Start a conversation',
   emptyText: 'Ask Claude to help you with coding, explain concepts, or make changes to your files.',
@@ -998,6 +1001,8 @@ onUnmounted(() => {
                 :message="row.msg"
                 :conversation-id="source.conversationId"
                 :working-directory="workingDirectory"
+                :user-label="userLabel"
+                :assistant-label="assistantLabel"
                 @open-task-detail="emit('open-task-detail', $event)"
                 @open-tool-detail="emit('open-tool-detail', $event)"
               />
@@ -1028,6 +1033,8 @@ onUnmounted(() => {
                   :message="row.msg"
                   :conversation-id="source.conversationId"
                   :working-directory="workingDirectory"
+                  :user-label="userLabel"
+                  :assistant-label="assistantLabel"
                   :child-count="row.childCount"
                   :is-expanded="row.isExpanded"
                   grouped

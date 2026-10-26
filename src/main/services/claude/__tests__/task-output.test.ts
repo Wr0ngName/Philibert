@@ -18,8 +18,7 @@ vi.mock('../../../utils/logger', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-import { backgroundOutputPath } from '../SDKMessageHandler';
-import { MAX_TASK_OUTPUT_BYTES, isTaskOutputPath, readTaskOutput, transcriptToMessages } from '../task-output';
+import { MAX_TASK_OUTPUT_BYTES, cliTempRoot, locateTaskOutput, readTaskOutput, transcriptToMessages } from '../task-output';
 
 import transcript from './fixtures/agent-transcript.json';
 
@@ -76,34 +75,65 @@ describe('transcriptToMessages', () => {
   });
 });
 
-describe('backgroundOutputPath', () => {
-  it('reads the path from a background Bash result', () => {
-    // Verbatim from the CLI (2.1.280).
-    const text = 'Command running in background with ID: b3q51bvd7. Output is being written to: '
-      + '/tmp/claude-1000/-tmp-task-probe5-t85X3t/6e5cb3ff-62ca-4def-8994-9d70a0fee155/tasks/b3q51bvd7.output. '
-      + 'You will be notified when it completes. To check interim output, use Read on that file path.';
-    expect(backgroundOutputPath(text)).toBe(
-      '/tmp/claude-1000/-tmp-task-probe5-t85X3t/6e5cb3ff-62ca-4def-8994-9d70a0fee155/tasks/b3q51bvd7.output',
-    );
+describe('locateTaskOutput', () => {
+  const SESSION = '6cfb63b6-b4b2-4d47-8dee-4c3563db912d';
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-tmp-test-'));
   });
 
-  it('finds nothing in an ordinary result', () => {
-    expect(backgroundOutputPath('total 0\n-rw-r--r-- notes.txt')).toBeUndefined();
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  /** The layout the CLI made under CLAUDE_CODE_TMPDIR (2.1.280, measured). */
+  function writeOutput(sessionId: string, taskId: string, base = root): string {
+    const dir = path.join(base, 'claude-1000', '-tmp-task-probe6-l2P6Hd', sessionId, 'tasks');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${taskId}.output`);
+    fs.writeFileSync(file, 'line 1\n');
+    return file;
+  }
+
+  it('finds a running command by its session and task ids', async () => {
+    const file = writeOutput(SESSION, 'bl6zrfn7y');
+    expect(await locateTaskOutput(root, SESSION, 'bl6zrfn7y')).toBe(file);
+  });
+
+  it("does not take another session's task, or a task that has no file yet", async () => {
+    writeOutput('another-session', 'bl6zrfn7y');
+    expect(await locateTaskOutput(root, SESSION, 'bl6zrfn7y')).toBeUndefined();
+    writeOutput(SESSION, 'other-task');
+    expect(await locateTaskOutput(root, SESSION, 'bl6zrfn7y')).toBeUndefined();
+  });
+
+  it('does not follow a link out of the temp root', async () => {
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'elsewhere-'));
+    try {
+      writeOutput(SESSION, 'bl6zrfn7y', elsewhere);
+      fs.symlinkSync(path.join(elsewhere, 'claude-1000'), path.join(root, 'claude-1000'));
+      expect(await locateTaskOutput(root, SESSION, 'bl6zrfn7y')).toBeUndefined();
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('finds nothing in a root that does not exist', async () => {
+    expect(await locateTaskOutput(path.join(root, 'missing'), SESSION, 'x')).toBeUndefined();
   });
 });
 
-describe('isTaskOutputPath', () => {
-  const tmp = os.tmpdir();
-
-  it("accepts the task's own output file under the temp directory", () => {
-    expect(isTaskOutputPath(path.join(tmp, 'claude-1000', 'proj', 'sess', 'tasks', 'b1.output'), 'b1')).toBe(true);
+describe('cliTempRoot', () => {
+  const saved = process.env.CLAUDE_CODE_TMPDIR;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CLAUDE_CODE_TMPDIR;
+    else process.env.CLAUDE_CODE_TMPDIR = saved;
   });
 
-  it("refuses another task's file, another directory, or a path outside the temp directory", () => {
-    expect(isTaskOutputPath(path.join(tmp, 'claude-1000', 'sess', 'tasks', 'b2.output'), 'b1')).toBe(false);
-    expect(isTaskOutputPath(path.join(tmp, 'claude-1000', 'sess', 'other', 'b1.output'), 'b1')).toBe(false);
-    expect(isTaskOutputPath('/home/user/.ssh/tasks/b1.output', 'b1')).toBe(false);
-    expect(isTaskOutputPath(path.join(tmp, 'x', 'tasks', '..', '..', '..', 'etc', 'tasks', 'b1.output'), 'b1')).toBe(false);
+  it("is the app's own directory, unless the user chose one", () => {
+    delete process.env.CLAUDE_CODE_TMPDIR;
+    expect(cliTempRoot()).toBe(path.join(os.tmpdir(), 'philibert-cli'));
+    process.env.CLAUDE_CODE_TMPDIR = '/srv/my-tmp';
+    expect(cliTempRoot()).toBe('/srv/my-tmp');
   });
 });
 

@@ -20,6 +20,8 @@
  * - Multi-conversation support
  */
 
+import * as fs from 'fs';
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Use vi.hoisted to ensure mocks are available before vi.mock is called
@@ -122,6 +124,7 @@ import { IPC_CHANNELS } from '../../../shared/types';
 import { createMockBrowserWindow } from '../../__tests__/setup';
 import ClaudeCodeService from '../ClaudeCodeService';
 import ConfigService from '../ConfigService';
+import { cliTempRoot } from '../claude/task-output';
 
 // Test conversation ID for multi-conversation tests
 const TEST_CONV_ID = 'test-conv-123';
@@ -327,6 +330,19 @@ describe('ClaudeCodeService', () => {
       const options = mockQuery.mock.calls[0][0].options;
       expect(options.tools).toBeUndefined();
       expect(options.canUseTool).toEqual(expect.any(Function));
+    });
+
+    it("gives the CLI a temp root this app knows, so a running command's output can be found", async () => {
+      // No message names a running command's output file; with the root known
+      // it is found by its ids. Created first: the CLI refuses a root it
+      // cannot verify as a directory.
+      mockQuery.mockReturnValue(createMockQueryIterator([]));
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello Claude', '/home/user/project');
+
+      const root = cliTempRoot();
+      expect(mockQuery.mock.calls[0][0].options.env.CLAUDE_CODE_TMPDIR).toBe(root);
+      expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(root, { recursive: true, mode: 0o700 });
     });
 
     it('declares the per-task stop affordance, so Stop spares background tasks', async () => {
