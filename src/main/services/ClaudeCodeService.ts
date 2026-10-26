@@ -1197,6 +1197,19 @@ export class ClaudeCodeService {
           // The turn this uuid identified is over. Cleared so a later result
           // cannot match it, which would end a turn that has not started.
           if (session) session.pendingTurnUuid = null;
+
+          // Sent before done, so the renderer knows the turn is waiting on a
+          // usage limit by the time it decides what to do with the queue.
+          const usageLimit = messageHandler.takeUsageLimitStop();
+          if (usageLimit) {
+            logger.info('Turn stopped by a usage limit', {
+              conversationId,
+              resetsAt: new Date(usageLimit.resetsAt).toISOString(),
+              limitType: usageLimit.limitType,
+            });
+            this.send(IPC_CHANNELS.CLAUDE_USAGE_LIMIT, conversationId, usageLimit);
+          }
+
           this.emitDone(conversationId);
         }
       }

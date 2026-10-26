@@ -14,7 +14,7 @@ vi.mock('../../../utils/logger', () => ({
     debug: vi.fn(),
   },
 }));
-import { SDKMessageHandler, MessageHandlerCallbacks, resolveResultError, extractTaskCreateId } from '../SDKMessageHandler';
+import { SDKMessageHandler, MessageHandlerCallbacks, resolveResultError, extractTaskCreateId, usageLimitStopFrom } from '../SDKMessageHandler';
 
 describe('SDKMessageHandler', () => {
   let callbacks: MessageHandlerCallbacks;
@@ -168,6 +168,106 @@ describe('SDKMessageHandler', () => {
       expect(logger.info).toHaveBeenCalledWith('Unhandled SDK message type', expect.objectContaining({
         type: 'something_new',
       }));
+    });
+  });
+
+  describe('a turn stopped by a usage limit', () => {
+    // Shapes per sdk.d.ts (SDKRateLimitEvent, SDKAssistantMessage.error).
+    const RESETS_AT_SECONDS = 1_792_000_000;
+
+    function rateLimitEvent(info: Record<string, unknown>) {
+      return { type: 'rate_limit_event', rate_limit_info: info, uuid: 'u-rl', session_id: 's' };
+    }
+
+    const rejected = rateLimitEvent({
+      status: 'rejected',
+      resetsAt: RESETS_AT_SECONDS,
+      rateLimitType: 'five_hour',
+    });
+
+    function refusal(parentToolUseId: string | null = null) {
+      return {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: "You've hit your limit · resets 7:50pm" }] },
+        parent_tool_use_id: parentToolUseId,
+        error: 'rate_limit',
+        uuid: 'u-a',
+        session_id: 's',
+      };
+    }
+
+    it('reports the reset, in milliseconds, at the end of the turn', async () => {
+      await handler.handleMessage(rejected as never);
+      await handler.handleMessage(refusal() as never);
+
+      expect(handler.takeUsageLimitStop()).toEqual({
+        resetsAt: RESETS_AT_SECONDS * 1000,
+        limitType: 'five_hour',
+      });
+    });
+
+    it('does not report the same stop for a later turn', async () => {
+      await handler.handleMessage(rejected as never);
+      await handler.handleMessage(refusal() as never);
+      handler.takeUsageLimitStop();
+
+      expect(handler.takeUsageLimitStop()).toBeNull();
+    });
+
+    it('needs the turn to have been refused, not just a rejected status', async () => {
+      // A turn can carry on past a rejected limit, e.g. on a fallback model.
+      await handler.handleMessage(rejected as never);
+
+      expect(handler.takeUsageLimitStop()).toBeNull();
+    });
+
+    it("ignores a sub-agent's refusal, which does not stop the turn", async () => {
+      await handler.handleMessage(rejected as never);
+      await handler.handleMessage(refusal('toolu_agent') as never);
+
+      expect(handler.takeUsageLimitStop()).toBeNull();
+    });
+
+    it('forgets a refusal when a new query starts', async () => {
+      await handler.handleMessage(rejected as never);
+      await handler.handleMessage(refusal() as never);
+      handler.reset();
+
+      expect(handler.takeUsageLimitStop()).toBeNull();
+    });
+
+    it('is not a usage-limit stop while drawing on extra usage', async () => {
+      await handler.handleMessage(rateLimitEvent({
+        status: 'rejected', resetsAt: RESETS_AT_SECONDS, isUsingOverage: true,
+      }) as never);
+      await handler.handleMessage(refusal() as never);
+
+      expect(handler.takeUsageLimitStop()).toBeNull();
+    });
+
+    it('is handled, so it does not fill main.log as unhandled', async () => {
+      const logger = (await import('../../../utils/logger')).default;
+      vi.mocked(logger.info).mockClear();
+
+      await handler.handleMessage(rejected as never);
+
+      expect(logger.info).not.toHaveBeenCalledWith('Unhandled SDK message type', expect.anything());
+      expect(logger.info).toHaveBeenCalledWith('Rate limit status', expect.objectContaining({ status: 'rejected' }));
+    });
+  });
+
+  describe('usageLimitStopFrom', () => {
+    it('needs a rejection with a known reset time', () => {
+      expect(usageLimitStopFrom(null)).toBeNull();
+      expect(usageLimitStopFrom({ status: 'allowed_warning', resetsAt: 10 })).toBeNull();
+      expect(usageLimitStopFrom({ status: 'rejected' })).toBeNull();
+      expect(usageLimitStopFrom({ status: 'rejected', resetsAt: Number.NaN })).toBeNull();
+      expect(usageLimitStopFrom({ status: 'rejected', resetsAt: 10 })).toEqual({ resetsAt: 10_000 });
+    });
+
+    it('is not one when extra usage is in use', () => {
+      expect(usageLimitStopFrom({ status: 'rejected', resetsAt: 10, overageInUse: true })).toBeNull();
+      expect(usageLimitStopFrom({ status: 'rejected', resetsAt: 10, isUsingOverage: true })).toBeNull();
     });
   });
 

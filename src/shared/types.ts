@@ -842,6 +842,13 @@ export interface AppConfig {
    * which lets a sub-agent run the model named in its own definition.
    */
   strictModelEnforcement: boolean;
+  /**
+   * When a claude.ai usage limit stops a turn, wait for the limit to reset and
+   * continue the task automatically. Mirrors the CLI's own
+   * `autoContinueAtUsageLimit`, which only applies to its interactive mode;
+   * when false the wait is offered as a choice instead.
+   */
+  autoContinueAtUsageLimit: boolean;
 }
 
 /**
@@ -877,6 +884,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   speechLanguage: 'auto',
   switchModelsOnFlag: true,
   strictModelEnforcement: false,
+  autoContinueAtUsageLimit: true,
 };
 
 // Conversation types
@@ -1281,6 +1289,21 @@ export interface ModelUsageInfo {
 }
 
 /**
+ * A turn stopped by a claude.ai usage limit that will reset at a known time.
+ *
+ * Interactive Claude Code waits for the reset and continues by itself
+ * ("Usage limit reached · continuing automatically at 7:50pm"). That wait is
+ * gated on the CLI being interactive, so an SDK session like ours just ends
+ * the turn — this is what the renderer needs to do the waiting itself.
+ */
+export interface UsageLimitStop {
+  /** When the limit resets, in epoch milliseconds. */
+  resetsAt: number;
+  /** Which limit was hit, e.g. 'five_hour' or 'seven_day', when the CLI said. */
+  limitType?: string;
+}
+
+/**
  * Session usage information sent to the renderer
  */
 export interface SessionUsage {
@@ -1653,6 +1676,8 @@ export const IPC_CHANNELS = {
   CLAUDE_REVOKE_PROJECT_PERMISSION: 'claude:revoke-project-permission',
   /** System status note (compaction, model change, etc.) — rendered as a separator, not inline text */
   CLAUDE_SYSTEM_NOTE: 'claude:system-note',
+  /** A turn was stopped by a claude.ai usage limit with a known reset time */
+  CLAUDE_USAGE_LIMIT: 'claude:usage-limit',
   /** Tool use captured from assistant message (all tools, including auto-approved) */
   CLAUDE_TOOL_CAPTURE: 'claude:tool-capture',
   /** Tool result written to disk (output file path) */

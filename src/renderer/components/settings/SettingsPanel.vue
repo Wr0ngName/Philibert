@@ -56,6 +56,7 @@ const localFontSize = ref(14);
 const localLineHeight = ref(1.6);
 const localLogLevel = ref<LogLevel>('info');
 const localEnableNotifications = ref(true);
+const localAutoContinueAtUsageLimit = ref(true);
 const localUpdateChannel = ref<UpdateChannel>('stable');
 const localExecutionMode = ref<ExecutionMode>('sdk');
 const localSpeechEnabled = ref(false);
@@ -101,6 +102,7 @@ watch(
     localLineHeight.value = newConfig.lineHeight;
     localLogLevel.value = newConfig.logLevel;
     localEnableNotifications.value = newConfig.enableNotifications;
+    localAutoContinueAtUsageLimit.value = newConfig.autoContinueAtUsageLimit;
     localUpdateChannel.value = newConfig.updateChannel;
     localExecutionMode.value = newConfig.executionMode;
     localSpeechEnabled.value = newConfig.speechEnabled;
@@ -128,6 +130,7 @@ async function saveSettings() {
   await settingsStore.setLineHeight(localLineHeight.value);
   await settingsStore.setLogLevel(localLogLevel.value);
   await settingsStore.setEnableNotifications(localEnableNotifications.value);
+  await settingsStore.setAutoContinueAtUsageLimit(localAutoContinueAtUsageLimit.value);
   await settingsStore.setUpdateChannel(localUpdateChannel.value);
   const effectiveMode = config.value.authMethod === 'oauth' ? localExecutionMode.value : 'sdk';
   await settingsStore.setExecutionMode(effectiveMode);
@@ -146,6 +149,7 @@ function cancel() {
   localLineHeight.value = config.value.lineHeight;
   localLogLevel.value = config.value.logLevel;
   localEnableNotifications.value = config.value.enableNotifications;
+  localAutoContinueAtUsageLimit.value = config.value.autoContinueAtUsageLimit;
   localUpdateChannel.value = config.value.updateChannel;
   localExecutionMode.value = config.value.executionMode;
   localSpeechEnabled.value = config.value.speechEnabled;
@@ -435,6 +439,43 @@ function cancel() {
               :class="[
                 'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
                 localEnableNotifications ? 'translate-x-6' : 'translate-x-1',
+              ]"
+            />
+          </button>
+        </div>
+      </div>
+
+      <!-- Usage limit -->
+      <div>
+        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+          Usage Limit
+        </label>
+        <div class="flex items-center justify-between p-3 rounded-lg border border-surface-300 dark:border-surface-600">
+          <div class="flex-1">
+            <div class="text-sm font-medium text-surface-700 dark:text-surface-300">
+              Continue automatically at usage limit
+            </div>
+            <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
+              When a claude.ai usage limit stops a task, wait for the limit to reset and continue
+              it. When off, the wait is offered as a choice instead.
+            </div>
+          </div>
+          <button
+            :class="[
+              'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+              localAutoContinueAtUsageLimit
+                ? 'bg-primary-600'
+                : 'bg-surface-300 dark:bg-surface-600',
+            ]"
+            role="switch"
+            :aria-checked="localAutoContinueAtUsageLimit"
+            aria-label="Toggle continuing automatically at usage limit"
+            @click="localAutoContinueAtUsageLimit = !localAutoContinueAtUsageLimit"
+          >
+            <span
+              :class="[
+                'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+                localAutoContinueAtUsageLimit ? 'translate-x-6' : 'translate-x-1',
               ]"
             />
           </button>

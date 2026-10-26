@@ -8,10 +8,11 @@
 import type {
   SDKMessage,
   SDKAssistantMessage,
+  SDKRateLimitInfo,
   SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 
-import type { SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, ToolCaptureData } from '../../../shared/types';
+import type { SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, ToolCaptureData, UsageLimitStop } from '../../../shared/types';
 import logger from '../../utils/logger';
 
 import { toolResultParts, type ExtractedImage } from './tool-result-images';
@@ -31,6 +32,25 @@ export function resolveResultError(
   }
   if (typeof result.error === 'string') return result.error;
   return '';
+}
+
+/**
+ * The usage-limit stop a rate-limit status describes, or null when it is not
+ * one worth waiting for.
+ *
+ * The same test interactive Claude Code applies before it offers to wait: the
+ * limit rejected the request, its reset time is known, and the account is not
+ * drawing on extra usage — a rejection while on extra usage is not something
+ * a reset cures. `resetsAt` arrives in epoch seconds.
+ */
+export function usageLimitStopFrom(info: SDKRateLimitInfo | null): UsageLimitStop | null {
+  if (!info || info.status !== 'rejected') return null;
+  if (info.resetsAt === undefined || !Number.isFinite(info.resetsAt)) return null;
+  if (info.isUsingOverage === true || info.overageInUse === true) return null;
+  return {
+    resetsAt: info.resetsAt * 1000,
+    ...(info.rateLimitType ? { limitType: info.rateLimitType } : {}),
+  };
 }
 
 /**
@@ -258,6 +278,10 @@ export class SDKMessageHandler {
   /** Maps tool_use IDs to their tool name so tool_result handlers know which
    *  parser to apply (e.g. TaskCreate → extract task list ID from response). */
   private toolUseIdToName = new Map<string, string>();
+  /** The account's latest rate-limit status, as the CLI last reported it. */
+  private rateLimitInfo: SDKRateLimitInfo | null = null;
+  /** Whether the main thread of the current turn was refused by a rate limit. */
+  private turnHitRateLimit = false;
 
   constructor(callbacks: MessageHandlerCallbacks) {
     this.callbacks = callbacks;
@@ -276,6 +300,33 @@ export class SDKMessageHandler {
     this.hasStreamedContent = false;
     this.lastStreamedBlockType = null;
     this.streamedTail = '';
+    this.turnHitRateLimit = false;
+  }
+
+  /**
+   * The usage-limit stop that ended this turn, if one did — and forget it, so
+   * a later turn cannot report it again.
+   *
+   * Asked when a turn ends. Both signals are needed: the assistant frame's
+   * `rate_limit` error says this turn was refused, and the rate-limit status
+   * says by which limit and until when. A rejected status on its own is not
+   * enough, since a turn can carry on past one (a per-model weekly limit with
+   * a fallback model, for instance).
+   */
+  takeUsageLimitStop(): UsageLimitStop | null {
+    const hit = this.turnHitRateLimit;
+    this.turnHitRateLimit = false;
+    if (!hit) return null;
+
+    const stop = usageLimitStopFrom(this.rateLimitInfo);
+    if (!stop) {
+      logger.warn('Turn refused by a rate limit with no reset time to wait for', {
+        status: this.rateLimitInfo?.status ?? '(no status received)',
+        rateLimitType: this.rateLimitInfo?.rateLimitType,
+        isUsingOverage: this.rateLimitInfo?.isUsingOverage,
+      });
+    }
+    return stop;
   }
 
   /**
@@ -364,6 +415,20 @@ export class SDKMessageHandler {
         });
         break;
 
+      // The account's rate-limit status, sent whenever it changes. Kept for
+      // the end of the turn, when it says whether a refusal is worth waiting
+      // out and until when — see takeUsageLimitStop.
+      case 'rate_limit_event':
+        this.rateLimitInfo = message.rate_limit_info;
+        logger.info('Rate limit status', {
+          status: message.rate_limit_info.status,
+          rateLimitType: message.rate_limit_info.rateLimitType,
+          resetsAt: message.rate_limit_info.resetsAt,
+          utilization: message.rate_limit_info.utilization,
+          isUsingOverage: message.rate_limit_info.isUsingOverage,
+        });
+        break;
+
       default:
         logger.info('Unhandled SDK message type', {
           type: message.type,
@@ -389,6 +454,17 @@ export class SDKMessageHandler {
     // Forward it on tool captures so the renderer can group sub-agent activity
     // under the Agent/Task tool that spawned them.
     const parentToolUseId = message.parent_tool_use_id ?? undefined;
+
+    // The API refused this turn over a rate limit. Only the main thread's
+    // refusal stops the turn the user is waiting on; a sub-agent's is the
+    // agent's own failure, reported through its tool result.
+    if (message.error === 'rate_limit' && !parentToolUseId) {
+      this.turnHitRateLimit = true;
+      logger.warn('Turn refused by a rate limit', {
+        rateLimitStatus: this.rateLimitInfo?.status ?? '(none yet)',
+        resetsAt: this.rateLimitInfo?.resetsAt,
+      });
+    }
 
     // Report the model that actually produced this frame. Sub-agent frames
     // carry parent_tool_use_id, so the caller can tell a background agent

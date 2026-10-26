@@ -42,6 +42,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const speechLanguage = computed(() => config.value.speechLanguage);
   const switchModelsOnFlag = computed(() => config.value.switchModelsOnFlag);
   const strictModelEnforcement = computed(() => config.value.strictModelEnforcement);
+  const autoContinueAtUsageLimit = computed(() => config.value.autoContinueAtUsageLimit);
   const needsSetup = computed(() => !workingDirectory.value || !hasAuth.value);
   const isDarkMode = computed(() => {
     if (config.value.theme === 'system') {
@@ -164,6 +165,10 @@ export const useSettingsStore = defineStore('settings', () => {
     await saveConfig({ strictModelEnforcement: enabled });
   }
 
+  async function setAutoContinueAtUsageLimit(enabled: boolean): Promise<void> {
+    await saveConfig({ autoContinueAtUsageLimit: enabled });
+  }
+
   function applyFontSize(size: number): void {
     if (typeof document !== 'undefined' && document.documentElement?.style) {
       document.documentElement.style.setProperty('--chat-font-size', `${size}px`);
@@ -258,6 +263,7 @@ export const useSettingsStore = defineStore('settings', () => {
     speechLanguage,
     switchModelsOnFlag,
     strictModelEnforcement,
+    autoContinueAtUsageLimit,
     isDarkMode,
     needsSetup,
 
@@ -284,6 +290,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setSpeechLanguage,
     setSwitchModelsOnFlag,
     setStrictModelEnforcement,
+    setAutoContinueAtUsageLimit,
     applyTheme,
     applyFontSize,
     applyLineHeight,

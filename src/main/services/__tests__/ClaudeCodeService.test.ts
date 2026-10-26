@@ -565,6 +565,56 @@ describe('ClaudeCodeService', () => {
       );
     });
 
+    it('reports a usage-limit stop before the turn is done', async () => {
+      // Before, so the renderer holds the queue before done would flush it.
+      const mockIterator = createMockQueryIterator([
+        {
+          type: 'rate_limit_event',
+          rate_limit_info: { status: 'rejected', resetsAt: 1_792_000_000, rateLimitType: 'five_hour' },
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: "You've hit your limit" }] },
+          parent_tool_use_id: null,
+          error: 'rate_limit',
+        },
+        { type: 'result', subtype: 'success', is_error: true },
+      ]);
+      mockQuery.mockReturnValue(mockIterator);
+
+      await service.sendMessage(TEST_CONV_ID, 'Hi', '/home/user');
+
+      await vi.waitFor(() => {
+        expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_DONE, TEST_CONV_ID);
+      });
+      const channels = mockSend.mock.calls.map((call) => call[0]);
+      const limitAt = channels.indexOf(IPC_CHANNELS.CLAUDE_USAGE_LIMIT);
+      expect(mockSend.mock.calls[limitAt]).toEqual([
+        IPC_CHANNELS.CLAUDE_USAGE_LIMIT,
+        TEST_CONV_ID,
+        { resetsAt: 1_792_000_000_000, limitType: 'five_hour' },
+      ]);
+      expect(limitAt).toBeLessThan(channels.lastIndexOf(IPC_CHANNELS.CLAUDE_DONE));
+    });
+
+    it('reports no usage-limit stop for a turn that was not refused', async () => {
+      const mockIterator = createMockQueryIterator([
+        {
+          type: 'rate_limit_event',
+          rate_limit_info: { status: 'allowed_warning', resetsAt: 1_792_000_000, utilization: 0.9 },
+        },
+        { type: 'result', subtype: 'success' },
+      ]);
+      mockQuery.mockReturnValue(mockIterator);
+
+      await service.sendMessage(TEST_CONV_ID, 'Hi', '/home/user');
+
+      await vi.waitFor(() => {
+        expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_DONE, TEST_CONV_ID);
+      });
+      expect(mockSend.mock.calls.map((call) => call[0])).not.toContain(IPC_CHANNELS.CLAUDE_USAGE_LIMIT);
+    });
+
     it('should handle init message with slash commands', async () => {
       // Clear the initial emit from constructor
       mockSend.mockClear();

@@ -40,6 +40,7 @@ interface StoredConfig {
   speechLanguage: string;
   switchModelsOnFlag: boolean;
   strictModelEnforcement: boolean;
+  autoContinueAtUsageLimit: boolean;
 }
 
 /**
@@ -117,6 +118,7 @@ export class ConfigService {
           speechLanguage: WHISPER_AUTO_LANGUAGE,
           switchModelsOnFlag: true,
           strictModelEnforcement: false,
+          autoContinueAtUsageLimit: true,
         },
       }) as unknown as TypedStore;
       this.isInitialized = true;

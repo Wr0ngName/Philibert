@@ -12,12 +12,19 @@ import { effectScope, onMounted, onUnmounted, shallowRef, watch, type EffectScop
 
 import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, MessageImage, PermissionScope } from '@shared/types';
 
+import { CONSTANTS } from '../constants/app';
 import { useChatStore } from '../stores/chat';
 import { useConversationsStore } from '../stores/conversations';
 import { useFilesStore } from '../stores/files';
 import { useSettingsStore } from '../stores/settings';
 import { logger } from '../utils/logger';
 import { nextFlush } from '../utils/prompt-queue';
+import {
+  USAGE_LIMIT_CHECK_INTERVAL_MS,
+  USAGE_LIMIT_CONTINUE_PROMPT,
+  scheduleWait,
+  waitForStop,
+} from '../utils/usage-limit';
 
 import { useSlashCommands } from './useSlashCommands';
 
@@ -29,6 +36,11 @@ let listenerRefCount = 0;
 let queueScope: EffectScope | null = null;
 /** Conversations with a flush in progress, so two cannot both send. */
 const flushing = new Set<string>();
+/** Conversations with a continue after a usage limit in progress. */
+const continuing = new Set<string>();
+/** Polls for a scheduled continue that is due; runs only while one exists. */
+let usageLimitTimer: ReturnType<typeof setInterval> | null = null;
+let cleanupUsageLimit: (() => void) | null = null;
 let cleanupChunk: (() => void) | null = null;
 let cleanupToolUse: (() => void) | null = null;
 let cleanupError: (() => void) | null = null;
@@ -173,27 +185,48 @@ export function useClaudeChat() {
       return 'handled';
     }
 
+    return startTurn(currentConvId, content, images);
+  }
+
+  /**
+   * Send a prompt whose user message is already in the transcript, and run
+   * the turn that answers it.
+   *
+   * The half of a send that does not care whether the conversation is the one
+   * on screen: everything here is keyed by conversation and writes through
+   * its message sink. Shared by `sendMessage` and the continue after a usage
+   * limit, which is the one turn that starts while the user may be looking at
+   * a different conversation.
+   */
+  async function startTurn(conversationId: string, content: string, images?: MessageImage[]): Promise<SendOutcome> {
     // Start assistant message for streaming - pass conversation ID for proper tracking
-    chatStore.startAssistantMessage(currentConvId);
-    chatStore.setLoading(currentConvId, true);
+    chatStore.startAssistantMessage(conversationId);
+    chatStore.setLoading(conversationId, true);
 
     // Start buffering for this conversation, seeded with what is on screen, so
     // it keeps building a complete history if the user switches away mid-turn.
-    chatStore.beginMessageBuffer(currentConvId);
+    chatStore.beginMessageBuffer(conversationId);
+
+    // Any turn ends a wait for a usage limit to reset: it is either the
+    // continue itself, or the user taking over from it.
+    chatStore.setUsageLimitWait(conversationId, null);
 
     try {
       // Get SDK session ID for this conversation (for resume support)
-      const resumeSessionId = conversationsStore.getSdkSessionId(currentConvId);
+      const resumeSessionId = conversationsStore.getSdkSessionId(conversationId);
 
       // When resuming, use the conversation's stored CWD — the CLI stores session
       // files under a CWD-derived path, so it must match the original creation CWD.
       // Fall back to current global CWD for new conversations or if not available.
-      const effectiveCwd = resumeSessionId
-        ? (conversationsStore.getConversationWorkingDirectory(currentConvId) || filesStore.workingDirectory)
+      // A conversation off screen is not the one the global CWD belongs to, so
+      // it uses its own whenever it has one.
+      const ownCwd = !!resumeSessionId || conversationId !== conversationsStore.currentConversationId;
+      const effectiveCwd = ownCwd
+        ? (conversationsStore.getConversationWorkingDirectory(conversationId) || filesStore.workingDirectory)
         : filesStore.workingDirectory;
 
       logger.info('Sending message to Claude', {
-        conversationId: currentConvId,
+        conversationId,
         hasResumeSession: !!resumeSessionId,
         cwd: effectiveCwd,
         cwdMatchesGlobal: effectiveCwd === filesStore.workingDirectory,
@@ -204,17 +237,109 @@ export function useClaudeChat() {
       // reactive state, and Electron cannot copy a reactive proxy across the
       // process boundary, so the send threw here before main ever saw it.
       const plainImages = images?.map((image) => ({ ...image }));
-      await window.electron.claude.send(currentConvId, content, effectiveCwd, resumeSessionId, plainImages);
+      await window.electron.claude.send(conversationId, content, effectiveCwd, resumeSessionId, plainImages);
       // New work means the user has moved past whatever stopped the queue, so
       // queued prompts go back to releasing on their own.
-      chatStore.releaseQueueHold(currentConvId);
+      chatStore.releaseQueueHold(conversationId);
       return 'started';
     } catch (err) {
       logger.error('Failed to send message', err);
-      chatStore.setError(currentConvId, 'Failed to send message to Claude');
-      chatStore.setLoading(currentConvId, false);
+      chatStore.setError(conversationId, 'Failed to send message to Claude');
+      chatStore.setLoading(conversationId, false);
       return 'rejected';
     }
+  }
+
+  /**
+   * Continue a task a usage limit stopped, with the prompt the CLI uses.
+   *
+   * Runs when the scheduled time comes, or when the user asks for it now. The
+   * conversation may not be the one on screen — the reset comes when it comes
+   * — so this does what `sendMessage` would, keyed by conversation, and gives
+   * a conversation that holds nothing in memory the tail of its history to
+   * write the turn into.
+   */
+  async function continueAfterUsageLimit(conversationId: string): Promise<void> {
+    // The poll can find the same wait due again while this one is still
+    // loading history; two continues would be two turns.
+    if (continuing.has(conversationId)) return;
+    continuing.add(conversationId);
+    try {
+      const wait = chatStore.getConversationState(conversationId).usageLimitWait;
+      if (!wait) return;
+
+      if (chatStore.isConversationLoading(conversationId)) {
+        // A turn is already running, so there is nothing left to continue.
+        chatStore.setUsageLimitWait(conversationId, null);
+        return;
+      }
+
+      if (chatStore.isAtResourceLimit) {
+        // Not an error: the wait stays scheduled and the next check retries.
+        logger.debug('Continue after usage limit waits for room under the run cap', { conversationId });
+        return;
+      }
+
+      if (!settingsStore.hasAuth) {
+        chatStore.setUsageLimitWait(conversationId, null);
+        chatStore.setError(conversationId, 'Could not continue after the usage limit reset: please log in or configure your API key in Settings');
+        return;
+      }
+
+      if (!chatStore.hasMessageSink(conversationId)) {
+        const window_ = await window.electron.conversation.getWindow(
+          conversationId,
+          CONSTANTS.CONVERSATION.WINDOW_SIZE,
+        );
+        if (!window_) {
+          logger.warn('Conversation to continue after usage limit no longer exists', { conversationId });
+          chatStore.setUsageLimitWait(conversationId, null);
+          return;
+        }
+        chatStore.seedBackgroundWindow(conversationId, window_.conversation.messages, window_.olderCount);
+      }
+
+      logger.info('Continuing after usage limit reset', {
+        conversationId,
+        resetsAt: new Date(wait.resetsAt).toISOString(),
+        isCurrent: conversationId === conversationsStore.currentConversationId,
+      });
+      chatStore.setError(conversationId, null);
+      chatStore.clearModifiedFiles(conversationId);
+      chatStore.addUserMessage(USAGE_LIMIT_CONTINUE_PROMPT, undefined, conversationId);
+      await startTurn(conversationId, USAGE_LIMIT_CONTINUE_PROMPT);
+    } finally {
+      continuing.delete(conversationId);
+    }
+  }
+
+  /** Continue the current conversation's stopped task now, without waiting. */
+  async function continueUsageLimitNow(): Promise<void> {
+    const conversationId = conversationsStore.currentConversationId;
+    if (conversationId) await continueAfterUsageLimit(conversationId);
+  }
+
+  /** Schedule the current conversation's continue, when the reset allows. */
+  function scheduleUsageLimitContinue(): void {
+    const conversationId = conversationsStore.currentConversationId;
+    const wait = chatStore.usageLimitWait;
+    if (!conversationId || !wait) return;
+    const scheduled = scheduleWait(wait, Date.now());
+    if (scheduled) chatStore.setUsageLimitWait(conversationId, scheduled);
+  }
+
+  /** Unschedule the current conversation's continue, keeping the wait on offer. */
+  function cancelUsageLimitContinue(): void {
+    const conversationId = conversationsStore.currentConversationId;
+    const wait = chatStore.usageLimitWait;
+    if (!conversationId || !wait) return;
+    chatStore.setUsageLimitWait(conversationId, { ...wait, resumeAt: null });
+  }
+
+  /** Forget the current conversation's usage-limit stop altogether. */
+  function dismissUsageLimit(): void {
+    const conversationId = conversationsStore.currentConversationId;
+    if (conversationId) chatStore.setUsageLimitWait(conversationId, null);
   }
 
   /**
@@ -529,6 +654,48 @@ export function useClaudeChat() {
           if (id) void flushQueuedPrompts(id);
         },
       );
+
+      // Poll for due continues only while one is scheduled.
+      watch(
+        () => chatStore.hasScheduledUsageLimitWait,
+        (scheduled) => {
+          if (scheduled && !usageLimitTimer) {
+            usageLimitTimer = setInterval(() => {
+              for (const id of chatStore.dueUsageLimitWaits(Date.now())) {
+                void continueAfterUsageLimit(id);
+              }
+            }, USAGE_LIMIT_CHECK_INTERVAL_MS);
+          } else if (!scheduled && usageLimitTimer) {
+            clearInterval(usageLimitTimer);
+            usageLimitTimer = null;
+          }
+        },
+        { immediate: true },
+      );
+
+      // Turning automatic continue off stops the continues already scheduled,
+      // as it does in the CLI; each stays on offer in its conversation.
+      watch(
+        () => settingsStore.autoContinueAtUsageLimit,
+        (enabled) => {
+          if (!enabled) chatStore.unscheduleUsageLimitWaits();
+        },
+      );
+    });
+
+    // A turn stopped by a usage limit. Arrives just before that turn's done,
+    // so the queue is already held when done decides whether to flush it:
+    // a queued prompt sent now would only hit the same limit.
+    cleanupUsageLimit = window.electron.claude.onUsageLimit((conversationId, stop) => {
+      const wait = waitForStop(stop, settingsStore.autoContinueAtUsageLimit, Date.now());
+      logger.info('Turn stopped by a usage limit', {
+        conversationId,
+        resetsAt: new Date(wait.resetsAt).toISOString(),
+        limitType: wait.limitType,
+        resumeAt: wait.resumeAt === null ? null : new Date(wait.resumeAt).toISOString(),
+      });
+      chatStore.setUsageLimitWait(conversationId, wait);
+      chatStore.holdQueuedPrompts(conversationId);
     });
 
     // Handle streaming chunks - route to correct conversation
@@ -797,6 +964,14 @@ export function useClaudeChat() {
 
     queueScope?.stop();
     queueScope = null;
+    if (usageLimitTimer) {
+      clearInterval(usageLimitTimer);
+      usageLimitTimer = null;
+    }
+    if (cleanupUsageLimit) {
+      cleanupUsageLimit();
+      cleanupUsageLimit = null;
+    }
 
     if (cleanupChunk) {
       cleanupChunk();
@@ -911,6 +1086,10 @@ export function useClaudeChat() {
     abortConversation,
     clearChat,
     revokeSessionPermission,
+    continueUsageLimitNow,
+    scheduleUsageLimitContinue,
+    cancelUsageLimitContinue,
+    dismissUsageLimit,
 
     // Store refs (for convenience) - these are now computed from current conversation
     messages: chatStore.messages,

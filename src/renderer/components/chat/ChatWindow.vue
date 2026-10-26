@@ -21,13 +21,14 @@ import InputBox from './InputBox.vue';
 import MessageList from './MessageList.vue';
 import TaskListPanel from './TaskListPanel.vue';
 import ToolDetailModal from './ToolDetailModal.vue';
+import UsageLimitBanner from './UsageLimitBanner.vue';
 import Toast from '../shared/Toast.vue';
 import TransitionFade from '../shared/TransitionFade.vue';
 
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
 const settingsStore = useSettingsStore();
-const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, hasTaskListItems, taskListItems, sessionUsage, hasSessionUsage, pendingScrollMessageId } = storeToRefs(chatStore);
+const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, hasTaskListItems, taskListItems, sessionUsage, hasSessionUsage, pendingScrollMessageId, usageLimitWait } = storeToRefs(chatStore);
 const { currentModeMismatch } = storeToRefs(conversationsStore);
 
 const {
@@ -38,7 +39,16 @@ const {
   rejectAction,
   abort,
   sendQuestionAnswer,
+  continueUsageLimitNow,
+  scheduleUsageLimitContinue,
+  cancelUsageLimitContinue,
+  dismissUsageLimit,
 } = useClaudeChat();
+
+function handleContinueUsageLimitNow() {
+  void continueUsageLimitNow();
+  nextTick(() => messageListRef.value?.scrollToBottom());
+}
 
 async function continueInCurrentMode() {
   await conversationsStore.adoptCurrentExecutionMode();
@@ -380,6 +390,22 @@ function closeToolDetail() {
         <BackgroundTaskPanel
           :tasks="runningBackgroundTasksList"
           @open-detail="openTaskDetail"
+        />
+      </div>
+    </TransitionFade>
+
+    <!-- Usage limit: waiting for the reset, or offering to -->
+    <TransitionFade type="slideUp">
+      <div
+        v-if="usageLimitWait"
+        class="px-4 py-2"
+      >
+        <UsageLimitBanner
+          :wait="usageLimitWait"
+          @continue-now="handleContinueUsageLimitNow"
+          @schedule="scheduleUsageLimitContinue"
+          @cancel="cancelUsageLimitContinue"
+          @dismiss="dismissUsageLimit"
         />
       </div>
     </TransitionFade>

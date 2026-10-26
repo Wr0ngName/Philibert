@@ -40,6 +40,7 @@ import type {
   ToolResultData,
   UpdateInfo,
   UpdateProgress,
+  UsageLimitStop,
   WhisperModelId,
   ConversationUpdate,
   ConversationWindow,
@@ -152,6 +153,8 @@ export interface ElectronAPI {
     ) => () => void;
     /** System status note (compaction, model change) — rendered as separator */
     onSystemNote: (callback: (conversationId: string, note: string) => void) => () => void;
+    /** A turn was stopped by a claude.ai usage limit with a known reset time */
+    onUsageLimit: (callback: (conversationId: string, stop: UsageLimitStop) => void) => () => void;
     /** SDK session ID received for a conversation (for resume support) */
     onSessionId: (callback: (conversationId: string, sessionId: string) => void) => () => void;
     /** Get session permissions for a conversation */

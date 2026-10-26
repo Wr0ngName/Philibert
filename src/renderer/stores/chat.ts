@@ -13,6 +13,7 @@ import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, Li
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
 import type { QueuedPrompt } from '../utils/prompt-queue';
+import { dueWaits, type UsageLimitWait } from '../utils/usage-limit';
 
 /**
  * Per-conversation state tracked for multi-instance support
@@ -67,6 +68,16 @@ export interface ConversationState {
    * long gone. Cleared when a new turn starts or the user releases the queue.
    */
   queueHeld: boolean;
+  /**
+   * The last turn was stopped by a claude.ai usage limit, and this is the
+   * reset it is waiting on — with, when one is scheduled, the time it will
+   * continue by itself. Cleared when any turn starts, since that turn is
+   * either the continuation or the user taking over.
+   *
+   * Not persisted, like the CLI's own wait: an app that quit in the meantime
+   * does not come back and start working unasked.
+   */
+  usageLimitWait: UsageLimitWait | null;
   /** Background tasks for this conversation */
   backgroundTasks: Map<string, BackgroundTask>;
   /** Model's todo list — reconstructed from TaskCreate/TaskUpdate/TaskList tool
@@ -205,6 +216,7 @@ function createConversationState(): ConversationState {
     pendingActions: [],
     queuedPrompts: [],
     queueHeld: false,
+    usageLimitWait: null,
     backgroundTasks: new Map(),
     taskListItems: new Map(),
     sessionUsage: null,
@@ -341,6 +353,17 @@ export const useChatStore = defineStore('chat', () => {
 
   /** Whether the current conversation's queue is waiting on the user. */
   const queueHeld = computed(() => getCurrentState()?.queueHeld ?? false);
+
+  /** The usage-limit reset the current conversation is waiting on, if any. */
+  const usageLimitWait = computed(() => getCurrentState()?.usageLimitWait ?? null);
+
+  /** Whether any conversation has a continue scheduled after a usage limit. */
+  const hasScheduledUsageLimitWait = computed(() => {
+    for (const state of conversationStates.value.values()) {
+      if (state.usageLimitWait?.resumeAt != null) return true;
+    }
+    return false;
+  });
 
   // Current conversation's background tasks
   const backgroundTasks = computed(() => {
@@ -485,12 +508,27 @@ export const useChatStore = defineStore('chat', () => {
   // Message Actions
   // ============================================
 
-  function addMessage(message: ChatMessage): void {
+  function addMessage(message: ChatMessage, conversationId: string | null = currentConversationId.value): void {
+    // A conversation off screen has no on-screen list to fall back on: with
+    // nowhere to put the message, writing it into the list the user is looking
+    // at would put it in the wrong conversation.
+    if (conversationId && conversationId !== currentConversationId.value) {
+      const sink = messageSink(conversationId);
+      if (!sink) {
+        logger.error('Message added to a conversation with nowhere to put it', {
+          conversationId,
+          role: message.role,
+        });
+        return;
+      }
+      addMessageTo(sink, message);
+      return;
+    }
+
     // Through the sink, not straight at the on-screen list: that list is a
     // window, and appending to it is only meaningful when it ends where the
     // conversation does. See `messageSink`.
-    const current = currentConversationId.value;
-    const sink = current ? messageSink(current) : messages.value;
+    const sink = conversationId ? messageSink(conversationId) : messages.value;
     addMessageTo(sink ?? messages.value, message);
   }
 
@@ -749,7 +787,11 @@ export const useChatStore = defineStore('chat', () => {
     state.bufferingMessages = false;
   }
 
-  function addUserMessage(content: string, images?: MessageImage[]): ChatMessage {
+  function addUserMessage(
+    content: string,
+    images?: MessageImage[],
+    conversationId: string | null = currentConversationId.value,
+  ): ChatMessage {
     const message: ChatMessage = {
       id: generateId(ID_PREFIXES.MESSAGE),
       role: 'user',
@@ -759,8 +801,37 @@ export const useChatStore = defineStore('chat', () => {
       // show what was sent without the message carrying it.
       ...(images && images.length > 0 ? { images } : {}),
     };
-    addMessage(message);
+    addMessage(message, conversationId);
     return message;
+  }
+
+  /** Whether updates for a conversation have somewhere to go. */
+  function hasMessageSink(conversationId: string): boolean {
+    return messageSink(conversationId) !== null;
+  }
+
+  /**
+   * Give a conversation that is off screen, and holds nothing in memory, the
+   * tail of its history to start a turn on.
+   *
+   * Turns start in the conversation on screen, and that is where a buffer is
+   * normally seeded from (see `beginMessageBuffer`). A turn started for a
+   * conversation the user is not looking at — the continue after a usage
+   * limit — has no such list, so it gets the window the conversation would
+   * open on, counts included: the buffer is what the next visit shows, and
+   * what the turn's end writes.
+   *
+   * Does nothing when the conversation already has somewhere to put a turn,
+   * since what it holds is newer than the file.
+   */
+  function seedBackgroundWindow(conversationId: string, history: ChatMessage[], olderCount: number): void {
+    if (conversationId === currentConversationId.value) return;
+    if (hasMessageSink(conversationId)) return;
+    const state = getConversationState(conversationId);
+    state.olderCount = olderCount;
+    state.newerCount = 0;
+    state.bufferedMessages = [...history];
+    state.bufferingMessages = true;
   }
 
   /**
@@ -2581,6 +2652,37 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // ============================================
+  // Usage Limit Actions
+  // ============================================
+
+  /** Record, replace or clear the usage-limit reset a conversation waits on. */
+  function setUsageLimitWait(conversationId: string, wait: UsageLimitWait | null): void {
+    // Clearing a conversation that has no state must not create one.
+    if (!wait && !conversationStates.value.has(conversationId)) return;
+    getConversationState(conversationId).usageLimitWait = wait;
+  }
+
+  /** Conversations whose scheduled continue is due. */
+  function dueUsageLimitWaits(now: number): string[] {
+    return dueWaits(
+      Array.from(conversationStates.value, ([id, state]) => [id, state.usageLimitWait] as [string, UsageLimitWait | null]),
+      now,
+    );
+  }
+
+  /**
+   * Unschedule every continue, keeping the waits on record so each one can
+   * still be offered. For automatic continue being turned off.
+   */
+  function unscheduleUsageLimitWaits(): void {
+    for (const state of conversationStates.value.values()) {
+      if (state.usageLimitWait?.resumeAt != null) {
+        state.usageLimitWait = { ...state.usageLimitWait, resumeAt: null };
+      }
+    }
+  }
+
+  // ============================================
   // Cleanup Actions
   // ============================================
 
@@ -2762,6 +2864,15 @@ export const useChatStore = defineStore('chat', () => {
     releaseQueueHold,
     isQueueHeld,
     queueHeld,
+
+    // Waiting out a usage limit
+    usageLimitWait,
+    hasScheduledUsageLimitWait,
+    setUsageLimitWait,
+    dueUsageLimitWaits,
+    unscheduleUsageLimitWaits,
+    hasMessageSink,
+    seedBackgroundWindow,
 
     // Cleanup
     clearConversationState,
