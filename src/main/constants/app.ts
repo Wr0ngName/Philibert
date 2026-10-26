@@ -25,8 +25,6 @@ export const MAIN_CONSTANTS = {
     OAUTH_POLL_MAX_ATTEMPTS: 90,
     /** Delay after OAuth process exit before final check - 500ms */
     OAUTH_PROCESS_EXIT_DELAY_MS: 500,
-    /** Delay before checking credentials file - 500ms */
-    OAUTH_CREDENTIALS_CHECK_DELAY_MS: 500,
     /** Wide terminal width to prevent URL wrapping */
     OAUTH_TERMINAL_COLS: 500,
     /** Terminal rows for OAuth PTY */
@@ -40,9 +38,9 @@ export const MAIN_CONSTANTS = {
     /** Minimum API key length for validation */
     API_KEY_MIN_LENGTH: 40,
     /**
-     * Minimum length for an OAuth token. Real tokens from `claude setup-token`
-     * are ~108 chars (sk-ant-oat01- + ~95 base64url chars). Below 40 is
-     * always corruption (e.g. ANSI strip ate part of the body).
+     * Minimum length for an OAuth token. Real access tokens are ~108 chars
+     * (sk-ant-oat01- + ~95 base64url chars), from `claude auth login` as from
+     * the `setup-token` logins made before it. Below 40 is always corruption.
      */
     OAUTH_TOKEN_MIN_LENGTH: 40,
     /**
@@ -54,7 +52,7 @@ export const MAIN_CONSTANTS = {
     /**
      * Recognised OAuth token type prefixes. The full prefix `sk-ant-` is
      * followed by a type segment then `-` then the base64url body.
-     * - `oat01-` : OAuth long-lived access token from `setup-token`
+     * - `oat01-` : OAuth access token (`auth login`, and older `setup-token` logins)
      * - `api03-` : API key (some users paste these into the OAuth flow)
      */
     KNOWN_TOKEN_TYPE_PREFIXES: ['sk-ant-oat01-', 'sk-ant-api03-'] as const,

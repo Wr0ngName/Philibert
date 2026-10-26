@@ -73,6 +73,8 @@ vi.mock('fs', () => ({
   unlinkSync: vi.fn(),
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
+  readFileSync: vi.fn(() => { throw new Error('ENOENT'); }),
+  rmSync: vi.fn(),
 }));
 
 vi.mock('../../utils/resourcePaths', () => ({
@@ -160,6 +162,7 @@ describe('Auth IPC handlers', () => {
       expect(handlers.has(IPC_CHANNELS.AUTH_GET_STATUS)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.AUTH_START_OAUTH)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.AUTH_COMPLETE_OAUTH)).toBe(true);
+      expect(handlers.has(IPC_CHANNELS.AUTH_CANCEL_OAUTH)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.AUTH_LOGOUT)).toBe(true);
     });
   });
@@ -363,6 +366,28 @@ describe('Auth IPC handlers', () => {
       expect(storedCreds).toBe(credsJson);
     });
 
+    it('puts the credentials and the account where the CLI reads them', async () => {
+      // Without the account, the CLI has credentials but cannot say whose:
+      // the settings would go on saying it could not read the account.
+      const credsJson = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test', refreshToken: 'rt-123' } });
+      const accountJson = JSON.stringify({ emailAddress: 'someone@example.com' });
+      mockAuthService.completeOAuthFlow.mockResolvedValue({
+        success: true,
+        token: 'sk-ant-oat01-test-token-for-auth-tests',
+        credentialsJson: credsJson,
+        accountJson,
+      });
+
+      await handler({}, 'valid_code_12345');
+
+      const fs = await import('fs');
+      expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
+        '/tmp/test-claude-config/.credentials.json', credsJson, { encoding: 'utf8', mode: 0o600 },
+      );
+      const accountWrite = vi.mocked(fs.writeFileSync).mock.calls.find(([file]) => file === '/tmp/test-claude-config/.claude.json');
+      expect(JSON.parse(accountWrite?.[1] as string).oauthAccount).toEqual({ emailAddress: 'someone@example.com' });
+    });
+
     it('should return error for invalid code format (too short)', async () => {
       const result = await handler({}, 'abc');
 
@@ -431,6 +456,14 @@ describe('Auth IPC handlers', () => {
   // ===========================================================================
   // AUTH_LOGOUT
   // ===========================================================================
+  describe('AUTH_CANCEL_OAUTH handler', () => {
+    it('ends the login in progress, so its CLI process does not wait on forever', async () => {
+      await handlers.get(IPC_CHANNELS.AUTH_CANCEL_OAUTH)!({});
+
+      expect(mockAuthService.cleanupOAuthFlow).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('AUTH_LOGOUT handler', () => {
     let handler: (...args: unknown[]) => unknown;
 

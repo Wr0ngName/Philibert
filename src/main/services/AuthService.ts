@@ -1,8 +1,13 @@
 /**
  * Authentication service for Claude Code OAuth login.
  *
- * Uses the Claude CLI `setup-token` command to get an OAuth URL,
- * then sends the user's code back to complete authentication.
+ * Runs the CLI's `auth login --claudeai` to get an OAuth URL, sends the
+ * user's code back, and takes the login from the files the CLI writes: its
+ * credentials (refreshable — see cliCredentials.ts) and the account record.
+ *
+ * It used to run `setup-token`, which issues a one-year token scoped to
+ * inference only: no refresh, and nothing that says whose account it is, so
+ * the settings could never show which account was logged in.
  *
  * Uses node-pty for cross-platform PTY support.
  */
@@ -19,11 +24,14 @@ import type { IPty } from 'node-pty';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { stripAnsi } from '../utils/ansi';
 import logger from '../utils/logger';
-import { renderPtyScreen } from '../utils/ptyScreen';
 import { getResourcesPath, WindowsPaths, ClaudeCliPaths } from '../utils/resourcePaths';
 import { sanitizeForLog } from '../utils/stringUtils';
 
 import { validateOAuthTokenFormat } from './claude/AuthValidator';
+import { accessTokenOf, readCliCredentials, readOAuthAccount } from './claude/cliCredentials';
+
+/** The CLI command that logs in with a Claude subscription. */
+const LOGIN_ARGS = ['auth', 'login', '--claudeai'];
 
 export interface OAuthFlowState {
   pty: IPty | null;
@@ -40,6 +48,8 @@ export interface OAuthFlowResult {
   success: boolean;
   token?: string;
   credentialsJson?: string;
+  /** The account the login is for (the CLI's `oauthAccount`), as JSON. */
+  accountJson?: string;
   error?: string;
 }
 
@@ -50,20 +60,11 @@ interface OAuthResourceHandlers {
   dataHandler: { dispose: () => void } | null;
   pollInterval: ReturnType<typeof setInterval> | null;
   resolved: boolean;
-  tokenValidationWarned: boolean;
-  tokenValidationError: string | null;
   cleanup: () => void;
 }
 
 export class AuthService {
   private pendingOAuthFlow: OAuthFlowState | null = null;
-  /**
-   * Callback invoked when credentials JSON is found AFTER the OAuth promise
-   * already resolved (e.g. setup-token writes the file between output
-   * extraction and PTY exit).  The IPC handler sets this to save the late
-   * credentials for refresh capability.
-   */
-  onLateCredentials: ((credentialsJson: string) => void) | null = null;
 
   constructor() {
     logger.info('AuthService initialized');
@@ -263,13 +264,12 @@ export class AuthService {
     if (isNpx) {
       // Fallback: use npx through shell (requires Node.js on system)
       spawnFile = process.platform === 'win32' ? 'cmd.exe' : '/bin/bash';
-      spawnArgs = process.platform === 'win32'
-        ? ['/c', 'npx @anthropic-ai/claude-code setup-token']
-        : ['-c', 'npx @anthropic-ai/claude-code setup-token'];
+      const npxCommand = ['npx @anthropic-ai/claude-code', ...LOGIN_ARGS].join(' ');
+      spawnArgs = process.platform === 'win32' ? ['/c', npxCommand] : ['-c', npxCommand];
     } else if (isNativeBinary) {
       // v2.1.121+ native binary — spawn directly, no node.exe needed
       spawnFile = claudeCli;
-      spawnArgs = ['setup-token'];
+      spawnArgs = [...LOGIN_ARGS];
       logger.info(`Using native Claude CLI binary: ${spawnFile}`);
     } else if (isNodeScript) {
       // Legacy cli.js or cli-wrapper.cjs — needs Node.js to execute
@@ -282,26 +282,27 @@ export class AuthService {
 
         if (nodeExeExists) {
           spawnFile = bundledNodeExe;
-          spawnArgs = [claudeCli, 'setup-token'];
+          spawnArgs = [claudeCli, ...LOGIN_ARGS];
         } else {
           logger.warn('Windows: bundled Node.js not found, falling back to ELECTRON_RUN_AS_NODE');
           spawnFile = 'powershell.exe';
           const escapeForPowerShell = (s: string): string => s.replace(/'/g, "''");
           const escapedExePath = escapeForPowerShell(process.execPath);
           const escapedCliPath = escapeForPowerShell(claudeCli);
-          const psCommand = `$env:ELECTRON_RUN_AS_NODE='1'; & '${escapedExePath}' '${escapedCliPath}' 'setup-token'`;
+          const loginArgs = LOGIN_ARGS.map((arg) => `'${escapeForPowerShell(arg)}'`).join(' ');
+          const psCommand = `$env:ELECTRON_RUN_AS_NODE='1'; & '${escapedExePath}' '${escapedCliPath}' ${loginArgs}`;
           spawnArgs = ['-NoProfile', '-Command', psCommand];
         }
       } else {
         spawnFile = process.execPath;
-        spawnArgs = [claudeCli, 'setup-token'];
+        spawnArgs = [claudeCli, ...LOGIN_ARGS];
         extraEnv = { ELECTRON_RUN_AS_NODE: '1' };
       }
       logger.info(`Using Node.js script CLI: ${spawnFile} ${JSON.stringify(spawnArgs)}`);
     } else {
       // System CLI (e.g. /usr/local/bin/claude): spawn directly
       spawnFile = claudeCli;
-      spawnArgs = ['setup-token'];
+      spawnArgs = [...LOGIN_ARGS];
     }
 
     logger.info('OAuth spawn configuration', {
@@ -666,8 +667,6 @@ export class AuthService {
       dataHandler: null,
       pollInterval: null,
       resolved: false,
-      tokenValidationWarned: false,
-      tokenValidationError: null,
       cleanup: () => {
         if (handlers.dataHandler) {
           handlers.dataHandler.dispose();
@@ -701,13 +700,11 @@ export class AuthService {
   }
 
   /**
-   * Check OAuth result in PTY output.
-   * Looks for token, credentials file, success message, or error indicators.
+   * Check whether the login has finished.
    *
-   * When a token is found in output, we resolve immediately so the user gets
-   * feedback, but we do NOT kill the PTY — the `setup-token` command may still
-   * need to finish server-side registration.  The PTY exit handler handles
-   * final cleanup and a last-chance credentials-file capture.
+   * The CLI's credentials file is the result: `auth login` writes it once the
+   * code is accepted, and it carries no token in its output. Errors are read
+   * from the output.
    */
   private checkOAuthResult(
     output: string,
@@ -719,100 +716,13 @@ export class AuthService {
 
     const clean = stripAnsi(output);
 
-    // ALWAYS check credentials file first - it's the only reliable source
-    const credsResult = this.extractTokenFromCredentialsFile(configDir);
-    if (credsResult) {
+    const login = this.readLogin(configDir);
+    if (login) {
       handlers.resolved = true;
       handlers.cleanup();
-      logger.info('OAuth authentication successful via credentials file');
+      logger.info('OAuth authentication successful via credentials file', { hasAccount: !!login.accountJson });
       this.cleanupOAuthFlow();
-      resolve({ success: true, token: credsResult.token, credentialsJson: credsResult.credentialsJson });
-      return true;
-    }
-
-    // Check for success message or token pattern
-    const hasSuccessIndicator =
-      clean.includes('Successfully authenticated') ||
-      clean.includes('logged in') ||
-      clean.includes('sk-ant-');
-
-    if (hasSuccessIndicator) {
-      logger.info('OAuth success indicator detected, waiting for credentials file');
-      this.scheduleCredentialsFileCheck(configDir, handlers, resolve);
-    }
-
-    // Fallback: try to extract token from output if credentials file not ready yet
-    // This is unreliable due to no whitespace between token and following text,
-    // but can work if we detect known junk patterns to trim
-    const tokenResult = this.extractTokenFromOutput(clean);
-    if (tokenResult) {
-      // Gate storage on strict format validation. Two prior versions shipped
-      // with PTY ANSI-stripping bugs that corrupted the extracted token by a
-      // single byte — the token was stored, every API call 401'd, and the
-      // user got logged out repeatedly. Refuse to proceed with a token that
-      // doesn't match the known shape.
-      //
-      // However, do NOT abort the flow — the credentials file (written by
-      // setup-token shortly after displaying the token) contains the correct
-      // un-corrupted token. Aborting here kills the PTY before it can write
-      // that file, which is exactly what happened in v0.17.29. Instead, log
-      // the diagnostic and continue waiting for the credentials file.
-      let finalToken = tokenResult;
-      const validation = validateOAuthTokenFormat(finalToken);
-      if (!validation.valid) {
-        const rendered = renderPtyScreen(output);
-        const renderedMatch = rendered.match(/(sk-ant-[A-Za-z0-9_-]+)/);
-        const renderedToken = renderedMatch?.[1] ?? null;
-
-        const renderedSkAntIdx = rendered.indexOf('sk-ant-');
-        const renderedWindow = renderedSkAntIdx >= 0
-          ? rendered.slice(Math.max(0, renderedSkAntIdx - 5), renderedSkAntIdx + 30)
-          : '';
-        logger.info('Screen buffer recovery attempt', {
-          renderedTokenFound: renderedToken !== null,
-          renderedTokenPreview: renderedToken?.slice(0, 20) ?? 'null',
-          renderedTokenLength: renderedToken?.length ?? 0,
-          renderedWindowHex: Buffer.from(renderedWindow, 'utf8').toString('hex'),
-          renderedWindowText: renderedWindow,
-          fullRawHex: Buffer.from(output, 'utf8').toString('hex'),
-        });
-
-        if (renderedToken) {
-          const renderedValidation = validateOAuthTokenFormat(renderedToken);
-          if (renderedValidation.valid) {
-            logger.info('Recovered token via PTY screen buffer (cursor-forward had hidden a character)', {
-              strippedPrefix: finalToken.slice(0, 14),
-              recoveredPrefix: renderedToken.slice(0, 14),
-            });
-            finalToken = renderedToken;
-          }
-        }
-      }
-
-      const finalValidation = validateOAuthTokenFormat(finalToken);
-      if (!finalValidation.valid) {
-        if (!handlers.tokenValidationWarned) {
-          handlers.tokenValidationWarned = true;
-          handlers.tokenValidationError = finalValidation.error ?? null;
-          logger.warn('OAuth token failed validation even after screen-buffer recovery', {
-            reason: finalValidation.error,
-            tokenPreview: finalToken.slice(0, 20),
-            tokenLength: finalToken.length,
-          });
-        }
-        return false;
-      }
-
-      handlers.resolved = true;
-      handlers.cleanup();
-      logger.info('OAuth authentication successful (extracted from output)', {
-        tokenLength: finalToken.length,
-        tokenPrefix: finalToken.slice(0, 14),
-      });
-      // Do NOT call cleanupOAuthFlow() here — let the PTY exit naturally so
-      // setup-token can complete its server-side registration.  The PTY exit
-      // handler calls cleanupOAuthFlow() after a final credentials-file check.
-      resolve({ success: true, token: finalToken });
+      resolve({ success: true, ...login });
       return true;
     }
 
@@ -830,121 +740,25 @@ export class AuthService {
   }
 
   /**
-   * Extract OAuth token from CLI output (fallback method).
-   *
-   * The CLI output often has no whitespace between token and following text, e.g.:
-   * "sk-ant-...AAStorethistokensecurely..."
-   *
-   * We ONLY trim at known junk patterns - no length assumptions.
-   * Returns null if no token found or if we can't reliably extract it.
+   * The login the CLI wrote to the flow's config directory, once it has: the
+   * credentials, their access token, and the account they are for.
    */
-  private extractTokenFromOutput(cleanOutput: string): string | null {
-    // Match any sk-ant- token (don't assume specific format after prefix)
-    const tokenMatch = cleanOutput.match(/(sk-ant-[A-Za-z0-9_-]+)/);
-    if (!tokenMatch) return null;
-
-    let token = tokenMatch[1];
-    const originalLength = token.length;
-
-    // Defer extraction if the match runs to the end of the buffer — i.e. we
-    // haven't yet seen a non-token-character boundary after the candidate.
-    // The streaming PTY data may have only emitted part of the token so far,
-    // and extracting prematurely yields a truncated string that fails
-    // downstream format validation and aborts the flow. Real CLI output
-    // always emits a newline (or further text) after the token, so by the
-    // time the line is genuinely complete the match is bounded by a
-    // non-token char. The PTY exit handler does one final check after the
-    // full output is in, so we don't risk hanging on a malformed exit.
-    const matchEnd = (tokenMatch.index ?? 0) + originalLength;
-    const isAtBufferEnd = matchEnd >= cleanOutput.length;
-    if (isAtBufferEnd) {
+  private readLogin(configDir: string): Pick<OAuthFlowResult, 'token' | 'credentialsJson' | 'accountJson'> | null {
+    const credentialsJson = readCliCredentials(configDir);
+    if (!credentialsJson) return null;
+    const token = accessTokenOf(credentialsJson);
+    // Strict-validate even though the file is the CLI's own: storing a token
+    // that will 401 is how users used to get logged out on every request.
+    const validation = token ? validateOAuthTokenFormat(token) : { valid: false, error: 'no access token' };
+    if (!token || !validation.valid) {
+      logger.warn('Credentials file token failed format validation — ignoring', {
+        reason: validation.error,
+        tokenLength: token?.length ?? 0,
+      });
       return null;
     }
-
-    // Only trim at known junk patterns that indicate where the token ends
-    const junkPatterns = [
-      'Store',      // "Store your token securely" / "Storethistokensecurely"
-      'You',        // "You won't be able to see it again"
-      'Use',        // "Use this token by setting"
-      'This',       // "This is your..."
-      'Keep',       // "Keep this token..."
-      'Save',       // "Save this token..."
-      'Please',     // "Please save..."
-      'Copy',       // "Copy this token..."
-      'Note',       // "Note: ..."
-    ];
-
-    for (const junk of junkPatterns) {
-      const junkIndex = token.indexOf(junk);
-      if (junkIndex > 0) {
-        logger.info('Trimming junk from OAuth token', {
-          junkPattern: junk,
-          junkIndex,
-          originalLength,
-        });
-        token = token.substring(0, junkIndex);
-        break;
-      }
-    }
-
-    if (token.length !== originalLength) {
-      logger.info('OAuth token trimmed', { originalLength, finalLength: token.length });
-    }
-
-    logger.debug('Extracted OAuth token from output', { length: token.length });
-    return token;
-  }
-
-  /**
-   * Extract OAuth token and full credentials from credentials file.
-   */
-  private extractTokenFromCredentialsFile(configDir: string): { token: string; credentialsJson: string } | null {
-    const credsFile = path.join(configDir, '.credentials.json');
-    if (!fs.existsSync(credsFile)) return null;
-
-    try {
-      const raw = fs.readFileSync(credsFile, 'utf8');
-      const creds = JSON.parse(raw);
-      const token = creds.oauthToken || creds.claudeAiOauth?.accessToken;
-      if (token && typeof token === 'string') {
-        // Strict-validate even though the credentials file is normally
-        // a trusted source — if it contains garbage, surface that rather
-        // than blindly storing it.
-        const validation = validateOAuthTokenFormat(token);
-        if (validation.valid) {
-          return { token, credentialsJson: raw };
-        }
-        logger.warn('Credentials file token failed format validation — ignoring', {
-          reason: validation.error,
-          tokenLength: token.length,
-          tokenPrefix: token.slice(0, 14),
-        });
-      }
-    } catch {
-      // Credentials file not ready yet
-    }
-    return null;
-  }
-
-  /**
-   * Schedule a delayed check of the credentials file after success message.
-   */
-  private scheduleCredentialsFileCheck(
-    configDir: string,
-    handlers: OAuthResourceHandlers,
-    resolve: (result: OAuthFlowResult) => void
-  ): void {
-    setTimeout(() => {
-      if (handlers.resolved) return;
-      const credsResult = this.extractTokenFromCredentialsFile(configDir);
-      if (credsResult) {
-        handlers.resolved = true;
-        handlers.cleanup();
-        logger.info('OAuth authentication successful');
-        this.cleanupOAuthFlow();
-        resolve({ success: true, token: credsResult.token, credentialsJson: credsResult.credentialsJson });
-      }
-    }, MAIN_CONSTANTS.AUTH.OAUTH_CREDENTIALS_CHECK_DELAY_MS);
+    const accountJson = readOAuthAccount(configDir);
+    return { token, credentialsJson, ...(accountJson ? { accountJson } : {}) };
   }
 
   /**
@@ -989,11 +803,8 @@ export class AuthService {
   }
 
   /**
-   * Setup PTY exit handler.
-   * Always cleans up the OAuth flow after PTY exits.  When the promise was
-   * already resolved (e.g. token extracted from output), we do a final
-   * credentials-file check and emit a late-credentials event so the caller
-   * can upgrade to the full JSON if available.
+   * Setup PTY exit handler: a last look for the credentials file, which the
+   * CLI may write as it exits, then cleanup either way.
    */
   private setupPtyExitHandler(
     ptyProcess: IPty,
@@ -1005,30 +816,15 @@ export class AuthService {
     ptyProcess.onExit(({ exitCode }) => {
       logger.info(`OAuth PTY exited with code ${exitCode}`);
       setTimeout(() => {
-        // Always clean up — even if we already resolved from output extraction,
-        // the PTY and temp dir still need cleanup.
         if (!handlers.resolved) {
           this.checkOAuthResult(getOutput(), configDir, handlers, resolve);
           if (!handlers.resolved) {
             handlers.resolved = true;
             handlers.cleanup();
-            this.cleanupOAuthFlow();
-            const error = handlers.tokenValidationError
-              ? `Authentication captured a malformed token (${handlers.tokenValidationError}). The credentials file was not written before the CLI exited. Please try logging in again.`
-              : 'Authentication failed. Please try again.';
-            resolve({ success: false, error });
+            resolve({ success: false, error: 'Authentication failed. Please try again.' });
           }
-        } else {
-          // Already resolved (from output extraction).  Do a final
-          // credentials-file check — setup-token may have written it between
-          // our resolve and the PTY exiting.  Save it async if found.
-          const credsResult = this.extractTokenFromCredentialsFile(configDir);
-          if (credsResult) {
-            logger.info('Late credentials file found after PTY exit — saving for refresh capability');
-            this.onLateCredentials?.(credsResult.credentialsJson);
-          }
-          this.cleanupOAuthFlow();
         }
+        this.cleanupOAuthFlow();
       }, MAIN_CONSTANTS.CLAUDE.INTERRUPT_DELAY_MS);
     });
   }

@@ -41,6 +41,7 @@ const {
   refreshAuthStatus,
   startOAuthLogin,
   completeOAuthLogin,
+  cancelOAuthLogin,
   saveApiKey: saveApiKeyFn,
   logout,
   resetState,
@@ -78,11 +79,6 @@ async function handleLogout() {
 /**
  * Handle cancel code input
  */
-function cancelCodeInput() {
-  showCodeInput.value = false;
-  oauthCode.value = '';
-}
-
 /**
  * Expose methods for parent components if needed
  */
@@ -140,6 +136,14 @@ defineExpose({
               <span class="font-medium">{{ account.email }}</span>
               <span v-if="account.subscriptionType"> · {{ account.subscriptionType }}</span>
               <span v-if="account.organization"> · {{ account.organization }}</span>
+            </p>
+            <p
+              v-else-if="accountState === 'token-only'"
+              class="text-xs text-amber-700 dark:text-amber-400"
+              data-testid="auth-account"
+            >
+              This older kind of login does not say which account it is. Log out and log in
+              again to see it — and to stay logged in without a yearly renewal.
             </p>
             <p
               v-else-if="accountState === 'unavailable'"
@@ -227,7 +231,7 @@ defineExpose({
             </Button>
             <Button
               variant="ghost"
-              @click="cancelCodeInput"
+              @click="cancelOAuthLogin"
             >
               Cancel
             </Button>

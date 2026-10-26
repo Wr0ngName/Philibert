@@ -706,6 +706,11 @@ export interface ClaudeAccount {
   organization?: string;
   /** The plan, e.g. "Claude Max". */
   subscriptionType?: string;
+  /**
+   * The login is a bare token (from `setup-token`, before Philibert used
+   * `auth login`), which does not say whose account it is.
+   */
+  tokenOnly?: boolean;
 }
 
 // Configuration types
@@ -778,7 +783,7 @@ export type WhisperModelId =
 export interface AppConfig {
   /** Direct API key for Claude API */
   apiKey: string;
-  /** OAuth token from claude CLI setup-token */
+  /** OAuth access token from the claude CLI login */
   oauthToken: string;
   /** Authentication method being used */
   authMethod: AuthMethod;
@@ -1849,6 +1854,8 @@ export const IPC_CHANNELS = {
   AUTH_START_OAUTH: 'auth:start-oauth',
   /** Complete OAuth flow */
   AUTH_COMPLETE_OAUTH: 'auth:complete-oauth',
+  /** Abandon a login in progress, ending the CLI process waiting for its code */
+  AUTH_CANCEL_OAUTH: 'auth:cancel-oauth',
   /** Log out and clear credentials */
   AUTH_LOGOUT: 'auth:logout',
   /** Fired when stored credentials are invalidated (e.g. 401 from API) */

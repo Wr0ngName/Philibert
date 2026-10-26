@@ -9,7 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockSafeStorage, mockStoreData, mockFsExistsSync, mockFsMkdirSync, mockFsWriteFileSync } = vi.hoisted(() => {
+const { mockSafeStorage, mockStoreData, mockFsExistsSync, mockFsMkdirSync, mockFsWriteFileSync, mockFsReadFileSync } = vi.hoisted(() => {
   const storeData: Record<string, unknown> = {};
 
   return {
@@ -26,6 +26,7 @@ const { mockSafeStorage, mockStoreData, mockFsExistsSync, mockFsMkdirSync, mockF
     mockFsExistsSync: vi.fn(() => false),
     mockFsMkdirSync: vi.fn(),
     mockFsWriteFileSync: vi.fn(),
+    mockFsReadFileSync: vi.fn(),
   };
 });
 
@@ -62,6 +63,7 @@ vi.mock('fs', () => ({
   existsSync: mockFsExistsSync,
   mkdirSync: mockFsMkdirSync,
   writeFileSync: mockFsWriteFileSync,
+  readFileSync: mockFsReadFileSync,
   unlinkSync: vi.fn(),
 }));
 
@@ -79,6 +81,11 @@ describe('AuthValidator', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     for (const k of Object.keys(mockStoreData)) delete mockStoreData[k];
+    // No credentials file unless a test writes one. Reset explicitly:
+    // clearAllMocks keeps an implementation from one test to the next.
+    mockFsReadFileSync.mockReset();
+    mockFsReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+    mockFsWriteFileSync.mockReset();
 
     mockSafeStorage.isEncryptionAvailable.mockImplementation(() => true);
     mockSafeStorage.encryptString.mockImplementation((value: string) => Buffer.from(`encrypted:${value}`));
@@ -237,10 +244,11 @@ describe('AuthValidator', () => {
   // setupAuthEnv — CLAUDE_CONFIG_DIR vs CLAUDE_CODE_OAUTH_TOKEN
   // ===========================================================================
   describe('setupAuthEnv', () => {
-    it('should prefer CLAUDE_CONFIG_DIR when full credentials are available', async () => {
+    it('should prefer CLAUDE_CONFIG_DIR when full credentials are available, restoring a missing file', async () => {
       const credsJson = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test', refreshToken: 'rt-123' } });
       await configService.setOAuthToken('sk-ant-oat01-test');
       await configService.setOAuthCredentials(credsJson);
+      mockFsReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
 
       const env = await validator.setupAuthEnv();
 
@@ -250,8 +258,30 @@ describe('AuthValidator', () => {
       expect(mockFsWriteFileSync).toHaveBeenCalledWith(
         '/tmp/test-claude-config/.credentials.json',
         credsJson,
-        'utf8'
+        { encoding: 'utf8', mode: 0o600 },
       );
+    });
+
+    it('never writes the stored copy over credentials the CLI has refreshed, and follows them instead', async () => {
+      // The CLI refreshed the token in its file. Writing the copy saved at
+      // login back over it handed the CLI a dead token: the next request
+      // 401'd and the user was logged out.
+      const atLogin = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-old', refreshToken: 'rt-1' } });
+      const refreshed = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-new', refreshToken: 'rt-2' } });
+      await configService.setOAuthToken('sk-ant-oat01-old');
+      await configService.setOAuthCredentials(atLogin);
+      mockFsReadFileSync.mockImplementation((p: string) => {
+        if (p === '/tmp/test-claude-config/.credentials.json') return refreshed;
+        throw new Error('ENOENT');
+      });
+      mockFsWriteFileSync.mockClear();
+
+      const env = await validator.setupAuthEnv();
+
+      expect(env['CLAUDE_CONFIG_DIR']).toBe('/tmp/test-claude-config');
+      expect(mockFsWriteFileSync).not.toHaveBeenCalledWith('/tmp/test-claude-config/.credentials.json', expect.anything(), expect.anything());
+      expect(await configService.getOAuthCredentials()).toBe(refreshed);
+      expect(await configService.getOAuthToken()).toBe('sk-ant-oat01-new');
     });
 
     it('should fall back to CLAUDE_CODE_OAUTH_TOKEN when no full credentials exist', async () => {

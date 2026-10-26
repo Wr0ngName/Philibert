@@ -77,7 +77,7 @@ import {
 import { AsyncChannel } from '../utils/AsyncChannel';
 import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
-import { ClaudeCliPaths, WindowsPaths, getClaudeConfigDir } from '../utils/resourcePaths';
+import { ClaudeCliPaths, WindowsPaths } from '../utils/resourcePaths';
 
 import ConfigService from './ConfigService';
 import { ImageStore } from './ImageStore';
@@ -92,6 +92,7 @@ import {
 } from './claude';
 import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
 import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
+import { removeCliCredentials } from './claude/cliCredentials';
 import { cliTempRoot, locateTaskOutput, readTaskOutput, transcriptToMessages } from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
 import type { ExtractedImage } from './claude/tool-result-images';
@@ -1874,10 +1875,7 @@ export class ClaudeCodeService {
 
       // Clean up credentials file from stable config dir
       try {
-        const credsFile = `${getClaudeConfigDir()}/.credentials.json`;
-        if (fs.existsSync(credsFile)) {
-          fs.unlinkSync(credsFile);
-        }
+        removeCliCredentials();
       } catch {
         // Non-critical cleanup
       }
@@ -2540,7 +2538,12 @@ export class ClaudeCodeService {
     const email = text(info.email);
     const organization = text(info.organization);
     const subscriptionType = text(info.subscriptionType);
+    // A bare token — the `setup-token` logins made before `auth login` —
+    // names no account, and the CLI says so by reporting only where the token
+    // came from. Told apart from a read that failed, which it is not.
+    const tokenOnly = info.tokenSource === 'CLAUDE_CODE_OAUTH_TOKEN';
     return {
+      ...(tokenOnly ? { tokenOnly } : {}),
       ...(email ? { email } : {}),
       ...(organization ? { organization } : {}),
       ...(subscriptionType ? { subscriptionType } : {}),

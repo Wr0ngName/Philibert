@@ -22,6 +22,7 @@ const auth = {
   getAccount: vi.fn<() => Promise<ClaudeAccount | null>>(),
   startOAuth: vi.fn(),
   completeOAuth: vi.fn(),
+  cancelOAuth: vi.fn(),
   logout: vi.fn(),
 };
 
@@ -58,6 +59,18 @@ describe('the account shown under Authentication', () => {
     answer({ email: 'someone@example.com' });
     await flushPromises();
     expect(accountLine(wrapper)).toBe('someone@example.com');
+  });
+
+  it('explains an older token login instead of reporting a failure, and how to see the account', async () => {
+    auth.getStatus.mockResolvedValue(OAUTH);
+    auth.getAccount.mockResolvedValue({ tokenOnly: true });
+
+    const wrapper = mount(AuthForm);
+    await flushPromises();
+
+    expect(accountLine(wrapper)).toContain('does not say which account it is');
+    expect(accountLine(wrapper)).toContain('log in');
+    expect(accountLine(wrapper)).not.toContain('Could not read');
   });
 
   it('says so when the account cannot be read, rather than showing nothing', async () => {

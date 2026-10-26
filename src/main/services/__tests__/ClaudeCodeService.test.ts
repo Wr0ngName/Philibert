@@ -2470,6 +2470,14 @@ describe('ClaudeCodeService', () => {
         expect(env['CLAUDE_CODE_OAUTH_TOKEN'] ?? env['CLAUDE_CONFIG_DIR']).toBeTruthy();
       });
 
+      it("says when the login is a bare token, which names no account", async () => {
+        // What the CLI reports for a setup-token login (2.1.280): only where
+        // the token came from. Not a failed read — nothing can be read.
+        mockQuery.mockReturnValue(accountQuery({ tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN', apiProvider: 'firstParty' }));
+
+        expect(await service.getAccountInfo()).toEqual({ tokenOnly: true });
+      });
+
       it('asks once per login, however often it is asked', async () => {
         const first = accountQuery({ email: 'someone@example.com' });
         mockQuery.mockReturnValue(first);

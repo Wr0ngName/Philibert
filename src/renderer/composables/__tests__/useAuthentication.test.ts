@@ -22,6 +22,7 @@ const mockElectron = {
     getStatus: vi.fn(),
     startOAuth: vi.fn(),
     completeOAuth: vi.fn(),
+    cancelOAuth: vi.fn(),
     logout: vi.fn(),
   },
   config: {
@@ -422,6 +423,38 @@ describe('useAuthentication', () => {
       expect(oauthCode.value).toBe('');
       expect(loginError.value).toBe('');
       expect(isLoggingIn.value).toBe(false);
+    });
+
+    it('abandons a login waiting for its code, so its CLI process ends', () => {
+      const { showCodeInput, resetState } = useAuthentication();
+      showCodeInput.value = true;
+
+      resetState();
+
+      expect(mockElectron.auth.cancelOAuth).toHaveBeenCalledTimes(1);
+    });
+
+    it('has nothing to abandon when no login is waiting', () => {
+      const { resetState } = useAuthentication();
+
+      resetState();
+
+      expect(mockElectron.auth.cancelOAuth).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cancelOAuthLogin', () => {
+    it('ends the login in the main process and closes the code step', async () => {
+      const { showCodeInput, oauthCode, cancelOAuthLogin } = useAuthentication();
+      showCodeInput.value = true;
+      oauthCode.value = 'half-typed';
+      mockElectron.auth.cancelOAuth.mockResolvedValue(undefined);
+
+      await cancelOAuthLogin();
+
+      expect(mockElectron.auth.cancelOAuth).toHaveBeenCalledTimes(1);
+      expect(showCodeInput.value).toBe(false);
+      expect(oauthCode.value).toBe('');
     });
   });
 });

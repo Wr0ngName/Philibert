@@ -76,6 +76,26 @@ vi.mock('../../utils/logger', () => ({
 import { MAIN_CONSTANTS } from '../../constants/app';
 import AuthService from '../AuthService';
 
+/** An access token of the shape `auth login` writes (sk-ant-oat01-, 108 chars). */
+const LOGIN_TOKEN = 'sk-ant-oat01-' + 'L'.repeat(95);
+
+/**
+ * Make the files `claude auth login` writes appear in the flow's config dir:
+ * `.credentials.json` and the account in `.claude.json`.
+ */
+function writeLogin(accessToken = LOGIN_TOKEN): { credentialsJson: string; accountJson: string } {
+  const credentialsJson = JSON.stringify({
+    claudeAiOauth: { accessToken, refreshToken: 'sk-ant-ort01-r', expiresAt: 1, scopes: ['user:inference', 'user:profile'], subscriptionType: 'max' },
+  });
+  const account = { emailAddress: 'someone@example.com', organizationName: 'Example' };
+  mockFsReadFileSync.mockImplementation((p: string) => {
+    if (typeof p === 'string' && p.endsWith('.credentials.json')) return credentialsJson;
+    if (typeof p === 'string' && p.endsWith('.claude.json')) return JSON.stringify({ oauthAccount: account, userID: 'u' });
+    throw new Error('ENOENT');
+  });
+  return { credentialsJson, accountJson: JSON.stringify(account) };
+}
+
 describe('AuthService', () => {
   let service: AuthService;
   let mockPty: MockPty;
@@ -128,6 +148,11 @@ describe('AuthService', () => {
 
     mockPty = createMockPty();
     mockPtySpawn.mockReturnValue(mockPty);
+
+    // No login written yet. Reset explicitly: clearAllMocks keeps an
+    // implementation, so one test's login would otherwise reach the next.
+    mockFsReadFileSync.mockReset();
+    mockFsReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
 
     // Default: bundled CLI exists
     mockFsExistsSync.mockImplementation((path: string) => {
@@ -249,6 +274,21 @@ describe('AuthService', () => {
           }),
         })
       );
+    });
+
+    it('logs in with `auth login --claudeai`, not setup-token', async () => {
+      // setup-token's token is inference-only: it cannot refresh, and it does
+      // not say whose account it is.
+      const flowPromise = service.startOAuthFlow();
+      await vi.advanceTimersByTimeAsync(50);
+      mockPty.emitData('https://claude.com/cai/oauth/authorize?code=true\n');
+      mockPty.emitData('Paste code here if prompted > ');
+      await vi.advanceTimersByTimeAsync(100);
+      await flowPromise;
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      expect(args.slice(-3)).toEqual(['auth', 'login', '--claudeai']);
+      expect(args).not.toContain('setup-token');
     });
 
     it('should extract OAuth URL from PTY output (claude.ai)', async () => {
@@ -449,10 +489,10 @@ describe('AuthService', () => {
         expect(writeCalls).toContain(char);
       }
 
-      // Emit token to complete the flow
-      mockPty.emitData('sk-ant-oat01-' + 'x'.repeat(80) + '\n');
+      // The CLI accepts the code and writes the login
+      writeLogin();
 
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(600);
 
       const result = await completePromise;
       expect(result.success).toBe(true);
@@ -469,9 +509,9 @@ describe('AuthService', () => {
 
       await vi.advanceTimersByTimeAsync(200);
 
-      mockPty.emitData('sk-ant-oat01-' + 'x'.repeat(80) + '\n');
+      writeLogin();
 
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(600);
 
       await completePromise;
 
@@ -480,331 +520,43 @@ describe('AuthService', () => {
       expect(writeCalls).toContain('\n');
     });
 
-    it('should extract token from PTY output', async () => {
-      // Use a code that's >= 10 chars
-      const completePromise = service.completeOAuthFlow('testcode12');
-
+    it('takes the login from the credentials file the CLI writes, with its account', async () => {
+      const promise = service.completeOAuthFlow('testcode12');
       await vi.advanceTimersByTimeAsync(200);
 
-      const token = 'sk-ant-oat01-' + 'a'.repeat(78);
-      mockPty.emitData(`Your token is: ${token}\n`);
-
+      const { credentialsJson, accountJson } = writeLogin();
       await vi.advanceTimersByTimeAsync(600);
 
-      const result = await completePromise;
-
-      expect(result.success).toBe(true);
-      expect(result.token).toBe(token);
+      const result = await promise;
+      expect(result).toEqual({ success: true, token: LOGIN_TOKEN, credentialsJson, accountJson });
     });
 
-    it('should trim "Store" suffix from over-matched token', async () => {
-      // Use a code that's >= 10 chars
-      const completePromise = service.completeOAuthFlow('testcode12');
-
+    it('refuses a credentials file whose token is malformed, rather than store a token that will 401', async () => {
+      const promise = service.completeOAuthFlow('testcode12');
       await vi.advanceTimersByTimeAsync(200);
 
-      // Token with "Store" accidentally matched (no whitespace before it)
-      const baseToken = 'sk-ant-oat01-' + 'a'.repeat(78);
-      mockPty.emitData(`${baseToken}Store your token securely\n`);
-
+      writeLogin('sk-ant-at01-' + 'A'.repeat(95));
       await vi.advanceTimersByTimeAsync(600);
+      mockPty.emitExit(0);
+      await vi.advanceTimersByTimeAsync(1500);
 
-      const result = await completePromise;
-
-      expect(result.success).toBe(true);
-      expect(result.token).toBe(baseToken);
-      expect(result.token).not.toContain('Store');
+      const result = await promise;
+      expect(result.success).toBe(false);
     });
 
-    it('should preserve leading "o" when CLI emits stray ESC before token (v2.1.150 regression)', async () => {
-      // CLI v2.1.150 prints a stray \x1b right before the OAuth token line.
-      // A greedy /\x1b./g strip ate the 'o' of `oat01-`, yielding `sk-ant-at01-…`
-      // which the server then rejected with 401 "Invalid bearer token".
-      const completePromise = service.completeOAuthFlow('testcode12');
-
+    it('does not take a token printed in the output: only the credentials file is the login', async () => {
+      // `auth login` never prints its token; anything token-shaped in the
+      // output is not a login and must not be stored as one.
+      const promise = service.completeOAuthFlow('testcode12');
       await vi.advanceTimersByTimeAsync(200);
 
-      const fullToken = 'sk-ant-oat01-' + 'X'.repeat(95);
-      mockPty.emitData(`Your OAuth token:\n\x1b${fullToken}\nStore this token securely\n`);
-
+      mockPty.emitData(`sk-ant-oat01-${'Q'.repeat(95)}\n`);
       await vi.advanceTimersByTimeAsync(600);
+      mockPty.emitExit(0);
+      await vi.advanceTimersByTimeAsync(1500);
 
-      const result = await completePromise;
-
-      expect(result.success).toBe(true);
-      expect(result.token).toBe(fullToken);
-      expect(result.token?.startsWith('sk-ant-oat01-')).toBe(true);
-      expect(result.token?.length).toBe(fullToken.length);
-    });
-
-    it('should preserve "o" when CLI emits CSI ending in `o` before the token', async () => {
-      // Defense-in-depth: a CSI whose final byte happens to be a letter the
-      // token also uses would historically consume the terminator letter.
-      // Verifies we tolerate that shape adjacent to a token.
-      const completePromise = service.completeOAuthFlow('testcode12');
-
-      await vi.advanceTimersByTimeAsync(200);
-
-      const fullToken = 'sk-ant-oat01-' + 'Y'.repeat(95);
-      mockPty.emitData(`Your OAuth token:\n\x1b[1024o${fullToken}\nStore this token securely\n`);
-
-      await vi.advanceTimersByTimeAsync(600);
-
-      const result = await completePromise;
-
-      expect(result.success).toBe(true);
-      expect(result.token).toBe(fullToken);
-      expect(result.token?.startsWith('sk-ant-oat01-')).toBe(true);
-      expect(result.token?.length).toBe(fullToken.length);
-    });
-
-    it('should preserve token when CLI emits CSI with other alpha terminators adjacent to token', async () => {
-      const completePromise = service.completeOAuthFlow('testcode12');
-
-      await vi.advanceTimersByTimeAsync(200);
-
-      const fullToken = 'sk-ant-oat01-' + 'Z'.repeat(95);
-      mockPty.emitData(`\x1b[?25h\x1b[2K${fullToken}\x1b[0m\n`);
-
-      await vi.advanceTimersByTimeAsync(600);
-
-      const result = await completePromise;
-
-      expect(result.success).toBe(true);
-      expect(result.token).toBe(fullToken);
-      expect(result.token?.startsWith('sk-ant-oat01-')).toBe(true);
-    });
-
-    it('should preserve leading "o" when CLI uses backspace animation across the token (v0.17.27 real-world regression)', async () => {
-      // The real bug observed on kotik's v0.17.27 install. The CLI in PTY
-      // mode emits the token with a backspace animation: `sk-ant-o\bat01-…`.
-      // The old BACKSPACE_OVERWRITE rule `/[^\n\x08]\x08/g` ate the `o`,
-      // producing `sk-ant-at01-…` (107 chars) which the API rejected with
-      // 401 "Invalid bearer token". The fix excludes alphanumeric chars
-      // from the overwrite class so token data survives.
-      const completePromise = service.completeOAuthFlow('testcode12');
-
-      await vi.advanceTimersByTimeAsync(200);
-
-      const tokenTail = 'at01-' + 'M'.repeat(90);  // 95 chars after the leading 'o'
-      const expected = 'sk-ant-o' + tokenTail;
-      mockPty.emitData(`Your OAuth token:\nsk-ant-o\b${tokenTail}\nStore this token securely\n`);
-
-      await vi.advanceTimersByTimeAsync(600);
-
-      const result = await completePromise;
-
-      expect(result.success).toBe(true);
-      expect(result.token).toBe(expected);
-      expect(result.token?.startsWith('sk-ant-oat01-')).toBe(true);
-      expect(result.token?.length).toBe(expected.length);
-    });
-
-    // ========================================================================
-    // Defense-in-depth: many shapes of PTY output, all must capture the token
-    // intact OR refuse with a clear error. No silent storage of garbage.
-    // ========================================================================
-    describe('robustness against PTY output variants', () => {
-      const TOKEN = 'sk-ant-oat01-' + 'Q'.repeat(95);
-
-      it('captures token wrapped in SGR styling escapes', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        mockPty.emitData(`\x1b[1m${TOKEN}\x1b[0m\n`);
-        await vi.advanceTimersByTimeAsync(600);
-        const result = await promise;
-        expect(result.success).toBe(true);
-        expect(result.token).toBe(TOKEN);
-      });
-
-      it('captures token with per-character SGR styling', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        const styled = [...TOKEN].map(c => `\x1b[1m${c}\x1b[0m`).join('');
-        mockPty.emitData(`${styled}\n`);
-        await vi.advanceTimersByTimeAsync(600);
-        const result = await promise;
-        expect(result.success).toBe(true);
-        expect(result.token).toBe(TOKEN);
-      });
-
-      it('captures token wrapped in OSC hyperlink', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        mockPty.emitData(`\x1b]8;;https://anthropic.com\x1b\\${TOKEN}\x1b]8;;\x1b\\\n`);
-        await vi.advanceTimersByTimeAsync(600);
-        const result = await promise;
-        expect(result.success).toBe(true);
-        expect(result.token).toBe(TOKEN);
-      });
-
-      it('captures token preceded by spinner residue', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        const spinner = '*\b✶\b✻\b✽\b';
-        mockPty.emitData(`Your token:\n${spinner}${TOKEN}\n`);
-        await vi.advanceTimersByTimeAsync(600);
-        const result = await promise;
-        expect(result.success).toBe(true);
-        expect(result.token).toBe(TOKEN);
-      });
-
-      it('captures token followed immediately by junk (Store)', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        mockPty.emitData(`${TOKEN}Store this securely\n`);
-        await vi.advanceTimersByTimeAsync(600);
-        const result = await promise;
-        expect(result.success).toBe(true);
-        expect(result.token).toBe(TOKEN);
-      });
-
-      it('captures token even when emitted across multiple PTY chunks', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        mockPty.emitData(TOKEN.slice(0, 30));
-        mockPty.emitData(TOKEN.slice(30, 60));
-        mockPty.emitData(TOKEN.slice(60));
-        mockPty.emitData('\n');
-        await vi.advanceTimersByTimeAsync(600);
-        const result = await promise;
-        expect(result.success).toBe(true);
-        expect(result.token).toBe(TOKEN);
-      });
-
-      it('captures token when chunk boundary splits at the sk-ant- prefix', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        mockPty.emitData('sk-ant');
-        mockPty.emitData('-oat01-' + 'Q'.repeat(95) + '\n');
-        await vi.advanceTimersByTimeAsync(600);
-        const result = await promise;
-        expect(result.success).toBe(true);
-        expect(result.token).toBe(TOKEN);
-      });
-
-      it('captures token when ANSI escape sits inside the token body', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        const half = TOKEN.length >> 1;
-        mockPty.emitData(`${TOKEN.slice(0, half)}\x1b[0m${TOKEN.slice(half)}\n`);
-        await vi.advanceTimersByTimeAsync(600);
-        const result = await promise;
-        expect(result.success).toBe(true);
-        expect(result.token).toBe(TOKEN);
-      });
-
-      it('captures API-key-shaped token (sk-ant-api03-) too', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        const apiKey = 'sk-ant-api03-' + 'K'.repeat(80);
-        mockPty.emitData(`${apiKey}\n`);
-        await vi.advanceTimersByTimeAsync(600);
-        const result = await promise;
-        expect(result.success).toBe(true);
-        expect(result.token).toBe(apiKey);
-      });
-
-      // ----- Refusal cases: corruption must surface, not be silently stored -----
-
-      it('refuses to store a token with unknown type prefix (defense gate)', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        const fake = 'sk-ant-xyz99-' + 'A'.repeat(95);
-        mockPty.emitData(`${fake}\n`);
-        await vi.advanceTimersByTimeAsync(600);
-        // Flow does NOT abort — waits for credentials file. Simulate PTY
-        // exit without credentials file to trigger the final failure path.
-        mockPty.emitExit(0);
-        await vi.advanceTimersByTimeAsync(1500);
-        const result = await promise;
-        expect(result.success).toBe(false);
-        expect(result.error).toMatch(/malformed|prefix|format/i);
-      });
-
-      it('refuses to store a truncated token (defense gate)', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        const truncated = 'sk-ant-oat01-abc';
-        mockPty.emitData(`${truncated}\n`);
-        await vi.advanceTimersByTimeAsync(600);
-        mockPty.emitExit(0);
-        await vi.advanceTimersByTimeAsync(1500);
-        const result = await promise;
-        expect(result.success).toBe(false);
-        expect(result.error).toMatch(/malformed|short|length/i);
-      });
-
-      it('refuses to store the v0.17.27 mangled shape (sk-ant-at01-…, missing o)', async () => {
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-        const mangled = 'sk-ant-at01-' + 'A'.repeat(95);
-        mockPty.emitData(`${mangled}\n`);
-        await vi.advanceTimersByTimeAsync(600);
-        mockPty.emitExit(0);
-        await vi.advanceTimersByTimeAsync(1500);
-        const result = await promise;
-        expect(result.success).toBe(false);
-        expect(result.error).toMatch(/malformed|prefix/i);
-      });
-
-      it('recovers token via PTY screen buffer when cursor-forward hides a character', async () => {
-        // Simulates real Ink rendering: "Paste code here" is on the same row,
-        // then the token is written to the same row with ESC[1C skipping the
-        // 'o' position because Ink sees it hasn't changed from frame 1.
-        // stripAnsi removes ESC[1C → "sk-ant-at01-..." (missing o)
-        // renderPtyScreen preserves the 'o' from frame 1 → "sk-ant-oat01-..."
-        const tokenBody = 'R'.repeat(95);
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-
-        // Frame 1: "Paste code here" at row 3 col 2 — the 'o' in "code" sits at col 9
-        // Frame 2: token at row 3 col 2, cursor-forward skips col 9 (the 'o')
-        const rawPty =
-          '\x1b[3;2HPaste\x1b[1Ccode\x1b[1Chere' +
-          '\x1b[3;2Hsk-ant-\x1b[1Cat01-' + tokenBody + '\n';
-        mockPty.emitData(rawPty);
-        await vi.advanceTimersByTimeAsync(600);
-
-        const result = await promise;
-        expect(result.success).toBe(true);
-        expect(result.token).toBe('sk-ant-oat01-' + tokenBody);
-      });
-
-      it('recovers via credentials file when output token is mangled by cursor-forward', async () => {
-        // Reproduces the v0.17.29 regression: CLI renders sk-ant-ESC[1Cat01-
-        // in PTY, ANSI stripping eats the cursor-forward and the 'o' position,
-        // yielding sk-ant-at01-. The flow must NOT abort — it should wait for
-        // setup-token to write .credentials.json with the correct token.
-        const correctToken = 'sk-ant-oat01-' + 'R'.repeat(95);
-        const promise = service.completeOAuthFlow('testcode12');
-        await vi.advanceTimersByTimeAsync(200);
-
-        // Emit the mangled token (as stripAnsi would produce from ESC[1C)
-        const mangled = 'sk-ant-at01-' + 'R'.repeat(95);
-        mockPty.emitData(`${mangled}\n`);
-        await vi.advanceTimersByTimeAsync(600);
-
-        // setup-token writes credentials file before exiting
-        const credsJson = JSON.stringify({ oauthToken: correctToken });
-        mockFsExistsSync.mockImplementation((p: string) => {
-          if (typeof p === 'string' && p.endsWith('.credentials.json')) return true;
-          if (typeof p === 'string' && p.includes('cli.js')) return true;
-          if (typeof p === 'string' && p.includes('node.exe')) return true;
-          return false;
-        });
-        mockFsReadFileSync.mockImplementation((p: string) => {
-          if (typeof p === 'string' && p.endsWith('.credentials.json')) return credsJson;
-          throw new Error('not found');
-        });
-
-        // Next polling check finds the credentials file
-        await vi.advanceTimersByTimeAsync(500);
-        const result = await promise;
-        expect(result.success).toBe(true);
-        expect(result.token).toBe(correctToken);
-        expect(result.credentialsJson).toBe(credsJson);
-      });
+      const result = await promise;
+      expect(result.success).toBe(false);
     });
 
     it('should return error when no pending flow', async () => {
@@ -866,14 +618,8 @@ describe('AuthService', () => {
       expect(result.error).toContain('Invalid code');
     });
 
-    it('should read token from credentials file if present', async () => {
-      const token = 'sk-ant-oat01-' + 'b'.repeat(78);
-      mockFsExistsSync.mockImplementation((path: string) => {
-        if (path.includes('.credentials.json')) return true;
-        if (path.includes('cli.js')) return true;
-        return false;
-      });
-      mockFsReadFileSync.mockReturnValue(JSON.stringify({ oauthToken: token }));
+    it('completes when the credentials file is already there on the first check', async () => {
+      writeLogin();
 
       const completePromise = service.completeOAuthFlow('testcode123');
 
@@ -882,7 +628,7 @@ describe('AuthService', () => {
       const result = await completePromise;
 
       expect(result.success).toBe(true);
-      expect(result.token).toBe(token);
+      expect(result.token).toBe(LOGIN_TOKEN);
     });
 
     it('should timeout after max attempts', async () => {

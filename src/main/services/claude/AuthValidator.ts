@@ -5,12 +5,12 @@
  * Extracted from ClaudeCodeService for better separation of concerns.
  */
 
-import * as fs from 'fs';
-
 import { MAIN_CONSTANTS } from '../../constants/app';
 import logger from '../../utils/logger';
 import { getClaudeConfigDir } from '../../utils/resourcePaths';
 import type ConfigService from '../ConfigService';
+
+import { accessTokenOf, readCliCredentials, writeCliCredentials } from './cliCredentials';
 
 /**
  * Validation result
@@ -116,20 +116,30 @@ export class AuthValidator {
   async setupAuthEnv(): Promise<Record<string, string>> {
     const env: Record<string, string> = {};
 
-    // Prefer CLAUDE_CONFIG_DIR with full credentials (enables SDK-native token refresh)
-    const credentialsJson = await this.configService.getOAuthCredentials();
-    if (credentialsJson) {
+    // Prefer CLAUDE_CONFIG_DIR with full credentials (enables SDK-native token refresh).
+    //
+    // The CLI's file is the truth once it exists: the CLI refreshes the token
+    // in it. The encrypted copy only restores a missing file, and is brought up
+    // to date from the file — never written over it; see cliCredentials.ts.
+    const storedCredentials = await this.configService.getOAuthCredentials();
+    if (storedCredentials) {
       const claudeConfigDir = getClaudeConfigDir();
-      const credsFilePath = `${claudeConfigDir}/.credentials.json`;
       try {
-        // Ensure the credentials file is up-to-date in the stable config dir
-        fs.mkdirSync(claudeConfigDir, { recursive: true });
-        fs.writeFileSync(credsFilePath, credentialsJson, 'utf8');
+        const current = readCliCredentials(claudeConfigDir);
+        if (!current) {
+          writeCliCredentials(storedCredentials, claudeConfigDir);
+          logger.info('Restored the CLI credentials file from the stored copy');
+        } else if (current !== storedCredentials) {
+          await this.configService.setOAuthCredentials(current);
+          const refreshedToken = accessTokenOf(current);
+          if (refreshedToken) await this.configService.setOAuthToken(refreshedToken);
+          logger.info('Stored copy of the credentials updated from the CLI (token refreshed)');
+        }
         env['CLAUDE_CONFIG_DIR'] = claudeConfigDir;
         logger.debug('Using CLAUDE_CONFIG_DIR for OAuth with full credentials (refresh-capable)');
         return env;
       } catch (err) {
-        logger.warn('Failed to write credentials file to config dir, falling back to token-only', { error: err });
+        logger.warn('Failed to use the credentials file in the config dir, falling back to token-only', { error: err });
       }
     }
 

@@ -397,6 +397,8 @@ const electronAPI: ElectronAPI = {
     completeOAuth: (code: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.AUTH_COMPLETE_OAUTH, code),
 
+    cancelOAuth: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_CANCEL_OAUTH),
+
     logout: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT),
 
     onInvalidated: (callback: () => void) => {

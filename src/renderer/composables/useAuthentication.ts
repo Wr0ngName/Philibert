@@ -29,7 +29,7 @@ export function useAuthentication(options: UseAuthenticationOptions = {}) {
    * the point of showing the account is that the user can check it, and a
    * blank where it should be would look like there is nothing to check.
    */
-  const accountState = ref<'none' | 'loading' | 'loaded' | 'unavailable'>('none');
+  const accountState = ref<'none' | 'loading' | 'loaded' | 'token-only' | 'unavailable'>('none');
   /** Bumped per read, so a slow answer for an earlier login is dropped. */
   let accountRead = 0;
 
@@ -65,7 +65,7 @@ export function useAuthentication(options: UseAuthenticationOptions = {}) {
     }
     if (read !== accountRead) return;
     account.value = result;
-    accountState.value = result?.email ? 'loaded' : 'unavailable';
+    accountState.value = result?.email ? 'loaded' : result?.tokenOnly ? 'token-only' : 'unavailable';
   }
 
   /**
@@ -170,10 +170,24 @@ export function useAuthentication(options: UseAuthenticationOptions = {}) {
    * Reset the authentication form state
    */
   function resetState() {
+    // A login waiting for its code is abandoned with the form, or its CLI
+    // process would go on waiting with nothing left to answer it.
+    if (showCodeInput.value) void cancelOAuthLogin();
     showCodeInput.value = false;
     oauthCode.value = '';
     loginError.value = '';
     isLoggingIn.value = false;
+  }
+
+  /** Abandon the login waiting for its code. */
+  async function cancelOAuthLogin() {
+    showCodeInput.value = false;
+    oauthCode.value = '';
+    try {
+      await window.electron.auth.cancelOAuth();
+    } catch (err) {
+      logger.warn('Failed to cancel the login in progress', { error: err });
+    }
   }
 
   return {
@@ -190,6 +204,7 @@ export function useAuthentication(options: UseAuthenticationOptions = {}) {
     refreshAuthStatus,
     startOAuthLogin,
     completeOAuthLogin,
+    cancelOAuthLogin,
     saveApiKey,
     logout,
     resetState,

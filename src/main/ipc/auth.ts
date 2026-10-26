@@ -2,7 +2,6 @@
  * IPC handlers for authentication operations
  */
 
-import * as fs from 'fs';
 
 import { ipcMain, BrowserWindow } from 'electron';
 
@@ -12,9 +11,9 @@ import { AuthenticationError, ERROR_CODES } from '../errors';
 import AuthService from '../services/AuthService';
 import type { ClaudeCodeService } from '../services/ClaudeCodeService';
 import ConfigService from '../services/ConfigService';
+import { mergeOAuthAccount, removeCliCredentials, writeCliCredentials } from '../services/claude/cliCredentials';
 import { validateString, sendToRenderer, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
-import { getClaudeConfigDir } from '../utils/resourcePaths';
 
 export function setupAuthHandlers(
   authService: AuthService,
@@ -173,36 +172,20 @@ export function setupAuthHandlers(
             return { success: false, error: 'Failed to verify stored token. Your system keyring may not be working. Please try again.' };
           }
 
-          // Store full OAuth credentials for SDK token refresh if available
-          const saveCredentials = (json: string) => {
+          // The full credentials, for the CLI to use and refresh, and the
+          // account they are for, which is where the CLI reads the email and
+          // plan from. Into the config directory sessions run with; the
+          // encrypted copy only restores a lost file (see cliCredentials.ts).
+          if (result.credentialsJson) {
             try {
-              configService.setOAuthCredentials(json).catch(err =>
-                logger.warn('Failed to store OAuth credentials', { error: err }));
-              const claudeConfigDir = getClaudeConfigDir();
-              fs.mkdirSync(claudeConfigDir, { recursive: true });
-              fs.writeFileSync(
-                `${claudeConfigDir}/.credentials.json`,
-                json,
-                'utf8'
-              );
-              logger.info('Full OAuth credentials saved to stable config dir');
+              await configService.setOAuthCredentials(result.credentialsJson);
+              writeCliCredentials(result.credentialsJson);
+              if (result.accountJson) mergeOAuthAccount(result.accountJson);
+              logger.info('OAuth credentials saved to the stable config dir', { hasAccount: !!result.accountJson });
             } catch (err) {
               logger.warn('Failed to store full OAuth credentials', { error: err });
             }
-          };
-
-          if (result.credentialsJson) {
-            saveCredentials(result.credentialsJson);
           }
-
-          // Register callback for late-arriving credentials (setup-token writes
-          // the file after displaying the token — PTY may not have finished yet)
-          authService.onLateCredentials = (credentialsJson: string) => {
-            authService.onLateCredentials = null;
-            saveCredentials(credentialsJson);
-          };
-          // Auto-clear callback after 10s to avoid stale references
-          setTimeout(() => { authService.onLateCredentials = null; }, 10000);
 
           // Conversations that are already open run their own CLI
           // subprocess, each holding the credentials it was spawned with.
@@ -230,6 +213,15 @@ export function setupAuthHandlers(
   );
 
   // Logout - clear all auth credentials
+  // Abandon a login in progress. The CLI waits for its code indefinitely, so
+  // without this a cancelled login left it running until the next attempt,
+  // a logout, or the app quitting.
+  ipcMain.handle(IPC_CHANNELS.AUTH_CANCEL_OAUTH, async (): Promise<void> => {
+    ensureService(authService, 'AuthService');
+    logger.info('IPC: auth:cancel-oauth');
+    authService.cleanupOAuthFlow();
+  });
+
   ipcMain.handle(IPC_CHANNELS.AUTH_LOGOUT, async (): Promise<void> => {
     try {
       logger.info('IPC: auth:logout');
@@ -249,11 +241,8 @@ export function setupAuthHandlers(
 
       // Clean up stable config dir credentials file
       try {
-        const credsFile = `${getClaudeConfigDir()}/.credentials.json`;
-        if (fs.existsSync(credsFile)) {
-          fs.unlinkSync(credsFile);
-          logger.debug('Cleaned up credentials file from stable config dir');
-        }
+        removeCliCredentials();
+        logger.debug('Cleaned up credentials file from stable config dir');
       } catch (err) {
         logger.debug('Failed to clean up credentials file', { error: err });
       }

@@ -301,6 +301,8 @@ export interface ElectronAPI {
     getAccount: () => Promise<ClaudeAccount | null>;
     startOAuth: () => Promise<{ authUrl: string; error?: string }>;
     completeOAuth: (code: string) => Promise<{ success: boolean; error?: string }>;
+    /** Abandon a login in progress, ending the CLI process waiting for its code. */
+    cancelOAuth: () => Promise<void>;
     logout: () => Promise<void>;
     onInvalidated: (callback: () => void) => () => void;
   };
