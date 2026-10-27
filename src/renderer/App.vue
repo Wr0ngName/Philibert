@@ -23,6 +23,7 @@ import SettingsPanel from './components/settings/SettingsPanel.vue';
 import InitWizard from './components/wizard/InitWizard.vue';
 import ErrorBoundary from './components/shared/ErrorBoundary.vue';
 import ModelMismatchBanner from './components/shared/ModelMismatchBanner.vue';
+import UsageWarningBanner from './components/shared/UsageWarningBanner.vue';
 import UpdateBanner from './components/shared/UpdateBanner.vue';
 import GitControls from './components/shared/GitControls.vue';
 import ModelSelector from './components/shared/ModelSelector.vue';
@@ -354,6 +355,9 @@ const isMac = window.electron?.platform === 'darwin';
 
       <!-- Running model differs from the selected one -->
       <ModelMismatchBanner />
+
+      <!-- A claude.ai usage limit is getting close -->
+      <UsageWarningBanner />
 
       <!-- Main content -->
       <main class="flex-1 flex overflow-hidden">

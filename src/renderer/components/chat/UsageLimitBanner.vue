@@ -12,7 +12,7 @@ import { computed } from 'vue';
 
 import { useNowTicker } from '../../composables/useNowTicker';
 import { usageLimitBanner, type UsageLimitWait } from '../../utils/usage-limit';
-import Icon from '../shared/Icon.vue';
+import NoticeBanner from '../shared/NoticeBanner.vue';
 
 interface Props {
   wait: UsageLimitWait;
@@ -35,19 +35,9 @@ const scheduled = computed(() => banner.value.kind === 'waiting' || banner.value
 </script>
 
 <template>
-  <div
-    class="usage-limit-banner"
-    role="status"
-  >
-    <div class="flex items-center gap-2 min-w-0">
-      <Icon
-        name="warning"
-        size="sm"
-        class="shrink-0 text-amber-600 dark:text-amber-400"
-      />
-      <span class="truncate">{{ banner.message }}</span>
-    </div>
-    <div class="flex items-center gap-2 shrink-0">
+  <NoticeBanner>
+    {{ banner.message }}
+    <template #actions>
       <button
         v-if="banner.kind === 'offer'"
         type="button"
@@ -80,28 +70,6 @@ const scheduled = computed(() => banner.value.kind === 'waiting' || banner.value
       >
         Dismiss
       </button>
-    </div>
-  </div>
+    </template>
+  </NoticeBanner>
 </template>
-
-<style scoped>
-@reference "../../assets/styles/main.css";
-.usage-limit-banner {
-  @apply flex items-center justify-between gap-4 px-3 py-2 rounded-lg;
-  @apply bg-amber-50 dark:bg-amber-900/30;
-  @apply border border-amber-200 dark:border-amber-800;
-  @apply text-sm text-surface-700 dark:text-surface-200;
-}
-
-.btn-sm {
-  @apply px-3 py-1 text-sm font-medium rounded-md transition-colors;
-}
-
-.btn-amber {
-  @apply bg-amber-600 text-white hover:bg-amber-700;
-}
-
-.btn-ghost {
-  @apply text-surface-600 dark:text-surface-400 hover:bg-surface-200 dark:hover:bg-surface-700;
-}
-</style>

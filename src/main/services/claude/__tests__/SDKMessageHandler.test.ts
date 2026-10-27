@@ -14,7 +14,7 @@ vi.mock('../../../utils/logger', () => ({
     debug: vi.fn(),
   },
 }));
-import { SDKMessageHandler, MessageHandlerCallbacks, resolveResultError, extractTaskCreateId, usageLimitStopFrom } from '../SDKMessageHandler';
+import { SDKMessageHandler, MessageHandlerCallbacks, resolveResultError, extractTaskCreateId, usageLimitStopFrom, usageWarningFrom } from '../SDKMessageHandler';
 
 describe('SDKMessageHandler', () => {
   let callbacks: MessageHandlerCallbacks;
@@ -253,6 +253,36 @@ describe('SDKMessageHandler', () => {
 
       expect(logger.info).not.toHaveBeenCalledWith('Unhandled SDK message type', expect.anything());
       expect(logger.info).toHaveBeenCalledWith('Rate limit status', expect.objectContaining({ status: 'rejected' }));
+    });
+
+    it('passes on a usage warning, and its end, as the server reports them', async () => {
+      // The sequence a real session logged (2026-10-27): allowed at start,
+      // then the weekly limit past its threshold.
+      const onUsageWarning = vi.fn();
+      handler = new SDKMessageHandler({ ...callbacks, onUsageWarning });
+
+      await handler.handleMessage(rateLimitEvent({ status: 'allowed', rateLimitType: 'five_hour' }) as never);
+      await handler.handleMessage(rateLimitEvent({
+        status: 'allowed_warning',
+        utilization: 0.8,
+        rateLimitType: 'seven_day',
+        resetsAt: RESETS_AT_SECONDS,
+        surpassedThreshold: 0.75,
+      }) as never);
+
+      expect(onUsageWarning.mock.calls).toEqual([
+        [null],
+        [{ utilization: 0.8, limitType: 'seven_day', resetsAt: RESETS_AT_SECONDS * 1000, surpassedThreshold: 0.75 }],
+      ]);
+    });
+  });
+
+  describe('usageWarningFrom', () => {
+    it('is a warning only for allowed_warning, with what the server said', () => {
+      expect(usageWarningFrom({ status: 'allowed' })).toBeNull();
+      expect(usageWarningFrom({ status: 'rejected', resetsAt: 10 })).toBeNull();
+      expect(usageWarningFrom({ status: 'allowed_warning' })).toEqual({});
+      expect(usageWarningFrom({ status: 'allowed_warning', utilization: Number.NaN, resetsAt: Number.NaN })).toEqual({});
     });
   });
 

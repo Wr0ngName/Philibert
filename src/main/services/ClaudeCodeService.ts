@@ -848,6 +848,9 @@ export class ClaudeCodeService {
         }
         this.emitSessionId(conversationId, sessionId);
       },
+      onUsageWarning: (warning) => {
+        this.send(IPC_CHANNELS.CLAUDE_USAGE_WARNING, warning);
+      },
       onAuthError: () => {
         const session = this.activeSessions.get(conversationId);
         if (session?.isResumeAttempt) {

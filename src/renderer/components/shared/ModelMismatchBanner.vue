@@ -21,7 +21,7 @@ import type { ModelInfo } from '@shared/types';
 import { useChatStore } from '../../stores/chat';
 import { useSettingsStore } from '../../stores/settings';
 import { formatModelId } from '../../utils/model';
-import Icon from './Icon.vue';
+import NoticeBanner from './NoticeBanner.vue';
 
 const settingsStore = useSettingsStore();
 const { selectedModel } = storeToRefs(settingsStore);
@@ -90,23 +90,14 @@ onUnmounted(() => {
     leave-from-class="translate-y-0 opacity-100"
     leave-to-class="-translate-y-full opacity-0"
   >
-    <div
+    <NoticeBanner
       v-if="isVisible"
-      class="model-mismatch-banner"
+      variant="bar"
     >
-      <div class="flex items-center gap-2 min-w-0">
-        <Icon
-          name="warning"
-          size="sm"
-          class="shrink-0 text-amber-600 dark:text-amber-400"
-        />
-        <span class="truncate">
-          Running <strong>{{ runningLabel }}</strong>, not
-          <strong>{{ selectedLabel }}</strong>. Claude Code switches models on
-          its own when a message is flagged or a model is unavailable.
-        </span>
-      </div>
-      <div class="flex items-center gap-2 shrink-0">
+      Running <strong>{{ runningLabel }}</strong>, not
+      <strong>{{ selectedLabel }}</strong>. Claude Code switches models on
+      its own when a message is flagged or a model is unavailable.
+      <template #actions>
         <button
           class="btn-sm btn-amber"
           @click="reapply"
@@ -119,29 +110,7 @@ onUnmounted(() => {
         >
           Dismiss
         </button>
-      </div>
-    </div>
+      </template>
+    </NoticeBanner>
   </Transition>
 </template>
-
-<style scoped>
-@reference "../../assets/styles/main.css";
-.model-mismatch-banner {
-  @apply flex items-center justify-between gap-4 px-4 py-2;
-  @apply bg-amber-50 dark:bg-amber-900/30;
-  @apply border-b border-amber-200 dark:border-amber-800;
-  @apply text-sm text-surface-700 dark:text-surface-200;
-}
-
-.btn-sm {
-  @apply px-3 py-1 text-sm font-medium rounded-md transition-colors;
-}
-
-.btn-amber {
-  @apply bg-amber-600 text-white hover:bg-amber-700;
-}
-
-.btn-ghost {
-  @apply text-surface-600 dark:text-surface-400 hover:bg-surface-200 dark:hover:bg-surface-700;
-}
-</style>

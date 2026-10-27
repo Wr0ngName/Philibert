@@ -41,6 +41,7 @@ const continuing = new Set<string>();
 /** Polls for a scheduled continue that is due; runs only while one exists. */
 let usageLimitTimer: ReturnType<typeof setInterval> | null = null;
 let cleanupUsageLimit: (() => void) | null = null;
+let cleanupUsageWarning: (() => void) | null = null;
 let cleanupChunk: (() => void) | null = null;
 let cleanupToolUse: (() => void) | null = null;
 let cleanupError: (() => void) | null = null;
@@ -698,6 +699,11 @@ export function useClaudeChat() {
       chatStore.holdQueuedPrompts(conversationId);
     });
 
+    // A usage limit getting close, or no longer — for the whole account.
+    cleanupUsageWarning = window.electron.claude.onUsageWarning((warning) => {
+      chatStore.setUsageWarning(warning);
+    });
+
     // Handle streaming chunks - route to correct conversation
     cleanupChunk = window.electron.claude.onChunk((conversationId, chunk) => {
       // appendChunk writes to the on-screen list or the background buffer as
@@ -971,6 +977,10 @@ export function useClaudeChat() {
     if (cleanupUsageLimit) {
       cleanupUsageLimit();
       cleanupUsageLimit = null;
+    }
+    if (cleanupUsageWarning) {
+      cleanupUsageWarning();
+      cleanupUsageWarning = null;
     }
 
     if (cleanupChunk) {

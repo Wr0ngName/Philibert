@@ -34,6 +34,7 @@ import { setupConversationIPC } from '../../../main/ipc/conversations';
 import { ConversationService } from '../../../main/services/ConversationService';
 import '../../../preload/preload';
 import ChatWindow from '../../components/chat/ChatWindow.vue';
+import UsageWarningBanner from '../../components/shared/UsageWarningBanner.vue';
 import { USAGE_LIMIT_CHECK_INTERVAL_MS, USAGE_LIMIT_CONTINUE_PROMPT } from '../../utils/usage-limit';
 import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
@@ -246,5 +247,66 @@ describe('a task stopped by a usage limit', () => {
     await clockTo(at);
     expect(sends).toHaveLength(1);
     expect(chat.getConversationState(id).usageLimitWait?.resumeAt).toBeNull();
+  });
+
+  describe('a usage limit getting close', () => {
+    // What a real session reported (main.log, 2026-10-27): the weekly limit
+    // past 75%, creeping to 80%, resetting days later.
+    const RESETS_AT = NOW + 3 * 24 * HOUR;
+    const warning = (utilization: number) => ({
+      utilization, limitType: 'seven_day', resetsAt: RESETS_AT, surpassedThreshold: 0.75,
+    });
+    let banner: ReturnType<typeof mount>;
+
+    beforeEach(() => {
+      banner = mount(UsageWarningBanner);
+    });
+
+    afterEach(() => banner.unmount());
+
+    it('says so, as the CLI does, and follows the usage as it grows', async () => {
+      expect(banner.text()).toBe('');
+
+      emitIpc('claude:usage-warning', warning(0.75));
+      await settle();
+      expect(banner.text()).toContain("You've used 75% of your weekly limit · resets");
+
+      emitIpc('claude:usage-warning', warning(0.8));
+      await settle();
+      expect(banner.text()).toContain("You've used 80% of your weekly limit");
+    });
+
+    it('stays dismissed until the server warns about something new', async () => {
+      emitIpc('claude:usage-warning', warning(0.75));
+      await settle();
+      await banner.findAll('button').find((b) => b.text() === 'Dismiss')!.trigger('click');
+      await settle();
+      expect(banner.text()).toBe('');
+
+      emitIpc('claude:usage-warning', warning(0.8));
+      await settle();
+      expect(banner.text()).toBe('');
+
+      emitIpc('claude:usage-warning', { ...warning(0.9), surpassedThreshold: 0.9 });
+      await settle();
+      expect(banner.text()).toContain("You've used 90% of your weekly limit");
+    });
+
+    it('goes when usage is back under the threshold, or the limit resets', async () => {
+      emitIpc('claude:usage-warning', warning(0.8));
+      await settle();
+      expect(banner.text()).toContain('80%');
+      emitIpc('claude:usage-warning', null);
+      await settle();
+      expect(banner.text()).toBe('');
+
+      emitIpc('claude:usage-warning', warning(0.8));
+      await settle();
+      expect(banner.text()).toContain('80%');
+      vi.setSystemTime(RESETS_AT);
+      vi.advanceTimersByTime(1000);
+      await settle();
+      expect(banner.text()).toBe('');
+    });
   });
 });

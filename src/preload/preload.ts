@@ -5,7 +5,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type { ElectronAPI } from '../shared/preload-api';
-import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type MessageImage, type ProjectPermissionEntry, type RendererLogEntry, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData, type UsageLimitStop } from '../shared/types';
+import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type MessageImage, type ProjectPermissionEntry, type RendererLogEntry, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData, type UsageLimitStop, type UsageWarning } from '../shared/types';
 
 // Create the API object that will be exposed to the renderer
 const electronAPI: ElectronAPI = {
@@ -206,6 +206,12 @@ const electronAPI: ElectronAPI = {
       ) => callback(conversationId, stop);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_USAGE_LIMIT, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_USAGE_LIMIT, handler);
+    },
+
+    onUsageWarning: (callback) => {
+      const handler = (_event: Electron.IpcRendererEvent, warning: UsageWarning | null) => callback(warning);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_USAGE_WARNING, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_USAGE_WARNING, handler);
     },
 
     onSessionId: (callback) => {

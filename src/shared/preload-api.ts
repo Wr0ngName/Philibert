@@ -42,6 +42,7 @@ import type {
   UpdateProgress,
   TaskOutputChunk,
   UsageLimitStop,
+  UsageWarning,
   WhisperModelId,
   ConversationUpdate,
   ConversationWindow,
@@ -168,6 +169,8 @@ export interface ElectronAPI {
     onSystemNote: (callback: (conversationId: string, note: string) => void) => () => void;
     /** A turn was stopped by a claude.ai usage limit with a known reset time */
     onUsageLimit: (callback: (conversationId: string, stop: UsageLimitStop) => void) => () => void;
+    /** A claude.ai usage limit is close, or (null) no longer is — account-wide */
+    onUsageWarning: (callback: (warning: UsageWarning | null) => void) => () => void;
     /** SDK session ID received for a conversation (for resume support) */
     onSessionId: (callback: (conversationId: string, sessionId: string) => void) => () => void;
     /** Get session permissions for a conversation */

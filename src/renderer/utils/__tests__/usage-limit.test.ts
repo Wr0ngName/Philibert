@@ -16,6 +16,8 @@ import {
   resumeTimeFor,
   scheduleWait,
   usageLimitBanner,
+  usageWarningKey,
+  usageWarningMessage,
   waitForStop,
   type UsageLimitWait,
 } from '../usage-limit';
@@ -135,5 +137,31 @@ describe('usageLimitBanner', () => {
       kind: 'too-far',
       message: `Usage limit reached · resets ${formatResetTime(far, NOW)}, too far out to wait for`,
     });
+  });
+});
+
+describe('usageWarningMessage', () => {
+  it("says it in the CLI's words, with the limit's own name", () => {
+    const resetsAt = NOW + 3 * 24 * HOUR;
+    expect(usageWarningMessage({ utilization: 0.8, limitType: 'seven_day', resetsAt }, NOW))
+      .toBe(`You've used 80% of your weekly limit · resets ${formatResetTime(resetsAt, NOW)}`);
+    expect(usageWarningMessage({ utilization: 0.919, limitType: 'five_hour' }, NOW))
+      .toBe("You've used 91% of your session limit");
+  });
+
+  it('says it is approaching when the server did not say how much is used', () => {
+    expect(usageWarningMessage({ limitType: 'seven_day_opus' }, NOW)).toBe('Approaching Opus limit');
+    expect(usageWarningMessage({ limitType: 'something_new' }, NOW)).toBe('Approaching usage limit');
+  });
+});
+
+describe('usageWarningKey', () => {
+  it('is the same as usage creeps up, and new for a new threshold, limit or period', () => {
+    const warning = { utilization: 0.75, limitType: 'seven_day', resetsAt: NOW, surpassedThreshold: 0.75 };
+    const key = usageWarningKey(warning);
+    expect(usageWarningKey({ ...warning, utilization: 0.8 })).toBe(key);
+    expect(usageWarningKey({ ...warning, surpassedThreshold: 0.9 })).not.toBe(key);
+    expect(usageWarningKey({ ...warning, limitType: 'five_hour' })).not.toBe(key);
+    expect(usageWarningKey({ ...warning, resetsAt: NOW + HOUR })).not.toBe(key);
   });
 });

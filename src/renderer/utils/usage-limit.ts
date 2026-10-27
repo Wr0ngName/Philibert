@@ -11,7 +11,7 @@
  * them, because this is the part with rules in it.
  */
 
-import type { UsageLimitStop } from '@shared/types';
+import type { UsageLimitStop, UsageWarning } from '@shared/types';
 
 /** What the CLI sends when it continues a task after the limit resets. */
 export const USAGE_LIMIT_CONTINUE_PROMPT =
@@ -146,4 +146,36 @@ export function usageLimitBanner(wait: UsageLimitWait, now: number): UsageLimitB
     return { kind: 'too-far', message: `Usage limit reached · resets ${resetTime}, too far out to wait for` };
   }
   return { kind: 'offer', message: `Usage limit reached · resets at ${resetTime}` };
+}
+
+/** What each limit is called — the CLI's own names for them. */
+const LIMIT_NAMES: Record<string, string> = {
+  five_hour: 'session limit',
+  seven_day: 'weekly limit',
+  seven_day_opus: 'Opus limit',
+  seven_day_sonnet: 'Sonnet limit',
+  overage: 'usage credit limit',
+};
+
+/**
+ * What the usage warning says, in the CLI's words: "You've used 80% of your
+ * session limit · resets 7:00 PM", or "Approaching usage limit · …" when the
+ * server did not say how much is used.
+ */
+export function usageWarningMessage(warning: UsageWarning, now: number): string {
+  const limit = (warning.limitType && LIMIT_NAMES[warning.limitType]) || 'usage limit';
+  const percent = warning.utilization ? Math.floor(warning.utilization * 100) : 0;
+  return [
+    percent > 0 ? `You've used ${percent}% of your ${limit}` : `Approaching ${limit}`,
+    warning.resetsAt !== undefined && `resets ${formatResetTime(warning.resetsAt, now)}`,
+  ].filter(Boolean).join(' · ');
+}
+
+/**
+ * Which warning this is, for dismissing it: one dismissed stays dismissed
+ * until the server warns about another limit, another threshold, or another
+ * period of the same limit.
+ */
+export function usageWarningKey(warning: UsageWarning): string {
+  return `${warning.limitType ?? ''}|${warning.surpassedThreshold ?? ''}|${warning.resetsAt ?? ''}`;
 }

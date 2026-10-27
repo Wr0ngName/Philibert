@@ -8,7 +8,7 @@ import { ref, computed } from 'vue';
 
 import { modifiedPathsForTool } from '@shared/file-modifications';
 import { primaryModelUsage } from '@shared/model-usage';
-import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData, MessageImage } from '@shared/types';
+import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData, MessageImage, UsageWarning } from '@shared/types';
 
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
@@ -267,6 +267,13 @@ export const useChatStore = defineStore('chat', () => {
 
   /** Map of conversation ID to its state */
   const conversationStates = ref<Map<string, ConversationState>>(new Map());
+
+  /**
+   * The account's usage warning — a claude.ai limit getting close — or null.
+   * Account-wide rather than per conversation: whichever session last
+   * reported the account's status, it holds for all of them.
+   */
+  const usageWarning = ref<UsageWarning | null>(null);
 
   // ============================================
   // Global Resource Tracking
@@ -2673,6 +2680,11 @@ export const useChatStore = defineStore('chat', () => {
   // Usage Limit Actions
   // ============================================
 
+  /** Record the account's usage warning, or clear it (null). */
+  function setUsageWarning(warning: UsageWarning | null): void {
+    usageWarning.value = warning;
+  }
+
   /** Record, replace or clear the usage-limit reset a conversation waits on. */
   function setUsageLimitWait(conversationId: string, wait: UsageLimitWait | null): void {
     // Clearing a conversation that has no state must not create one.
@@ -2883,7 +2895,9 @@ export const useChatStore = defineStore('chat', () => {
     isQueueHeld,
     queueHeld,
 
-    // Waiting out a usage limit
+    // Usage limits: getting close, and waiting one out
+    usageWarning,
+    setUsageWarning,
     usageLimitWait,
     hasScheduledUsageLimitWait,
     setUsageLimitWait,

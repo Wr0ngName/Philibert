@@ -1344,6 +1344,22 @@ export interface UsageLimitStop {
 }
 
 /**
+ * A claude.ai usage limit getting close: what interactive Claude Code shows as
+ * "You've used 80% of your session limit · resets 7pm". The server reports it
+ * (status `allowed_warning`) once usage passes one of its thresholds.
+ */
+export interface UsageWarning {
+  /** How much of the limit is used, from 0 to 1, when the server said. */
+  utilization?: number;
+  /** Which limit, e.g. 'five_hour' or 'seven_day', when the server said. */
+  limitType?: string;
+  /** When the limit resets, in epoch milliseconds, when the server said. */
+  resetsAt?: number;
+  /** The threshold passed (0 to 1): a new one is a new warning. */
+  surpassedThreshold?: number;
+}
+
+/**
  * Session usage information sent to the renderer
  */
 export interface SessionUsage {
@@ -1722,6 +1738,8 @@ export const IPC_CHANNELS = {
   CLAUDE_SYSTEM_NOTE: 'claude:system-note',
   /** A turn was stopped by a claude.ai usage limit with a known reset time */
   CLAUDE_USAGE_LIMIT: 'claude:usage-limit',
+  /** A claude.ai usage limit is close (UsageWarning), or no longer is (null) */
+  CLAUDE_USAGE_WARNING: 'claude:usage-warning',
   /** Tool use captured from assistant message (all tools, including auto-approved) */
   CLAUDE_TOOL_CAPTURE: 'claude:tool-capture',
   /** Tool result written to disk (output file path) */

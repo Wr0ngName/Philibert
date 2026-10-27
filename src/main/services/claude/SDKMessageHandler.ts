@@ -12,7 +12,7 @@ import type {
   SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 
-import type { SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, ToolCaptureData, UsageLimitStop } from '../../../shared/types';
+import type { SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, ToolCaptureData, UsageLimitStop, UsageWarning } from '../../../shared/types';
 import logger from '../../utils/logger';
 
 import { toolResultParts, type ExtractedImage } from './tool-result-images';
@@ -50,6 +50,25 @@ export function usageLimitStopFrom(info: SDKRateLimitInfo | null): UsageLimitSto
   return {
     resetsAt: info.resetsAt * 1000,
     ...(info.rateLimitType ? { limitType: info.rateLimitType } : {}),
+  };
+}
+
+/**
+ * The usage warning a rate-limit status carries, or null when it carries none.
+ *
+ * `allowed_warning` is the server saying usage has passed one of its
+ * thresholds; interactive Claude Code shows it as "You've used 80% of your
+ * session limit". Any other status ends the warning: `allowed` is back under
+ * the threshold (a reset), and `rejected` is the limit itself, which the
+ * usage-limit stop covers. `resetsAt` arrives in epoch seconds.
+ */
+export function usageWarningFrom(info: SDKRateLimitInfo): UsageWarning | null {
+  if (info.status !== 'allowed_warning') return null;
+  return {
+    ...(typeof info.utilization === 'number' && Number.isFinite(info.utilization) && { utilization: info.utilization }),
+    ...(info.rateLimitType && { limitType: info.rateLimitType }),
+    ...(typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt) && { resetsAt: info.resetsAt * 1000 }),
+    ...(typeof info.surpassedThreshold === 'number' && { surpassedThreshold: info.surpassedThreshold }),
   };
 }
 
@@ -172,6 +191,11 @@ export interface MessageHandlerCallbacks {
   }) => void;
   onSessionId?: (sessionId: string) => void;
   onAuthError?: () => void;
+  /**
+   * The account's usage warning, on every rate-limit status: a limit is close,
+   * or (null) it no longer is. Account-wide, whichever session reported it.
+   */
+  onUsageWarning?: (warning: UsageWarning | null) => void;
   /**
    * The model the CLI reports it is actually running, as seen on the `init`
    * system message and on each assistant frame. The caller compares this
@@ -442,9 +466,10 @@ export class SDKMessageHandler {
         });
         break;
 
-      // The account's rate-limit status, sent whenever it changes. Kept for
-      // the end of the turn, when it says whether a refusal is worth waiting
-      // out and until when — see takeUsageLimitStop.
+      // The account's rate-limit status, sent whenever it changes. Passed on
+      // as the usage warning it carries, and kept for the end of the turn,
+      // when it says whether a refusal is worth waiting out and until when —
+      // see takeUsageLimitStop.
       case 'rate_limit_event':
         this.rateLimitInfo = message.rate_limit_info;
         logger.info('Rate limit status', {
@@ -454,6 +479,7 @@ export class SDKMessageHandler {
           utilization: message.rate_limit_info.utilization,
           isUsingOverage: message.rate_limit_info.isUsingOverage,
         });
+        this.callbacks.onUsageWarning?.(usageWarningFrom(message.rate_limit_info));
         break;
 
       default:
