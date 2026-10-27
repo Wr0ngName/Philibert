@@ -238,7 +238,8 @@ pipeline (`.gitlab-ci.yml`):
     not touched.
   - **Stable pipeline** (`vX.Y.Z`): deletes **every RC** (across all
     versions), then keeps the **last `KEEP_LAST_N` stable releases**
-    (default 3).
+    (1: only the newest stable — auto-update needs nothing older, and each
+    version holds ~2.3 GB of installers).
   - Anything else (manual run, unexpected tag): no-op.
 
   Both branches apply the same shape to the Releases API and the Package

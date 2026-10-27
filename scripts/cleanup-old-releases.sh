@@ -9,7 +9,7 @@
 #
 # Stable pipeline (tag matches `vX.Y.Z`):
 #   - Releases: delete every RC, then keep the most recent KEEP_LAST_N
-#               stable releases (default 3).
+#               stable releases (default 1).
 #   - Packages: mirror.
 #
 # Anything else (manual run, weird tag): no-op with a log message — we
@@ -19,7 +19,7 @@
 # Reads from the environment:
 #   CI_API_V4_URL, CI_PROJECT_ID, CI_JOB_TOKEN — provided by GitLab CI
 #   CI_COMMIT_TAG                              — release tag that triggered the pipeline
-#   KEEP_LAST_N                                — stable retention count (default 3)
+#   KEEP_LAST_N                                — stable retention count (default 1)
 #
 # Requires: curl, jq (the CI job runs this inside `alpine` with both installed).
 #
@@ -30,7 +30,7 @@
 
 set -eu
 
-KEEP_LAST_N="${KEEP_LAST_N:-3}"
+KEEP_LAST_N="${KEEP_LAST_N:-1}"
 API="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}"
 HDR="JOB-TOKEN: ${CI_JOB_TOKEN}"
 TAG="${CI_COMMIT_TAG:-}"

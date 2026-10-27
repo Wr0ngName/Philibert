@@ -724,7 +724,9 @@ cleanup:old:
   needs:
     - job: create:release
   variables:
-    KEEP_LAST_N: "3"
+    # Only the newest stable: auto-update needs nothing older, and each
+    # stable version holds ~2.3 GB of installers in the Package Registry.
+    KEEP_LAST_N: "1"
   script:
     - |
       docker run --rm \
