@@ -20,6 +20,12 @@ variables:
   # move the binary; the vendor job keys its published artifact on this value,
   # so nothing is rebuilt until it changes.
   WHISPER_VERSION: "v1.9.5"
+  # The image the Windows installers are packaged in, pinned to a dated
+  # release. The bare `wine-mono` tag follows the latest one: it moved to
+  # 10.26 on 2026-10-24, and v0.25.0-rc.4 was the first build to pull it
+  # (the runner's copy had been cleared) — both Windows packages then came
+  # out empty. A new release is adopted by changing this line.
+  WINE_BUILDER_IMAGE: "electronuserland/builder:24-wine-mono-05.26"
 
 # Common cleanup template - fixes root-owned files from docker
 # Uses docker to run chown as root (since host doesn't have passwordless sudo)
@@ -424,7 +430,7 @@ vendor:whisper:windows:
         -v "$CI_PROJECT_DIR:/app" \
         -w /app \
         -e PHILIBERT_ONLINE_BUILD=false \
-        electronuserland/builder:wine-mono \
+        "$WINE_BUILDER_IMAGE" \
         bash -c "curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs bzip2 && npm ci --maxsockets 1 --no-audit --no-fund && ./scripts/download-node-windows.sh && ./scripts/download-git-bash-windows.sh && npm run package -- --platform=win32 && node scripts/verify-package.mjs out/Philibert-win32-x64 win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never"
     - echo "=== Artifact sizes ==="
     - du -sh out/make/nsis/*.exe 2>/dev/null || true
@@ -452,7 +458,7 @@ vendor:whisper:windows:
         -v "$CI_PROJECT_DIR:/app" \
         -w /app \
         -e PHILIBERT_ONLINE_BUILD=true \
-        electronuserland/builder:wine-mono \
+        "$WINE_BUILDER_IMAGE" \
         bash -c "curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs bzip2 && npm ci --maxsockets 1 --no-audit --no-fund && npm run package -- --platform=win32 && node scripts/verify-package.mjs out/Philibert-win32-x64 win32 && npx electron-builder --win nsis --x64 --prepackaged 'out/Philibert-win32-x64' --publish never && mkdir -p out-online/nsis && cp out/make/nsis/*.exe out-online/nsis/"
 
 # Windows OFFLINE build for tags (main installer for auto-updates)

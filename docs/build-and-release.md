@@ -224,7 +224,8 @@ pipeline (`.gitlab-ci.yml`):
 - `build:linux` — DEB + RPM packages via `electron-forge make` in a `node:25`
   container with `build-essential`, `python3`, `dpkg`, `fakeroot`, `rpm`
 - `build:windows` — NSIS offline installer (bundles Node.js + Git) via
-  `electronuserland/builder:wine-mono` with Node 25 installed at runtime
+  the `WINE_BUILDER_IMAGE` image (a dated `electronuserland/builder`
+  wine-mono release, pinned) with Node 25 installed at runtime
 - `build:windows:online` — NSIS online installer (downloads Node.js + Git
   during install, smaller download)
 
@@ -281,7 +282,14 @@ directly (see Version Bump above).
 Tags are protected. Delete via GitLab web UI: Settings > Repository >
 Protected Tags, or Tags page > delete button.
 
-### Build fails in `electronuserland/builder:wine-mono`
+### Build fails in the Windows builder image
 This container doesn't include Node.js by default. The CI script installs it
 via `nodesource` at runtime. If the Node version changes, update the
 `NODE_VERSION` variable in `.gitlab-ci.yml`.
+
+The image is pinned (`WINE_BUILDER_IMAGE` in `.gitlab-ci.yml`) because the
+bare `wine-mono` tag follows the newest release. A runner that has lost its
+cached copy then builds with a different image than the last release did:
+v0.25.0-rc.4 pulled 10.26 (published 2026-10-24) and both Windows packages
+came out empty. Adopt a new release by changing the pin and running the
+manual Windows builds on `main` before tagging.
