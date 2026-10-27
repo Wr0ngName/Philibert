@@ -18,6 +18,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
+import { formatTime } from '../../utils/date';
 import { logger } from '../../utils/logger';
 import TransitionFade from './TransitionFade.vue';
 
@@ -42,10 +43,6 @@ const hasPermissions = computed(() => permissionCount.value > 0);
 /**
  * Format timestamp for display
  */
-function formatTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
 /** Main line for a project entry: the tool, or "Directory". */
 function projectEntryTitle(entry: ProjectPermissionEntry): string {
   return entry.kind === 'directory' ? 'Directory' : entry.toolName ?? entry.value;

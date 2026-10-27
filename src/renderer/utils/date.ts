@@ -12,14 +12,34 @@ import { TIME_MS } from '../constants/app';
 export type DateFormatStyle = 'relative' | 'time' | 'date' | 'datetime';
 
 /**
+ * Formatters, built once per set of options.
+ *
+ * `toLocaleTimeString(locales, options)` builds a new Intl.DateTimeFormat on
+ * every call, and that is the expensive part: the discussion formats one time
+ * per message it renders, and with a window of hundreds of messages that was
+ * the largest cost of rendering it after the DOM itself (profiled 2026-10-27).
+ * The locale is the default one, as `[]` gave before.
+ */
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
+function formatterFor(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = JSON.stringify(options);
+  let formatter = formatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat([], options);
+    formatters.set(key, formatter);
+  }
+  return formatter;
+}
+
+/**
  * Format a timestamp as a time string (HH:MM)
  *
  * @param timestamp - Unix timestamp in milliseconds
  * @returns Formatted time string like "2:30 PM"
  */
 export function formatTime(timestamp: number): string {
-  const date = new Date(timestamp);
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return formatterFor({ hour: '2-digit', minute: '2-digit' }).format(timestamp);
 }
 
 /**
@@ -33,8 +53,7 @@ export function formatDate(
   timestamp: number,
   options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
 ): string {
-  const date = new Date(timestamp);
-  return date.toLocaleDateString([], options);
+  return formatterFor(options).format(timestamp);
 }
 
 /**
@@ -72,7 +91,7 @@ export function formatRelativeDate(timestamp: number): string {
 
   // This week - show weekday
   if (diff < TIME_MS.ONE_WEEK) {
-    return date.toLocaleDateString([], { weekday: 'short' });
+    return formatDate(timestamp, { weekday: 'short' });
   }
 
   // Older - show month and day
@@ -86,14 +105,13 @@ export function formatRelativeDate(timestamp: number): string {
  * @returns Formatted datetime string like "Jan 15, 2024, 2:30 PM"
  */
 export function formatDateTime(timestamp: number): string {
-  const date = new Date(timestamp);
-  return date.toLocaleString([], {
+  return formatterFor({
     month: 'short',
     day: 'numeric',
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-  });
+  }).format(timestamp);
 }
 
 /**

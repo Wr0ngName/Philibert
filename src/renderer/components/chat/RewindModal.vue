@@ -22,6 +22,7 @@ import { computed, ref, watch } from 'vue';
 import type { RewindPreview, RewindScope } from '@shared/types';
 
 import { useChatStore } from '../../stores/chat';
+import { formatTime } from '../../utils/date';
 import { logger } from '../../utils/logger';
 import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
@@ -75,10 +76,6 @@ const canApply = computed(() => {
   if (!touchesFiles.value) return true;
   return preview.value?.canRewind === true;
 });
-
-function formatTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
 
 async function runPreview(): Promise<void> {
   const uuid = selectedUuid.value;
