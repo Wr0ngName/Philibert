@@ -8,7 +8,7 @@
  * line and its output, followed the same way.
  */
 
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed } from 'vue';
 
 import type { BackgroundTask, ToolUseInfo } from '@shared/types';
 
@@ -18,13 +18,14 @@ import { useConversationsStore } from '../../stores/conversations';
 import { formatModelId } from '../../utils/model';
 import { formatTaskDuration } from '../../utils/task-duration';
 import { formatTokenCount } from '../../utils/token-count';
-import { formatToolInput, type InputParam } from '../../utils/tool-input';
+import type { ToolCallOutput } from '../../utils/tool-output';
 import Button from '../shared/Button.vue';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
 import { heldListSource } from './message-list-source';
 import MessageList from './MessageList.vue';
+import ToolCallView from './ToolCallView.vue';
 
 interface Props {
   open: boolean;
@@ -99,55 +100,32 @@ function openTranscriptTool(toolUseBlockId: string): void {
  */
 const commandToolName = computed(() => props.spawningTool?.toolName ?? props.task?.toolName);
 
+/** The command's input: its command line, as Tool Details shows a call's input. */
+const commandInput = computed(() => props.spawningTool?.input ?? props.task?.toolInput);
+
 /**
- * What an empty output means, as far as it is known: a command that has
- * printed nothing so far (some write to a log file of their own instead),
- * or no output file to read at all.
+ * The command's Output section: what it has written so far, or what an empty
+ * output means, as far as it is known — a command that has printed nothing
+ * yet (some write to a log file of their own instead), or no output file to
+ * read at all.
  */
-const emptyOutputText = computed(() => {
+const commandOutput = computed((): ToolCallOutput => {
+  if (!output.loaded.value) return { kind: 'loading' };
+  if (output.text.value) return { kind: 'text', text: output.text.value, skippedBytes: output.skippedBytes.value };
   if (!output.found.value) {
-    return isRunning.value
-      ? 'No output file yet: the command has not written to the console.'
-      : 'Its output is no longer available.';
+    return {
+      kind: 'note',
+      message: isRunning.value
+        ? 'No output file yet: the command has not written to the console.'
+        : 'Its output is no longer available.',
+    };
   }
-  return isRunning.value
-    ? 'Nothing printed yet. The command may be writing to a log file of its own instead of the console.'
-    : 'This command wrote no output.';
-});
-
-/** The command line, formatted the same way the tool modal shows a tool's input. */
-const inputParams = computed((): InputParam[] =>
-  isAgent.value ? [] : formatToolInput(props.spawningTool?.input ?? props.task?.toolInput),
-);
-
-/**
- * The output view follows the end of a running command — but only while the
- * reader is there. Scrolled up to read something, they stay put.
- */
-const outputRef = ref<HTMLElement | null>(null);
-const FOLLOW_THRESHOLD_PX = 24;
-let followingOutput = true;
-
-function onOutputScroll(): void {
-  const el = outputRef.value;
-  if (!el) return;
-  followingOutput = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD_PX;
-}
-
-watch(
-  () => output.text.value,
-  () => {
-    if (!followingOutput) return;
-    void nextTick(() => {
-      const el = outputRef.value;
-      if (el) el.scrollTop = el.scrollHeight;
-    });
-  },
-);
-
-// A different task starts at its own end.
-watch(() => props.task?.id, () => {
-  followingOutput = true;
+  return {
+    kind: 'note',
+    message: isRunning.value
+      ? 'Nothing printed yet. The command may be writing to a log file of its own instead of the console.'
+      : 'This command wrote no output.',
+  };
 });
 
 /**
@@ -371,80 +349,16 @@ const statusDisplay = computed(() => {
         />
       </div>
 
-      <template v-else>
-        <!-- A command: its command line… -->
-        <div
-          v-if="inputParams.length > 0"
-          class="space-y-2"
-        >
-          <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
-            <Icon
-              name="terminal"
-              size="xs"
-            />
-            <span>Input</span>
-            <span
-              v-if="commandToolName"
-              class="font-mono text-surface-400 dark:text-surface-500"
-            >{{ commandToolName }}</span>
-          </div>
+      <!-- A command: its command line and its output, followed while it
+           runs — the same view Tool Details gives a call in the discussion. -->
+      <ToolCallView
+        v-else
+        :input="commandInput"
+        :tool-name="commandToolName"
+        :output="commandOutput"
+        :live="isRunning"
+      />
 
-          <div class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 space-y-2">
-            <div
-              v-for="param in inputParams"
-              :key="param.key"
-            >
-              <div class="text-xs text-surface-500 dark:text-surface-400 mb-0.5">
-                {{ param.label }}
-              </div>
-              <pre
-                v-if="param.isBlock"
-                class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono max-h-60 overflow-y-auto"
-              >{{ param.value }}</pre>
-              <div
-                v-else
-                class="text-xs text-surface-800 dark:text-surface-200 font-mono break-all"
-              >
-                {{ param.value }}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- …and its output, followed while it runs. -->
-        <div class="space-y-2">
-          <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
-            <Icon
-              name="document"
-              size="xs"
-            />
-            <span>Output</span>
-            <span
-              v-if="output.skippedBytes.value > 0"
-              class="text-surface-400 dark:text-surface-500"
-            >— the last part only; {{ formatTokenCount(output.skippedBytes.value) }}B before it not shown</span>
-          </div>
-          <div
-            v-if="!output.loaded.value"
-            class="flex items-center gap-2 p-3 text-xs text-surface-500"
-          >
-            <Spinner size="xs" />
-            Loading output…
-          </div>
-          <pre
-            v-else-if="output.text.value"
-            ref="outputRef"
-            class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 max-h-96 overflow-y-auto text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap font-mono"
-            @scroll="onOutputScroll"
-          >{{ output.text.value }}</pre>
-          <div
-            v-else
-            class="text-xs text-surface-500 dark:text-surface-400 italic"
-          >
-            {{ emptyOutputText }}
-          </div>
-        </div>
-      </template>
 
       <!-- Stopping a task. Only offered while it is actually running; the
            status here is live, so the button disappears once the task ends

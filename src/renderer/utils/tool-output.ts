@@ -1,4 +1,16 @@
 /**
+ * What a tool call's Output section shows (ToolCallView): the output still
+ * being read, a failure to read it, its text, or a note saying why there is
+ * none to show.
+ */
+export type ToolCallOutput =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  /** `skippedBytes`: how much came before the text and is not shown. */
+  | { kind: 'text'; text: string; skippedBytes?: number }
+  | { kind: 'note'; message: string };
+
+/**
  * Presenting a tool's output file for display.
  *
  * Many tool results are JSON — MCP tools, and AskUserQuestion's answer

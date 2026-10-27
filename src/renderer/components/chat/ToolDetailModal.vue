@@ -2,6 +2,9 @@
 /**
  * Tool use detail modal — shows tool input parameters and lazy-loaded output.
  * Opened by clicking on a ToolUseMessage inline indicator.
+ *
+ * Input and output are the ones the background task view uses for a command
+ * (ToolCallView).
  */
 
 import { ref, watch, computed } from 'vue';
@@ -13,9 +16,9 @@ import {
 } from '@shared/ask-user-question';
 import type { ToolUseInfo } from '@shared/types';
 
-import { formatToolInput, type InputParam } from '../../utils/tool-input';
-import { formatToolOutput } from '../../utils/tool-output';
+import type { ToolCallOutput } from '../../utils/tool-output';
 import AskUserQuestionDetails from './AskUserQuestionDetails.vue';
+import ToolCallView from './ToolCallView.vue';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
@@ -75,8 +78,6 @@ const statusDisplay = computed(() => {
   }
 });
 
-const inputParams = computed((): InputParam[] => formatToolInput(props.toolUse?.input));
-
 /** An AskUserQuestion call's questions; empty for any other tool. */
 const questions = computed(() =>
   props.toolUse?.toolName === ASK_USER_QUESTION_TOOL ? parseAskUserQuestionEntries(props.toolUse.input) : [],
@@ -89,10 +90,24 @@ const questionResult = computed(() =>
     : null,
 );
 
-/** Output text, pretty-printed when it is JSON. */
-const formattedOutput = computed(() =>
-  outputContent.value === null ? null : formatToolOutput(outputContent.value),
-);
+/**
+ * The Output section: the file once read, or why there is none yet. An
+ * answered question already shows its answers above, so it has none.
+ */
+const output = computed((): ToolCallOutput | null => {
+  const toolUse = props.toolUse;
+  if (!toolUse) return null;
+  if (toolUse.outputFile && !questionResult.value) {
+    if (outputLoading.value) return { kind: 'loading' };
+    if (outputError.value) return { kind: 'error', message: outputError.value };
+    if (outputContent.value !== null) return { kind: 'text', text: outputContent.value };
+    return null;
+  }
+  if (!toolUse.outputFile && (toolUse.status === 'pending' || toolUse.status === 'approved')) {
+    return { kind: 'note', message: 'Output will appear once the tool finishes executing.' };
+  }
+  return null;
+});
 </script>
 
 <template>
@@ -137,7 +152,8 @@ const formattedOutput = computed(() =>
         </div>
       </div>
 
-      <!-- AskUserQuestion: questions, options and the answers given -->
+      <!-- AskUserQuestion: questions, options and the answers given, in place
+           of the raw input. -->
       <div
         v-if="questions.length > 0"
         class="space-y-3"
@@ -155,85 +171,10 @@ const formattedOutput = computed(() =>
         />
       </div>
 
-      <!-- Input Parameters (structured) -->
-      <div
-        v-else-if="inputParams.length > 0"
-        class="space-y-3"
-      >
-        <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
-          <Icon
-            name="code"
-            size="xs"
-          />
-          <span>Input</span>
-        </div>
-
-        <div
-          v-for="param in inputParams"
-          :key="param.key"
-          class="space-y-1"
-        >
-          <!-- Inline parameter (short values) -->
-          <template v-if="!param.isBlock">
-            <div class="flex items-baseline gap-2 text-xs">
-              <span class="font-medium text-surface-500 dark:text-surface-400 shrink-0">{{ param.label }}</span>
-              <span class="font-mono text-surface-800 dark:text-surface-200 break-all">{{ param.value }}</span>
-            </div>
-          </template>
-
-          <!-- Block parameter (code/content) -->
-          <template v-else>
-            <div class="text-xs font-medium text-surface-500 dark:text-surface-400">
-              {{ param.label }}
-            </div>
-            <div class="code-block !p-3 max-h-60 overflow-y-auto">
-              <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap">{{ param.value }}</pre>
-            </div>
-          </template>
-        </div>
-      </div>
-
-      <!-- Output Content (an answered question already shows its answers above) -->
-      <div
-        v-if="toolUse.outputFile && !questionResult"
-        class="space-y-2"
-      >
-        <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
-          <Icon
-            name="document"
-            size="xs"
-          />
-          <span>Output</span>
-        </div>
-
-        <div
-          v-if="outputLoading"
-          class="flex items-center gap-2 p-3 text-xs text-surface-500"
-        >
-          <Spinner size="xs" />
-          Loading output...
-        </div>
-        <div
-          v-else-if="outputError"
-          class="text-xs text-red-500 p-3 bg-red-50 dark:bg-red-900/20 rounded-lg"
-        >
-          Failed to load output: {{ outputError }}
-        </div>
-        <div
-          v-else-if="formattedOutput !== null"
-          class="code-block !p-3 max-h-80 overflow-y-auto"
-        >
-          <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap">{{ formattedOutput }}</pre>
-        </div>
-      </div>
-
-      <!-- No output yet -->
-      <div
-        v-else-if="toolUse.status === 'pending' || toolUse.status === 'approved'"
-        class="text-xs text-surface-400 dark:text-surface-500 italic"
-      >
-        Output will appear once the tool finishes executing.
-      </div>
+      <ToolCallView
+        :input="questions.length > 0 ? undefined : toolUse.input"
+        :output="output"
+      />
     </div>
   </Modal>
 </template>
