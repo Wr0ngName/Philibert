@@ -126,8 +126,14 @@ that step 7 pulls in the opposite direction and must give way.
    ```bash
    git tag v<version>
    git push origin v<version>
-   git push origin main
+   git push -o ci.skip origin main
    ```
+   `-o ci.skip` on the `main` push: the tag pipeline already verifies this
+   exact commit, and a `main` pipeline for it would run at the same time on
+   the one shell runner. That happened on v0.25.0-rc.4 (pipeline #8049 next to
+   release #8048): the two `verify` jobs overlapped, and a test that takes 2s
+   alone took 35s and failed the release. Cancelling the duplicate is not
+   enough — its job kept running for over two minutes after the cancel.
    This ordering is not cosmetic and not about CI noise. **Pushing the tag is
    what creates the tag pipeline, and that pipeline is what builds and
    publishes the release.** If `main` already carries the commit, the tag push
