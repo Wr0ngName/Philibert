@@ -1082,6 +1082,30 @@ describe('SDKMessageHandler', () => {
       expect(notified.find((n) => n.taskId === 'bash-2')?.parentTaskId).toBeUndefined();
     });
 
+    it("carries a command's tool call onto its task — an agent's included, which the discussion never shows", async () => {
+      // The sequence main.log recorded (2026-10-27): an agent's background
+      // PowerShell run via Bash, then its task_started, owned by the agent.
+      const input = { command: 'powershell -File tools/test/regress.ps1', description: 'Run targeted regression suites', run_in_background: true };
+      await handler.handleMessage({
+        type: 'system', subtype: 'task_started', task_id: 'agent-1', tool_use_id: 'toolu_agent',
+        description: 'Agent', task_type: 'local_agent',
+      } as never);
+      await handler.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'toolu_cmd', name: 'Bash', input }] },
+        parent_tool_use_id: 'toolu_agent',
+      } as never);
+      await handler.handleMessage({
+        type: 'system', subtype: 'task_started', task_id: 'bx3022jkq', tool_use_id: 'toolu_cmd',
+        owned_by_subagent: true, description: 'Run targeted regression suites', is_backgrounded: true, task_type: 'local_bash',
+      } as never);
+
+      const notified = vi.mocked(callbacks.onTaskNotification).mock.calls.map(([n]) => n);
+      expect(notified.find((n) => n.taskId === 'bx3022jkq')).toMatchObject({ toolName: 'Bash', toolInput: input });
+      // The agent's own task is not a command and carries no call.
+      expect(notified.find((n) => n.taskId === 'agent-1')?.toolInput).toBeUndefined();
+    });
+
     it("takes a command's output file only from a structured field, never from the result's prose", async () => {
       // The prose names the file; the structured result does not. Reading it
       // out of the wording would break the day the wording changes, so a

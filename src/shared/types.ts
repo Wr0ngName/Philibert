@@ -1181,6 +1181,14 @@ export interface BackgroundTask {
    * for a task the main conversation started.
    */
   parentTaskId?: string;
+  /**
+   * The tool call a command task runs — its tool ('Bash', 'PowerShell') and
+   * input, command line included. Carried on the task because a command an
+   * agent started is a call in the agent's transcript, not in the
+   * discussion, where the detail view would otherwise look for it.
+   */
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
 }
 
 /** A slice of a background task's output, read from a byte offset. */
@@ -1256,6 +1264,9 @@ export interface TaskNotification {
   totalTokens?: number;
   toolUses?: number;
   parentTaskId?: string;
+  /** The tool call a command task runs; see BackgroundTask.toolInput. */
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
 }
 
 // Channel mode types

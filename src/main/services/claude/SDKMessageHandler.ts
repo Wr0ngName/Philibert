@@ -306,6 +306,12 @@ export class SDKMessageHandler {
   private toolUseParent = new Map<string, string>();
   /** An agent's spawning tool_use id → its task id. */
   private agentTaskByToolUse = new Map<string, string>();
+  /**
+   * tool_use id → a command call (any tool with a `command` line: Bash,
+   * PowerShell), for the task it may become. Commands only: their input is
+   * a line, unlike a Write's whole file.
+   */
+  private commandCalls = new Map<string, { toolName: string; toolInput: Record<string, unknown> }>();
   /** Task id → the file its output is written to, as soon as it is known. */
   private taskOutputFiles = new Map<string, string>();
   /** The account's latest rate-limit status, as the CLI last reported it. */
@@ -586,6 +592,9 @@ export class SDKMessageHandler {
 
         this.toolUseIdToName.set(toolBlock.id, toolBlock.name);
         if (parentToolUseId) this.toolUseParent.set(toolBlock.id, parentToolUseId);
+        if (typeof input.command === 'string') {
+          this.commandCalls.set(toolBlock.id, { toolName: toolBlock.name, toolInput: input });
+        }
 
         this.callbacks.onToolUseCapture?.({
           toolUseBlockId: toolBlock.id,
@@ -610,6 +619,7 @@ export class SDKMessageHandler {
             taskId: toolBlock.id,
             status: 'running',
             description,
+            ...this.commandCalls.get(toolBlock.id),
           });
         }
       }
@@ -1201,6 +1211,7 @@ export class SDKMessageHandler {
           ...(systemMsg.task_type && { taskType: isAgent ? 'agent' : 'command' }),
           ...(systemMsg.subagent_type && { agentType: systemMsg.subagent_type }),
           ...(parentTaskId && { parentTaskId }),
+          ...(!isAgent && systemMsg.tool_use_id && this.commandCalls.get(systemMsg.tool_use_id)),
         });
       }
     }

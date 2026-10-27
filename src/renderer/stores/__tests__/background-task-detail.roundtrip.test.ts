@@ -225,6 +225,34 @@ describe('background tasks, panel and detail', () => {
     expect(modal.querySelector('pre')?.textContent).toBe('main line 1\nmain line 2\n');
   });
 
+  it('shows the command line of a command an agent started, which is not in the discussion', async () => {
+    // As main.log recorded it (2026-10-27): the agent's Bash call, carried
+    // on the task because the discussion has no tool_use for it.
+    const command = 'cd C:/Users/u/proj && powershell -NoProfile -File tools/test/regress.ps1 -Suites "VectorShapesSelfTest"';
+    notify({
+      taskId: 'bash-agent', status: 'running', description: 'Run the agent loop', toolUseId: 'toolu_sub',
+      toolName: 'Bash', toolInput: { command, description: 'Run the agent loop', run_in_background: true },
+    });
+    await settle(20);
+
+    const modal = await openTask('agent loop');
+
+    expect(modal.textContent).toContain(command);
+    expect(modal.textContent).toContain('Bash');
+  });
+
+  it('tells a command that has printed nothing from one with no output file', async () => {
+    commandOutput = '';
+    let modal = await openTask('main loop');
+    expect(modal.textContent).toContain('Nothing printed yet');
+
+    (modal.querySelector('[aria-label="Close"]') as HTMLElement | null)?.click();
+    await settle(20);
+    mainHandlers.set('claude:read-task-output', () => null);
+    modal = await openTask('agent loop');
+    expect(modal.textContent).toContain('No output file yet');
+  });
+
   it('says which agent started a command, and opens it', async () => {
     const modal = await openTask('agent loop');
 

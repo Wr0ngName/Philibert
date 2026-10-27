@@ -116,16 +116,24 @@ export function useAgentTranscript(options: FeedOptions): { messages: Ref<ChatMe
   return { messages, loaded };
 }
 
-/** A command's output, read in increments as it grows. */
+/**
+ * A command's output, read in increments as it grows.
+ *
+ * `found` tells an output file with nothing in it — a command that has not
+ * printed anything, often one writing to its own log instead — from no
+ * output file at all.
+ */
 export function useCommandOutput(options: FeedOptions): {
   text: Ref<string>;
   skippedBytes: Ref<number>;
   loaded: Ref<boolean>;
+  found: Ref<boolean>;
 } {
   const conversationsStore = useConversationsStore();
   const text = ref('');
   const skippedBytes = ref(0);
   const loaded = ref(false);
+  const found = ref(false);
   let nextByte = 0;
 
   usePolledFeed(options, async (task, first) => {
@@ -134,6 +142,7 @@ export function useCommandOutput(options: FeedOptions): {
       text.value = '';
       skippedBytes.value = 0;
       loaded.value = false;
+      found.value = false;
       nextByte = 0;
     }
     const conversationId = options.conversationId();
@@ -144,6 +153,7 @@ export function useCommandOutput(options: FeedOptions): {
       nextByte,
     );
     loaded.value = true;
+    found.value = chunk !== null;
     if (!chunk) return;
     nextByte = chunk.nextByte;
     if (!chunk.text && chunk.skippedBytes === 0) return;
@@ -156,5 +166,5 @@ export function useCommandOutput(options: FeedOptions): {
     skippedBytes.value = chunk.nextByte - utf8.encode(kept).length;
   });
 
-  return { text, skippedBytes, loaded };
+  return { text, skippedBytes, loaded, found };
 }

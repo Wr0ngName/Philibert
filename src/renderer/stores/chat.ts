@@ -210,7 +210,8 @@ export interface ConversationState {
 /**
  * The fields of a task notification that describe the task as it runs —
  * its kind as the CLI states it, the agent's type, what it is doing now,
- * how far it has got, and the agent that started it — for the ones present.
+ * how far it has got, the agent that started it, and a command's tool call
+ * — for the ones present.
  */
 function liveTaskFields(notification: TaskNotification): Partial<BackgroundTask> {
   return {
@@ -220,6 +221,8 @@ function liveTaskFields(notification: TaskNotification): Partial<BackgroundTask>
     ...(notification.totalTokens !== undefined && { totalTokens: notification.totalTokens }),
     ...(notification.toolUses !== undefined && { toolUses: notification.toolUses }),
     ...(notification.parentTaskId && { parentTaskId: notification.parentTaskId }),
+    ...(notification.toolName && { toolName: notification.toolName }),
+    ...(notification.toolInput && { toolInput: notification.toolInput }),
   };
 }
 

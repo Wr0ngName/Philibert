@@ -92,9 +92,32 @@ function openTranscriptTool(toolUseBlockId: string): void {
   if (toolUse) emit('open-tool-detail', toolUse);
 }
 
+/**
+ * The command's tool call: the one in the discussion when the main
+ * conversation made it, otherwise the one the task carries — a command an
+ * agent started is a call in the agent's transcript.
+ */
+const commandToolName = computed(() => props.spawningTool?.toolName ?? props.task?.toolName);
+
+/**
+ * What an empty output means, as far as it is known: a command that has
+ * printed nothing so far (some write to a log file of their own instead),
+ * or no output file to read at all.
+ */
+const emptyOutputText = computed(() => {
+  if (!output.found.value) {
+    return isRunning.value
+      ? 'No output file yet: the command has not written to the console.'
+      : 'Its output is no longer available.';
+  }
+  return isRunning.value
+    ? 'Nothing printed yet. The command may be writing to a log file of its own instead of the console.'
+    : 'This command wrote no output.';
+});
+
 /** The command line, formatted the same way the tool modal shows a tool's input. */
 const inputParams = computed((): InputParam[] =>
-  isAgent.value ? [] : formatToolInput(props.spawningTool?.input),
+  isAgent.value ? [] : formatToolInput(props.spawningTool?.input ?? props.task?.toolInput),
 );
 
 /**
@@ -361,9 +384,9 @@ const statusDisplay = computed(() => {
             />
             <span>Input</span>
             <span
-              v-if="spawningTool"
+              v-if="commandToolName"
               class="font-mono text-surface-400 dark:text-surface-500"
-            >{{ spawningTool.toolName }}</span>
+            >{{ commandToolName }}</span>
           </div>
 
           <div class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3 space-y-2">
@@ -418,7 +441,7 @@ const statusDisplay = computed(() => {
             v-else
             class="text-xs text-surface-500 dark:text-surface-400 italic"
           >
-            {{ isRunning ? 'No output yet.' : 'This command wrote no output.' }}
+            {{ emptyOutputText }}
           </div>
         </div>
       </template>
