@@ -77,6 +77,14 @@ export const MAIN_CONSTANTS = {
      * active — switching away from a git-repo directory tears it down.
      */
     REMOTE_FETCH_INTERVAL_MS: 60_000,
+    /** How long a git command may run before it is stopped. */
+    COMMAND_TIMEOUT_MS: 15_000,
+    /**
+     * The same for a push or pull, which may wait on the user signing in
+     * (Philibert's prompt, or the user's own credential manager's window) —
+     * the 15 seconds above cut a sign-in short.
+     */
+    REMOTE_OPERATION_TIMEOUT_MS: 10 * 60_000,
   },
   CONFIG: {
     /** Maximum number of recent projects to keep */

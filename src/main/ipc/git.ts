@@ -4,7 +4,7 @@
 
 import { BrowserWindow, ipcMain } from 'electron';
 
-import { IPC_CHANNELS } from '../../shared/types';
+import { IPC_CHANNELS, type GitCredentialAnswer, type GitRemoteResult } from '../../shared/types';
 import ConfigService from '../services/ConfigService';
 import FileWatcherService from '../services/FileWatcherService';
 import GitService from '../services/GitService';
@@ -53,35 +53,62 @@ export function setupGitIPC(
     }
   );
 
-  // Pull from remote
+  // Pull and push. Their failures come back as results, not errors: an
+  // error crosses IPC as its text only, and the window needs to know when it
+  // was the login that failed.
   ipcMain.handle(
     IPC_CHANNELS.GIT_PULL,
-    async (_event, workingDir: string, expectedBranch?: string) => {
-      try {
-        ensureService(gitService, 'GitService');
-        validateString(workingDir, 'Working directory');
-
-        return await gitService.pull(workingDir, expectedBranch);
-      } catch (error) {
-        logger.error('Failed to pull', { error, workingDir });
-        throw new Error(formatErrorMessage('Failed to pull', error), { cause: error });
-      }
+    async (_event, workingDir: string, expectedBranch?: string): Promise<GitRemoteResult> => {
+      ensureService(gitService, 'GitService');
+      validateString(workingDir, 'Working directory');
+      const result = await gitService.pull(workingDir, expectedBranch);
+      if (!result.ok) logger.error('Failed to pull', { error: result.error, auth: result.auth, workingDir });
+      return result;
     }
   );
 
-  // Push to remote
   ipcMain.handle(
     IPC_CHANNELS.GIT_PUSH,
-    async (_event, workingDir: string, expectedBranch?: string) => {
-      try {
-        ensureService(gitService, 'GitService');
-        validateString(workingDir, 'Working directory');
+    async (_event, workingDir: string, expectedBranch?: string): Promise<GitRemoteResult> => {
+      ensureService(gitService, 'GitService');
+      validateString(workingDir, 'Working directory');
+      const result = await gitService.push(workingDir, expectedBranch);
+      if (!result.ok) logger.error('Failed to push', { error: result.error, auth: result.auth, workingDir });
+      return result;
+    }
+  );
 
-        return await gitService.push(workingDir, expectedBranch);
-      } catch (error) {
-        logger.error('Failed to push', { error, workingDir });
-        throw new Error(formatErrorMessage('Failed to push', error), { cause: error });
-      }
+  // Signing in for a push or pull: git asks the broker, which asks the
+  // window. A request the window never answers — closed meanwhile — is a
+  // cancel, so git does not wait out its timeout.
+  const pendingCredentials = new Map<string, (answer: GitCredentialAnswer | null) => void>();
+  gitService.credentials?.setAsker((request) => new Promise((resolve) => {
+    const window = getMainWindow();
+    if (!window || window.isDestroyed()) {
+      resolve(null);
+      return;
+    }
+    const settle = (answer: GitCredentialAnswer | null) => {
+      pendingCredentials.delete(request.requestId);
+      window.off('closed', onClosed);
+      resolve(answer);
+    };
+    const onClosed = () => settle(null);
+    window.once('closed', onClosed);
+    pendingCredentials.set(request.requestId, settle);
+    logger.info('Git asks for a login', { host: request.host });
+    sendToRenderer(getMainWindow, IPC_CHANNELS.GIT_CREDENTIAL_REQUEST, request);
+  }));
+
+  ipcMain.handle(
+    IPC_CHANNELS.GIT_CREDENTIAL_RESPOND,
+    (_event, requestId: string, answer: GitCredentialAnswer | null) => {
+      validateString(requestId, 'Request id');
+      const valid = answer !== null
+        && typeof answer === 'object'
+        && typeof answer.username === 'string'
+        && typeof answer.password === 'string';
+      pendingCredentials.get(requestId)?.(valid ? { username: answer.username, password: answer.password } : null);
     }
   );
 

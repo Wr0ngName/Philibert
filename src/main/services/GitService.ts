@@ -8,10 +8,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import type { GitBranch, GitStatus } from '../../shared/types';
+import type { GitBranch, GitRemoteResult, GitStatus } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import logger from '../utils/logger';
 import { WindowsPaths } from '../utils/resourcePaths';
+
+import type { CredentialSession, GitCredentialBroker } from './git/GitCredentialBroker';
 
 const execFileAsync = promisify(execFile);
 
@@ -44,7 +46,11 @@ export class GitService {
   private statusCallbacks: Set<(status: GitStatus) => void> = new Set();
   private resolvedGitBinary: string | null = null;
 
-  constructor() {
+  /**
+   * @param credentials Asks the user for a login during a push or pull.
+   *   Without it, those fail when git has no login, as other commands do.
+   */
+  constructor(readonly credentials: GitCredentialBroker | null = null) {
     logger.info('GitService initialized');
   }
 
@@ -70,30 +76,70 @@ export class GitService {
    * Build the env for git subprocesses. On Windows we prepend the bundled
    * git-bash bin dirs so sh.exe, credential helpers, and other tools git
    * shells out to resolve from the bundle rather than (or before) system PATH.
+   *
+   * No git command may prompt on its own. There is no terminal to prompt on,
+   * and the user's own prompters (Git Credential Manager's window, an ssh
+   * askpass dialog) would pop up from background work — the periodic fetch
+   * of a private repository opening a sign-in window every minute. A push or
+   * pull asks through Philibert instead (GitCredentialBroker).
    */
   private getGitEnv(): NodeJS.ProcessEnv {
+    const noPrompts = { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', SSH_ASKPASS_REQUIRE: 'never' };
     if (process.platform === 'win32' && WindowsPaths.hasBundledGitBash()) {
-      return { ...process.env, PATH: WindowsPaths.buildEnhancedPath() };
+      return { ...process.env, PATH: WindowsPaths.buildEnhancedPath(), ...noPrompts };
     }
-    return process.env;
+    return { ...process.env, ...noPrompts };
   }
 
   /**
-   * Run a git command safely via execFile (no shell injection)
+   * Run a git command safely via execFile (no shell injection).
+   *
+   * With a credential session, git may ask Philibert for a login, and the
+   * command gets the longer timeout of a push or pull.
    */
-  private async runGit(args: string[], cwd: string): Promise<string> {
+  private async runGit(args: string[], cwd: string, session?: CredentialSession): Promise<string> {
     try {
-      const { stdout } = await execFileAsync(this.getGitBinary(), args, {
+      const { stdout } = await execFileAsync(this.getGitBinary(), [...(session?.configArgs ?? []), ...args], {
         cwd,
-        timeout: 15000,
+        timeout: session ? MAIN_CONSTANTS.GIT.REMOTE_OPERATION_TIMEOUT_MS : MAIN_CONSTANTS.GIT.COMMAND_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
-        env: this.getGitEnv(),
+        env: { ...this.getGitEnv(), ...session?.env },
       });
       return stdout.trim();
     } catch (error) {
       const err = error as Error & { stderr?: string; code?: string };
       const message = err.stderr?.trim() || err.message;
       throw new Error(message, { cause: error });
+    }
+  }
+
+  /**
+   * A push or pull: the command that may need a login, run so it can ask
+   * the user for one, with the outcome as a result rather than a throw — a
+   * failure says when it was the login's.
+   */
+  private async runRemote(args: string[], cwd: string, expectedBranch: string | undefined): Promise<GitRemoteResult> {
+    try {
+      await this.assertCurrentBranch(cwd, expectedBranch);
+    } catch (error) {
+      return { ok: false, error: (error as Error).message };
+    }
+
+    let session: CredentialSession | undefined;
+    try {
+      session = await this.credentials?.begin();
+    } catch (error) {
+      // Without the broker the command still runs; it just cannot ask.
+      logger.warn('Git credential broker unavailable', { error: (error as Error).message });
+    }
+    try {
+      const output = await this.runGit(args, cwd, session);
+      return { ok: true, output };
+    } catch (error) {
+      const auth = session?.authFailure();
+      return { ok: false, error: (error as Error).message, ...(auth ? { auth } : {}) };
+    } finally {
+      session?.end();
     }
   }
 
@@ -303,25 +349,23 @@ export class GitService {
   }
 
   /**
-   * Pull from remote.
+   * Pull from remote, asking for a login when it needs one.
    * @param expectedBranch If set, abort unless HEAD currently points at this branch.
    */
-  async pull(cwd: string, expectedBranch?: string): Promise<string> {
-    await this.assertCurrentBranch(cwd, expectedBranch);
-    const output = await this.runGit(['pull'], cwd);
-    logger.info('Git pull', { cwd });
-    return output;
+  async pull(cwd: string, expectedBranch?: string): Promise<GitRemoteResult> {
+    const result = await this.runRemote(['pull'], cwd, expectedBranch);
+    logger.info('Git pull', { cwd, ok: result.ok, ...(!result.ok && result.auth ? { auth: result.auth.reason } : {}) });
+    return result;
   }
 
   /**
-   * Push to remote.
+   * Push to remote, asking for a login when it needs one.
    * @param expectedBranch If set, abort unless HEAD currently points at this branch.
    */
-  async push(cwd: string, expectedBranch?: string): Promise<string> {
-    await this.assertCurrentBranch(cwd, expectedBranch);
-    const output = await this.runGit(['push'], cwd);
-    logger.info('Git push', { cwd });
-    return output;
+  async push(cwd: string, expectedBranch?: string): Promise<GitRemoteResult> {
+    const result = await this.runRemote(['push'], cwd, expectedBranch);
+    logger.info('Git push', { cwd, ok: result.ok, ...(!result.ok && result.auth ? { auth: result.auth.reason } : {}) });
+    return result;
   }
 
   /**

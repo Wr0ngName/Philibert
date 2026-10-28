@@ -22,6 +22,7 @@ import AboutPanel from './components/settings/AboutPanel.vue';
 import SettingsPanel from './components/settings/SettingsPanel.vue';
 import InitWizard from './components/wizard/InitWizard.vue';
 import ErrorBoundary from './components/shared/ErrorBoundary.vue';
+import GitCredentialDialog from './components/shared/GitCredentialDialog.vue';
 import ModelMismatchBanner from './components/shared/ModelMismatchBanner.vue';
 import UsageWarningBanner from './components/shared/UsageWarningBanner.vue';
 import UpdateBanner from './components/shared/UpdateBanner.vue';
@@ -358,6 +359,9 @@ const isMac = window.electron?.platform === 'darwin';
 
       <!-- A claude.ai usage limit is getting close -->
       <UsageWarningBanner />
+
+      <!-- Signing in to a git server during a push or pull -->
+      <GitCredentialDialog />
 
       <!-- Main content -->
       <main class="flex-1 flex overflow-hidden">

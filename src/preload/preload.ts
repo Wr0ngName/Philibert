@@ -323,6 +323,18 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on(IPC_CHANNELS.GIT_STATUS_CHANGED, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.GIT_STATUS_CHANGED, handler);
     },
+
+    onCredentialRequest: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        request: Parameters<typeof callback>[0]
+      ) => callback(request);
+      ipcRenderer.on(IPC_CHANNELS.GIT_CREDENTIAL_REQUEST, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.GIT_CREDENTIAL_REQUEST, handler);
+    },
+
+    respondToCredentialRequest: (requestId, answer) =>
+      ipcRenderer.invoke(IPC_CHANNELS.GIT_CREDENTIAL_RESPOND, requestId, answer),
   },
 
   // File operations

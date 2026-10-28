@@ -1076,6 +1076,35 @@ export interface GitBranch {
   upstream: string;
 }
 
+/**
+ * Git asking for a login during a push or pull — what it named in its
+ * credential request ({@link IPC_CHANNELS.GIT_CREDENTIAL_REQUEST}).
+ */
+export interface GitCredentialRequest {
+  requestId: string;
+  /** e.g. "https" */
+  protocol: string;
+  /** e.g. "gitlab.example.com" (with ":port" when not the default) */
+  host: string;
+  /** A username git already has for this host, to start from. */
+  username?: string;
+}
+
+/** The login the user gave for a {@link GitCredentialRequest}. */
+export interface GitCredentialAnswer {
+  username: string;
+  /** A password or an access token. */
+  password: string;
+}
+
+/**
+ * What a push or pull came to. A failure caused by the login carries
+ * `auth`: the user cancelled the sign-in, or the server refused the login.
+ */
+export type GitRemoteResult =
+  | { ok: true; output: string }
+  | { ok: false; error: string; auth?: { host: string; reason: 'cancelled' | 'rejected' } };
+
 // Update types
 
 // Background Task types
@@ -1787,6 +1816,10 @@ export const IPC_CHANNELS = {
   GIT_GET_IDENTITY: 'git:get-identity',
   /** Write user.name and user.email to local repo or global config */
   GIT_SET_IDENTITY: 'git:set-identity',
+  /** Git needs a login for a push or pull (event from main to renderer) */
+  GIT_CREDENTIAL_REQUEST: 'git:credential-request',
+  /** The user's answer to a credential request: a login, or null to cancel */
+  GIT_CREDENTIAL_RESPOND: 'git:credential-respond',
 
   // File operations
   /** Open directory picker dialog */

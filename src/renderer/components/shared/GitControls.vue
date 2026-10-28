@@ -297,36 +297,61 @@ async function doCommit(): Promise<void> {
   }
 }
 
-async function doPull(): Promise<void> {
+/**
+ * A push or pull that failed on the login: the user cancelled signing in,
+ * or the server refused it. Shown until dismissed or retried, unlike the
+ * four-second error: it needs the user to act, and says what with.
+ */
+interface SignInProblem {
+  op: 'pull' | 'push';
+  host: string;
+  reason: 'cancelled' | 'rejected';
+}
+const signInProblem = ref<SignInProblem | null>(null);
+
+const signInProblemText = computed(() => {
+  const problem = signInProblem.value;
+  if (!problem) return '';
+  const what = problem.op === 'push' ? 'Push' : 'Pull';
+  const where = problem.host || 'the server';
+  return problem.reason === 'rejected'
+    ? `${what} failed: ${where} refused the login.`
+    : `${what} needs you to sign in to ${where}.`;
+});
+
+/** Pull or push, the same way: git may ask the user to sign in meanwhile. */
+async function doRemote(op: 'pull' | 'push'): Promise<void> {
   if (!workingDirectory.value || isMutating.value) return;
-  loadingPull.value = true;
+  const loading = op === 'push' ? loadingPush : loadingPull;
+  loading.value = true;
+  signInProblem.value = null;
   try {
     if (!(await ensureBranchConsistent())) return;
     const branchAtClick = status.value?.branch ?? '';
-    await window.electron.git.pull(workingDirectory.value, branchAtClick);
-    await fetchStatus();
+    const result = await window.electron.git[op](workingDirectory.value, branchAtClick);
+    if (!result.ok) {
+      if (result.auth) signInProblem.value = { op, ...result.auth };
+      else showError(`${op === 'push' ? 'Push' : 'Pull'} failed: ${result.error}`);
+    }
   } catch (err) {
-    showError(`Pull failed: ${err instanceof Error ? err.message : String(err)}`);
-    await fetchStatus();
+    showError(`${op === 'push' ? 'Push' : 'Pull'} failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
-    loadingPull.value = false;
+    loading.value = false;
+    await fetchStatus();
   }
 }
 
-async function doPush(): Promise<void> {
-  if (!workingDirectory.value || isMutating.value) return;
-  loadingPush.value = true;
-  try {
-    if (!(await ensureBranchConsistent())) return;
-    const branchAtClick = status.value?.branch ?? '';
-    await window.electron.git.push(workingDirectory.value, branchAtClick);
-    await fetchStatus();
-  } catch (err) {
-    showError(`Push failed: ${err instanceof Error ? err.message : String(err)}`);
-    await fetchStatus();
-  } finally {
-    loadingPush.value = false;
-  }
+function doPull(): Promise<void> {
+  return doRemote('pull');
+}
+
+function doPush(): Promise<void> {
+  return doRemote('push');
+}
+
+function retrySignIn(): void {
+  const problem = signInProblem.value;
+  if (problem) void doRemote(problem.op);
 }
 
 async function doCheckout(branchName: string): Promise<void> {
@@ -959,6 +984,33 @@ onUnmounted(() => {
         class="fixed top-14 right-4 z-50 max-w-sm px-3 py-2 rounded-lg bg-red-500 text-white text-sm shadow-lg"
       >
         {{ errorMessage }}
+      </div>
+    </TransitionFade>
+
+    <TransitionFade>
+      <div
+        v-if="signInProblem"
+        role="alert"
+        data-testid="git-sign-in-problem"
+        class="fixed top-14 right-4 z-50 max-w-sm px-3 py-2 rounded-lg bg-red-500 text-white text-sm shadow-lg space-y-2"
+      >
+        <p>{{ signInProblemText }}</p>
+        <div class="flex justify-end gap-2">
+          <button
+            type="button"
+            class="px-2 py-0.5 rounded-md text-white/90 hover:bg-white/15"
+            @click="signInProblem = null"
+          >
+            Dismiss
+          </button>
+          <button
+            type="button"
+            class="px-2 py-0.5 rounded-md bg-white text-red-600 font-medium hover:bg-red-50"
+            @click="retrySignIn"
+          >
+            Try again
+          </button>
+        </div>
       </div>
     </TransitionFade>
   </div>

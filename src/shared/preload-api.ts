@@ -18,6 +18,9 @@ import type {
   FileChange,
   FileNode,
   GitBranch,
+  GitCredentialAnswer,
+  GitCredentialRequest,
+  GitRemoteResult,
   GitStatus,
   McpCommandCheck,
   McpRuntimeInfo,
@@ -215,15 +218,17 @@ export interface ElectronAPI {
       expectedBranch?: string
     ) => Promise<string>;
     /**
-     * Pull from remote. If `expectedBranch` is supplied, the main process
-     * verifies HEAD matches before pulling and rejects otherwise.
+     * Pull from remote, asking for a login if it needs one. If
+     * `expectedBranch` is supplied, the main process verifies HEAD matches
+     * first. A failure is a result, saying when it was the login's.
      */
-    pull: (workingDir: string, expectedBranch?: string) => Promise<string>;
-    /**
-     * Push to remote. If `expectedBranch` is supplied, the main process
-     * verifies HEAD matches before pushing and rejects otherwise.
-     */
-    push: (workingDir: string, expectedBranch?: string) => Promise<string>;
+    pull: (workingDir: string, expectedBranch?: string) => Promise<GitRemoteResult>;
+    /** Push to remote; as `pull`. */
+    push: (workingDir: string, expectedBranch?: string) => Promise<GitRemoteResult>;
+    /** Git needs a login for a push or pull: answer with `respondToCredentialRequest`. */
+    onCredentialRequest: (callback: (request: GitCredentialRequest) => void) => () => void;
+    /** The login for a credential request, or null to cancel it. */
+    respondToCredentialRequest: (requestId: string, answer: GitCredentialAnswer | null) => Promise<void>;
     /** Fetch from remote (updates tracking refs for ahead/behind) */
     fetch: (workingDir: string) => Promise<void>;
     /** List local and remote-tracking branches */

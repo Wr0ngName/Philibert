@@ -73,7 +73,10 @@ describe('IPC teardown', () => {
       configService: standIn(),
       claudeService: standIn(),
       fileWatcher: standIn(),
-      gitService: standIn(),
+      // Its credential broker is an object of its own, given the asker.
+      gitService: new Proxy({}, {
+        get: (_target, key) => (key === 'credentials' ? standIn() : key === 'then' ? undefined : vi.fn(async () => undefined)),
+      }) as never,
       mcpService: standIn(),
       projectPermissionService: standIn(),
       conversationService: standIn(),

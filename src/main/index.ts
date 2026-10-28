@@ -108,7 +108,9 @@ async function main(): Promise<void> {
     await conversationService.recoverSessionData();
     claudeService = new ClaudeCodeService(configService, getMainWindow, notificationService);
     fileWatcher = new FileWatcherService();
-    gitService = new GitService();
+    const { GitCredentialBroker } = await import('./services/git/GitCredentialBroker');
+    const { getUserDataPath } = await import('./utils/paths');
+    gitService = new GitService(new GitCredentialBroker(getUserDataPath()));
     mcpService = new McpConfigService();
     projectPermissionService = new ProjectPermissionService();
     updateService = new UpdateService(getMainWindow, configService);
@@ -272,6 +274,7 @@ async function main(): Promise<void> {
 
     // Clean up all resources
     gitService?.stopWatching();
+    void gitService?.credentials?.close();
     fileWatcher?.stop();
 
     if (ipcCleanup) {
