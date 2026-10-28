@@ -166,6 +166,12 @@ verify:
         -w /app \
         node:${NODE_VERSION} \
         bash -c "apt-get update && apt-get install -y build-essential python3 dpkg fakeroot rpm && npm ci --maxsockets 1 --no-audit --no-fund && npm run make -- --platform=linux && node scripts/verify-package.mjs out/Philibert-linux-x64 linux"
+    # Forge can end with exit 0 before its makers finish: on v0.25.0-rc.7 the
+    # log stops at "Making a deb distributable", no package was written, and
+    # the job passed — so the release went out without Linux files. Fail here
+    # instead, where a retry fixes it. (Not reproduced locally: the same make
+    # produces both packages; cause unknown.)
+    - ls -l out/make/deb/x64/*.deb out/make/rpm/x64/*.rpm
 
 # Linux build for tags (with artifacts for release)
 build:linux:
@@ -544,6 +550,10 @@ publish:packages:
 
       echo "Publishing version ${VERSION} to package registry..."
 
+      # Every package or none: a release missing one is published with an
+      # empty download link (v0.25.0-rc.7 shipped without its Linux files).
+      ls -l out/make/deb/x64/*.deb out/make/rpm/x64/*.rpm out/make/nsis/*.exe out-online/nsis/*.exe
+
       # Initialize release info file
       mkdir -p release-info
       echo "TAG_VERSION=${VERSION}" > release-info/urls.env
@@ -554,7 +564,7 @@ publish:packages:
           DEB_NAME=$(basename "$file")
           DEB_URL="${PACKAGE_REGISTRY_URL}/releases/${VERSION}/${DEB_NAME}"
           echo "Uploading $file..."
-          curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
                --upload-file "$file" \
                "${DEB_URL}"
           echo "DEB_NAME=${DEB_NAME}" >> release-info/urls.env
@@ -568,7 +578,7 @@ publish:packages:
           RPM_NAME=$(basename "$file")
           RPM_URL="${PACKAGE_REGISTRY_URL}/releases/${VERSION}/${RPM_NAME}"
           echo "Uploading $file..."
-          curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
                --upload-file "$file" \
                "${RPM_URL}"
           echo "RPM_NAME=${RPM_NAME}" >> release-info/urls.env
@@ -583,7 +593,7 @@ publish:packages:
           WIN_NAME=$(basename "$file" | tr ' ' '-')
           WIN_URL="${PACKAGE_REGISTRY_URL}/releases/${VERSION}/${WIN_NAME}"
           echo "Uploading OFFLINE installer: $file as ${WIN_NAME}..."
-          curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
                --upload-file "$file" \
                "${WIN_URL}"
           echo "WIN_NAME=${WIN_NAME}" >> release-info/urls.env
@@ -594,7 +604,7 @@ publish:packages:
           if [ "${WIN_OFFLINE_NAME}" != "${WIN_NAME}" ]; then
             WIN_OFFLINE_URL="${PACKAGE_REGISTRY_URL}/releases/${VERSION}/${WIN_OFFLINE_NAME}"
             echo "Uploading as ${WIN_OFFLINE_NAME}..."
-            curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+            curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
                  --upload-file "$file" \
                  "${WIN_OFFLINE_URL}"
             echo "WIN_OFFLINE_NAME=${WIN_OFFLINE_NAME}" >> release-info/urls.env
@@ -611,7 +621,7 @@ publish:packages:
           WIN_ONLINE_NAME=$(basename "$file" | tr ' ' '-' | sed 's/\.exe$/-online.exe/')
           WIN_ONLINE_URL="${PACKAGE_REGISTRY_URL}/releases/${VERSION}/${WIN_ONLINE_NAME}"
           echo "Uploading ONLINE installer: $file as ${WIN_ONLINE_NAME}..."
-          curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
                --upload-file "$file" \
                "${WIN_ONLINE_URL}"
           echo "WIN_ONLINE_NAME=${WIN_ONLINE_NAME}" >> release-info/urls.env
@@ -627,7 +637,7 @@ publish:packages:
       RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       printf 'version: %s\npath: %s\nsha512: %s\nreleaseDate: %s\n' \
         "${VERSION}" "${WIN_FILENAME}" "${WIN_SHA512}" "${RELEASE_DATE}" > latest.yml
-      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file latest.yml \
            "${PACKAGE_REGISTRY_URL}/releases/${VERSION}/latest.yml"
       cp latest.yml release-info/latest.yml
