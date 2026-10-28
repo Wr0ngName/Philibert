@@ -145,6 +145,33 @@ describe('signing in for a push or pull', () => {
     expect(fs.existsSync(storeFile) ? fs.readFileSync(storeFile, 'utf8') : '').toBe('');
   });
 
+  it('when the saved login no longer works (token revoked), says it was refused, drops it, and asks on the next try', async () => {
+    await service.push(work);
+    // The user's helper still holds the old token; the server no longer
+    // takes it.
+    fs.writeFileSync(storeFile, `http://alice:glpat-revoked@${server.host.replace(':', '%3a')}\n`);
+    asked = [];
+    fs.writeFileSync(path.join(work, 'b.txt'), 'b');
+    await git(['add', 'b.txt']);
+    await git(['commit', '-q', '-m', 'second']);
+
+    const refused = await service.push(work);
+
+    // Git used the saved token without asking anyone, the server refused
+    // it, and git told every helper to forget it.
+    expect(refused).toMatchObject({ ok: false, auth: { host: server.host, reason: 'rejected' } });
+    expect(asked).toHaveLength(0);
+    expect(fs.readFileSync(storeFile, 'utf8').trim()).toBe('');
+
+    // Try again: nothing saved now, so the user is asked, and the new token
+    // is kept.
+    const retried = await service.push(work);
+
+    expect(retried).toMatchObject({ ok: true });
+    expect(asked).toHaveLength(1);
+    expect(fs.readFileSync(storeFile, 'utf8')).toContain(`alice:${LOGIN.password}@`);
+  });
+
   it('pulls the same way', async () => {
     await service.push(work);
     await git(['branch', '--set-upstream-to', 'origin/main']);
