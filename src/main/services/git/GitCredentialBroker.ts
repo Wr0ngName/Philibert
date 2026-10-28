@@ -50,7 +50,11 @@ interface Operation {
   host?: string;
   cancelled: boolean;
   rejected: boolean;
+  keeping?: KeepingLookup;
 }
+
+/** What will keep a login for a host: see GitCredentialRequest.keeping. */
+export type KeepingLookup = (host: string) => Promise<GitCredentialRequest['keeping']>;
 
 interface HelperMessage {
   token?: unknown;
@@ -121,11 +125,14 @@ export class GitCredentialBroker {
     this.asker = asker;
   }
 
-  /** Start an operation (a push or pull) that may ask for a login. */
-  async begin(): Promise<CredentialSession> {
+  /**
+   * Start an operation (a push or pull) that may ask for a login.
+   * @param keeping Looks up what will keep the login, to tell the user.
+   */
+  async begin(keeping?: KeepingLookup): Promise<CredentialSession> {
     await this.start();
     const id = crypto.randomUUID();
-    const operation: Operation = { cancelled: false, rejected: false };
+    const operation: Operation = { cancelled: false, rejected: false, ...(keeping ? { keeping } : {}) };
     this.operations.set(id, operation);
 
     // Paths in forward slashes: Git for Windows runs the helper through its
@@ -237,11 +244,13 @@ export class GitCredentialBroker {
     }
     if (message.action !== 'get') return {};
 
+    const keeping = await operation.keeping?.(host).catch(() => undefined);
     const request: GitCredentialRequest = {
       requestId: crypto.randomUUID(),
       protocol: typeof attributes.protocol === 'string' ? attributes.protocol : '',
       host,
       ...(typeof attributes.username === 'string' && attributes.username ? { username: attributes.username } : {}),
+      ...(keeping ? { keeping } : {}),
     };
     const answer = this.asker ? await this.asker(request) : null;
     // A value with a line break would end git's key=value line early.

@@ -8,12 +8,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import type { GitBranch, GitRemoteResult, GitStatus } from '../../shared/types';
+import type { GitBranch, GitCredentialRequest, GitRemoteResult, GitStatus } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import logger from '../utils/logger';
 import { WindowsPaths } from '../utils/resourcePaths';
 
 import type { CredentialSession, GitCredentialBroker } from './git/GitCredentialBroker';
+import { describeHelper, effectiveHelpers, keepsLogin, parseHelperConfig } from './git/credential-helpers';
 
 const execFileAsync = promisify(execFile);
 
@@ -114,6 +115,22 @@ export class GitService {
   }
 
   /**
+   * What will keep a login for a host in this repository: the user's
+   * credential helpers as git's configuration (system, global, local) lists
+   * them. `git config` exits 1 when there are none, which is an answer too.
+   */
+  private async credentialKeeping(cwd: string, host: string): Promise<GitCredentialRequest['keeping']> {
+    let output = '';
+    try {
+      output = await this.runGit(['config', '--get-regexp', '^credential\\..*helper$'], cwd);
+    } catch (error) {
+      if ((error as Error & { cause?: { code?: unknown } }).cause?.code !== 1) throw error;
+    }
+    const helpers = effectiveHelpers(parseHelperConfig(output), host);
+    return { helpers: helpers.map(describeHelper), remembered: keepsLogin(helpers) };
+  }
+
+  /**
    * A push or pull: the command that may need a login, run so it can ask
    * the user for one, with the outcome as a result rather than a throw — a
    * failure says when it was the login's.
@@ -127,7 +144,7 @@ export class GitService {
 
     let session: CredentialSession | undefined;
     try {
-      session = await this.credentials?.begin();
+      session = await this.credentials?.begin((host) => this.credentialKeeping(cwd, host));
     } catch (error) {
       // Without the broker the command still runs; it just cannot ask.
       logger.warn('Git credential broker unavailable', { error: (error as Error).message });

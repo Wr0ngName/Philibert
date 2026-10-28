@@ -6,7 +6,7 @@
  * (see GitCredentialBroker). The answer goes back to git and nowhere else:
  * Philibert keeps nothing. When it works, git hands it to the user's own
  * credential helper, which is what remembers it — the same as a sign-in in
- * a terminal.
+ * a terminal. The dialog says which helper that will be, or that none will.
  *
  * Closing the dialog cancels the sign-in, and the push or pull then fails
  * saying so.
@@ -29,6 +29,27 @@ const usernameInput = ref<HTMLInputElement | null>(null);
 const passwordInput = ref<HTMLInputElement | null>(null);
 
 const canSubmit = computed(() => username.value.trim() !== '' && password.value !== '');
+
+/**
+ * Whether the login will be remembered, by what — from the user's git
+ * credential helpers for this host. Philibert keeps nothing either way.
+ */
+const keepingText = computed((): { text: string; warn: boolean } => {
+  const keeping = current.value?.keeping;
+  if (!keeping) {
+    return { text: 'Philibert does not keep it; your git credential helper does, if you have one.', warn: false };
+  }
+  if (keeping.helpers.length === 0) {
+    return {
+      text: 'It will not be saved: no git credential helper is set up, so you will be asked again next time.',
+      warn: true,
+    };
+  }
+  const names = keeping.helpers.join(', ');
+  return keeping.remembered
+    ? { text: `It will be saved by ${names}. Philibert does not keep it.`, warn: false }
+    : { text: `It will be kept by ${names} only for a while, then asked for again.`, warn: true };
+});
 
 let cleanup: (() => void) | null = null;
 
@@ -104,8 +125,11 @@ onUnmounted(() => {
           class="w-full px-2.5 py-1.5 text-sm rounded-md border border-surface-300 dark:border-surface-600 bg-surface-50 dark:bg-surface-900 text-surface-800 dark:text-surface-200 focus:outline-hidden focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
         >
       </label>
-      <p class="text-xs text-surface-500 dark:text-surface-400">
-        Philibert does not keep it; your git credential helper does, if you have one.
+      <p
+        data-testid="git-credential-keeping"
+        :class="['text-xs', keepingText.warn ? 'text-amber-600 dark:text-amber-400' : 'text-surface-500 dark:text-surface-400']"
+      >
+        {{ keepingText.text }}
       </p>
       <div class="flex justify-end gap-2 pt-1">
         <Button

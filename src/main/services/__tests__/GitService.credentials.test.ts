@@ -109,7 +109,12 @@ describe('signing in for a push or pull', () => {
     const result = await service.push(work);
 
     expect(result).toMatchObject({ ok: true });
-    expect(asked).toEqual([expect.objectContaining({ protocol: 'http', host: server.host })]);
+    expect(asked).toEqual([expect.objectContaining({
+      protocol: 'http',
+      host: server.host,
+      // What the dialog tells the user will keep it: the repo's helper.
+      keeping: { helpers: ['git-credential-store (a plain-text file)'], remembered: true },
+    })]);
     expect(await serverHasCommit()).toBe(true);
     // git-credential-store URL-encodes the port's colon.
     expect(fs.readFileSync(storeFile, 'utf8').trim())
@@ -170,6 +175,13 @@ describe('signing in for a push or pull', () => {
     expect(retried).toMatchObject({ ok: true });
     expect(asked).toHaveLength(1);
     expect(fs.readFileSync(storeFile, 'utf8')).toContain(`alice:${LOGIN.password}@`);
+  });
+
+  it('tells the user when no helper will keep the login', async () => {
+    await git(['config', '--unset', 'credential.helper']);
+
+    expect(await service.push(work)).toMatchObject({ ok: true });
+    expect(asked[0].keeping).toEqual({ helpers: [], remembered: false });
   });
 
   it('pulls the same way', async () => {

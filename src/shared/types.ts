@@ -1088,6 +1088,12 @@ export interface GitCredentialRequest {
   host: string;
   /** A username git already has for this host, to start from. */
   username?: string;
+  /**
+   * What will keep the login once it works: the user's git credential
+   * helpers for this host, by name, and whether any keeps it beyond a while
+   * in memory. Absent when it could not be read.
+   */
+  keeping?: { helpers: string[]; remembered: boolean };
 }
 
 /** The login the user gave for a {@link GitCredentialRequest}. */

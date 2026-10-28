@@ -131,6 +131,20 @@ describe('signing in during a push', () => {
     expect(problem()).toContain('sign in');
   }, 10_000);
 
+  it('says what will keep the login, and warns when nothing will', async () => {
+    const keepingText = () => document.body.querySelector('[data-testid="git-credential-keeping"]')?.textContent?.trim();
+
+    requestListener!({ requestId: 'k1', protocol: 'https', host: HOST, keeping: { helpers: ['Git Credential Manager'], remembered: true } });
+    await flushPromises();
+    expect(keepingText()).toBe('It will be saved by Git Credential Manager. Philibert does not keep it.');
+
+    (document.body.querySelector('[data-testid="git-credential-form"] button[type="button"]') as HTMLButtonElement).click();
+    await flushPromises();
+    requestListener!({ requestId: 'k2', protocol: 'https', host: HOST, keeping: { helpers: [], remembered: false } });
+    await flushPromises();
+    expect(keepingText()).toBe('It will not be saved: no git credential helper is set up, so you will be asked again next time.');
+  });
+
   it('says the server refused the login, and "Try again" asks again', async () => {
     await clickPush();
     await signIn({ username: 'alice', password: 'wrong' });
