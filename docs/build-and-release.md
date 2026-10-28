@@ -288,8 +288,26 @@ via `nodesource` at runtime. If the Node version changes, update the
 `NODE_VERSION` variable in `.gitlab-ci.yml`.
 
 The image is pinned (`WINE_BUILDER_IMAGE` in `.gitlab-ci.yml`) because the
-bare `wine-mono` tag follows the newest release. A runner that has lost its
-cached copy then builds with a different image than the last release did:
-v0.25.0-rc.4 pulled 10.26 (published 2026-10-24) and both Windows packages
-came out empty. Adopt a new release by changing the pin and running the
-manual Windows builds on `main` before tagging.
+bare `wine-mono` tag follows the newest release, so a runner that has lost
+its cached copy would build with a different image than the last release
+did. Adopt a new release by changing the pin.
+
+### A package job passes, or fails with "packaging produced nothing"
+Forge exits 0 when its packaging process is killed. Its CLI runs each
+command (`package`, `make`) as a child process through commander 11, which
+turns a death by signal into exit code 0 — commander 12 fixed it, but
+`@electron-forge/cli` 7.11 still uses 11. On this runner the killer is the
+OOM killer (the VM has had 5.7GiB with about 2GiB available when jobs
+start). The log then just stops mid-step, with no error and no "Killed".
+
+The jobs check their output, so this fails the job rather than shipping a
+release without packages: `verify-package.mjs` reports the package
+directory as missing, `build:linux` fails when no `.deb`/`.rpm` was
+written, and `publish:packages` publishes nothing unless every package is
+there. Retry the job once memory is free. Forcing commander 12 through npm
+`overrides` is not an option: overrides reach Forge's whole dependency
+tree, replacing the commander that `@electron/asar`, `postject` and
+`terser` need.
+
+v0.25.0-rc.4 (both Windows packages), rc.7 (Linux, published without its
+packages) and rc.8 (Linux) failed this way.

@@ -111,7 +111,16 @@ export function verifyPackage(packageDir, platform) {
   const problems = [];
 
   if (!existsSync(packageDir)) {
-    problems.push(`Package directory ${packageDir} does not exist — packaging produced nothing.`);
+    // What this has meant every time so far: Forge's packaging process was
+    // killed (out of memory) and Forge reported success anyway — its CLI
+    // runs the command as a child through commander 11, which exits 0 when
+    // that child dies from a signal (fixed in commander 12, which
+    // @electron-forge/cli 7.11 does not use).
+    problems.push(
+      `Package directory ${packageDir} does not exist — packaging produced nothing. `
+      + 'If Forge reported no error, its process was most likely killed (out of memory): '
+      + 'Forge exits 0 when that happens.',
+    );
     return problems;
   }
 

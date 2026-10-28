@@ -21,10 +21,10 @@ variables:
   # so nothing is rebuilt until it changes.
   WHISPER_VERSION: "v1.9.5"
   # The image the Windows installers are packaged in, pinned to a dated
-  # release. The bare `wine-mono` tag follows the latest one: it moved to
-  # 10.26 on 2026-10-24, and v0.25.0-rc.4 was the first build to pull it
-  # (the runner's copy had been cleared) — both Windows packages then came
-  # out empty. A new release is adopted by changing this line.
+  # release: the bare `wine-mono` tag follows the latest one (it moved to
+  # 10.26 on 2026-10-24), so every runner that lost its cached copy would
+  # build with whatever was newest. A new release is adopted by changing
+  # this line.
   WINE_BUILDER_IMAGE: "electronuserland/builder:24-wine-mono-05.26"
 
 # Common cleanup template - fixes root-owned files from docker
@@ -166,11 +166,13 @@ verify:
         -w /app \
         node:${NODE_VERSION} \
         bash -c "apt-get update && apt-get install -y build-essential python3 dpkg fakeroot rpm && npm ci --maxsockets 1 --no-audit --no-fund && npm run make -- --platform=linux && node scripts/verify-package.mjs out/Philibert-linux-x64 linux"
-    # Forge can end with exit 0 before its makers finish: on v0.25.0-rc.7 the
-    # log stops at "Making a deb distributable", no package was written, and
-    # the job passed — so the release went out without Linux files. Fail here
-    # instead, where a retry fixes it. (Not reproduced locally: the same make
-    # produces both packages; cause unknown.)
+    # Forge exits 0 when its packaging process is killed: its CLI runs `make`
+    # as a child through commander 11, which turns a signal death into exit 0
+    # (fixed in commander 12, not used by @electron-forge/cli 7.11). On this
+    # runner the killer is the OOM killer. On v0.25.0-rc.7 the log stopped at
+    # "Making a deb distributable", no package was written, and the job
+    # passed, so the release went out without Linux files. Fail here instead,
+    # where a retry fixes it.
     - ls -l out/make/deb/x64/*.deb out/make/rpm/x64/*.rpm
 
 # Linux build for tags (with artifacts for release)
