@@ -6,7 +6,7 @@
 import { ref, computed, nextTick, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
-import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, MessageImage, PendingAction, PermissionScope, ToolUseInfo } from '@shared/types';
+import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, MessageImage, PendingAction, PermissionOptionVariant, PermissionScope, ToolUseInfo } from '@shared/types';
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
@@ -208,8 +208,8 @@ async function stopAllRunningTasks(): Promise<void> {
   await Promise.allSettled(tasks.map((task) => stopTask(task.id)));
 }
 
-function handleApprove(actionId: string, alwaysAllow?: boolean, chosenScope?: PermissionScope) {
-  approveAction(actionId, alwaysAllow, chosenScope);
+function handleApprove(actionId: string, alwaysAllow?: boolean, chosenScope?: PermissionScope, chosenVariant?: PermissionOptionVariant) {
+  approveAction(actionId, alwaysAllow, chosenScope, chosenVariant);
 }
 
 function handleReject(actionId: string) {

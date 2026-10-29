@@ -459,9 +459,17 @@ export type PermissionScope = 'session' | 'project' | 'global';
  * A single scope option presented to the user in the permission approval UI.
  * Each option maps to a set of SDK PermissionUpdate suggestions for that scope.
  */
+/**
+ * Which of a scope's options: the whole tool (default, absent), or `narrow`
+ * — only what the CLI itself suggested, e.g. this exact command.
+ */
+export type PermissionOptionVariant = 'narrow';
+
 export interface PermissionScopeOption {
   /** The scope this option applies to */
   scope: PermissionScope;
+  /** Set on a scope's second option: see PermissionOptionVariant. */
+  variant?: PermissionOptionVariant;
   /** Button label (e.g. "Allow Bash this session") */
   label: string;
   /** Tooltip description of what will be allowed */
@@ -642,6 +650,8 @@ export interface ActionResponse {
   /** Which permission scope the user chose (session/project/global).
    *  When set, only suggestions matching this scope are applied. */
   chosenScope?: PermissionScope;
+  /** Which of that scope's options, when it has two. */
+  chosenVariant?: PermissionOptionVariant;
   /** Optional message explaining why the action was denied */
   denyMessage?: string;
 }

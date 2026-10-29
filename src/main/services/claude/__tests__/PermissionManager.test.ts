@@ -504,7 +504,7 @@ describe('PermissionManager', () => {
       expect(capturedAction?.permissionInfo?.alwaysAllowLabel).toBe('Allow Bash in this project');
     });
 
-    it('should handle rules with ruleContent field', async () => {
+    it('grants the whole tool in project, as "this session" does, whatever narrower rule the CLI suggested', async () => {
       const canUseTool = permissionManager.createCanUseToolCallback();
       const signal = new AbortController().signal;
 
@@ -534,11 +534,13 @@ describe('PermissionManager', () => {
       expect(capturedAction).not.toBeNull();
       expect(capturedAction?.permissionInfo).toEqual({
         alwaysAllowLabel: 'Allow Bash in this project',
-        description: 'Allow Bash (command contains "git") for this project',
+        description: 'Allow Bash for this project',
         scope: 'project',
         scopeOptions: [
           { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
-          { scope: 'project', label: 'Allow Bash (command contains "git") in project', description: 'Allow Bash (command contains "git") for this project' },
+          { scope: 'project', label: 'Allow Bash in project', description: 'Allow Bash for this project' },
+          // The CLI's own narrower rule stays available as a second choice.
+          { scope: 'project', variant: 'narrow', label: 'Allow Bash (command contains "git") in project', description: 'Allow only Bash (command contains "git") for this project' },
         ],
       });
     });
@@ -1037,11 +1039,64 @@ describe('PermissionManager', () => {
       ]);
     });
 
-    it('leaves suggestions untouched when the SDK already offers a project scope', async () => {
+    it('replaces the exact command the CLI suggests for the project with the whole tool, as "this session" grants', async () => {
       const { action, result } = await requestAndApprove('Bash', { command: 'touch probe-one.txt' }, BASH_SUGGESTIONS, 'project');
 
-      expect(action.permissionInfo?.scopeOptions.map(o => o.scope)).toEqual(['session', 'project']);
-      expect(result.updatedPermissions).toEqual(BASH_SUGGESTIONS);
+      expect(action.permissionInfo?.scopeOptions.filter(o => o.scope === 'project').map(o => o.label)).toEqual([
+        'Allow Bash (/tmp/project) in project',
+        'Allow this exact command in project',
+      ]);
+      expect(result.updatedPermissions?.filter(u => u.destination === 'localSettings')).toEqual([
+        { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow', destination: 'localSettings' },
+        { type: 'addDirectories', directories: ['/tmp/project'], destination: 'localSettings' },
+      ]);
+    });
+
+    it('offers "Allow PowerShell in project" for a one-off PowerShell pipeline (main.log, 2026-10-29)', async () => {
+      // The CLI's project suggestion for it was the whole command line.
+      const command = 'Get-ChildItem -Force | Select-Object Mode,Name,Length; Get-ChildItem -Directory | ForEach-Object { "--- $($_.Name)"; Get-ChildItem $_.FullName -Force | Select-Object -First 30 -ExpandProperty Name }';
+      const { action, result } = await requestAndApprove(
+        'PowerShell',
+        { command, description: 'List working directory contents' },
+        [{ type: 'addRules', rules: [{ toolName: 'PowerShell', ruleContent: command }], behavior: 'allow', destination: 'localSettings' }],
+        'project',
+      );
+
+      // Short labels: the command is never repeated in a button.
+      expect(action.permissionInfo?.scopeOptions).toEqual([
+        { scope: 'session', label: 'Allow PowerShell this session', description: 'Allow PowerShell for this session' },
+        { scope: 'project', label: 'Allow PowerShell in project', description: 'Allow PowerShell for this project' },
+        { scope: 'project', variant: 'narrow', label: 'Allow this exact command in project', description: 'Allow only this exact command for this project' },
+      ]);
+      expect(result.updatedPermissions).toEqual([
+        { type: 'addRules', rules: [{ toolName: 'PowerShell' }], behavior: 'allow', destination: 'localSettings' },
+      ]);
+    });
+
+    it('persists only the exact command when "this exact command" is chosen', async () => {
+      const command = 'git log --oneline -5';
+      const narrow: PermissionUpdate = {
+        type: 'addRules', rules: [{ toolName: 'PowerShell', ruleContent: command }], behavior: 'allow', destination: 'localSettings',
+      };
+      const canUseTool = permissionManager.createCanUseToolCallback();
+      const pending = canUseTool('PowerShell', { command }, {
+        signal: new AbortController().signal,
+        toolUseID: 'test-id',
+        requestId: 'test-request-id',
+        suggestions: [narrow],
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      permissionManager.handleActionResponse({
+        actionId: capturedAction!.id,
+        conversationId: 'conv-1',
+        approved: true,
+        alwaysAllow: true,
+        chosenScope: 'project',
+        chosenVariant: 'narrow',
+      });
+
+      const result = await pending;
+      expect(result).toMatchObject({ behavior: 'allow', updatedPermissions: [narrow] });
     });
 
     it('offers no project option when the SDK made no suggestion', async () => {

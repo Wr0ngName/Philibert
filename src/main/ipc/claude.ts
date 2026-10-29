@@ -13,7 +13,7 @@
 
 import { ipcMain } from 'electron';
 
-import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionScope, RewindScope, SessionPermissionEntry, IMAGE_MEDIA_TYPES, type MessageImage } from '../../shared/types';
+import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionOptionVariant, PermissionScope, RewindScope, SessionPermissionEntry, IMAGE_MEDIA_TYPES, type MessageImage } from '../../shared/types';
 import { IpcError, ValidationError, AppError, ERROR_CODES } from '../errors';
 import ClaudeCodeService from '../services/ClaudeCodeService';
 import { validateString, validateObject, validateBoolean, formatErrorMessage, ensureService } from '../utils/ipc-helpers';
@@ -91,10 +91,11 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
       actionId: string,
       updatedInput?: Record<string, unknown>,
       alwaysAllow?: boolean,
-      chosenScope?: PermissionScope
+      chosenScope?: PermissionScope,
+      chosenVariant?: PermissionOptionVariant
     ) => {
       try {
-        logger.debug('IPC: claude:approve', { conversationId, actionId, alwaysAllow, chosenScope });
+        logger.debug('IPC: claude:approve', { conversationId, actionId, alwaysAllow, chosenScope, chosenVariant });
 
         // Validate service
         ensureService(claudeService, 'ClaudeCodeService');
@@ -115,7 +116,11 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
           validateString(chosenScope, 'chosenScope');
         }
 
-        await claudeService.approveAction(conversationId, actionId, updatedInput, alwaysAllow, chosenScope);
+        if (chosenVariant !== undefined && chosenVariant !== 'narrow') {
+          throw new Error(`Invalid chosenVariant: ${String(chosenVariant)}`);
+        }
+
+        await claudeService.approveAction(conversationId, actionId, updatedInput, alwaysAllow, chosenScope, chosenVariant);
       } catch (error) {
         logger.error('Failed to approve action', { error, conversationId, actionId });
         throw new IpcError(formatErrorMessage('Failed to approve action', error), IPC_CHANNELS.CLAUDE_APPROVE, ERROR_CODES.IPC_HANDLER_FAILED, error);

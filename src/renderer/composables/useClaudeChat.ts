@@ -10,7 +10,7 @@
 
 import { effectScope, onMounted, onUnmounted, shallowRef, watch, type EffectScope } from 'vue';
 
-import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, MessageImage, PermissionScope } from '@shared/types';
+import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, MessageImage, PermissionOptionVariant, PermissionScope } from '@shared/types';
 
 import { CONSTANTS } from '../constants/app';
 import { useChatStore } from '../stores/chat';
@@ -451,7 +451,12 @@ export function useClaudeChat() {
    * @param actionId - The action to approve
    * @param alwaysAllow - If true, automatically approve similar actions in the future
    */
-  async function approveAction(actionId: string, alwaysAllow?: boolean, chosenScope?: PermissionScope) {
+  async function approveAction(
+    actionId: string,
+    alwaysAllow?: boolean,
+    chosenScope?: PermissionScope,
+    chosenVariant?: PermissionOptionVariant,
+  ) {
     const currentConvId = conversationsStore.currentConversationId;
     if (!currentConvId) {
       logger.error('Cannot approve action: no active conversation');
@@ -465,7 +470,7 @@ export function useClaudeChat() {
       // tool use reaches 'executed', whatever route it took to get there.
       chatStore.updateActionStatus(currentConvId, actionId, 'approved');
       chatStore.updateToolUseStatus(currentConvId, actionId, 'approved');
-      await window.electron.claude.approve(currentConvId, actionId, undefined, alwaysAllow, chosenScope);
+      await window.electron.claude.approve(currentConvId, actionId, undefined, alwaysAllow, chosenScope, chosenVariant);
       chatStore.removePendingAction(currentConvId, actionId);
     } catch (err) {
       logger.error('Failed to approve action', err);

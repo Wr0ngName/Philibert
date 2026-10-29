@@ -49,6 +49,8 @@ interface PendingPermission {
   resolve: (result: PermissionResult) => void;
   reject: (error: Error) => void;
   suggestions?: PermissionUpdate[];
+  /** What the project's narrow option grants: see withProjectScopeSuggestions. */
+  narrowProject?: PermissionUpdate[];
   /** Cleanup function to remove the abort event listener */
   cleanupAbortHandler?: () => void;
 }
@@ -161,8 +163,8 @@ export class PermissionManager {
       }
 
       // Create pending action for UI (include permission info from SDK suggestions)
-      const suggestions = this.withProjectScopeSuggestions(toolName, options.suggestions);
-      const permissionInfo = this.describePermissionSuggestions(toolName, suggestions);
+      const { suggestions, narrowProject } = this.withProjectScopeSuggestions(toolName, options.suggestions);
+      const permissionInfo = this.describePermissionSuggestions(toolName, suggestions, input, narrowProject);
       const permissionContext: PermissionContext | undefined =
         (options.blockedPath || options.decisionReason)
           ? {
@@ -191,6 +193,7 @@ export class PermissionManager {
           resolve,
           reject,
           suggestions,
+          ...(narrowProject ? { narrowProject } : {}),
         };
 
         // Set up named abort handler so it can be removed after resolution
@@ -431,62 +434,81 @@ export class PermissionManager {
   }
 
   /**
-   * Add a project-scope equivalent of the SDK's session grant when the SDK
-   * offered no project-scope suggestion of its own.
+   * The project-scope grant: the same as "this session" — the requesting
+   * tool, whatever its input — remembered for the project.
    *
-   * The CLI only suggests `localSettings` rules for some tools (Bash commands,
-   * web domains, MCP tools, skills). Everything else gets session-only
-   * suggestions — generic tools an `addRules` with destination `session`, file
-   * edits a `setMode: acceptEdits` — so the modal had no way to remember the
-   * choice for the project. The synthesized updates use `localSettings`, the
-   * destination the CLI itself uses for "don't ask again in this project"
-   * (`.claude/settings.local.json`); the SDK writes them to that file when they
-   * come back through `updatedPermissions`.
+   * "Allow <tool> this session" allows the whole tool (handleActionResponse
+   * adds the tool to the session cache with no rule content). The project
+   * option used to pass on the CLI's own `localSettings` suggestion instead,
+   * and for a command tool that is the exact command line: "Allow PowerShell
+   * (Get-ChildItem -Force | Select-Object …) in project" saved a rule only
+   * that one command would ever match. The two options granted different
+   * things under the same wording.
    *
-   * Mapping (behaviour verified against the bundled CLI):
-   * - session `addRules` (allow)  → same rules in `localSettings`
-   * - session `addDirectories`    → same directories in `localSettings`
-   * - session `setMode: acceptEdits` and no rule → an allow rule for the
-   *   requesting (file-edit) tool. A persisted mode would change the project's
-   *   default mode for every tool, while a bare `Write` rule allows Write and
-   *   still asks for Edit. Other modes (e.g. the plan-mode exits) are not
-   *   tool grants and get no project option.
+   * So the project option is built here, from what the session and project
+   * suggestions grant:
+   * - allow rules → an allow rule for each of their tools, with no rule
+   *   content; `setMode: acceptEdits` (file edits) with no rule → one for the
+   *   requesting tool. Not the mode: a persisted mode would change the
+   *   project's default mode for every tool;
+   * - `addDirectories` → the same directories;
+   * all with destination `localSettings`, where the CLI keeps "don't ask
+   * again in this project" (`.claude/settings.local.json`); the SDK writes
+   * them there when they come back through `updatedPermissions`. The CLI's
+   * own narrower project rules are replaced by it. Global suggestions are
+   * left as they are, and alone they do not make a project option.
    *
-   * Nothing is synthesized when the SDK made no suggestion at all: it does that
-   * for requests it deliberately won't generalize (e.g. compound Bash commands),
-   * and a blanket tool rule written to disk would outlive the session.
+   * No project option when nothing is granted: no suggestion at all (the SDK
+   * does that for requests it deliberately won't generalize), only a deny,
+   * or a mode that is not a tool grant (the plan-mode exits).
    */
   private withProjectScopeSuggestions(
     toolName: string,
     suggestions?: PermissionUpdate[]
-  ): PermissionUpdate[] | undefined {
-    if (!suggestions || suggestions.length === 0) return suggestions;
-    if (suggestions.some((s) => this.mapDestinationToScope(s.destination) !== 'session')) {
-      return suggestions;
-    }
+  ): { suggestions?: PermissionUpdate[]; narrowProject?: PermissionUpdate[] } {
+    if (!suggestions || suggestions.length === 0) return { suggestions };
 
-    const projectSuggestions: PermissionUpdate[] = [];
-    for (const suggestion of suggestions) {
-      // Empty updates are skipped: they would yield a project option that
-      // persists nothing.
-      if (suggestion.type === 'addRules' && suggestion.behavior === 'allow' && suggestion.rules.length > 0) {
-        projectSuggestions.push({ ...suggestion, destination: 'localSettings' });
-      } else if (suggestion.type === 'addDirectories' && suggestion.directories.length > 0) {
-        projectSuggestions.push({ ...suggestion, destination: 'localSettings' });
-      }
+    const isProject = (s: PermissionUpdate) => this.mapDestinationToScope(s.destination) === 'project';
+    // The CLI's own narrower project rules (this exact command, a prefix, a
+    // domain): offered as the project's second option.
+    const narrowRules = suggestions.filter((s) =>
+      isProject(s) && s.type === 'addRules' && s.behavior === 'allow' && s.rules.some((r) => r.ruleContent));
+    const local = suggestions.filter((s) => this.mapDestinationToScope(s.destination) !== 'global');
+    const tools = [...new Set(local.flatMap((s) =>
+      (s.type === 'addRules' && s.behavior === 'allow' ? s.rules.map((r) => r.toolName) : [])))];
+    if (tools.length === 0 && local.some((s) => s.type === 'setMode' && s.mode === 'acceptEdits')) {
+      tools.push(toolName);
     }
+    const directories = [...new Set(local.flatMap((s) => (s.type === 'addDirectories' ? s.directories : [])))];
+    if (tools.length === 0 && directories.length === 0) return { suggestions };
 
-    const grantsTool = projectSuggestions.some((s) => s.type === 'addRules');
-    if (!grantsTool && suggestions.some((s) => s.type === 'setMode' && s.mode === 'acceptEdits')) {
-      projectSuggestions.push({
-        type: 'addRules',
-        rules: [{ toolName }],
-        behavior: 'allow',
-        destination: 'localSettings',
-      });
+    const kept = suggestions.filter((s) => !(isProject(s) && (s.type === 'addRules' || s.type === 'addDirectories')));
+    const projectDirectories: PermissionUpdate[] = directories.length > 0
+      ? [{ type: 'addDirectories', directories, destination: 'localSettings' }]
+      : [];
+    const project: PermissionUpdate[] = [];
+    if (tools.length > 0) {
+      project.push({ type: 'addRules', rules: tools.map((tool) => ({ toolName: tool })), behavior: 'allow', destination: 'localSettings' });
     }
+    project.push(...projectDirectories);
+    return {
+      suggestions: [...kept, ...project],
+      ...(narrowRules.length > 0 ? { narrowProject: [...narrowRules, ...projectDirectories] } : {}),
+    };
+  }
 
-    return [...suggestions, ...projectSuggestions];
+  /**
+   * A rule as the approval card names it: "this exact command" when its
+   * content is the request's own command line — which can be any length, and
+   * is shown above the buttons already — and otherwise the tool and content,
+   * e.g. `Bash (npm run test:*)`.
+   */
+  private ruleText(rule: { toolName: string; ruleContent?: string }, input?: Record<string, unknown>): string {
+    if (!rule.ruleContent) return rule.toolName;
+    if (typeof input?.command === 'string' && rule.ruleContent.trim() === input.command.trim()) {
+      return 'this exact command';
+    }
+    return `${rule.toolName} (${rule.ruleContent})`;
   }
 
   /**
@@ -500,7 +522,9 @@ export class PermissionManager {
    */
   private describePermissionSuggestions(
     toolName: string,
-    suggestions?: PermissionUpdate[]
+    suggestions?: PermissionUpdate[],
+    input?: Record<string, unknown>,
+    narrowProject?: PermissionUpdate[],
   ): PermissionSuggestionInfo | undefined {
     if (!suggestions || suggestions.length === 0) {
       return {
@@ -551,13 +575,12 @@ export class PermissionManager {
           group.toolNames.add(rule.toolName);
           allToolNames.add(rule.toolName);
           if (rule.ruleContent) {
-            group.ruleDetails.push(`${rule.toolName}: ${rule.ruleContent}`);
+            const text = this.ruleText(rule, input);
+            group.ruleDetails.push(text === 'this exact command' ? text : rule.ruleContent);
           }
         }
         if (suggestion.type === 'addRules') {
-          const ruleDescParts = suggestion.rules.map((r) =>
-            r.ruleContent ? `${r.toolName} (${r.ruleContent})` : r.toolName
-          );
+          const ruleDescParts = suggestion.rules.map((r) => this.ruleText(r, input));
           group.descriptions.push(`Allow ${ruleDescParts.join(', ')} ${SCOPE_LABELS[scope]}`);
         }
       } else if (suggestion.type === 'addDirectories') {
@@ -605,9 +628,7 @@ export class PermissionManager {
       let detailSuffix = '';
       if (hasRuleDetails && scopeToolNames.size === 1) {
         // Single tool with rule content — show the condition
-        const firstRule = group.ruleDetails[0];
-        const ruleContent = firstRule.substring(firstRule.indexOf(':') + 2);
-        detailSuffix = ` (${ruleContent})`;
+        detailSuffix = ` (${group.ruleDetails[0]})`;
       }
       if (hasDirectories) {
         const dirList = group.directories.length <= 2
@@ -633,6 +654,18 @@ export class PermissionManager {
         : `Allow ${toolLabel} (${scope} scope)`;
 
       scopeOptions.push({ scope, label, description });
+
+      // The project's second option: only what the CLI itself suggested.
+      if (scope === 'project' && narrowProject) {
+        const narrowRules = narrowProject.flatMap((s) => (s.type === 'addRules' ? s.rules : []));
+        const what = narrowRules.map((r) => this.ruleText(r, input)).join(', ');
+        scopeOptions.push({
+          scope,
+          variant: 'narrow',
+          label: what === 'this exact command' ? 'Allow this exact command in project' : `Allow ${what} in project`,
+          description: `Allow only ${what} ${SCOPE_LABELS.project}`,
+        });
+      }
     }
 
     // Ensure a session scope option always exists (for tools where SDK only provides project/global)
@@ -837,10 +870,15 @@ export class PermissionManager {
 
       // Include permission updates if user chose "always allow"
       if (response.alwaysAllow && pending.suggestions && pending.suggestions.length > 0) {
-        // Filter suggestions by chosen scope if specified
-        const filteredSuggestions = response.chosenScope
-          ? this.filterSuggestionsByScope(pending.suggestions, response.chosenScope)
-          : pending.suggestions;
+        // Filter suggestions by chosen scope if specified. The project's
+        // narrow option persists the CLI's own rules instead of the whole
+        // tool, along with what any project choice includes from the session.
+        const narrow = response.chosenScope === 'project' && response.chosenVariant === 'narrow' && pending.narrowProject;
+        const filteredSuggestions = narrow
+          ? [...this.filterSuggestionsByScope(pending.suggestions, 'session'), ...pending.narrowProject!]
+          : response.chosenScope
+            ? this.filterSuggestionsByScope(pending.suggestions, response.chosenScope)
+            : pending.suggestions;
 
         result.updatedPermissions = filteredSuggestions;
 

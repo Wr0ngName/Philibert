@@ -28,6 +28,7 @@ import type {
   McpServerInput,
   ModelInfo,
   PendingAction,
+  PermissionOptionVariant,
   PermissionScope,
   ProjectPermissionEntry,
   SessionPermissionEntry,
@@ -83,7 +84,8 @@ export interface ElectronAPI {
       actionId: string,
       updatedInput?: Record<string, unknown>,
       alwaysAllow?: boolean,
-      chosenScope?: PermissionScope
+      chosenScope?: PermissionScope,
+      chosenVariant?: PermissionOptionVariant
     ) => Promise<void>;
     /** Reject a pending action for a specific conversation */
     reject: (conversationId: string, actionId: string, message?: string) => Promise<void>;

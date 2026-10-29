@@ -271,6 +271,7 @@ describe('Claude IPC handlers', () => {
         'action_123',
         undefined,
         undefined,
+        undefined,
         undefined
       );
     });
@@ -284,6 +285,7 @@ describe('Claude IPC handlers', () => {
         'action_123',
         updatedInput,
         undefined,
+        undefined,
         undefined
       );
     });
@@ -296,6 +298,7 @@ describe('Claude IPC handlers', () => {
         'action_123',
         undefined,
         true,
+        undefined,
         undefined
       );
     });
@@ -309,8 +312,23 @@ describe('Claude IPC handlers', () => {
         'action_123',
         updatedInput,
         true,
+        undefined,
         undefined
       );
+    });
+
+    it('passes on which of a scope\'s options was chosen, and refuses an unknown one', async () => {
+      await handler({}, TEST_CONV_ID, 'action_123', undefined, true, 'project', 'narrow');
+
+      expect(mockClaudeService.approveAction).toHaveBeenCalledWith(
+        TEST_CONV_ID,
+        'action_123',
+        undefined,
+        true,
+        'project',
+        'narrow'
+      );
+      await expect(handler({}, TEST_CONV_ID, 'action_123', undefined, true, 'project', 'everything')).rejects.toThrow(IpcError);
     });
 
     it('should throw when conversationId is not a string', async () => {

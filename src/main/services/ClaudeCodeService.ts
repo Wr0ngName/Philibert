@@ -1589,6 +1589,7 @@ export class ClaudeCodeService {
     updatedInput?: Record<string, unknown>,
     alwaysAllow?: boolean,
     chosenScope?: import('../../shared/types').PermissionScope,
+    chosenVariant?: import('../../shared/types').PermissionOptionVariant,
   ): Promise<void> {
     // Channel mode: route to channel service (PTY-based permission handling)
     if (this.channelService && this.channelService.isConversationActive(conversationId)) {
@@ -1606,6 +1607,7 @@ export class ClaudeCodeService {
         updatedInput,
         alwaysAllow,
         chosenScope,
+        ...(chosenVariant ? { chosenVariant } : {}),
       });
       // Notify renderer that the tool is now executing (spinner → check)
       this.emitToolExecuted(conversationId, actionId);

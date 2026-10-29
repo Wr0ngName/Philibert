@@ -7,7 +7,7 @@
 
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
-import type { PendingAction, FileEditDetails, BashCommandDetails, GenericToolDetails, PermissionScope, PermissionScopeOption, PermissionContext } from '@shared/types';
+import type { PendingAction, FileEditDetails, BashCommandDetails, GenericToolDetails, PermissionOptionVariant, PermissionScope, PermissionScopeOption, PermissionContext } from '@shared/types';
 import type { IconName } from '../shared/Icon.vue';
 
 import Button from '../shared/Button.vue';
@@ -21,7 +21,7 @@ interface Props {
 const props = defineProps<Props>();
 
 const emit = defineEmits<{
-  (e: 'approve', actionId: string, alwaysAllow?: boolean, chosenScope?: PermissionScope): void;
+  (e: 'approve', actionId: string, alwaysAllow?: boolean, chosenScope?: PermissionScope, chosenVariant?: PermissionOptionVariant): void;
   (e: 'reject', actionId: string): void;
 }>();
 
@@ -36,12 +36,13 @@ const scopeOptions = computed((): PermissionScopeOption[] => {
 /** Whether we have per-scope buttons to show */
 const hasScopeOptions = computed(() => scopeOptions.value.length > 0);
 
-/** The broadest scope option (last in sorted order) */
+/**
+ * The broadest scope option: the last in scope order, leaving out a scope's
+ * narrow option ("this exact command"), which grants the least.
+ */
 const broadestScopeOption = computed(() => {
-  if (scopeOptions.value.length > 0) {
-    return scopeOptions.value[scopeOptions.value.length - 1];
-  }
-  return null;
+  const broad = scopeOptions.value.filter((o) => !o.variant);
+  return broad.length > 0 ? broad[broad.length - 1] : null;
 });
 
 /** Fallback label when no scope options */
@@ -451,7 +452,7 @@ const shortcutHint = computed(() => {
     <!-- Actions -->
     <div class="flex gap-2 justify-end items-center flex-wrap">
       <Button
-        variant="ghost"
+        variant="danger"
         size="sm"
         @click="emit('reject', action.id)"
       >
@@ -469,12 +470,12 @@ const shortcutHint = computed(() => {
       <template v-if="hasScopeOptions">
         <Button
           v-for="option in scopeOptions"
-          :key="option.scope"
+          :key="`${option.scope}:${option.variant ?? ''}`"
           variant="secondary"
           size="sm"
           :title="option.description"
           :aria-label="`${option.label} - ${option.description}`"
-          @click="emit('approve', action.id, true, option.scope)"
+          @click="emit('approve', action.id, true, option.scope, option.variant)"
         >
           <span
             :class="['inline-block w-2 h-2 rounded-full mr-1.5', scopeDotClass(option.scope)]"
