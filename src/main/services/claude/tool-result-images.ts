@@ -20,6 +20,7 @@
  * had been there at all.
  */
 
+import { imageOnlyResultText } from '../../../shared/tool-images';
 import { IMAGE_MEDIA_TYPES } from '../../../shared/types';
 
 export interface ExtractedImage {
@@ -122,7 +123,7 @@ export function toolResultParts(content: unknown, toolUseResult?: unknown): Tool
   // An image-only result would otherwise show as nothing at all. The caller
   // renders the images; this is what the text of the result says it is.
   if (text.trim().length === 0 && images.length > 0) {
-    text = images.length === 1 ? '[image]' : `[${images.length} images]`;
+    text = imageOnlyResultText(images.length);
   }
 
   return { text, images };

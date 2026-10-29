@@ -93,7 +93,9 @@ import {
 } from './claude';
 import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
 import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
-import { cliTempRoot, locateTaskOutput, readTaskOutput, transcriptToMessages } from './claude/task-output';
+import {
+  attachTranscriptImages, cliTempRoot, locateTaskOutput, readTaskOutput, transcriptToMessages, type FoundImages,
+} from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
 import type { ExtractedImage } from './claude/tool-result-images';
 
@@ -1774,9 +1776,16 @@ export class ClaudeCodeService {
     const entries = await getSubagentMessages(sessionId, agentId, {
       ...(session ? { dir: session.workingDirectory } : {}),
     });
-    return transcriptToMessages(entries, (toolUseBlockId, content) =>
-      writeToolResultFile(conversationId, toolUseBlockId, content),
+    const found: FoundImages[] = [];
+    const messages = transcriptToMessages(
+      entries,
+      (toolUseBlockId, content) => writeToolResultFile(conversationId, toolUseBlockId, content),
+      (message, images) => found.push({ message, images }),
     );
+    // saveOnce: the transcript is read again every few seconds while the
+    // agent runs, and every read finds the same images.
+    await attachTranscriptImages(found, (image) => this.imageStore.saveOnce(conversationId, image));
+    return messages;
   }
 
   async abort(conversationId: string): Promise<void> {

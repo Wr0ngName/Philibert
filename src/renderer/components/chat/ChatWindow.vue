@@ -6,7 +6,7 @@
 import { ref, computed, nextTick, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
-import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, MessageImage, PendingAction, PermissionOptionVariant, PermissionScope, ToolUseInfo } from '@shared/types';
+import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, ChatMessage, MessageImage, PendingAction, PermissionOptionVariant, PermissionScope, ToolUseInfo } from '@shared/types';
 import { isBackgroundTask, useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
@@ -104,9 +104,10 @@ const taskDetailParent = computed<BackgroundTask | null>(() => {
   return parentId ? chatStore.findBackgroundTask(parentId) : null;
 });
 
-// Tool detail modal state
+// Tool detail modal state: the call's message, which holds the images the
+// call produced as well as the call.
 const toolDetailOpen = ref(false);
-const toolDetailInfo = ref<ToolUseInfo | null>(null);
+const toolDetailMessage = ref<ChatMessage | null>(null);
 
 function handleSend(message: string, images?: MessageImage[]) {
   sendMessage(message, images);
@@ -282,18 +283,18 @@ function openToolDetail(id: string) {
   const msg = chatStore.messages.find(
     m => m.toolUse && (m.toolUse.toolUseBlockId === id || m.toolUse.actionId === id)
   );
-  if (msg?.toolUse) showToolCall(msg.toolUse, msg.timestamp);
+  if (msg) showToolCall(msg);
 }
 
 /**
  * Show a tool call the task modal handed over directly.
  *
  * Separate from openToolDetail, which looks a call up by id: the task modal
- * already holds the ToolUseInfo, and searching for it again would fail for a
- * call whose parent agent is no longer in the message list.
+ * already holds the call's message, and searching for it again would fail
+ * for a call whose parent agent is no longer in the message list.
  */
-function openToolDetailFor(toolUse: ToolUseInfo, timestamp: number) {
-  showToolCall(toolUse, timestamp);
+function openToolDetailFor(message: ChatMessage) {
+  showToolCall(message);
 }
 
 /**
@@ -306,19 +307,20 @@ function openToolDetailFor(toolUse: ToolUseInfo, timestamp: number) {
  * background tasks list gave for the same task. A foreground command's
  * output is its result, which Tool Details shows.
  */
-function showToolCall(toolUse: ToolUseInfo, timestamp: number) {
-  const task = chatStore.taskForToolCall(toolUse, timestamp);
+function showToolCall(message: ChatMessage) {
+  if (!message.toolUse) return;
+  const task = chatStore.taskForToolCall(message.toolUse, message.timestamp);
   if (task && (task.taskType === 'agent' || isBackgroundTask(task))) {
     openTaskDetail(task.id);
     return;
   }
-  toolDetailInfo.value = toolUse;
+  toolDetailMessage.value = message;
   toolDetailOpen.value = true;
 }
 
 function closeToolDetail() {
   toolDetailOpen.value = false;
-  toolDetailInfo.value = null;
+  toolDetailMessage.value = null;
 }
 </script>
 
@@ -437,7 +439,9 @@ function closeToolDetail() {
     <!-- Tool use detail modal -->
     <ToolDetailModal
       :open="toolDetailOpen"
-      :tool-use="toolDetailInfo"
+      :tool-use="toolDetailMessage?.toolUse ?? null"
+      :images="toolDetailMessage?.images"
+      :conversation-id="conversationsStore.currentConversationId ?? undefined"
       @close="closeToolDetail"
     />
 

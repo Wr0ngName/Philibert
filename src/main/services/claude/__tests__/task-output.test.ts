@@ -18,7 +18,8 @@ vi.mock('../../../utils/logger', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-import { MAX_TASK_OUTPUT_BYTES, cliTempRoot, locateTaskOutput, readTaskOutput, transcriptToMessages } from '../task-output';
+import type { ChatMessage } from '../../../../shared/types';
+import { MAX_TASK_OUTPUT_BYTES, attachTranscriptImages, cliTempRoot, locateTaskOutput, readTaskOutput, transcriptToMessages } from '../task-output';
 
 import transcript from './fixtures/agent-transcript.json';
 
@@ -72,6 +73,63 @@ describe('transcriptToMessages', () => {
   it('dates each message from the transcript', () => {
     const messages = transcriptToMessages(entries, store);
     expect(messages[0].timestamp).toBe(Date.parse('2026-10-26T19:30:13.484Z'));
+  });
+
+  it("hands over the image an agent's Read produced, with the call's message", () => {
+    // As an agent's transcript on disk holds one (CLI 2.1.280): the image is
+    // an image block of the tool_result content, with no text beside it.
+    const imageRead = [
+      {
+        type: 'assistant', uuid: 'u-call', session_id: 's', parent_tool_use_id: null, timestamp: '2026-10-29T21:00:00.000Z',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_img', name: 'Read', input: { file_path: '/out/gui.png' } }] },
+      },
+      {
+        type: 'user', uuid: 'u-result', session_id: 's', parent_tool_use_id: null, timestamp: '2026-10-29T21:00:01.000Z',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_img', content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+        ] }] },
+      },
+    ] as unknown as SessionMessage[];
+    const found: { id: string | undefined; images: unknown[] }[] = [];
+
+    const messages = transcriptToMessages(imageRead, store, (message, images) => {
+      found.push({ id: message.toolUse?.toolUseBlockId, images });
+    });
+
+    expect(found).toEqual([{ id: 'toolu_img', images: [{ base64: 'aGVsbG8=', mediaType: 'image/png' }] }]);
+    expect(messages.find((m) => m.toolUse)?.toolUse?.status).toBe('executed');
+    expect(stored.get('toolu_img')).toBe('[image]');
+  });
+});
+
+describe('attachTranscriptImages', () => {
+  const call = (): ChatMessage => ({ id: 'm', role: 'assistant', content: '', timestamp: 0 });
+
+  it("puts what was stored on the call's message, as a tool image", async () => {
+    const message = call();
+    const saved: unknown[] = [];
+
+    await attachTranscriptImages(
+      [{ message, images: [{ base64: 'aGVsbG8=', mediaType: 'image/png', width: 4, height: 3 }] }],
+      async (image) => {
+        saved.push(image);
+        return { id: 'img_1', mediaType: 'image/png', byteSize: 5, origin: image.origin };
+      },
+    );
+
+    expect(saved).toEqual([{ base64: 'aGVsbG8=', mediaType: 'image/png', origin: 'tool', width: 4, height: 3 }]);
+    expect(message.images).toEqual([{ id: 'img_1', mediaType: 'image/png', byteSize: 5, origin: 'tool' }]);
+  });
+
+  it('leaves out an image the store refuses, and leaves the message alone when none is stored', async () => {
+    const message = call();
+
+    await attachTranscriptImages(
+      [{ message, images: [{ base64: 'x', mediaType: 'image/svg+xml' }] }],
+      async () => null,
+    );
+
+    expect(message).not.toHaveProperty('images');
   });
 });
 

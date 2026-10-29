@@ -15,10 +15,11 @@ import path from 'node:path';
 
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 
-import type { ChatMessage, TaskOutputChunk, ToolUseInfo } from '../../../shared/types';
+import type { ChatMessage, MessageImage, TaskOutputChunk, ToolUseInfo } from '../../../shared/types';
+import type { ImageInput } from '../ImageStore';
 
 import { describeToolUse } from './SDKMessageHandler';
-import { toolResultParts } from './tool-result-images';
+import { toolResultParts, type ExtractedImage } from './tool-result-images';
 
 /** At most this much of an output is sent at once: its tail. */
 export const MAX_TASK_OUTPUT_BYTES = 512 * 1024;
@@ -102,6 +103,39 @@ export async function readTaskOutput(file: string, fromByte: number): Promise<Ta
   }
 }
 
+/** The images of one call's result in a transcript, with the call's message. */
+export interface FoundImages {
+  message: ChatMessage;
+  images: ExtractedImage[];
+}
+
+/**
+ * Store the images transcriptToMessages found, and put the references on
+ * their calls' messages — where a call in the discussion has them, so the
+ * list and the tool detail draw them the same way.
+ *
+ * An image the store refuses is left out; the call keeps its result.
+ */
+export async function attachTranscriptImages(
+  found: FoundImages[],
+  save: (image: ImageInput) => Promise<MessageImage | null>,
+): Promise<void> {
+  for (const { message, images } of found) {
+    const stored: MessageImage[] = [];
+    for (const image of images) {
+      const ref = await save({
+        base64: image.base64,
+        mediaType: image.mediaType,
+        origin: 'tool',
+        ...(image.width ? { width: image.width } : {}),
+        ...(image.height ? { height: image.height } : {}),
+      });
+      if (ref) stored.push(ref);
+    }
+    if (stored.length > 0) message.images = stored;
+  }
+}
+
 /**
  * An agent's transcript as the chat messages the discussion is drawn from,
  * so the same list renders it: what it was asked, what it said, the calls it
@@ -112,11 +146,15 @@ export async function readTaskOutput(file: string, fromByte: number): Promise<Ta
  * its rows and its scroll position, and only what is new is added.
  *
  * `storeResult` keeps a call's result where the tool detail view reads it
- * from, and returns that file.
+ * from, and returns that file. `foundImages` is handed the images of a
+ * call's result with the call's message, for the caller to store and attach
+ * the way a call in the discussion has them — storing is asynchronous, and
+ * this is not.
  */
 export function transcriptToMessages(
   entries: SessionMessage[],
   storeResult: (toolUseBlockId: string, content: string) => string,
+  foundImages?: (message: ChatMessage, images: FoundImages['images']) => void,
 ): ChatMessage[] {
   const messages: ChatMessage[] = [];
   const toolMessages = new Map<string, ChatMessage>();
@@ -158,12 +196,15 @@ export function transcriptToMessages(
       if (block.type === 'tool_result' && block.tool_use_id) {
         const call = toolMessages.get(block.tool_use_id);
         if (!call?.toolUse) return;
-        const { text } = toolResultParts(block.content, undefined);
+        // The image of a Read is an image block of the content here: the
+        // entries the SDK reads back carry no structured result.
+        const { text, images } = toolResultParts(block.content, undefined);
         call.toolUse = {
           ...call.toolUse,
           status: block.is_error ? 'failed' : 'executed',
           outputFile: storeResult(block.tool_use_id, text),
         };
+        if (images.length > 0) foundImages?.(call, images);
       }
     });
   }

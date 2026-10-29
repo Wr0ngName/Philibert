@@ -11,11 +11,15 @@
 
 import { computed, nextTick, ref, watch } from 'vue';
 
+import { imageOnlyResultText } from '@shared/tool-images';
+import type { MessageImage } from '@shared/types';
+
 import { formatTokenCount } from '../../utils/token-count';
 import { formatToolInput } from '../../utils/tool-input';
 import { formatToolOutput, type ToolCallOutput } from '../../utils/tool-output';
 import Icon from '../shared/Icon.vue';
 import Spinner from '../shared/Spinner.vue';
+import MessageImages from './MessageImages.vue';
 
 interface Props {
   /** The call's input; no Input section when there is none to show. */
@@ -25,13 +29,34 @@ interface Props {
   /** No Output section when null. */
   output: ToolCallOutput | null;
   live?: boolean;
+  /**
+   * Images the call produced — a Read of an image file, a rendered page —
+   * and the conversation whose store holds their bytes.
+   */
+  images?: MessageImage[];
+  conversationId?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   input: undefined,
   toolName: undefined,
   live: false,
+  images: undefined,
+  conversationId: undefined,
 });
+
+const hasImages = computed(() => (props.images?.length ?? 0) > 0 && !!props.conversationId);
+
+/**
+ * Whether the text output only says the result is images ("[image]"). It is
+ * there for views that show text alone; next to the images it is a tag
+ * repeating what is on screen, so it is left out.
+ */
+const textOnlyNamesImages = computed(() =>
+  hasImages.value
+  && props.output?.kind === 'text'
+  && props.output.text.trim() === imageOnlyResultText(props.images!.length),
+);
 
 const inputParams = computed(() => formatToolInput(props.input));
 
@@ -114,7 +139,7 @@ watch(() => props.output?.kind, (kind) => {
     </div>
 
     <div
-      v-if="output"
+      v-if="output || hasImages"
       class="space-y-2"
     >
       <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
@@ -129,33 +154,42 @@ watch(() => props.output?.kind, (kind) => {
         >— the last part only; {{ formatTokenCount(skippedBytes) }}B before it not shown</span>
       </div>
 
-      <div
-        v-if="output.kind === 'loading'"
-        class="flex items-center gap-2 p-3 text-xs text-surface-500"
-      >
-        <Spinner size="xs" />
-        Loading output…
-      </div>
-      <div
-        v-else-if="output.kind === 'error'"
-        class="text-xs text-red-500 p-3 bg-red-50 dark:bg-red-900/20 rounded-lg"
-      >
-        Failed to load output: {{ output.message }}
-      </div>
-      <div
-        v-else-if="output.kind === 'text'"
-        ref="outputRef"
-        class="code-block !p-3 max-h-96 overflow-y-auto"
-        @scroll="onOutputScroll"
-      >
-        <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap">{{ outputText }}</pre>
-      </div>
-      <div
-        v-else
-        class="text-xs text-surface-400 dark:text-surface-500 italic"
-      >
-        {{ output.message }}
-      </div>
+      <!-- What the tool produced as images, drawn as the discussion draws them. -->
+      <MessageImages
+        v-if="hasImages"
+        :conversation-id="conversationId!"
+        :images="images!"
+      />
+
+      <template v-if="output">
+        <div
+          v-if="output.kind === 'loading'"
+          class="flex items-center gap-2 p-3 text-xs text-surface-500"
+        >
+          <Spinner size="xs" />
+          Loading output…
+        </div>
+        <div
+          v-else-if="output.kind === 'error'"
+          class="text-xs text-red-500 p-3 bg-red-50 dark:bg-red-900/20 rounded-lg"
+        >
+          Failed to load output: {{ output.message }}
+        </div>
+        <div
+          v-else-if="output.kind === 'text' && !textOnlyNamesImages"
+          ref="outputRef"
+          class="code-block !p-3 max-h-96 overflow-y-auto"
+          @scroll="onOutputScroll"
+        >
+          <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap">{{ outputText }}</pre>
+        </div>
+        <div
+          v-else-if="output.kind === 'note'"
+          class="text-xs text-surface-400 dark:text-surface-500 italic"
+        >
+          {{ output.message }}
+        </div>
+      </template>
     </div>
   </div>
 </template>

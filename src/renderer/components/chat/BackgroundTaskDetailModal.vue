@@ -14,7 +14,7 @@
 
 import { computed } from 'vue';
 
-import type { BackgroundTask, ToolUseInfo } from '@shared/types';
+import type { BackgroundTask, ChatMessage, ToolUseInfo } from '@shared/types';
 
 import { useNowTicker } from '../../composables/useNowTicker';
 import { useAgentTranscript, useCommandOutput } from '../../composables/useTaskDetailFeed';
@@ -60,8 +60,8 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'stop', taskId: string): void;
-  /** Show one of the task's tool calls, with when it was made. */
-  (e: 'open-tool-detail', toolUse: ToolUseInfo, timestamp: number): void;
+  /** Show one of the task's tool calls: its message, which holds its images too. */
+  (e: 'open-tool-detail', message: ChatMessage): void;
   /** Show another task — the agent that started this one, or one it started. */
   (e: 'open-task-detail', taskId: string): void;
 }>();
@@ -94,7 +94,7 @@ const agentLabel = computed(() => props.task?.agentType ?? 'Agent');
 /** A call in the transcript, opened as a call in the discussion is. */
 function openTranscriptTool(toolUseBlockId: string): void {
   const message = transcript.messages.value.find((m) => m.toolUse?.toolUseBlockId === toolUseBlockId);
-  if (message?.toolUse) emit('open-tool-detail', message.toolUse, message.timestamp);
+  if (message?.toolUse) emit('open-tool-detail', message);
 }
 
 /**

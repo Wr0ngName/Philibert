@@ -4,7 +4,8 @@
  * Opened by clicking on a ToolUseMessage inline indicator.
  *
  * Input and output are the ones the background task view uses for a command
- * (ToolCallView).
+ * (ToolCallView), images included: a Read of an image shows the image, as
+ * the discussion does.
  */
 
 import { ref, watch, computed } from 'vue';
@@ -14,7 +15,7 @@ import {
   parseAskUserQuestionEntries,
   parseAskUserQuestionResult,
 } from '@shared/ask-user-question';
-import type { ToolUseInfo } from '@shared/types';
+import type { MessageImage, ToolUseInfo } from '@shared/types';
 
 import type { ToolCallOutput } from '../../utils/tool-output';
 import AskUserQuestionDetails from './AskUserQuestionDetails.vue';
@@ -26,9 +27,19 @@ import Spinner from '../shared/Spinner.vue';
 interface Props {
   open: boolean;
   toolUse: ToolUseInfo | null;
+  /**
+   * The images the call produced. They are kept on the call's message, not
+   * on the call, which is why they are passed beside it.
+   */
+  images?: MessageImage[];
+  /** The conversation whose image store holds their bytes. */
+  conversationId?: string;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+  images: undefined,
+  conversationId: undefined,
+});
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -174,6 +185,8 @@ const output = computed((): ToolCallOutput | null => {
       <ToolCallView
         :input="questions.length > 0 ? undefined : toolUse.input"
         :output="output"
+        :images="images"
+        :conversation-id="conversationId"
       />
     </div>
   </Modal>

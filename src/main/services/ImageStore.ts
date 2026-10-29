@@ -17,6 +17,7 @@
  * otherwise name a path.
  */
 
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -44,6 +45,16 @@ const EXTENSIONS: Record<ImageMediaType, string> = {
   'image/gif': 'gif',
   'image/webp': 'webp',
 };
+
+/** Bytes offered to the store, and what a reference to them records. */
+export interface ImageInput {
+  base64: string;
+  mediaType: string;
+  origin: MessageImage['origin'];
+  label?: string;
+  width?: number;
+  height?: number;
+}
 
 export class ImageStore {
   private readonly root: string;
@@ -85,17 +96,33 @@ export class ImageStore {
    * the data, not a failure of the app, and the caller's job is to carry on
    * without the image rather than to lose the message it came with.
    */
-  async save(
-    conversationId: string,
-    input: {
-      base64: string;
-      mediaType: string;
-      origin: MessageImage['origin'];
-      label?: string;
-      width?: number;
-      height?: number;
-    },
-  ): Promise<MessageImage | null> {
+  async save(conversationId: string, input: ImageInput): Promise<MessageImage | null> {
+    const bytes = this.accept(conversationId, input);
+    if (!bytes) return null;
+    return this.write(conversationId, input, bytes, generateId(ID_PREFIXES.IMAGE));
+  }
+
+  /**
+   * Store bytes under an id derived from them, once.
+   *
+   * For images read from something that is read again and again — an
+   * agent's transcript, re-read while the agent runs. `save` would store
+   * every read's copy under a new id; here the same bytes get the same id,
+   * and bytes already stored are not written again. The id is still made
+   * here, from the bytes, never taken from the caller.
+   */
+  async saveOnce(conversationId: string, input: ImageInput): Promise<MessageImage | null> {
+    const bytes = this.accept(conversationId, input);
+    if (!bytes) return null;
+    const id = `${ID_PREFIXES.IMAGE}_${createHash('sha256').update(bytes).digest('hex').slice(0, 32)}`;
+    const file = this.fileFor(conversationId, { id, mediaType: input.mediaType as ImageMediaType });
+    const stored = await fs.promises.access(file).then(() => true, () => false);
+    if (stored) return this.reference(input, bytes, id);
+    return this.write(conversationId, input, bytes, id);
+  }
+
+  /** The bytes, when they are an image this store accepts; null, with why logged, when not. */
+  private accept(conversationId: string, input: ImageInput): Buffer | null {
     if (!isImageMediaType(input.mediaType)) {
       logger.warn('Refused an image with an unsupported media type', {
         conversationId, mediaType: input.mediaType,
@@ -120,17 +147,23 @@ export class ImageStore {
       });
       return null;
     }
+    return bytes;
+  }
 
-    const image: MessageImage = {
-      id: generateId(ID_PREFIXES.IMAGE),
-      mediaType: input.mediaType,
+  private reference(input: ImageInput, bytes: Buffer, id: string): MessageImage {
+    return {
+      id,
+      mediaType: input.mediaType as ImageMediaType,
       byteSize: bytes.length,
       origin: input.origin,
       ...(input.label ? { label: input.label } : {}),
       ...(input.width ? { width: input.width } : {}),
       ...(input.height ? { height: input.height } : {}),
     };
+  }
 
+  private async write(conversationId: string, input: ImageInput, bytes: Buffer, id: string): Promise<MessageImage> {
+    const image = this.reference(input, bytes, id);
     const dir = this.dirFor(conversationId);
     await fs.promises.mkdir(dir, { recursive: true });
     await fs.promises.writeFile(this.fileFor(conversationId, image), bytes);

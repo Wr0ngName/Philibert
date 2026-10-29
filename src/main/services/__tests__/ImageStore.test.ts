@@ -13,6 +13,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const files = new Map<string, Buffer>();
 const dirs = new Set<string>(['/conversations', '/conversations/images']);
+/** Files written, so a store that writes the same bytes again is caught. */
+let writes = 0;
 
 vi.mock('node:fs', () => {
   const promises = {
@@ -27,6 +29,14 @@ vi.mock('node:fs', () => {
         throw err;
       }
       files.set(file, Buffer.from(data));
+      writes += 1;
+    },
+    access: async (file: string) => {
+      if (!files.has(file) && !dirs.has(file)) {
+        const err: NodeJS.ErrnoException = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      }
     },
     readFile: async (file: string) => {
       const found = files.get(file);
@@ -192,5 +202,42 @@ describe('the image store', () => {
 
     // A gap in the transcript, not a reason to fail the conversation.
     expect(await store.read('conv-1', ref!.id, ref!.mediaType)).toBeNull();
+  });
+
+  describe('saveOnce, for images read again and again', () => {
+    // An agent's transcript is re-read every few seconds while it runs, and
+    // each read finds the same images.
+    const input = { base64: PNG.toString('base64'), mediaType: 'image/png', origin: 'tool' as const };
+
+    it('gives the same bytes the same reference, and writes them once', async () => {
+      writes = 0;
+      const first = await store.saveOnce('conv-1', input);
+      const again = await store.saveOnce('conv-1', input);
+
+      expect(again).toEqual(first);
+      expect(writes).toBe(1);
+      expect((await store.read('conv-1', first!.id, first!.mediaType))?.base64).toBe(PNG.toString('base64'));
+    });
+
+    it('gives different bytes different references', async () => {
+      const first = await store.saveOnce('conv-1', input);
+      const other = await store.saveOnce('conv-1', { ...input, base64: Buffer.concat([PNG, Buffer.from([0])]).toString('base64') });
+
+      expect(other!.id).not.toBe(first!.id);
+    });
+
+    it('writes the bytes again when their file has gone', async () => {
+      const first = await store.saveOnce('conv-1', input);
+      files.clear();
+
+      await store.saveOnce('conv-1', input);
+
+      expect(await store.read('conv-1', first!.id, first!.mediaType)).not.toBeNull();
+    });
+
+    it('refuses what save refuses', async () => {
+      expect(await store.saveOnce('conv-1', { ...input, mediaType: 'image/svg+xml' })).toBeNull();
+      expect(await store.saveOnce('conv-1', { ...input, base64: '' })).toBeNull();
+    });
   });
 });
