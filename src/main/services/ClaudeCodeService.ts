@@ -53,6 +53,7 @@ import {
 } from '../../shared/model-id';
 import {
   AgentInfo,
+  AgentRun,
   IPC_CHANNELS,
   PendingAction,
   ActionResponse,
@@ -764,6 +765,7 @@ export class ClaudeCodeService {
         toolUseBlockId: string;
         content: string;
         taskListId?: string;
+        agent?: AgentRun;
         images?: ExtractedImage[];
       }) => {
         const outputFile = writeToolResultFile(conversationId, result.toolUseBlockId, result.content);
@@ -791,6 +793,7 @@ export class ClaudeCodeService {
             outputFile,
             ...(inlineContent !== undefined && { content: inlineContent }),
             ...(result.taskListId && { taskListId: result.taskListId }),
+            ...(result.agent && { agent: result.agent }),
             ...(images && images.length > 0 && { images }),
           });
         };

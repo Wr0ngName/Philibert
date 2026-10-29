@@ -8,7 +8,7 @@ import { ref, computed } from 'vue';
 
 import { modifiedPathsForTool } from '@shared/file-modifications';
 import { primaryModelUsage } from '@shared/model-usage';
-import type { ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData, MessageImage, UsageWarning } from '@shared/types';
+import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData, MessageImage, UsageWarning } from '@shared/types';
 
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
@@ -209,13 +209,15 @@ export interface ConversationState {
  */
 /**
  * The fields of a task notification that describe the task as it runs —
- * its kind as the CLI states it, the agent's type, what it is doing now,
+ * its kind as the CLI states it, whether it runs in the background, the
+ * agent's type, what it is doing now,
  * how far it has got, the agent that started it, and a command's tool call
  * — for the ones present.
  */
 function liveTaskFields(notification: TaskNotification): Partial<BackgroundTask> {
   return {
     ...(notification.taskType && { taskType: notification.taskType }),
+    ...(notification.backgrounded !== undefined && { backgrounded: notification.backgrounded }),
     ...(notification.agentType && { agentType: notification.agentType }),
     ...(notification.activity && { activity: notification.activity }),
     ...(notification.totalTokens !== undefined && { totalTokens: notification.totalTokens }),
@@ -223,6 +225,32 @@ function liveTaskFields(notification: TaskNotification): Partial<BackgroundTask>
     ...(notification.parentTaskId && { parentTaskId: notification.parentTaskId }),
     ...(notification.toolName && { toolName: notification.toolName }),
     ...(notification.toolInput && { toolInput: notification.toolInput }),
+  };
+}
+
+/**
+ * Whether a task runs in the background. Absent means it does: the CLI states
+ * it only for commands and agents. See BackgroundTask.backgrounded.
+ */
+export function isBackgroundTask(task: BackgroundTask): boolean {
+  return task.backgrounded !== false;
+}
+
+/**
+ * The record an Agent call keeps of the agent it ran, made when the call's
+ * result arrives. The result says how the agent stands: launched into the
+ * background, so running, or run to the end in the foreground.
+ */
+function agentTaskRecord(message: ChatMessage, agent: AgentRun): BackgroundTaskInfo {
+  const toolUse = message.toolUse;
+  const description = toolUse?.input?.description;
+  return {
+    taskId: agent.id,
+    description: typeof description === 'string' && description ? description : toolUse?.description ?? 'Agent',
+    status: agent.background ? 'running' : 'completed',
+    startedAt: message.timestamp,
+    ...(!agent.background && { completedAt: Date.now() }),
+    ...(toolUse?.toolUseBlockId && { toolUseId: toolUse.toolUseBlockId }),
   };
 }
 
@@ -399,14 +427,15 @@ export const useChatStore = defineStore('chat', () => {
 
   const hasBackgroundTasks = computed(() => backgroundTasks.value.size > 0);
 
-  const runningTasksCount = computed(() =>
-    Array.from(backgroundTasks.value.values()).filter(t => t.status === 'running').length
-  );
-
   const backgroundTasksList = computed(() => Array.from(backgroundTasks.value.values()));
 
+  /**
+   * The background tasks still running. A foreground task is tracked too —
+   * the CLI opens one for every command and agent — but it is part of the
+   * turn, not something running beside it, so it is not listed here.
+   */
   const runningBackgroundTasksList = computed(() =>
-    Array.from(backgroundTasks.value.values()).filter(t => t.status === 'running')
+    Array.from(backgroundTasks.value.values()).filter(t => t.status === 'running' && isBackgroundTask(t))
   );
 
   const hasRunningBackgroundTasks = computed(() => runningBackgroundTasksList.value.length > 0);
@@ -1978,6 +2007,9 @@ export const useChatStore = defineStore('chat', () => {
           // task list is rebuilt from these calls on load, and an update
           // refers to its task by this id. See rebuildTaskList.
           ...(result.taskListId ? { taskListId: result.taskListId } : {}),
+          // Saved for the same reason: the call opens its agent's view by
+          // this record, after a restart as much as now.
+          ...(result.agent ? { agentTask: agentTaskRecord(msg, result.agent) } : {}),
         };
         // Images the tool produced go on the MESSAGE, not inside toolUse:
         // they are the result's content as far as the reader is concerned,
@@ -2322,6 +2354,8 @@ export const useChatStore = defineStore('chat', () => {
    *
    * The detail view used to accept only tracked tasks, so clicking a row of a
    * re-keyed task, or of one from before a restart, silently did nothing.
+   * An agent's record is kept on the Agent call that ran it instead of on a
+   * row, and is found there the same way.
    */
   function findBackgroundTask(taskId: string): BackgroundTask | null {
     const conversationId = currentConversationId.value;
@@ -2332,19 +2366,65 @@ export const useChatStore = defineStore('chat', () => {
     for (const list of [messages.value, state?.detachedTurn ?? []]) {
       const message = list.find((m) => m.backgroundTask?.taskId === taskId);
       if (message?.backgroundTask) return taskForRow(conversationId, message.backgroundTask, message.timestamp);
+      const call = list.find((m) => m.toolUse?.agentTask?.taskId === taskId);
+      if (call?.toolUse) return taskForAgentCall(conversationId, call.toolUse, call.timestamp);
     }
     return null;
   }
 
   /**
-   * Messages about to be stored, with each task row brought up to date from
-   * its tracked task, so the stored record says how the task really stands.
+   * The agent an Agent call ran, for its detail view: the tracked task, or
+   * the call's record of it read back as a task row's is. Null for a call
+   * with no such record — any other tool, or an Agent call from before calls
+   * kept one.
+   */
+  function taskForAgentCall(conversationId: string, toolUse: ToolUseInfo, timestamp: number): BackgroundTask | null {
+    const record = toolUse.agentTask;
+    if (!record) return null;
+    const tracked = trackedTask(conversationId, record.taskId);
+    if (tracked) return tracked;
+    const agentType = toolUse.input?.subagent_type;
+    return {
+      ...taskForRow(conversationId, record, timestamp),
+      taskType: 'agent',
+      ...(typeof agentType === 'string' && agentType && { agentType }),
+    };
+  }
+
+  /**
+   * The task a tool call in the current conversation started, if any: the
+   * task tracked under the call's id — the command or agent it ran — or the
+   * agent an Agent call keeps a record of.
+   */
+  function taskForToolCall(toolUse: ToolUseInfo, timestamp: number): BackgroundTask | null {
+    const conversationId = currentConversationId.value;
+    if (!conversationId) return null;
+    const blockId = toolUse.toolUseBlockId;
+    if (blockId) {
+      const tasks = conversationStates.value.get(conversationId)?.backgroundTasks;
+      for (const task of tasks?.values() ?? []) {
+        if (task.toolUseId === blockId || task.id === blockId || task.formerIds?.includes(blockId)) return task;
+      }
+    }
+    return taskForAgentCall(conversationId, toolUse, timestamp);
+  }
+
+  /**
+   * Messages about to be stored, with each task row — and each Agent call's
+   * record of its agent — brought up to date from its tracked task, so the
+   * stored record says how the task really stands.
    * Rows of untracked tasks are left exactly as they were: nothing new is
    * known about them, and the store is no place to guess. Returns new
    * objects only for the rows it changes.
    */
   function withTasksAsTracked(conversationId: string, list: ChatMessage[]): ChatMessage[] {
     return list.map((message) => {
+      const agentTask = message.toolUse?.agentTask;
+      if (message.toolUse && agentTask) {
+        const tracked = trackedTask(conversationId, agentTask.taskId);
+        if (!tracked) return message;
+        return { ...message, toolUse: { ...message.toolUse, agentTask: taskRecord(agentTask.taskId, tracked) } };
+      }
       if (!message.backgroundTask) return message;
       const tracked = trackedTask(conversationId, message.backgroundTask.taskId);
       if (!tracked) return message;
@@ -2394,6 +2474,10 @@ export const useChatStore = defineStore('chat', () => {
    * visible entries — the SDK asks hosts to keep them out of activity
    * indicators.
    *
+   * Foreground tasks take part in neither step. The live set lists only
+   * background tasks, so a foreground command was retired as 'stopped' while
+   * it was still running, every time the set changed.
+   *
    * @returns Whether any task was retired, which is an outcome to store.
    */
   function reconcileBackgroundTasks(conversationId: string, live: LiveBackgroundTask[]): boolean {
@@ -2411,7 +2495,7 @@ export const useChatStore = defineStore('chat', () => {
       // itself live, so an adopted key is never stolen from another task.
       let staleKey: string | null = null;
       for (const [key, task] of state.backgroundTasks.entries()) {
-        if (task.status !== 'running') continue;
+        if (task.status !== 'running' || !isBackgroundTask(task)) continue;
         if (liveIds.has(key)) continue;
         if (task.description && task.description === liveTask.description) {
           staleKey = key;
@@ -2428,7 +2512,7 @@ export const useChatStore = defineStore('chat', () => {
     // Step 2 — retire running tasks the SDK no longer lists.
     let retired = false;
     for (const [key, task] of state.backgroundTasks.entries()) {
-      if (task.status !== 'running' || liveIds.has(key)) continue;
+      if (task.status !== 'running' || !isBackgroundTask(task) || liveIds.has(key)) continue;
       storeBackgroundTask(state, key, {
         ...task,
         status: 'stopped',
@@ -2767,7 +2851,6 @@ export const useChatStore = defineStore('chat', () => {
     hasPendingActions,
     lastMessage,
     hasBackgroundTasks,
-    runningTasksCount,
     backgroundTasksList,
     runningBackgroundTasksList,
     hasRunningBackgroundTasks,
@@ -2847,6 +2930,7 @@ export const useChatStore = defineStore('chat', () => {
     addBackgroundTaskMessage,
     taskForRow,
     findBackgroundTask,
+    taskForToolCall,
     withTasksAsTracked,
     beginMessageBuffer,
     getBufferedMessages,

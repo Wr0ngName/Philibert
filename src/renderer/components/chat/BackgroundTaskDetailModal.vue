@@ -1,6 +1,10 @@
 <script setup lang="ts">
 /**
- * Background task detail modal (equivalent of Ctrl+O in Claude Code CLI).
+ * Task detail modal (equivalent of Ctrl+O in Claude Code CLI).
+ *
+ * Opened from the background tasks list, and from the discussion for a call
+ * that started an agent or a background command — foreground agents
+ * included, so it is titled for any task, not only a background one.
  *
  * An agent is shown the way the discussion is — its prompt, what it said, the
  * calls it made and their results — by the same message list, read from its
@@ -56,8 +60,8 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'stop', taskId: string): void;
-  /** Show one of the task's tool calls in the tool detail modal. */
-  (e: 'open-tool-detail', toolUse: ToolUseInfo): void;
+  /** Show one of the task's tool calls, with when it was made. */
+  (e: 'open-tool-detail', toolUse: ToolUseInfo, timestamp: number): void;
   /** Show another task — the agent that started this one, or one it started. */
   (e: 'open-task-detail', taskId: string): void;
 }>();
@@ -87,10 +91,10 @@ const transcriptSource = heldListSource(() => ({
 /** Who the transcript's assistant turns are from. */
 const agentLabel = computed(() => props.task?.agentType ?? 'Agent');
 
-/** A call in the transcript, opened in the tool detail modal. */
+/** A call in the transcript, opened as a call in the discussion is. */
 function openTranscriptTool(toolUseBlockId: string): void {
-  const toolUse = transcript.messages.value.find((m) => m.toolUse?.toolUseBlockId === toolUseBlockId)?.toolUse;
-  if (toolUse) emit('open-tool-detail', toolUse);
+  const message = transcript.messages.value.find((m) => m.toolUse?.toolUseBlockId === toolUseBlockId);
+  if (message?.toolUse) emit('open-tool-detail', message.toolUse, message.timestamp);
 }
 
 /**
@@ -209,7 +213,7 @@ const statusDisplay = computed(() => {
 <template>
   <Modal
     :open="open"
-    title="Background Task Details"
+    title="Task Details"
     size="3xl"
     @close="emit('close')"
   >

@@ -7,7 +7,7 @@ import { ref, computed, nextTick, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, MessageImage, PendingAction, PermissionOptionVariant, PermissionScope, ToolUseInfo } from '@shared/types';
-import { useChatStore } from '../../stores/chat';
+import { isBackgroundTask, useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
 import { useClaudeChat } from '../../composables/useClaudeChat';
@@ -282,10 +282,7 @@ function openToolDetail(id: string) {
   const msg = chatStore.messages.find(
     m => m.toolUse && (m.toolUse.toolUseBlockId === id || m.toolUse.actionId === id)
   );
-  if (msg?.toolUse) {
-    toolDetailInfo.value = msg.toolUse;
-    toolDetailOpen.value = true;
-  }
+  if (msg?.toolUse) showToolCall(msg.toolUse, msg.timestamp);
 }
 
 /**
@@ -295,7 +292,26 @@ function openToolDetail(id: string) {
  * already holds the ToolUseInfo, and searching for it again would fail for a
  * call whose parent agent is no longer in the message list.
  */
-function openToolDetailFor(toolUse: ToolUseInfo) {
+function openToolDetailFor(toolUse: ToolUseInfo, timestamp: number) {
+  showToolCall(toolUse, timestamp);
+}
+
+/**
+ * Open a tool call where its details are: the task view when the call
+ * started an agent or a background command, Tool Details otherwise.
+ *
+ * An agent's work is its transcript, and a background command's output is
+ * in its task's output file — the call's own result says only that it was
+ * launched. Showing those calls in Tool Details gave far less than the
+ * background tasks list gave for the same task. A foreground command's
+ * output is its result, which Tool Details shows.
+ */
+function showToolCall(toolUse: ToolUseInfo, timestamp: number) {
+  const task = chatStore.taskForToolCall(toolUse, timestamp);
+  if (task && (task.taskType === 'agent' || isBackgroundTask(task))) {
+    openTaskDetail(task.id);
+    return;
+  }
   toolDetailInfo.value = toolUse;
   toolDetailOpen.value = true;
 }

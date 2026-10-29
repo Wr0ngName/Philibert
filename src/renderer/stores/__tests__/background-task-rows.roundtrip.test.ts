@@ -80,7 +80,7 @@ describe('task rows in the discussion', () => {
   /** The open task detail modal's text, or null when none is open. */
   function detail(): string | null {
     const modal = [...document.body.querySelectorAll('[role="dialog"]')]
-      .find((d) => d.textContent?.includes('Background Task Details'));
+      .find((d) => d.textContent?.includes('Task Details'));
     return modal?.textContent ?? null;
   }
 

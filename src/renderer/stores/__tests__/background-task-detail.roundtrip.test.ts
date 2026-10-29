@@ -83,7 +83,7 @@ describe('background tasks, panel and detail', () => {
     expect(row, `expected a panel row with "${text}"`).toBeDefined();
     await row!.trigger('click');
     await settle(20);
-    const modal = dialog('Background Task Details');
+    const modal = dialog('Task Details');
     expect(modal, 'expected the task detail to open').not.toBeNull();
     return modal!;
   }
@@ -261,6 +261,6 @@ describe('background tasks, panel and detail', () => {
     link!.click();
     await settle(20);
 
-    expect(dialog('Background Task Details')?.textContent).toContain('Agent reads notes.txt');
+    expect(dialog('Task Details')?.textContent).toContain('Agent reads notes.txt');
   });
 });

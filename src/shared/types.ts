@@ -119,6 +119,18 @@ export interface ToolUseInfo {
    * create whose result never came.
    */
   taskListId?: string;
+  /**
+   * The agent an Agent/Task call ran, as a task record: its id (`agentId` on
+   * the call's structured result), and how it stands as of the last save,
+   * brought up to date from the tracked task the way a task row is.
+   *
+   * Clicking the call opens the agent's view — its transcript, read by this
+   * id. The tracked task does not outlive the app, so without this a
+   * reopened conversation could show only the call's prompt and final
+   * answer, and could not say how a background agent ended: its call
+   * finishes when the agent is launched.
+   */
+  agentTask?: BackgroundTaskInfo;
 }
 
 /** Data emitted for every tool_use block in assistant messages */
@@ -129,6 +141,12 @@ export interface ToolCaptureData {
   description: string;
   /** SDK parent_tool_use_id — present on tool_use blocks emitted from sub-agents */
   parentToolUseId?: string;
+}
+
+/** The agent an Agent/Task call ran; see ToolResultData.agent. */
+export interface AgentRun {
+  id: string;
+  background: boolean;
 }
 
 /** Data emitted when a tool result is captured and written to disk */
@@ -143,6 +161,13 @@ export interface ToolResultData {
    *  passed here so the renderer can key its task-list state deterministically
    *  without re-parsing joined text. */
   taskListId?: string;
+  /**
+   * The agent an Agent/Task call ran, from its structured result: its id,
+   * and whether it was launched into the background (`async_launched`)
+   * rather than run to completion in the foreground (`completed`).
+   * See ToolUseInfo.agentTask.
+   */
+  agent?: AgentRun;
   /**
    * Images this tool produced — a Read of an image file, a rendered PDF page.
    * References, not bytes: they were stored in the main process before this
@@ -1234,6 +1259,18 @@ export interface BackgroundTask {
    */
   toolName?: string;
   toolInput?: Record<string, unknown>;
+  /**
+   * False while the task runs in the foreground, its tool call waiting on it.
+   *
+   * The CLI opens a task for every command and agent, foreground ones
+   * included, and says which it is (`is_backgrounded` on task_started; a
+   * later move to the background arrives as a task_updated patch). Only
+   * background tasks belong in the background tasks list, and only they are
+   * in the CLI's live background set. Absent means background: the CLI sets
+   * the flag only for commands and agents, and every other kind of task runs
+   * in the background.
+   */
+  backgrounded?: boolean;
 }
 
 /** A slice of a background task's output, read from a byte offset. */
@@ -1303,6 +1340,11 @@ export interface TaskNotification {
   timedOutAfterMs?: number;
   /** What kind of task this is, when the CLI said (its `task_type`). */
   taskType?: 'agent' | 'command';
+  /**
+   * Whether the task runs in the background; see BackgroundTask.backgrounded.
+   * Absent when this notification does not say.
+   */
+  backgrounded?: boolean;
   /** Live progress fields; see BackgroundTask. */
   agentType?: string;
   activity?: string;

@@ -119,6 +119,63 @@ describe('SDKMessageHandler', () => {
     });
   });
 
+  describe('the agent an Agent call ran', () => {
+    // AgentOutput's shapes (sdk-tools.d.ts), trimmed.
+    async function agentCallWithResult(toolUseResult: unknown) {
+      const onToolResult = vi.fn();
+      const h = new SDKMessageHandler({ ...callbacks, onToolResult });
+      await h.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'toolu_agent', name: 'Agent', input: { description: 'Read notes', prompt: 'Read notes.txt' } }] },
+        parent_tool_use_id: null,
+      } as never);
+      await h.handleMessage({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_agent', content: 'done' }] },
+        parent_tool_use_id: null,
+        tool_use_result: toolUseResult,
+      } as never);
+      return onToolResult.mock.calls[0][0];
+    }
+
+    it('names an agent that ran in the foreground, as finished there', async () => {
+      const result = await agentCallWithResult({ status: 'completed', agentId: 'a47ef0f60a29e8d14', prompt: 'Read notes.txt', content: [] });
+
+      expect(result.agent).toEqual({ id: 'a47ef0f60a29e8d14', background: false });
+    });
+
+    it('names an agent launched into the background, as running there', async () => {
+      // As recorded in a Claude Code session file on this machine.
+      const result = await agentCallWithResult({ isAsync: true, status: 'async_launched', agentId: 'a0df431f0ec89504a', description: 'Read notes', prompt: 'Read notes.txt', outputFile: '/tmp/a.output' });
+
+      expect(result.agent).toEqual({ id: 'a0df431f0ec89504a', background: true });
+    });
+
+    it('names none for an outcome that ran no agent here', async () => {
+      const result = await agentCallWithResult({ status: 'remote_launched', taskId: 'r1', sessionUrl: 'https://x', description: 'd', prompt: 'p' });
+
+      expect(result).not.toHaveProperty('agent');
+    });
+
+    it('names none for another tool, whatever its result holds', async () => {
+      const onToolResult = vi.fn();
+      const h = new SDKMessageHandler({ ...callbacks, onToolResult });
+      await h.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'ls' } }] },
+        parent_tool_use_id: null,
+      } as never);
+      await h.handleMessage({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_bash', content: 'x' }] },
+        parent_tool_use_id: null,
+        tool_use_result: { status: 'completed', agentId: 'not-an-agent' },
+      } as never);
+
+      expect(onToolResult.mock.calls[0][0]).not.toHaveProperty('agent');
+    });
+  });
+
   describe('tool progress heartbeats', () => {
     // Captured from a real session: a Bash command still running at 30s.
     const heartbeat = {
@@ -1075,8 +1132,76 @@ describe('SDKMessageHandler', () => {
         description: 'Agent reads notes.txt',
         toolUseId: 'toolu_agent',
         taskType: 'agent',
+        backgrounded: true,
         agentType: 'general-purpose',
       });
+    });
+
+    it('says when a task runs in the foreground', async () => {
+      // As main.log recorded one of 128 such (CLI 2.1.280): a command the
+      // call waits on is still a task, with is_backgrounded false.
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'by6s5etlk',
+        tool_use_id: 'toolu_016aza3QbFdzwQ3u3Ms2GBHa',
+        description: 'List files',
+        is_backgrounded: false,
+        task_type: 'local_bash',
+      } as never);
+
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: 'by6s5etlk',
+        status: 'running',
+        backgrounded: false,
+      }));
+    });
+
+    it('passes on a foreground task moved to the background', async () => {
+      // The CLI sends the move as a patch of that flag alone (39 times in
+      // the same log), with no status.
+      await handler.handleMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'bnrp3ry9n',
+        patch: { is_backgrounded: true },
+      } as never);
+
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith({
+        taskId: 'bnrp3ry9n',
+        status: 'running',
+        backgrounded: true,
+      });
+    });
+
+    it('marks a command as background once its result names a background task', async () => {
+      // A foreground command the user moved to the background: its result is
+      // where the CLI says so, by naming the task it now runs as.
+      await handler.handleMessage({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_cmd', content: 'Command was manually backgrounded' }] },
+        tool_use_result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b3q51bvd7', backgroundedByUser: true },
+        parent_tool_use_id: null,
+      } as never);
+
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: 'b3q51bvd7',
+        previousTaskId: 'toolu_cmd',
+        backgrounded: true,
+      }));
+    });
+
+    it('marks a command launched in the background as background from its first notification', async () => {
+      await handler.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'toolu_bg', name: 'Bash', input: { command: 'npm run build', run_in_background: true } }] },
+        parent_tool_use_id: null,
+      } as never);
+
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: 'toolu_bg',
+        backgrounded: true,
+      }));
     });
 
     it('names the agent that started a command, and none for the main conversation', async () => {

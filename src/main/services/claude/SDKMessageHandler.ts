@@ -12,7 +12,7 @@ import type {
   SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 
-import type { SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, ToolCaptureData, UsageLimitStop, UsageWarning } from '../../../shared/types';
+import type { AgentRun, SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, ToolCaptureData, UsageLimitStop, UsageWarning } from '../../../shared/types';
 import logger from '../../utils/logger';
 
 import { toolResultParts, type ExtractedImage } from './tool-result-images';
@@ -182,6 +182,7 @@ export interface MessageHandlerCallbacks {
     toolUseBlockId: string;
     content: string;
     taskListId?: string;
+    agent?: AgentRun;
     /**
      * Images the tool produced, as bytes. The handler does not store them —
      * it has no conversation to store them against — so the caller writes
@@ -624,6 +625,7 @@ export class SDKMessageHandler {
             taskId: toolBlock.id,
             status: 'running',
             description,
+            backgrounded: true,
             ...this.commandCalls.get(toolBlock.id),
           });
         }
@@ -718,10 +720,14 @@ export class SDKMessageHandler {
               });
             }
           }
+          const agent = toolName === 'Agent' || toolName === 'Task'
+            ? agentRunOf(userMsg.tool_use_result)
+            : undefined;
           this.callbacks.onToolResult?.({
             toolUseBlockId: block.tool_use_id,
             content,
             ...(taskListId && { taskListId }),
+            ...(agent && { agent }),
             ...(images.length > 0 && { images }),
           });
         }
@@ -769,10 +775,14 @@ export class SDKMessageHandler {
 
         // Re-emit running notification with the real background task ID
         // and previousTaskId so renderer can remap the existing entry
+        // A result names a backgroundTaskId only for a call whose task now
+        // runs in the background — launched there, moved there by the user,
+        // or moved there by reaching its timeout.
         this.callbacks.onTaskNotification({
           taskId: backgroundTaskId,
           status: 'running',
           previousTaskId: toolUseId,
+          backgrounded: true,
           ...(typeof toolResult.timedOutAfterMs === 'number'
             ? { timedOutAfterMs: toolResult.timedOutAfterMs }
             : {}),
@@ -1042,6 +1052,9 @@ export class SDKMessageHandler {
       // task_started fields
       task_type?: string;
       skip_transcript?: boolean;
+      // Set for commands and agents: false when the spawning call blocks on
+      // the task (the foreground), true when it runs in the background.
+      is_backgrounded?: boolean;
       // Present on task_started / task_notification / task_progress when the task
       // was spawned by a tool_use (e.g. Task/Agent tool). Links the task back to
       // its tool_use indicator so the renderer can dedupe.
@@ -1215,6 +1228,7 @@ export class SDKMessageHandler {
           description: systemMsg.description,
           ...(systemMsg.tool_use_id && { toolUseId: systemMsg.tool_use_id }),
           ...(systemMsg.task_type && { taskType: isAgent ? 'agent' : 'command' }),
+          ...(typeof systemMsg.is_backgrounded === 'boolean' && { backgrounded: systemMsg.is_backgrounded }),
           ...(systemMsg.subagent_type && { agentType: systemMsg.subagent_type }),
           ...(parentTaskId && { parentTaskId }),
           ...(!isAgent && systemMsg.tool_use_id && this.commandCalls.get(systemMsg.tool_use_id)),
@@ -1283,12 +1297,25 @@ export class SDKMessageHandler {
         'failed': 'failed',
         'killed': 'stopped',
       };
+      const backgrounded = typeof patch.is_backgrounded === 'boolean'
+        ? { backgrounded: patch.is_backgrounded }
+        : {};
       if (patch.status && statusMap[patch.status]) {
         this.callbacks.onTaskNotification({
           taskId: systemMsg.task_id,
           status: statusMap[patch.status],
           ...(patch.description && { description: patch.description }),
           ...(patch.error && { error: patch.error }),
+          ...backgrounded,
+        });
+      } else if (patch.is_backgrounded === true) {
+        // A foreground task moved to the background, which the CLI sends as
+        // a patch of that flag alone. Only a running task can be moved, so
+        // the task is running.
+        this.callbacks.onTaskNotification({
+          taskId: systemMsg.task_id,
+          status: 'running',
+          backgrounded: true,
         });
       }
     }
@@ -1316,6 +1343,21 @@ export class SDKMessageHandler {
     }
   }
 
+}
+
+/**
+ * The agent an Agent/Task call ran, from the call's structured result
+ * (AgentOutput): its id, and whether it was launched into the background or
+ * ran to completion in the foreground. Undefined for any other outcome — a
+ * remote launch, say — which ran no agent here to show.
+ */
+export function agentRunOf(toolUseResult: unknown): AgentRun | undefined {
+  if (!toolUseResult || typeof toolUseResult !== 'object') return undefined;
+  const { agentId, status } = toolUseResult as { agentId?: unknown; status?: unknown };
+  if (typeof agentId !== 'string' || !agentId) return undefined;
+  if (status === 'completed') return { id: agentId, background: false };
+  if (status === 'async_launched') return { id: agentId, background: true };
+  return undefined;
 }
 
 /**
