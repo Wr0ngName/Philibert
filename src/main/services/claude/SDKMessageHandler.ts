@@ -288,8 +288,12 @@ export class SDKMessageHandler {
   private cachedSlashCommands: SlashCommandInfo[] = [];
   /** Tracks when the last user message was a slash command for output handling */
   private lastMessageWasSlashCommand = false;
-  /** Tracks if content was streamed via content_block_delta events */
-  private hasStreamedContent = false;
+  /**
+   * Whether this turn's reply text has reached the renderer, streamed or as a
+   * slash command's whole reply. The result text repeats that reply, so it is
+   * shown only when nothing was.
+   */
+  private hasEmittedText = false;
   /**
    * Type of the last content block seen in the stream, and the tail of the
    * text streamed so far. Both feed `needsBlockSeparator` — see
@@ -333,7 +337,7 @@ export class SDKMessageHandler {
   reset(): void {
     this.querySucceeded = false;
     this.lastMessageWasSlashCommand = false;
-    this.hasStreamedContent = false;
+    this.hasEmittedText = false;
     this.lastStreamedBlockType = null;
     this.streamedTail = '';
     this.turnHitRateLimit = false;
@@ -569,6 +573,7 @@ export class SDKMessageHandler {
             preview: block.text.slice(0, 100),
           });
           this.callbacks.onChunk(block.text);
+          this.hasEmittedText = true;
         }
       }
       this.lastMessageWasSlashCommand = false;
@@ -878,10 +883,11 @@ export class SDKMessageHandler {
       // Mark query as succeeded - used to handle process exit errors gracefully
       this.querySucceeded = true;
 
-      // Only emit result text if content wasn't already streamed.
-      // Regular messages stream via content_block_delta events - emitting result would duplicate.
-      // Slash commands and other non-streaming responses need the result text emitted here.
-      if (!this.hasStreamedContent && resultMessage.result?.trim()) {
+      // Only emit result text if the reply wasn't already shown.
+      // Regular messages stream via content_block_delta events, and a slash
+      // command's reply can arrive whole as an assistant message; either way
+      // the result repeats it. A reply that came neither way needs it here.
+      if (!this.hasEmittedText && resultMessage.result?.trim()) {
         logger.debug('Emitting result text (no streamed content)', {
           resultLength: resultMessage.result.length,
         });
@@ -952,7 +958,7 @@ export class SDKMessageHandler {
     // inserted into it.
     if (event?.type === 'content_block_start') {
       const blockType = event.content_block?.type;
-      if (blockType === 'text' && this.hasStreamedContent && this.needsBlockSeparator()) {
+      if (blockType === 'text' && this.hasEmittedText && this.needsBlockSeparator()) {
         this.callbacks.onChunk('\n\n');
       }
       this.lastStreamedBlockType = blockType ?? null;
@@ -960,7 +966,7 @@ export class SDKMessageHandler {
 
     if (event?.type === 'content_block_delta' && event?.delta?.type === 'text_delta') {
       const text = event.delta.text || '';
-      this.hasStreamedContent = true;
+      this.hasEmittedText = true;
       // Only the tail matters, and only for the check above.
       if (text) this.streamedTail = (this.streamedTail + text).slice(-8);
       this.callbacks.onChunk(text);

@@ -435,6 +435,29 @@ describe('SDKMessageHandler', () => {
       expect(callbacks.onChunk).toHaveBeenCalledWith('Command output');
     });
 
+    it('shows a reply that also arrives as the result text once', async () => {
+      // What the CLI sends for a command it does not offer here (`/rewind`):
+      // the reply as a synthetic assistant message, then the same text again
+      // as the result. Both used to be shown, so the reply read twice.
+      const reply = "/rewind isn't available in this environment.";
+      handler.markSlashCommandSent();
+
+      await handler.handleMessage({
+        type: 'assistant',
+        message: { model: '<synthetic>', content: [{ type: 'text', text: reply }] },
+      } as never);
+      await handler.handleMessage({
+        type: 'result',
+        subtype: 'success',
+        num_turns: 0,
+        duration_ms: 0,
+        result: reply,
+      } as never);
+
+      expect(callbacks.onChunk).toHaveBeenCalledTimes(1);
+      expect(callbacks.onChunk).toHaveBeenCalledWith(reply);
+    });
+
     it('should not emit empty text content', async () => {
       handler.markSlashCommandSent();
 

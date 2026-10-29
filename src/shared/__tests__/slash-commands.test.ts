@@ -20,6 +20,7 @@ import {
   findCommand,
   parseSlashInput,
   rankCommandMatches,
+  withGuiCommands,
 } from '../slash-commands';
 import type { SlashCommandInfo } from '../types';
 
@@ -264,5 +265,48 @@ describe('rankCommandMatches', () => {
     const original = [...commands];
     rankCommandMatches(commands, 're');
     expect(commands).toEqual(original);
+  });
+});
+
+describe('withGuiCommands', () => {
+  // The CLI stopped listing /rewind to SDK hosts, which left the GUI's own
+  // rewind dialog with no way in: only listed commands are dispatched.
+  it('offers /rewind when the CLI does not list it, and it resolves to the dialog', () => {
+    const commands = withGuiCommands([cmd('clear', { builtin: true }), cmd('compact', { builtin: true })]);
+
+    const rewind = findCommand(commands, 'rewind');
+    expect(rewind).toBeDefined();
+    expect(rewind?.description).not.toBe('');
+    expect(dispositionFor(rewind!)).toEqual({ kind: 'gui', action: 'rewind' });
+    expect(commands.map((c) => c.name)).toEqual(['clear', 'compact', 'rewind']);
+  });
+
+  it('keeps the CLI row when the CLI lists the command itself', () => {
+    const cliRewind = cmd('rewind', { builtin: true, aliases: ['checkpoint'] });
+
+    const commands = withGuiCommands([cliRewind]);
+
+    expect(commands).toEqual([cliRewind]);
+  });
+
+  it('adds the GUI row beside a project command of the same name, which it outranks as the CLI one did', () => {
+    const projectRewind = cmd('rewind');
+
+    const commands = withGuiCommands([projectRewind]);
+
+    expect(commands).toHaveLength(2);
+    expect(findCommand(commands, 'rewind')?.builtin).toBe(true);
+  });
+
+  it('adds nothing to an empty list, which means the CLI could not be reached', () => {
+    expect(withGuiCommands([])).toEqual([]);
+  });
+
+  it('does not change the list it is given', () => {
+    const commands = [cmd('clear', { builtin: true })];
+
+    withGuiCommands(commands);
+
+    expect(commands).toEqual([cmd('clear', { builtin: true })]);
   });
 });

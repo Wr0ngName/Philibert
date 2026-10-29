@@ -9,6 +9,12 @@
  * a command (that is how `/rewind` came to be missing), and nothing here can
  * know about a project's custom commands anyway.
  *
+ * The one exception is a command the GUI implements entirely by itself, which
+ * the CLI may stop advertising because its own version is a terminal screen.
+ * The CLI no longer lists `/rewind` to SDK hosts, and since only listed
+ * commands are dispatched, that left the rewind dialog unreachable. Those
+ * commands are in GUI_PROVIDED_COMMANDS and added by withGuiCommands.
+ *
  * ── What this module decides ──
  * Only how a resolved command should be *handled*, which is a property of this
  * GUI and not of the CLI. Three things can be true of a command:
@@ -150,6 +156,41 @@ export const GUI_DISPOSITIONS: Readonly<Record<string, CommandDisposition>> = {
       'to this project too, since it is configured in the repository rather than in the client.',
   },
 };
+
+/**
+ * Commands the GUI offers whether or not the CLI lists them.
+ *
+ * Only commands whose GUI_DISPOSITIONS entry is a `gui` action the GUI carries
+ * out entirely by itself belong here. Marked `builtin` because they stand in
+ * for Claude Code's own command, and so outrank a project command of the same
+ * name exactly as the CLI's row did.
+ */
+const GUI_PROVIDED_COMMANDS: readonly SlashCommandInfo[] = [
+  {
+    name: 'rewind',
+    description: 'Restore the code and/or the conversation to an earlier message',
+    argumentHint: '',
+    builtin: true,
+  },
+];
+
+/**
+ * The CLI's command list plus the GUI-provided commands it does not list.
+ *
+ * A builtin row the CLI does list is kept as it is: it describes the command
+ * as the CLI knows it. An empty list stays empty, since it means the CLI could
+ * not be reached, and the help text says so rather than listing one command.
+ */
+export function withGuiCommands(commands: readonly SlashCommandInfo[]): SlashCommandInfo[] {
+  if (commands.length === 0) return [];
+  const listedBuiltins = new Set(
+    commands.filter((cmd) => cmd.builtin).map((cmd) => cmd.name.toLowerCase()),
+  );
+  return [
+    ...commands,
+    ...GUI_PROVIDED_COMMANDS.filter((cmd) => !listedBuiltins.has(cmd.name)),
+  ];
+}
 
 /** A slash command input split into its name and the rest of the line. */
 export interface ParsedSlashInput {

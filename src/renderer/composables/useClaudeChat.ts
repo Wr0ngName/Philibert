@@ -10,6 +10,7 @@
 
 import { effectScope, onMounted, onUnmounted, shallowRef, watch, type EffectScope } from 'vue';
 
+import { withGuiCommands } from '@shared/slash-commands';
 import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, MessageImage, PermissionOptionVariant, PermissionScope } from '@shared/types';
 
 import { CONSTANTS } from '../constants/app';
@@ -102,7 +103,7 @@ export function useClaudeChat() {
       // Never assign a non-array into the shared ref. It is module-level state
       // reused by every component instance, so one bad response would make the
       // next mount throw on `.length` and take the whole chat view down.
-      slashCommands.value = Array.isArray(commands) ? commands : [];
+      slashCommands.value = Array.isArray(commands) ? withGuiCommands(commands) : [];
       logger.debug('Loaded slash commands', { count: slashCommands.value.length });
     } catch (err) {
       logger.warn('Failed to load slash commands', { error: err instanceof Error ? err.message : String(err) });
@@ -836,7 +837,7 @@ export function useClaudeChat() {
 
     // Handle slash commands updates from SDK
     cleanupSlashCommands = window.electron.claude.onSlashCommands((conversationId, commands) => {
-      sharedSlashCommands.value = commands;
+      sharedSlashCommands.value = withGuiCommands(commands);
       logger.debug('Received slash commands from SDK', { conversationId, count: commands.length });
     });
 
