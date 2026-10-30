@@ -4,7 +4,8 @@
  * Shows native desktop notifications when the application window is not focused.
  * Notifications are triggered for:
  * - Tool use permission requests
- * - Query completion
+ * - Claude finishing: each turn and background task, or only once everything
+ *   is done (see CompletionNotifications)
  * - Errors
  *
  * Clicking a notification focuses and brings the window to front.
@@ -41,14 +42,38 @@ export class NotificationService {
   }
 
   /**
-   * Show notification when a query completes
+   * A turn ended. `tasksStillRunning` is how many of the conversation's
+   * background tasks are still going: with any, Claude has only started the
+   * work — a build, an agent — and in 'all-done' mode that is not news. It
+   * is, once the turn answering the last of them ends.
    */
-  showQueryComplete(conversationId: string): void {
-    this.showNotification(
-      'Query Complete',
-      'Claude has finished processing your request.',
-      conversationId
+  async showTurnEnded(conversationId: string, tasksStillRunning: number): Promise<void> {
+    const { completionNotifications } = await this.configService.getConfig();
+    if (completionNotifications === 'each') {
+      await this.showNotification('Claude has finished', 'Claude has finished replying.', conversationId);
+      return;
+    }
+    if (tasksStillRunning > 0) {
+      logger.debug('Completion notification held: background tasks still running', {
+        conversationId, tasksStillRunning,
+      });
+      return;
+    }
+    await this.showNotification(
+      'Claude has finished',
+      'Claude has finished, and no background task is still running.',
+      conversationId,
     );
+  }
+
+  /**
+   * A background task ended. Only in 'each' mode: otherwise the turn that
+   * answers it is what says the work is done.
+   */
+  async showTaskEnded(conversationId: string, description: string): Promise<void> {
+    const { completionNotifications } = await this.configService.getConfig();
+    if (completionNotifications !== 'each') return;
+    await this.showNotification('Background task ended', description || 'A background task ended.', conversationId);
   }
 
   /**

@@ -93,7 +93,8 @@ function makeConfigService() {
 function makeNotificationService() {
   return {
     showPermissionRequest: vi.fn(),
-    showQueryComplete: vi.fn(),
+    showTurnEnded: vi.fn(),
+    showTaskEnded: vi.fn(),
     showError: vi.fn(),
   } as unknown as ConstructorParameters<typeof ChannelService>[2];
 }

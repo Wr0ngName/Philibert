@@ -3,7 +3,7 @@
  * Settings panel component with OAuth login support
  */
 
-import type { ExecutionMode, LogLevel, UpdateChannel, WhisperModelId } from '@shared/types';
+import type { CompletionNotifications, ExecutionMode, LogLevel, UpdateChannel, WhisperModelId } from '@shared/types';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE, WHISPER_MODELS } from '@shared/speech';
 import { ref, computed, nextTick, watch, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
@@ -56,6 +56,7 @@ const localFontSize = ref(14);
 const localLineHeight = ref(1.6);
 const localLogLevel = ref<LogLevel>('info');
 const localEnableNotifications = ref(true);
+const localCompletionNotifications = ref<CompletionNotifications>('all-done');
 const localAutoContinueAtUsageLimit = ref(true);
 const localUpdateChannel = ref<UpdateChannel>('stable');
 const localExecutionMode = ref<ExecutionMode>('sdk');
@@ -93,6 +94,19 @@ const logLevelOptions: { value: LogLevel; label: string; description: string }[]
   { value: 'debug', label: 'Debug', description: 'Detailed debugging' },
 ];
 
+const completionNotificationOptions: { value: CompletionNotifications; label: string; description: string }[] = [
+  {
+    value: 'all-done',
+    label: 'When everything is done',
+    description: 'Once Claude has finished and no background task is still running',
+  },
+  {
+    value: 'each',
+    label: 'Each reply and task',
+    description: 'Every time Claude finishes replying, and every time a background task ends',
+  },
+];
+
 // Sync with store when modal opens
 watch(
   () => config.value,
@@ -102,6 +116,7 @@ watch(
     localLineHeight.value = newConfig.lineHeight;
     localLogLevel.value = newConfig.logLevel;
     localEnableNotifications.value = newConfig.enableNotifications;
+    localCompletionNotifications.value = newConfig.completionNotifications;
     localAutoContinueAtUsageLimit.value = newConfig.autoContinueAtUsageLimit;
     localUpdateChannel.value = newConfig.updateChannel;
     localExecutionMode.value = newConfig.executionMode;
@@ -130,6 +145,7 @@ async function saveSettings() {
   await settingsStore.setLineHeight(localLineHeight.value);
   await settingsStore.setLogLevel(localLogLevel.value);
   await settingsStore.setEnableNotifications(localEnableNotifications.value);
+  await settingsStore.setCompletionNotifications(localCompletionNotifications.value);
   await settingsStore.setAutoContinueAtUsageLimit(localAutoContinueAtUsageLimit.value);
   await settingsStore.setUpdateChannel(localUpdateChannel.value);
   const effectiveMode = config.value.authMethod === 'oauth' ? localExecutionMode.value : 'sdk';
@@ -149,6 +165,7 @@ function cancel() {
   localLineHeight.value = config.value.lineHeight;
   localLogLevel.value = config.value.logLevel;
   localEnableNotifications.value = config.value.enableNotifications;
+  localCompletionNotifications.value = config.value.completionNotifications;
   localAutoContinueAtUsageLimit.value = config.value.autoContinueAtUsageLimit;
   localUpdateChannel.value = config.value.updateChannel;
   localExecutionMode.value = config.value.executionMode;
@@ -441,6 +458,33 @@ function cancel() {
                 localEnableNotifications ? 'translate-x-6' : 'translate-x-1',
               ]"
             />
+          </button>
+        </div>
+        <div
+          v-if="localEnableNotifications"
+          class="flex gap-2 mt-2"
+          role="radiogroup"
+          aria-label="When to notify that Claude has finished"
+        >
+          <button
+            v-for="option in completionNotificationOptions"
+            :key="option.value"
+            :class="[
+              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
+              localCompletionNotifications === option.value
+                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+            ]"
+            role="radio"
+            :aria-checked="localCompletionNotifications === option.value"
+            @click="localCompletionNotifications = option.value"
+          >
+            <div class="font-medium">
+              {{ option.label }}
+            </div>
+            <div class="text-xs opacity-75">
+              {{ option.description }}
+            </div>
           </button>
         </div>
       </div>

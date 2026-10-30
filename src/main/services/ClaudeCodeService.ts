@@ -362,13 +362,21 @@ export class ClaudeCodeService {
    */
   getRunningWork(): { turns: number; tasks: number } {
     let tasks = 0;
-    for (const [conversationId, live] of this.liveBackgroundTasks) {
-      // A session that has gone cannot still be running tasks; a stale set
-      // left behind by one would otherwise warn about nothing.
-      if (!this.activeSessions.has(conversationId)) continue;
-      tasks += live.filter((task) => !task.ambient).length;
+    for (const conversationId of this.liveBackgroundTasks.keys()) {
+      tasks += this.runningTasks(conversationId).length;
     }
     return { turns: this.processingSessions.size, tasks };
+  }
+
+  /**
+   * A conversation's background tasks that count as work in progress: live,
+   * and not ambient.
+   */
+  private runningTasks(conversationId: string): LiveBackgroundTask[] {
+    // A session that has gone cannot still be running tasks; a stale set
+    // left behind by one would otherwise count work that is not there.
+    if (!this.activeSessions.has(conversationId)) return [];
+    return (this.liveBackgroundTasks.get(conversationId) ?? []).filter((task) => !task.ambient);
   }
 
   /**
@@ -748,6 +756,12 @@ export class ClaudeCodeService {
         this.emitTaskNotification(conversationId, notification);
       },
       onLiveBackgroundTasks: (tasks: LiveBackgroundTask[]) => {
+        // The set is authoritative, so a task gone from it has ended —
+        // however its own notification fared.
+        const stillLive = new Set(tasks.map((task) => task.taskId));
+        for (const ended of this.runningTasks(conversationId).filter((task) => !stillLive.has(task.taskId))) {
+          void this.notificationService.showTaskEnded(conversationId, ended.description);
+        }
         this.liveBackgroundTasks.set(conversationId, tasks);
         this.send(IPC_CHANNELS.CLAUDE_BACKGROUND_TASKS_CHANGED, conversationId, tasks);
       },
@@ -1226,7 +1240,7 @@ export class ClaudeCodeService {
 
           if (session && !endsUserTurn && session.unpromptedTurn) {
             session.unpromptedTurn = false;
-            if (endsUnpromptedTurn) this.endUnpromptedTurn(conversationId);
+            if (endsUnpromptedTurn) this.emitDone(conversationId, true);
             continue;
           }
 
@@ -2003,25 +2017,15 @@ export class ClaudeCodeService {
   }
 
   /**
-   * End a turn the CLI started by itself. Quiet: the "Query Complete"
-   * notification is for answers to what the user asked.
+   * Emit done event to the renderer for a specific conversation — the end of
+   * a turn the user sent, or of one the CLI started by itself.
    */
-  private endUnpromptedTurn(conversationId: string): void {
-    logger.info('[turn] done', { conversationId, unprompted: true });
+  private emitDone(conversationId: string, unprompted = false): void {
+    logger.info('[turn] done', { conversationId, unprompted });
     this.processingSessions.delete(conversationId);
     this.emitActiveQueryCount();
     this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
-  }
-
-  /**
-   * Emit done event to the renderer for a specific conversation
-   */
-  private emitDone(conversationId: string): void {
-    logger.info('[turn] done', { conversationId });
-    this.processingSessions.delete(conversationId);
-    this.emitActiveQueryCount();
-    this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
-    this.notificationService.showQueryComplete(conversationId);
+    void this.notificationService.showTurnEnded(conversationId, this.runningTasks(conversationId).length);
   }
 
   /**

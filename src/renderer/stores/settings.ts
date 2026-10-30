@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 
-import type { AppConfig, EffortLevel, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel, WhisperModelId } from '@shared/types';
+import type { AppConfig, CompletionNotifications, EffortLevel, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel, WhisperModelId } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 
 import { useEventCleanup } from '../composables/useEventCleanup';
@@ -127,6 +127,10 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function setEnableNotifications(enabled: boolean): Promise<void> {
     await saveConfig({ enableNotifications: enabled });
+  }
+
+  async function setCompletionNotifications(mode: CompletionNotifications): Promise<void> {
+    await saveConfig({ completionNotifications: mode });
   }
 
   async function setUpdateChannel(channel: UpdateChannel): Promise<void> {
@@ -281,6 +285,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setShowHistorySidebar,
     setShowFilesSidebar,
     setEnableNotifications,
+    setCompletionNotifications,
     setUpdateChannel,
     setExecutionMode,
     setThinkingMode,

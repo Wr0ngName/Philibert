@@ -7,7 +7,7 @@ import { safeStorage, dialog } from 'electron';
 
 import { DEFAULT_EFFORT, isEffortLevel } from '../../shared/effort';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE } from '../../shared/speech';
-import { AppConfig, AuthMethod, DEFAULT_CONFIG, EffortLevel, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel, WhisperModelId } from '../../shared/types';
+import { AppConfig, AuthMethod, CompletionNotifications, DEFAULT_CONFIG, EffortLevel, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel, WhisperModelId } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { ConfigurationError, ERROR_CODES } from '../errors';
 import logger, { setLogLevel } from '../utils/logger';
@@ -33,6 +33,7 @@ interface StoredConfig {
   logLevel: LogLevel;
   selectedModel: string;
   enableNotifications: boolean;
+  completionNotifications: CompletionNotifications;
   lastConversationId: string;
   updateChannel: UpdateChannel;
   executionMode: ExecutionMode;
@@ -111,6 +112,7 @@ export class ConfigService {
           logLevel: 'warn',
           selectedModel: '',
           enableNotifications: true,
+          completionNotifications: 'all-done',
           lastConversationId: '',
           updateChannel: 'stable',
           executionMode: 'sdk',

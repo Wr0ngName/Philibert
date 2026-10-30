@@ -794,6 +794,16 @@ export type ExecutionMode = 'sdk' | 'channel';
 export type ThinkingMode = 'auto' | 'disabled';
 
 /**
+ * When a desktop notification says Claude has finished.
+ *
+ * - 'all-done': once, when a turn ends with none of the conversation's
+ *   background tasks still running — so not when Claude has only started a
+ *   build, but when it has answered the build finishing.
+ * - 'each': at the end of every turn, and whenever a background task ends.
+ */
+export type CompletionNotifications = 'all-done' | 'each';
+
+/**
  * Reasoning-effort level, mirroring the SDK's `EffortLevel`.
  *
  * Which of these a given model accepts differs per model and is reported by
@@ -848,6 +858,8 @@ export interface AppConfig {
   showFilesSidebar: boolean;
   /** Whether to show native OS notifications when window is not focused */
   enableNotifications: boolean;
+  /** When a notification says Claude has finished; see CompletionNotifications. */
+  completionNotifications: CompletionNotifications;
   /** ID of the last active conversation (for auto-restore on startup) */
   lastConversationId: string;
   /** Auto-update channel: 'stable' for releases only, 'rc' to include release candidates */
@@ -912,6 +924,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   showHistorySidebar: true,
   showFilesSidebar: true,
   enableNotifications: true,
+  completionNotifications: 'all-done',
   lastConversationId: '',
   updateChannel: 'stable',
   executionMode: 'sdk',

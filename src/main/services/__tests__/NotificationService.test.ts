@@ -8,7 +8,7 @@
  * - Notification NOT shown when platform doesn't support notifications
  * - Clicking notification focuses and restores window
  * - Permission request notification format
- * - Query complete notification format
+ * - Claude-finished notifications, per completion mode
  * - Error notification format (including truncation)
  * - Graceful error handling (never breaks main flow)
  */
@@ -139,23 +139,77 @@ describe('NotificationService', () => {
     });
   });
 
-  describe('showQueryComplete', () => {
-    it('should show notification with correct title and body', async () => {
-      service.showQueryComplete('conv-2');
-      await flushPromises();
+  describe('Claude finishing', () => {
+    function mode(completionNotifications: 'all-done' | 'each') {
+      mockConfigService.getConfig.mockResolvedValue({ enableNotifications: true, completionNotifications });
+    }
 
-      expect(MockNotificationClass).toHaveBeenCalledWith({
-        title: 'Query Complete',
-        body: 'Claude has finished processing your request.',
+    describe("'all-done' (the default)", () => {
+      beforeEach(() => mode('all-done'));
+
+      it('says nothing while a background task the turn started is still running', async () => {
+        await service.showTurnEnded('conv-2', 1);
+
+        expect(mockNotificationInstance.show).not.toHaveBeenCalled();
       });
-      expect(mockNotificationInstance.show).toHaveBeenCalled();
+
+      it('says Claude has finished once a turn ends with no background task left', async () => {
+        await service.showTurnEnded('conv-2', 0);
+
+        expect(MockNotificationClass).toHaveBeenCalledWith({
+          title: 'Claude has finished',
+          body: 'Claude has finished, and no background task is still running.',
+        });
+        expect(mockNotificationInstance.show).toHaveBeenCalledTimes(1);
+      });
+
+      it('says nothing when a background task ends: the turn answering it will', async () => {
+        await service.showTaskEnded('conv-2', 'Build the app');
+
+        expect(mockNotificationInstance.show).not.toHaveBeenCalled();
+      });
+
+      it('is the default for a config that has never been saved with the setting', async () => {
+        mockConfigService.getConfig.mockResolvedValue({ enableNotifications: true });
+
+        await service.showTurnEnded('conv-2', 1);
+        await service.showTaskEnded('conv-2', 'Build the app');
+
+        expect(mockNotificationInstance.show).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("'each'", () => {
+      beforeEach(() => mode('each'));
+
+      it('says so at the end of every turn, background tasks or not', async () => {
+        await service.showTurnEnded('conv-2', 1);
+        await service.showTurnEnded('conv-2', 0);
+
+        expect(MockNotificationClass).toHaveBeenCalledWith({
+          title: 'Claude has finished',
+          body: 'Claude has finished replying.',
+        });
+        expect(mockNotificationInstance.show).toHaveBeenCalledTimes(2);
+      });
+
+      it('says which background task ended', async () => {
+        await service.showTaskEnded('conv-2', 'Build the app');
+
+        expect(MockNotificationClass).toHaveBeenCalledWith({
+          title: 'Background task ended',
+          body: 'Build the app',
+        });
+        expect(mockNotificationInstance.show).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('should NOT show when window is focused', async () => {
+      mode('each');
       mockWindow.isFocused.mockReturnValue(true);
 
-      service.showQueryComplete('conv-2');
-      await flushPromises();
+      await service.showTurnEnded('conv-2', 0);
+      await service.showTaskEnded('conv-2', 'Build the app');
 
       expect(mockNotificationInstance.show).not.toHaveBeenCalled();
     });
@@ -207,8 +261,7 @@ describe('NotificationService', () => {
     it('should restore minimized window on notification click', async () => {
       mockWindow.isMinimized.mockReturnValue(true);
 
-      service.showQueryComplete('conv-1');
-      await flushPromises();
+      await service.showTurnEnded('conv-1', 0);
 
       expect(mockNotificationInstance.on).toHaveBeenCalledWith('click', expect.any(Function));
 

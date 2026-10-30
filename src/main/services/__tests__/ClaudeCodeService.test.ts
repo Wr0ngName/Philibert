@@ -46,7 +46,8 @@ const { mockQuery, mockSend, mockSafeStorage, mockDialog, mockStoreData, mockNot
     mockStoreData: storeData,
     mockNotificationService: {
       showPermissionRequest: vi.fn(),
-      showQueryComplete: vi.fn(),
+      showTurnEnded: vi.fn(),
+      showTaskEnded: vi.fn(),
       showError: vi.fn(),
     },
   };
@@ -517,8 +518,40 @@ describe('ClaudeCodeService', () => {
           .map((call) => call[4]);
         expect(runningSets).toContainEqual([TEST_CONV_ID]);
         expect(service.getProcessingQueryCount()).toBe(0);
-        // "Query Complete" stays for answers to what the user asked.
-        expect(mockNotificationService.showQueryComplete).toHaveBeenCalledTimes(1);
+        // Both are turns ending, as far as notifying goes.
+        expect(mockNotificationService.showTurnEnded.mock.calls).toEqual([[TEST_CONV_ID, 0], [TEST_CONV_ID, 0]]);
+      });
+
+      // The case notifications are decided on: the first turn ends with its
+      // build still running, the CLI's own turn after the build ends with
+      // nothing left. Live-set shapes as the SDK sends them.
+      it('tells the notifier how many background tasks each turn ends with, and which task ended', async () => {
+        const live = (tasks: { task_id: string; description: string; ambient?: boolean }[]) => ({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: tasks.map((task) => ({ task_type: 'local_bash', ...task })),
+        });
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          live([
+            { task_id: 'b-build', description: 'Build the app' },
+            { task_id: 'b-watch', description: 'Watch the logs', ambient: true },
+          ]),
+          { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 },
+          { type: 'system', subtype: 'session_state_changed', state: 'idle' },
+          live([{ task_id: 'b-watch', description: 'Watch the logs', ambient: true }]),
+          { type: 'system', subtype: 'session_state_changed', state: 'running' },
+          { type: 'result', subtype: 'success', origin: { kind: 'task-notification' }, num_turns: 1, duration_ms: 10 },
+          { type: 'system', subtype: 'session_state_changed', state: 'idle' },
+        ]));
+
+        await service.sendMessage(TEST_CONV_ID, 'Build it in the background', '/home/user');
+
+        await vi.waitFor(() => {
+          expect(mockNotificationService.showTurnEnded).toHaveBeenCalledTimes(2);
+        });
+        // The ambient watcher counts for neither.
+        expect(mockNotificationService.showTurnEnded.mock.calls).toEqual([[TEST_CONV_ID, 1], [TEST_CONV_ID, 0]]);
+        expect(mockNotificationService.showTaskEnded.mock.calls).toEqual([[TEST_CONV_ID, 'Build the app']]);
       });
 
       it('keeps the conversation busy when the user sent something during the turn the CLI started', async () => {

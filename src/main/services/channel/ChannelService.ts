@@ -423,7 +423,9 @@ export class ChannelService {
       active.turnDoneTimer = null;
       this.clearTurnWatchdog(conversationId);
       this.emitDone(conversationId);
-      this.notificationService.showQueryComplete(conversationId);
+      // A channel session reports no background tasks, so none can be
+      // counted as still running.
+      void this.notificationService.showTurnEnded(conversationId, 0);
       this.pollUsage(conversationId);
     }, TURN_DONE_DELAY_MS);
   }
