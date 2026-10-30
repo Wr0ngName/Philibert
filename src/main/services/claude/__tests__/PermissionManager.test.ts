@@ -1092,6 +1092,69 @@ describe('PermissionManager', () => {
       expect(file.action.permissionInfo?.scopeOptions.find(o => o.variant === 'narrow')?.label).toBe('Allow Edit (this file) in project');
     });
 
+    // Reported: Monitor's card offered "Allow Bash for this project", and
+    // Monitor asked again every time after it. The shapes are the CLI's
+    // (probe on CLI 2.1.280): Monitor asks with a Bash rule for its command.
+    // Measured too: a project `Bash` rule does not cover Monitor; `Monitor`,
+    // or `Bash(<that command>)`, does.
+    const MONITOR_COMMAND = 'node -e "setTimeout(()=>console.log(1),500)"';
+    const MONITOR_INPUT = { command: MONITOR_COMMAND, description: 'count ticks', timeout_ms: 5000 };
+    const MONITOR_SUGGESTIONS: PermissionUpdate[] = [
+      { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: MONITOR_COMMAND }], behavior: 'allow', destination: 'localSettings' },
+    ];
+
+    it('grants Monitor itself in project when Monitor asks with a Bash rule', async () => {
+      const { action, result } = await requestAndApprove('Monitor', MONITOR_INPUT, MONITOR_SUGGESTIONS, 'project');
+
+      expect(action.permissionInfo?.scopeOptions.map(o => o.label)).toEqual([
+        'Allow Monitor this session',
+        'Allow Monitor in project',
+        'Allow this exact command in project',
+      ]);
+      expect(result.updatedPermissions).toEqual([
+        { type: 'addRules', rules: [{ toolName: 'Monitor' }], behavior: 'allow', destination: 'localSettings' },
+      ]);
+    });
+
+    it("keeps the CLI's own rule for Monitor's exact command, which does cover it", async () => {
+      const canUseTool = permissionManager.createCanUseToolCallback();
+      const pending = canUseTool('Monitor', MONITOR_INPUT, {
+        signal: new AbortController().signal, toolUseID: 'test-id', requestId: 'test-request-id', suggestions: MONITOR_SUGGESTIONS,
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      permissionManager.handleActionResponse({
+        actionId: capturedAction!.id, conversationId: 'conv-1', approved: true, alwaysAllow: true,
+        chosenScope: 'project', chosenVariant: 'narrow',
+      });
+
+      expect((await pending as Extract<PermissionResult, { behavior: 'allow' }>).updatedPermissions).toEqual(MONITOR_SUGGESTIONS);
+    });
+
+    it('offers nothing beyond once when the CLI says the ask must not have "don\'t ask again"', async () => {
+      const canUseTool = permissionManager.createCanUseToolCallback();
+      const ask = () => canUseTool('Monitor', MONITOR_INPUT, {
+        signal: new AbortController().signal, toolUseID: 'test-id', requestId: 'test-request-id',
+        suggestions: MONITOR_SUGGESTIONS, suppressAlwaysAllowRule: true,
+      });
+
+      const first = ask();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(capturedAction?.onceOnly).toBe(true);
+      expect(capturedAction?.permissionInfo).toBeUndefined();
+
+      // An "always" that reaches main anyway is taken as once.
+      permissionManager.handleActionResponse({
+        actionId: capturedAction!.id, conversationId: 'conv-1', approved: true, alwaysAllow: true, chosenScope: 'session',
+      });
+      const result = await first as Extract<PermissionResult, { behavior: 'allow' }>;
+      expect(result.updatedPermissions).toBeUndefined();
+
+      capturedAction = null;
+      void ask();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(capturedAction).not.toBeNull();
+    });
+
     it('replaces the exact command the CLI suggests for the project with the whole tool, as "this session" grants', async () => {
       const { action, result } = await requestAndApprove('Bash', { command: 'touch probe-one.txt' }, BASH_SUGGESTIONS, 'project');
 

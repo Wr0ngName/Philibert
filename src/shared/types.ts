@@ -602,6 +602,12 @@ interface BaseAction {
   permissionInfo?: PermissionSuggestionInfo;
   /** Context about why this permission was requested */
   permissionContext?: PermissionContext;
+  /**
+   * The CLI asked that this be allowed once at most, with no "don't ask
+   * again" choice: the rule it would write grants more than this action
+   * (the SDK's `suppressAlwaysAllowRule`).
+   */
+  onceOnly?: boolean;
 }
 
 /**

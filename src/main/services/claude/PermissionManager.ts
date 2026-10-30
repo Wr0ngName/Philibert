@@ -67,6 +67,8 @@ interface PendingPermission {
   suggestions?: PermissionUpdate[];
   /** What the project's narrow option grants: see withProjectScopeSuggestions. */
   narrowProject?: PermissionUpdate[];
+  /** Allowed once at most: see PendingAction.onceOnly. */
+  onceOnly?: boolean;
   /** Cleanup function to remove the abort event listener */
   cleanupAbortHandler?: () => void;
 }
@@ -137,7 +139,16 @@ export class PermissionManager {
     return async (toolName, input, options): Promise<PermissionResult> => {
       const actionId = generateId(ID_PREFIXES.ACTION);
 
-      logger.info('Tool permission requested', { actionId, toolName, input });
+      // Why the CLI asked and what it offers decide what the card can offer —
+      // and are what a "it keeps asking" report has to be traced from.
+      logger.info('Tool permission requested', {
+        actionId,
+        toolName,
+        input,
+        decisionReason: options.decisionReason,
+        suggestions: options.suggestions,
+        ...(options.suppressAlwaysAllowRule ? { suppressAlwaysAllowRule: true } : {}),
+      });
 
       // Check if operation was aborted
       if (options.signal.aborted) {
@@ -179,8 +190,15 @@ export class PermissionManager {
       }
 
       // Create pending action for UI (include permission info from SDK suggestions)
-      const { suggestions, narrowProject } = this.withProjectScopeSuggestions(toolName, options.suggestions);
-      const permissionInfo = this.describePermissionSuggestions(toolName, suggestions, input, narrowProject);
+      // When the CLI says this ask must not offer "don't ask again" — the rule
+      // it would write grants more than this one action — the card offers
+      // allowing it once, and nothing more.
+      const { suggestions, narrowProject } = options.suppressAlwaysAllowRule
+        ? { suggestions: undefined, narrowProject: undefined }
+        : this.withProjectScopeSuggestions(toolName, options.suggestions);
+      const permissionInfo = options.suppressAlwaysAllowRule
+        ? undefined
+        : this.describePermissionSuggestions(toolName, suggestions, input, narrowProject);
       const permissionContext: PermissionContext | undefined =
         (options.blockedPath || options.decisionReason)
           ? {
@@ -188,7 +206,8 @@ export class PermissionManager {
             decisionReason: options.decisionReason,
           }
           : undefined;
-      const action = this.createPendingAction(actionId, toolName, input, permissionInfo, permissionContext);
+      const created = this.createPendingAction(actionId, toolName, input, permissionInfo, permissionContext);
+      const action = created && options.suppressAlwaysAllowRule ? { ...created, onceOnly: true } : created;
       if (!action) {
         logger.warn('Could not create action for tool', { toolName });
         return {
@@ -210,6 +229,7 @@ export class PermissionManager {
           reject,
           suggestions,
           ...(narrowProject ? { narrowProject } : {}),
+          ...(options.suppressAlwaysAllowRule ? { onceOnly: true } : {}),
         };
 
         // Set up named abort handler so it can be removed after resolution
@@ -490,8 +510,8 @@ export class PermissionManager {
     const narrowRules = suggestions.filter((s) =>
       isProject(s) && s.type === 'addRules' && s.behavior === 'allow' && s.rules.some((r) => r.ruleContent));
     const local = suggestions.filter((s) => this.mapDestinationToScope(s.destination) !== 'global');
-    const tools = [...new Set(local.flatMap((s) =>
-      (s.type === 'addRules' && s.behavior === 'allow' ? s.rules.map((r) => r.toolName) : [])))];
+    const wholeTools = (rules: { toolName: string }[]) => this.wholeToolsFor(toolName, rules);
+    const tools = wholeTools(local.flatMap((s) => (s.type === 'addRules' && s.behavior === 'allow' ? s.rules : [])));
     if (tools.length === 0 && local.some((s) => s.type === 'setMode' && s.mode === 'acceptEdits')) {
       tools.push(toolName);
     }
@@ -504,10 +524,21 @@ export class PermissionManager {
     // suggest a path for a file outside the project ("Read(//c/…/tasks/**)"),
     // and passing that on named the option after a rule it did not keep to.
     const isSession = (s: PermissionUpdate) => this.mapDestinationToScope(s.destination) === 'session';
+    const isSessionAllow = (s: PermissionUpdate): s is Extract<PermissionUpdate, { type: 'addRules' }> =>
+      isSession(s) && s.type === 'addRules' && s.behavior === 'allow';
+    // Decided over all the session's rules at once: a request for one tool
+    // can come with rules for several.
+    const sessionRuleTools = suggestions.filter(isSessionAllow).flatMap((s) => s.rules);
+    const sessionTools = wholeTools(sessionRuleTools);
+    const sessionSwapped = sessionRuleTools.length > 0 && !sessionRuleTools.some((r) => r.toolName === toolName);
     const kept = suggestions
       .filter((s) => !(isProject(s) && (s.type === 'addRules' || s.type === 'addDirectories')))
-      .map((s): PermissionUpdate => (isSession(s) && s.type === 'addRules' && s.behavior === 'allow'
-        ? { ...s, rules: [...new Set(s.rules.map((r) => r.toolName))].map((tool) => ({ toolName: tool })) }
+      .map((s): PermissionUpdate => (isSessionAllow(s)
+        ? {
+          ...s,
+          rules: (sessionSwapped ? sessionTools : [...new Set(s.rules.map((r) => r.toolName))])
+            .map((tool) => ({ toolName: tool })),
+        }
         : s));
     const projectDirectories: PermissionUpdate[] = directories.length > 0
       ? [{ type: 'addDirectories', directories, destination: 'localSettings' }]
@@ -521,6 +552,22 @@ export class PermissionManager {
       suggestions: [...kept, ...project],
       ...(narrowRules.length > 0 ? { narrowProject: [...narrowRules, ...projectDirectories] } : {}),
     };
+  }
+
+  /**
+   * The tools a whole-tool grant names, from the rules the CLI suggested:
+   * those rules' tools — unless none of them is the tool asking, in which
+   * case the tool asking.
+   *
+   * Monitor asks with Bash rules (its commands go through the shell's
+   * permission check), and measured on CLI 2.1.280: a project `Bash` rule
+   * does not cover Monitor — it asked again for every Monitor command — while
+   * `Monitor`, or the CLI's own `Bash(<that command>)`, does. So "Allow Bash
+   * in project" saved a rule that never applied to what was being approved.
+   */
+  private wholeToolsFor(toolName: string, rules: { toolName: string }[]): string[] {
+    const named = [...new Set(rules.map((r) => r.toolName))];
+    return named.length === 0 || named.includes(toolName) ? named : [toolName];
   }
 
   /**
@@ -909,6 +956,11 @@ export class PermissionManager {
     pending.cleanupAbortHandler?.();
 
     if (response.approved) {
+      // An "always" on an ask the CLI said must not have one is an "once".
+      if (pending.onceOnly && response.alwaysAllow) {
+        logger.warn('"Always allow" on a once-only ask, allowed once', { actionId: response.actionId });
+        response = { ...response, alwaysAllow: false };
+      }
       logger.info('Action approved by user', {
         actionId: response.actionId,
         toolName: pending.toolName,

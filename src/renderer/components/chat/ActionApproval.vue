@@ -85,6 +85,11 @@ function handleKeydown(event: KeyboardEvent) {
     return;
   }
 
+  if ((event.key === 'Enter' && event.shiftKey) || event.key === 'A') {
+    // Neither "always" shortcut on an ask that may only be allowed once.
+    if (props.action.onceOnly) return;
+  }
+
   if (event.key === 'Enter' && event.shiftKey) {
     // Shift+Enter = broadest scope always allow
     event.preventDefault();
@@ -259,7 +264,7 @@ const shortcutHint = computed(() => {
     if (scopeOptions.value.some((o) => o.scope === 'session')) parts.push('s=session');
     if (scopeOptions.value.some((o) => o.scope === 'project')) parts.push('p=project');
     parts.push('Shift+Enter/A=broadest');
-  } else {
+  } else if (!props.action.onceOnly) {
     parts.push('Shift+Enter/A=always allow');
   }
   parts.push('Esc/r=deny');
@@ -485,9 +490,10 @@ const shortcutHint = computed(() => {
         </Button>
       </template>
 
-      <!-- Fallback single button (when no scope options) -->
+      <!-- Fallback single button (when no scope options). None at all when
+           the CLI asked for this to be allowed once at most. -->
       <Button
-        v-else
+        v-else-if="!action.onceOnly"
         variant="secondary"
         size="sm"
         :title="fallbackAlwaysAllowTooltip"
