@@ -199,10 +199,18 @@ interface SessionInstance {
    */
   unpromptedTurn: boolean;
   /**
-   * Messages sent while a turn was running that Claude has not read yet, by
-   * uuid. See sendDuringTurn.
+   * Messages sent while a turn was running that Claude has not read yet: each
+   * uuid, with the turn's join key it replaced (`pendingTurnUuid` before it
+   * was sent), which taking it back restores. See sendDuringTurn and
+   * cancelDuringTurn.
    */
-  deliveringPrompts: Set<string>;
+  deliveringPrompts: Map<string, string | null>;
+  /**
+   * Those of them the user is taking back right now. The CLI reports such a
+   * message 'cancelled' before it answers the request to take it back
+   * (measured on 2.1.280), which must not read as the session dropping it.
+   */
+  takingBack: Set<string>;
   /** The model the user selected when this session was started ('' = CLI default). */
   requestedModel: string;
   /**
@@ -753,10 +761,54 @@ export class ClaudeCodeService {
       logger.info('No turn to send into; the caller sends it after', { conversationId, hasSession: !!session });
       return null;
     }
+    const replaced = session.pendingTurnUuid;
     const uuid = await this.pushUserMessage(session, message, images);
-    session.deliveringPrompts.add(uuid);
+    session.deliveringPrompts.set(uuid, replaced);
     logger.info('Sent a message into the running turn', { conversationId, uuid, messageLength: message.length });
     return uuid;
+  }
+
+  /**
+   * Take back a message sent into the running turn, while Claude has not
+   * read it yet. True when it was taken back; false when it is too late —
+   * Claude has it — or there is nothing to take back.
+   *
+   * The CLI drops a message still waiting for the turn's next step
+   * (`cancel_async_message`; a no-op once it is dequeued). The SDK's Query has
+   * `cancelAsyncMessage` for it, missing from its type declarations, hence
+   * the checked cast.
+   *
+   * Taken back, the message no longer ends the turn: the turn's join key
+   * goes back to the one it replaced, or the turn's result — which will not
+   * list it — would never be recognised as ending the turn.
+   */
+  async cancelDuringTurn(conversationId: string, uuid: string): Promise<boolean> {
+    const session = this.activeSessions.get(conversationId);
+    if (!session || !session.deliveringPrompts.has(uuid)) return false;
+    const cancel = (session.query as { cancelAsyncMessage?: (uuid: string) => Promise<boolean> }).cancelAsyncMessage;
+    if (typeof cancel !== 'function') {
+      logger.warn('This SDK cannot take back a queued message', { conversationId });
+      return false;
+    }
+    session.takingBack.add(uuid);
+    let cancelled: boolean;
+    try {
+      cancelled = await cancel.call(session.query, uuid);
+    } finally {
+      session.takingBack.delete(uuid);
+    }
+    logger.info('Taking back a message sent into the turn', { conversationId, uuid, cancelled });
+    if (!cancelled) return false;
+
+    const replaced = session.deliveringPrompts.get(uuid) ?? null;
+    session.deliveringPrompts.delete(uuid);
+    if (session.pendingTurnUuid === uuid) session.pendingTurnUuid = replaced;
+    // A later message that replaced this one replaced, in effect, what this
+    // one did.
+    for (const [later, itsReplaced] of session.deliveringPrompts) {
+      if (itsReplaced === uuid) session.deliveringPrompts.set(later, replaced);
+    }
+    return true;
   }
 
   /**
@@ -772,6 +824,9 @@ export class ClaudeCodeService {
         : state === 'cancelled' ? 'cancelled'
           : null;
     if (!delivery) return;
+    // The user taking it back: cancelDuringTurn reports that, and it is not
+    // a message to give back to the queue.
+    if (delivery === 'cancelled' && session.takingBack.has(uuid)) return;
     session.deliveringPrompts.delete(uuid);
     logger.info('Message sent during a turn', { conversationId, uuid, delivery });
     this.send(IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY, conversationId, uuid, delivery);
@@ -1132,7 +1187,8 @@ export class ClaudeCodeService {
         isResumeAttempt: shouldResume,
         pendingTurnUuid: firstTurnUuid,
         unpromptedTurn: false,
-        deliveringPrompts: new Set<string>(),
+        deliveringPrompts: new Map<string, string | null>(),
+        takingBack: new Set<string>(),
         requestedModel: selectedModel,
         announcedModels: new Set<string>(),
         // Recorded now, because `authEnv` above was read now. See
@@ -1675,7 +1731,7 @@ export class ClaudeCodeService {
     // Nor read anything still waiting for its next step: said, so the
     // renderer gives those messages back to the user instead of waiting on
     // them for ever.
-    for (const uuid of instance.deliveringPrompts) {
+    for (const uuid of instance.deliveringPrompts.keys()) {
       this.send(IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY, conversationId, uuid, 'cancelled' satisfies PromptDeliveryState);
     }
     instance.deliveringPrompts.clear();

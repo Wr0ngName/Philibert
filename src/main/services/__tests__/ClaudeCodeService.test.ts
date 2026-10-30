@@ -435,9 +435,12 @@ describe('ClaudeCodeService', () => {
     describe('sending into the running turn', () => {
       /**
        * A session whose stream is scripted per step, reading what is pushed
-       * into it. `next()` lets the stream go on to its next yield.
+       * into it. `query` adds methods to the query object.
        */
-      function scriptedSession(script: (pushed: { uuid: string; text: string }[]) => AsyncGenerator<unknown>) {
+      function scriptedSession(
+        script: (pushed: { uuid: string; text: string }[]) => AsyncGenerator<unknown>,
+        query: Record<string, unknown> = {},
+      ) {
         const pushed: { uuid: string; text: string }[] = [];
         mockQuery.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
           void (async () => {
@@ -446,10 +449,76 @@ describe('ClaudeCodeService', () => {
               pushed.push({ uuid: m.uuid, text: m.message.content });
             }
           })();
-          return { ...createMockQueryIterator([]), [Symbol.asyncIterator]: () => script(pushed) };
+          return { ...createMockQueryIterator([]), ...query, [Symbol.asyncIterator]: () => script(pushed) };
         });
         return pushed;
       }
+
+      // Measured on CLI 2.1.280: taken back while still queued, the message
+      // is lifecycle 'cancelled' — before cancelAsyncMessage resolves true —
+      // and the turn's result lists only the first message.
+      it('takes a message back before Claude reads it, and the turn still ends', async () => {
+        const gates: (() => void)[] = [];
+        const gate = () => new Promise<void>((resolve) => { gates.push(resolve); });
+        let cancelledSeen = false;
+        const cancelAsyncMessage = vi.fn(async () => {
+          gates[1]();
+          await vi.waitFor(() => expect(cancelledSeen).toBe(true));
+          return true;
+        });
+        scriptedSession(async function* (seen) {
+          yield { type: 'system', subtype: 'init', slash_commands: [], model: 'claude-3', session_id: 'sess-1' };
+          await gate();
+          await gate();
+          yield { type: 'command_lifecycle', command_uuid: seen[1].uuid, state: 'cancelled' };
+          cancelledSeen = true;
+          await gate();
+          yield { type: 'result', subtype: 'success', num_turns: 1, duration_ms: 10, user_message_uuid: seen[0].uuid, user_message_uuids: [seen[0].uuid] };
+          await gate();
+        }, { cancelAsyncMessage });
+
+        await service.sendMessage(TEST_CONV_ID, 'Build the app', '/home/user');
+        await vi.waitFor(() => expect(gates).toHaveLength(1));
+        const uuid = await service.sendDuringTurn(TEST_CONV_ID, 'Also run the tests');
+        gates[0]();
+        await vi.waitFor(() => expect(gates).toHaveLength(2));
+
+        expect(await service.cancelDuringTurn(TEST_CONV_ID, uuid!)).toBe(true);
+        expect(cancelAsyncMessage).toHaveBeenCalledWith(uuid);
+        // Taken back by the user: not a message to hand back to the queue.
+        expect(sent(IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY)).toEqual([]);
+
+        await vi.waitFor(() => expect(gates).toHaveLength(3));
+        gates[2]();
+        await vi.waitFor(() => expect(gates).toHaveLength(4));
+        expect(sent(IPC_CHANNELS.CLAUDE_DONE)).toHaveLength(1);
+        expect(service.getProcessingQueryCount()).toBe(0);
+        gates[3]();
+      });
+
+      it('says when it is too late to take back: Claude has it, and it is delivered', async () => {
+        const gates: (() => void)[] = [];
+        const gate = () => new Promise<void>((resolve) => { gates.push(resolve); });
+        scriptedSession(async function* (seen) {
+          yield { type: 'system', subtype: 'init', slash_commands: [], model: 'claude-3', session_id: 'sess-1' };
+          await gate();
+          yield { type: 'command_lifecycle', command_uuid: seen[1].uuid, state: 'started' };
+          await gate();
+        }, { cancelAsyncMessage: vi.fn(async () => false) });
+
+        await service.sendMessage(TEST_CONV_ID, 'Build the app', '/home/user');
+        await vi.waitFor(() => expect(gates).toHaveLength(1));
+        const uuid = await service.sendDuringTurn(TEST_CONV_ID, 'Also run the tests');
+
+        expect(await service.cancelDuringTurn(TEST_CONV_ID, uuid!)).toBe(false);
+        gates[0]();
+        await vi.waitFor(() => {
+          expect(sent(IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY)).toEqual([
+            [IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY, TEST_CONV_ID, uuid, 'started'],
+          ]);
+        });
+        gates[1]();
+      });
 
       const sent = (channel: string) => mockSend.mock.calls.filter((call) => call[0] === channel);
 

@@ -25,6 +25,8 @@ const emit = defineEmits<{
   (e: 'send', message: string, images?: MessageImage[]): void;
   /** Send this prompt into the running turn, for Claude to read at its next step. */
   (e: 'send-now', message: string, images?: MessageImage[]): void;
+  /** Take back a prompt sent into the turn, before Claude reads it. */
+  (e: 'take-back', uuid: string): void;
   /** Hold this prompt until the running turn finishes. */
   (e: 'queue', message: string, images?: MessageImage[]): void;
   /** Send what is queued now, without waiting for a turn to end. */
@@ -450,9 +452,25 @@ function handleInput(event: Event) {
         <li
           v-for="prompt in deliveringPrompts"
           :key="prompt.uuid"
-          class="px-3 py-2 text-xs text-surface-700 dark:text-surface-200 whitespace-pre-wrap break-words line-clamp-3"
+          class="flex items-start gap-2 px-3 py-2"
         >
-          {{ prompt.content }}
+          <span class="flex-1 min-w-0 text-xs text-surface-700 dark:text-surface-200 whitespace-pre-wrap break-words line-clamp-3">{{ prompt.content }}</span>
+          <span
+            v-if="prompt.tooLate"
+            class="shrink-0 text-xs text-surface-400 dark:text-surface-500"
+          >Claude already has it</span>
+          <button
+            v-else
+            type="button"
+            class="shrink-0 p-1 rounded text-surface-400 hover:text-surface-700 dark:hover:text-surface-200 hover:bg-surface-200 dark:hover:bg-surface-700"
+            title="Take this back before Claude reads it"
+            @click="emit('take-back', prompt.uuid)"
+          >
+            <Icon
+              name="close"
+              size="xs"
+            />
+          </button>
         </li>
       </ul>
     </div>

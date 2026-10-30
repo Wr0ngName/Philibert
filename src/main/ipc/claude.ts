@@ -96,6 +96,20 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
     }
   });
 
+  // Take back a message sent into the running turn. Resolves to whether it
+  // was taken back: false once Claude has read it.
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_CANCEL_DURING_TURN, async (_event, conversationId: string, uuid: string) => {
+    try {
+      ensureService(claudeService, 'ClaudeCodeService');
+      validateString(conversationId, 'Conversation ID');
+      validateString(uuid, 'Message ID');
+      return await claudeService.cancelDuringTurn(conversationId, uuid);
+    } catch (error) {
+      logger.error('Failed to take back a message sent into the turn', { error, conversationId, uuid });
+      throw new IpcError(formatErrorMessage('Failed to take the message back', error), IPC_CHANNELS.CLAUDE_CANCEL_DURING_TURN, ERROR_CODES.CLAUDE_SEND_FAILED, error);
+    }
+  });
+
   // Approve a pending action with optional parameters
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_APPROVE,

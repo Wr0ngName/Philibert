@@ -25,6 +25,9 @@ const electronAPI: ElectronAPI = {
     sendDuringTurn: (conversationId: string, message: string, images?: MessageImage[]) =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND_DURING_TURN, conversationId, message, images),
 
+    cancelDuringTurn: (conversationId: string, uuid: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_CANCEL_DURING_TURN, conversationId, uuid),
+
     onPromptDelivery: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

@@ -405,6 +405,24 @@ export function useClaudeChat() {
   }
 
   /**
+   * Take back a prompt sent into the running turn, before Claude reads it.
+   * Too late once it has — then it stays listed, saying so, and joins the
+   * discussion when Claude takes it.
+   */
+  async function takeBackPrompt(uuid: string): Promise<void> {
+    const conversationId = conversationsStore.currentConversationId;
+    if (!conversationId) return;
+    let takenBack = false;
+    try {
+      takenBack = await window.electron.claude.cancelDuringTurn(conversationId, uuid);
+    } catch (err) {
+      logger.error('Failed to take back a prompt sent into the turn', { conversationId, uuid, err });
+    }
+    if (takenBack) chatStore.dropDeliveringPrompt(conversationId, uuid);
+    else chatStore.markDeliveringPromptTooLate(conversationId, uuid);
+  }
+
+  /**
    * Release queued prompts, as far as the conditions allow.
    *
    * Called when a turn ends. `nextFlush` owns the rules and is tested on its
@@ -1163,6 +1181,7 @@ export function useClaudeChat() {
     sendMessage,
     queuePrompt,
     sendDuringTurn,
+    takeBackPrompt,
     releaseQueuedPrompts,
     approveAction,
     rejectAction,

@@ -23,7 +23,7 @@ const { ipcListeners, exposed, invoked, duringTurn } = vi.hoisted(() => ({
   exposed: { api: null as Record<string, unknown> | null },
   invoked: [] as { channel: string; args: unknown[] }[],
   /** What the main process answers a send into the turn with: its uuid, or null. */
-  duringTurn: { answer: 'uuid-1' as string | null },
+  duringTurn: { answer: 'uuid-1' as string | null, takenBack: true },
 }));
 
 vi.mock('electron', () => ({
@@ -36,6 +36,7 @@ vi.mock('electron', () => ({
     invoke: vi.fn(async (channel: string, ...args: unknown[]) => {
       invoked.push({ channel, args: structuredClone(args) });
       if (channel === 'claude:send-during-turn') return duringTurn.answer;
+      if (channel === 'claude:cancel-during-turn') return duringTurn.takenBack;
       if (/availability/i.test(channel)) return { available: false };
       if (/commands|models|list|queries|permissions/i.test(channel)) return [];
       return undefined;
@@ -116,6 +117,7 @@ describe('sending a prompt into the running turn', () => {
     ipcListeners.clear();
     invoked.length = 0;
     duringTurn.answer = 'uuid-1';
+    duringTurn.takenBack = true;
     if (!exposed.api) throw new Error('preload did not expose its API');
     (globalThis as unknown as { window: Record<string, unknown> }).window.electron = exposed.api;
 
@@ -219,6 +221,35 @@ describe('sending a prompt into the running turn', () => {
 
     expect(invokes(IPC_CHANNELS.CLAUDE_SEND).map((args) => args[1])).toEqual(['build the app', 'also run the tests']);
     expect(wrapper.find('[data-testid="delivering-prompts"]').exists()).toBe(false);
+  });
+
+  it('takes it back before Claude reads it: gone, and not queued either', async () => {
+    const wrapper = mountHost();
+    await turnRunning(wrapper);
+    await type(wrapper, 'also run the tests');
+
+    await wrapper.find('[title="Take this back before Claude reads it"]').trigger('click');
+    await settle();
+
+    expect(invokes(IPC_CHANNELS.CLAUDE_CANCEL_DURING_TURN)).toEqual([[CONV, 'uuid-1']]);
+    expect(wrapper.find('[data-testid="delivering-prompts"]').exists()).toBe(false);
+    expect(chat.queuedPrompts).toEqual([]);
+    expect(discussion(chat)).toEqual(['user:build the app', 'assistant:Building now.']);
+  });
+
+  it('says so when it is too late, and the prompt still joins the discussion', async () => {
+    const wrapper = mountHost();
+    await turnRunning(wrapper);
+    await type(wrapper, 'also run the tests');
+    duringTurn.takenBack = false;
+
+    await wrapper.find('[title="Take this back before Claude reads it"]').trigger('click');
+    await settle();
+    expect(wrapper.find('[data-testid="delivering-prompts"]').text()).toContain('Claude already has it');
+
+    emitIpc(IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY, CONV, 'uuid-1', 'started');
+    await settle();
+    expect(discussion(chat)).toContain('user:also run the tests');
   });
 
   it('queues a slash command rather than putting it into another turn', async () => {

@@ -35,6 +35,7 @@ const {
   sendMessage,
   queuePrompt,
   sendDuringTurn,
+  takeBackPrompt,
   releaseQueuedPrompts,
   approveAction,
   rejectAction,
@@ -494,6 +495,7 @@ function closeToolDetail() {
     <InputBox
       @send="handleSend"
       @send-now="handleSendNow"
+      @take-back="takeBackPrompt"
       @queue="handleQueue"
       @release-queue="handleReleaseQueue"
       @unqueue="handleUnqueue"

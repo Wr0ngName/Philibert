@@ -1811,6 +1811,8 @@ export const IPC_CHANNELS = {
   CLAUDE_TURN_STARTED: 'claude:turn-started',
   /** Send a message into the turn running now, for Claude to read at its next step */
   CLAUDE_SEND_DURING_TURN: 'claude:send-during-turn',
+  /** Take back a message sent into the running turn, before Claude reads it */
+  CLAUDE_CANCEL_DURING_TURN: 'claude:cancel-during-turn',
   /** A message sent during a turn reached Claude, or never will */
   CLAUDE_PROMPT_DELIVERY: 'claude:prompt-delivery',
   /** Abort current Claude request */

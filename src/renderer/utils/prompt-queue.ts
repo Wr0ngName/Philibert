@@ -38,6 +38,8 @@ export interface DeliveringPrompt {
   content: string;
   images?: MessageImage[];
   sentAt: number;
+  /** The user tried to take it back, too late: Claude already has it. */
+  tooLate?: boolean;
 }
 
 /** What the caller knows at the moment a turn ends. */

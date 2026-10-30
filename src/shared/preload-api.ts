@@ -85,6 +85,11 @@ export interface ElectronAPI {
      * onPromptDelivery; null when no turn is running for it to join.
      */
     sendDuringTurn: (conversationId: string, message: string, images?: MessageImage[]) => Promise<string | null>;
+    /**
+     * Take back a message sent into the running turn, while Claude has not
+     * read it. Resolves to whether it was taken back: false once Claude has it.
+     */
+    cancelDuringTurn: (conversationId: string, uuid: string) => Promise<boolean>;
     /** What became of a message sent during a turn. */
     onPromptDelivery: (
       callback: (conversationId: string, uuid: string, state: PromptDeliveryState) => void,

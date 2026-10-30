@@ -2809,6 +2809,17 @@ export const useChatStore = defineStore('chat', () => {
     return addUserMessage(prompt.content, prompt.images, conversationId);
   }
 
+  /** A prompt sent into the turn that the user took back before Claude read it. */
+  function dropDeliveringPrompt(conversationId: string, uuid: string): void {
+    takeDeliveringPrompt(conversationId, uuid);
+  }
+
+  /** Taking it back came too late: Claude already has it. */
+  function markDeliveringPromptTooLate(conversationId: string, uuid: string): void {
+    const prompt = conversationStates.value.get(conversationId)?.deliveringPrompts.find((p) => p.uuid === uuid);
+    if (prompt) prompt.tooLate = true;
+  }
+
   /**
    * A prompt sent into the turn that Claude will never read — the session
    * ended first. Back at the front of the queue, so what the user wrote is
@@ -3063,6 +3074,8 @@ export const useChatStore = defineStore('chat', () => {
     addDeliveringPrompt,
     deliverPrompt,
     returnUndeliveredPrompt,
+    dropDeliveringPrompt,
+    markDeliveringPromptTooLate,
 
     // Usage limits: getting close, and waiting one out
     usageWarning,
