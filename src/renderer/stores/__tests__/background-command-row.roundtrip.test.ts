@@ -188,6 +188,108 @@ describe('a background command in the discussion', () => {
     expect(dialog('Task Details')?.textContent).toContain('build line 1');
   });
 
+  // Reported: a command moved to the background by its timeout still read
+  // Running in Task Details long after it had finished. The notices are the
+  // ones main sends for that, in the order one main.log has them (CLI
+  // 2.1.280, task bnrp3ry9n): started in the foreground, moved, the call's
+  // result naming the task, then the status patch and the completion.
+  describe('a command moved to the background by its timeout', () => {
+    async function runAndMove(): Promise<void> {
+      emitIpc('claude:tool-capture', conversationId, {
+        toolUseBlockId: 'toolu_wait', toolName: 'Bash',
+        input: { command: 'npm run regression', timeout: 120000, description: 'Wait for the regression' },
+        description: 'Wait for the regression',
+      });
+      notify({
+        taskId: 'b-wait', toolUseId: 'toolu_wait', status: 'running', description: 'Wait for the regression',
+        taskType: 'command', backgrounded: false,
+        toolName: 'Bash', toolInput: { command: 'npm run regression', timeout: 120000 },
+      });
+      await settle(10);
+      notify({ taskId: 'b-wait', status: 'running', backgrounded: true });
+      result('toolu_wait');
+      notify({ taskId: 'b-wait', status: 'running', previousTaskId: 'toolu_wait', backgrounded: true, timedOutAfterMs: 120000 });
+      await settle(20);
+    }
+
+    function complete(): void {
+      notify({ taskId: 'b-wait', status: 'completed' });
+      notify({
+        taskId: 'b-wait', toolUseId: 'toolu_wait', status: 'completed',
+        outputFile: '/tmp/claude/tasks/b-wait.output', summary: 'Background command "Wait for the regression" completed (exit code 0)',
+      });
+    }
+
+    it('says Running while it runs', async () => {
+      await runAndMove();
+
+      expect(callRows()).toEqual([expect.stringContaining('Running')]);
+    });
+
+    it('says Done on its call once it ends', async () => {
+      await runAndMove();
+      complete();
+      await settle(20);
+
+      expect(callRows()).toEqual([expect.stringContaining('Done')]);
+    });
+
+    it('says it ended in Task Details, and stops counting', async () => {
+      await runAndMove();
+      complete();
+      await settle(20);
+      await app.findAll('.tool-use-entry')[0].trigger('click');
+      await settle(20);
+
+      const details = dialog('Task Details')?.textContent ?? '';
+      expect(details).not.toContain('Running');
+      expect(details).toContain('Completed');
+    });
+
+    it('says it ended in Task Details when a sub-agent ran it', async () => {
+      // As task bnrp3ry9n was: owned_by_subagent, its call inside an agent's.
+      emitIpc('claude:tool-capture', conversationId, {
+        toolUseBlockId: 'toolu_agent', toolName: 'Agent',
+        input: { prompt: 'Run the regression and report', description: 'Regression agent', run_in_background: true },
+        description: 'Regression agent',
+      });
+      notify({ taskId: 'a-agent', toolUseId: 'toolu_agent', status: 'running', description: 'Regression agent', taskType: 'agent', backgrounded: true });
+      result('toolu_agent', { agent: { id: 'a-agent', background: true } });
+      await settle(10);
+      emitIpc('claude:tool-capture', conversationId, {
+        toolUseBlockId: 'toolu_wait', toolName: 'Bash', parentToolUseId: 'toolu_agent',
+        input: { command: 'npm run regression', timeout: 120000, description: 'Wait for the regression' },
+        description: 'Wait for the regression',
+      });
+      notify({
+        taskId: 'b-wait', toolUseId: 'toolu_wait', status: 'running', description: 'Wait for the regression',
+        taskType: 'command', backgrounded: false, parentTaskId: 'a-agent',
+        toolName: 'Bash', toolInput: { command: 'npm run regression', timeout: 120000 },
+      });
+      await settle(10);
+      notify({ taskId: 'b-wait', status: 'running', backgrounded: true });
+      result('toolu_wait');
+      notify({ taskId: 'b-wait', status: 'running', previousTaskId: 'toolu_wait', backgrounded: true, timedOutAfterMs: 120000 });
+      await settle(20);
+      complete();
+      await settle(20);
+
+      const { useChatStore } = await import('../chat');
+      const tracked = useChatStore().findBackgroundTask('b-wait');
+      expect(tracked?.status).toBe('completed');
+    });
+
+    it('stays ended after a restart', async () => {
+      await runAndMove();
+      complete();
+      await settle(20);
+      await endTurn();
+      await restart();
+
+      expect(callRows()).toEqual([expect.stringContaining('Done')]);
+    });
+  });
+
   it('still has its own row when no call in the discussion started it', async () => {
     notify({ taskId: 'b-elsewhere', status: 'running', description: 'Watch the logs', taskType: 'command', backgrounded: true });
     await settle(20);
