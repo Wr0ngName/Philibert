@@ -2026,6 +2026,7 @@ export const useChatStore = defineStore('chat', () => {
           ...msg.toolUse,
           outputFile: result.outputFile,
           status: newStatus,
+          completedAt: msg.toolUse.completedAt ?? Date.now(),
           // Kept on the message because the message is what gets saved: the
           // task list is rebuilt from these calls on load, and an update
           // refers to its task by this id. See rebuildTaskList.
@@ -2063,6 +2064,10 @@ export const useChatStore = defineStore('chat', () => {
     const msg = sink.find((m) => m.toolUse?.actionId === actionId);
     if (msg?.toolUse) {
       msg.toolUse.status = status;
+      // How long it ran, for Tool Details: from approval, to the first word
+      // that it finished.
+      if (status === 'approved') msg.toolUse.startedAt ??= Date.now();
+      if (status === 'executed' || status === 'failed') msg.toolUse.completedAt ??= Date.now();
       if (status === 'executed') {
         trackModificationsFor(conversationId, msg.toolUse);
       }

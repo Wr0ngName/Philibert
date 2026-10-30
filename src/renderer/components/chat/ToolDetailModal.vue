@@ -18,6 +18,8 @@ import {
 import { toolCallLabel } from '@shared/tool-description';
 import type { MessageImage, ToolUseInfo } from '@shared/types';
 
+import { useNowTicker } from '../../composables/useNowTicker';
+import { formatTaskDuration, toolCallTiming } from '../../utils/task-duration';
 import type { ToolCallOutput } from '../../utils/tool-output';
 import AskUserQuestionDetails from './AskUserQuestionDetails.vue';
 import ToolCallView from './ToolCallView.vue';
@@ -35,12 +37,24 @@ interface Props {
   images?: MessageImage[];
   /** The conversation whose image store holds their bytes. */
   conversationId?: string;
+  /** When Claude made the call: its message's timestamp. */
+  calledAt?: number;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   images: undefined,
   conversationId: undefined,
+  calledAt: undefined,
 });
+
+const timing = computed(() =>
+  props.toolUse && props.calledAt !== undefined ? toolCallTiming(props.toolUse, props.calledAt) : null,
+);
+
+/** Ticks only while this is open on a call still running, as the task view does. */
+const now = useNowTicker(() => props.open && timing.value?.completedAt === undefined && !!timing.value);
+
+const duration = computed(() => (timing.value ? formatTaskDuration(timing.value, now.value) : null));
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -165,6 +179,7 @@ const output = computed((): ToolCallOutput | null => {
           </p>
           <div class="flex items-center gap-3 mt-1 text-xs text-surface-500 dark:text-surface-400">
             <span :class="statusDisplay.colorClass">{{ statusDisplay.label }}</span>
+            <span v-if="duration">Duration: {{ duration }}</span>
           </div>
         </div>
       </div>

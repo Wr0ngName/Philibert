@@ -42,9 +42,9 @@ function toolUse(overrides: Partial<ToolUseInfo>): ToolUseInfo {
   };
 }
 
-async function mountModal(info: ToolUseInfo) {
+async function mountModal(info: ToolUseInfo, calledAt?: number) {
   const wrapper = mount(ToolDetailModal, {
-    props: { open: true, toolUse: info },
+    props: { open: true, toolUse: info, calledAt },
     global: {
       stubs: {
         Modal: { template: '<div><slot /></div>' },
@@ -56,6 +56,44 @@ async function mountModal(info: ToolUseInfo) {
   await flushPromises();
   return wrapper;
 }
+
+describe('ToolDetailModal duration', () => {
+  const CALLED = 1_700_000_000_000;
+
+  it("shows how long a finished call took, as an agent's view does", async () => {
+    const wrapper = await mountModal(
+      toolUse({ toolName: 'Bash', input: { command: 'npm test' }, completedAt: CALLED + 72_000 }),
+      CALLED,
+    );
+
+    expect(wrapper.text()).toContain('Duration: 1m 12s');
+  });
+
+  it('counts up while the call runs', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CALLED + 5_000);
+    try {
+      const wrapper = await mountModal(
+        toolUse({ toolName: 'Bash', input: { command: 'npm test' }, status: 'approved', outputFile: undefined }),
+        CALLED,
+      );
+      expect(wrapper.text()).toContain('Duration: 5s');
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(wrapper.text()).toContain('Duration: 8s');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows none for a call that never ran, or one saved without its end', async () => {
+    const rejected = await mountModal(toolUse({ status: 'rejected' }), CALLED);
+    const unrecorded = await mountModal(toolUse({ status: 'executed' }), CALLED);
+
+    expect(rejected.text()).not.toContain('Duration');
+    expect(unrecorded.text()).not.toContain('Duration');
+  });
+});
 
 describe('ToolDetailModal', () => {
   beforeEach(() => {

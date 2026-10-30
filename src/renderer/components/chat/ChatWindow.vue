@@ -447,6 +447,7 @@ function closeToolDetail() {
       :open="toolDetailOpen"
       :tool-use="toolDetailMessage?.toolUse ?? null"
       :images="toolDetailMessage?.images"
+      :called-at="toolDetailMessage?.timestamp"
       :conversation-id="conversationsStore.currentConversationId ?? undefined"
       @close="closeToolDetail"
     />

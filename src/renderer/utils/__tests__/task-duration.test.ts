@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { formatTaskDuration, taskElapsedMs } from '../task-duration';
+import { formatTaskDuration, taskElapsedMs, toolCallTiming } from '../task-duration';
 
 const START = 1_700_000_000_000;
 
@@ -50,5 +50,30 @@ describe('formatTaskDuration', () => {
     // A task created from a notification carries the sender's clock.
     expect(formatTaskDuration({ startedAt: START + 500 }, START)).toBe('0s');
     expect(taskElapsedMs({ startedAt: START + 500 }, START)).toBe(0);
+  });
+});
+
+describe('toolCallTiming', () => {
+  it('runs from when Claude made the call, for one that needed no approval', () => {
+    expect(toolCallTiming({ status: 'approved' }, START)).toEqual({ startedAt: START });
+  });
+
+  it('runs from the approval, not the wait for it', () => {
+    expect(toolCallTiming({ status: 'approved', startedAt: START + 30_000 }, START))
+      .toEqual({ startedAt: START + 30_000 });
+  });
+
+  it('ends where the call finished, failed or not', () => {
+    expect(toolCallTiming({ status: 'executed', completedAt: START + 12_000 }, START))
+      .toEqual({ startedAt: START, completedAt: START + 12_000 });
+    expect(toolCallTiming({ status: 'failed', completedAt: START + 3_000 }, START))
+      .toEqual({ startedAt: START, completedAt: START + 3_000 });
+  });
+
+  it('has none for a call that never ran, or whose end was never recorded', () => {
+    expect(toolCallTiming({ status: 'pending' }, START)).toBeNull();
+    expect(toolCallTiming({ status: 'rejected' }, START)).toBeNull();
+    // Saved before ends were recorded: measured to now it would read as days.
+    expect(toolCallTiming({ status: 'executed' }, START)).toBeNull();
   });
 });

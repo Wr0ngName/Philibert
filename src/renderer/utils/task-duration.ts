@@ -1,5 +1,7 @@
+import type { ToolUseInfo } from '@shared/types';
+
 /**
- * How long a background task has been running, as text.
+ * How long a background task — or a tool call — has been running, as text.
  *
  * `now` is passed in rather than read here, because a duration that reads the
  * clock itself cannot be reactive: `Date.now()` inside a Vue computed is not a
@@ -12,6 +14,28 @@ export interface TaskTiming {
   startedAt: number;
   /** Set once the task is no longer running. */
   completedAt?: number;
+}
+
+/**
+ * A tool call's timing, or null when it has no duration worth showing: still
+ * waiting for approval, rejected so it never ran, or finished without a
+ * recorded end (saved before ends were recorded) — measured up to now, that
+ * last would read as having run for days.
+ *
+ * `calledAt` is the call's message timestamp: when Claude made the call.
+ */
+export function toolCallTiming(
+  toolUse: Pick<ToolUseInfo, 'status' | 'startedAt' | 'completedAt'>,
+  calledAt: number,
+): TaskTiming | null {
+  const startedAt = toolUse.startedAt ?? calledAt;
+  switch (toolUse.status) {
+    case 'approved': return { startedAt };
+    case 'executed':
+    case 'failed':
+      return toolUse.completedAt === undefined ? null : { startedAt, completedAt: toolUse.completedAt };
+    default: return null;
+  }
 }
 
 /** Elapsed milliseconds, up to completion or up to `now`. */

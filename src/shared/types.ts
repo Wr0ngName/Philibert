@@ -133,6 +133,18 @@ export interface ToolUseInfo {
    * call finishes as soon as the task is launched.
    */
   task?: BackgroundTaskInfo;
+  /**
+   * When the user approved the call, for one that waited on approval: it ran
+   * from then, not from when Claude made it. A call that needed no approval
+   * started when its message was made (the message's timestamp).
+   */
+  startedAt?: number;
+  /**
+   * When the call finished: reported executed or failed, or its result came
+   * back, whichever first. Absent while it runs, on one that never ran, and
+   * on calls saved before this was recorded.
+   */
+  completedAt?: number;
 }
 
 /** Data emitted for every tool_use block in assistant messages */
