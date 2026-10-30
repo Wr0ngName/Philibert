@@ -35,16 +35,18 @@ variables:
     - docker run --rm -v "$CI_PROJECT_DIR:/app" alpine chown -R $(id -u):$(id -g) /app || true
     # Now clean up old files (git clean was disabled via GIT_CLEAN_FLAGS)
     - git clean -ffdx || true
-    # Reclaim containers left behind by previous (possibly OOM-killed) jobs.
-    # Containers only — images are kept so they don't get re-pulled.
-    - docker container prune -f || true
+    # No docker-wide cleanup here (prune, rm, kill): the runner is shared with
+    # other projects, and a global prune deletes their stopped containers too.
+    # Every container this pipeline starts is `docker run --rm`, so the daemon
+    # removes it when it exits, OOM-killed or not — there is nothing of ours
+    # left to reclaim.
     # Show available disk space and memory for diagnostics
     - df -h "$CI_PROJECT_DIR" || true
     - free -h || true
     # Jobs are being OOM-killed with 0.5-1.6Gi available while the runner
-    # already reports 3.5-4.6Gi used before any job starts, and container
-    # prune reclaims 0B — so the memory belongs to something other than this
-    # pipeline. Name it rather than keep guessing at mitigations.
+    # already reports 3.5-4.6Gi used before any job starts, with no container
+    # of this pipeline left running — so the memory belongs to something other
+    # than this pipeline. Name it rather than keep guessing at mitigations.
     - echo "=== top RSS consumers on runner ==="
     - ps -eo rss,pid,etimes,comm --sort=-rss 2>/dev/null | head -15 | awk 'NR==1{print} NR>1{printf "%8.0f MB  pid=%-8s age=%-8ss  %s\n", $1/1024, $2, $3, $4}' || true
     - echo "=== docker resource usage ==="
