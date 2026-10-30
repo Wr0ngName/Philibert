@@ -242,6 +242,33 @@ describe('turn spinner — real render path', () => {
     expect(wrapper.find(SPINNER).exists()).toBe(false);
   });
 
+  /**
+   * The other side of the case above: when a background task finishes, the
+   * CLI starts a turn of its own to answer it, and main says so. That turn
+   * streams and runs tools like any other, and showed no activity at all.
+   */
+  it('shows the spinner for the turn the CLI starts by itself, until it ends', async () => {
+    const wrapper = mountHost();
+
+    chat.addMessage({ id: 'u1', role: 'user', content: 'build in the background', timestamp: Date.now() });
+    chat.startAssistantMessage(CONV);
+    chat.setLoading(CONV, true);
+    chat.appendChunk(CONV, 'started');
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+    await settle();
+    expect(wrapper.find(SPINNER).exists()).toBe(false);
+
+    emitIpc(IPC_CHANNELS.CLAUDE_TURN_STARTED, CONV);
+    emitIpc(IPC_CHANNELS.CLAUDE_CHUNK, CONV, 'the build finished, checking the output');
+    await settle();
+    expect(wrapper.find(SPINNER).exists()).toBe(true);
+
+    emitIpc(IPC_CHANNELS.CLAUDE_DONE, CONV);
+    await settle();
+    expect(wrapper.find(SPINNER).exists()).toBe(false);
+    expect(chat.messages.filter((m) => m.isStreaming)).toEqual([]);
+  });
+
   /** Aborting must clear it as well. */
   it('clears the spinner after an abort', async () => {
     const wrapper = mountHost();

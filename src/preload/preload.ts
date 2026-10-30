@@ -98,6 +98,13 @@ const electronAPI: ElectronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_DONE, handler);
     },
 
+    onTurnStarted: (callback) => {
+      const handler = (_event: Electron.IpcRendererEvent, conversationId: string) =>
+        callback(conversationId);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_TURN_STARTED, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TURN_STARTED, handler);
+    },
+
     onSlashCommands: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

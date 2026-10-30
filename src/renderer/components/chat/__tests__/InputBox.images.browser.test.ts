@@ -54,17 +54,19 @@ function installIpc(options: { refuse?: boolean } = {}) {
       },
       readImage: async () => null,
     },
-    // Every listener useClaudeChat registers on mount. Missing one throws
-    // during setup and the composer never renders at all.
-    claude: {
-      getSlashCommands: async () => [],
-      ...Object.fromEntries([
-        'onActiveModel', 'onActiveQueriesChange', 'onBackgroundTasksChanged', 'onChunk',
-        'onDone', 'onError', 'onSessionId', 'onSessionPermissionsChanged', 'onSlashCommands',
-        'onSubagentActivity', 'onSystemNote', 'onTaskNotification', 'onToolCapture',
-        'onToolExecuted', 'onToolResult', 'onToolUse', 'onUsageUpdate', 'onUserTurnUuid',
-      ].map((name) => [name, () => () => {}])),
-    },
+    // useClaudeChat subscribes to every claude:* event on mount, and one it
+    // cannot subscribe to throws during setup, so the composer never renders.
+    // A listed set of listeners fell behind the API and broke this file, so
+    // any `on…` answers with a subscription that does nothing.
+    claude: new Proxy({
+      getCommands: async () => [],
+      getActiveQueries: async () => ({ count: 0, maxCount: 1, processingCount: 0, activeConversationIds: [] }),
+    } as Record<string | symbol, unknown>, {
+      get: (target, name) =>
+        name in target || typeof name !== 'string' || !name.startsWith('on')
+          ? target[name]
+          : () => () => {},
+    }),
     config: { get: async () => ({}), set: async () => undefined, onChange: () => () => {} },
     auth: { onInvalidated: () => () => {} },
     // Dictation is not what this file is about, but the composer sets it up

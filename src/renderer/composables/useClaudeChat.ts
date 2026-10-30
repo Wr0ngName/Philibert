@@ -47,6 +47,7 @@ let cleanupChunk: (() => void) | null = null;
 let cleanupToolUse: (() => void) | null = null;
 let cleanupError: (() => void) | null = null;
 let cleanupDone: (() => void) | null = null;
+let cleanupTurnStarted: (() => void) | null = null;
 let cleanupSlashCommands: (() => void) | null = null;
 let cleanupActiveModel: (() => void) | null = null;
 let cleanupSubagentActivity: (() => void) | null = null;
@@ -741,6 +742,15 @@ export function useClaudeChat() {
       chatStore.holdQueuedPrompts(conversationId);
     });
 
+    // A turn nobody sent: the CLI answering a background task that finished.
+    // It is a turn like any other — busy until its CLAUDE_DONE, and collected
+    // so it is written whole even if the user switches away while it runs.
+    cleanupTurnStarted = window.electron.claude.onTurnStarted((conversationId) => {
+      logger.info('[turn] started by the CLI', { conversationId });
+      chatStore.setLoading(conversationId, true);
+      chatStore.beginMessageBuffer(conversationId);
+    });
+
     // Handle completion - route to correct conversation
     cleanupDone = window.electron.claude.onDone(async (conversationId) => {
       // Turn-lifecycle diagnostics: the spinner is driven by isLoading and by
@@ -1004,6 +1014,10 @@ export function useClaudeChat() {
     if (cleanupDone) {
       cleanupDone();
       cleanupDone = null;
+    }
+    if (cleanupTurnStarted) {
+      cleanupTurnStarted();
+      cleanupTurnStarted = null;
     }
     if (cleanupSlashCommands) {
       cleanupSlashCommands();

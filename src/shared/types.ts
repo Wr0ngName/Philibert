@@ -1769,6 +1769,8 @@ export const IPC_CHANNELS = {
   CLAUDE_ERROR: 'claude:error',
   /** Claude finished processing */
   CLAUDE_DONE: 'claude:done',
+  /** The CLI started a turn nobody sent, its answer to a background task finishing */
+  CLAUDE_TURN_STARTED: 'claude:turn-started',
   /** Abort current Claude request */
   CLAUDE_ABORT: 'claude:abort',
   /** Stop one running background task */

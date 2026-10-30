@@ -133,6 +133,8 @@ export interface ElectronAPI {
     onError: (callback: (conversationId: string, error: string) => void) => () => void;
     /** Request completed for a conversation */
     onDone: (callback: (conversationId: string) => void) => () => void;
+    /** The CLI started a turn nobody sent, its answer to a background task finishing */
+    onTurnStarted: (callback: (conversationId: string) => void) => () => void;
     /** Slash commands updated for a conversation */
     onSlashCommands: (callback: (conversationId: string, commands: SlashCommandInfo[]) => void) => () => void;
     /**

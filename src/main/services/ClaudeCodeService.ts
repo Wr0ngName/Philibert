@@ -190,6 +190,13 @@ interface SessionInstance {
    * resultEndsOurTurn.
    */
   pendingTurnUuid: string | null;
+  /**
+   * Whether the turn running now is one the CLI started on its own — its
+   * answer to a background task finishing — rather than one the user sent.
+   * Such a turn is ended by its own result, which carries no uuid of ours.
+   * See beginUnpromptedTurn.
+   */
+  unpromptedTurn: boolean;
   /** The model the user selected when this session was started ('' = CLI default). */
   requestedModel: string;
   /**
@@ -837,6 +844,9 @@ export class ClaudeCodeService {
       onSubagentActivity: (activity: SubagentActivity) => {
         this.send(IPC_CHANNELS.CLAUDE_SUBAGENT_ACTIVITY, conversationId, activity);
       },
+      onSessionRunning: () => {
+        this.beginUnpromptedTurn(conversationId);
+      },
       onSessionIdle: () => {
         this.endStrandedTurn(conversationId, 'session reported idle');
       },
@@ -928,6 +938,11 @@ export class ClaudeCodeService {
         ...(await this.authValidator.setupAuthEnv()),
         ...(await this.buildModelEnforcementEnv(selectedModel)),
         CLAUDE_CODE_TMPDIR: tempRoot,
+        // Has the CLI report each turn starting and ending
+        // (session_state_changed). Without it nothing marks the start of a
+        // turn the CLI begins by itself when a background task finishes, and
+        // that turn ran with no activity indicator at all.
+        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
       };
 
       // CRITICAL: Set auth env vars in actual process.env BEFORE calling query()
@@ -1029,6 +1044,7 @@ export class ClaudeCodeService {
         sessionModel: shouldResume ? '' : selectedModel,
         isResumeAttempt: shouldResume,
         pendingTurnUuid: firstTurnUuid,
+        unpromptedTurn: false,
         requestedModel: selectedModel,
         announcedModels: new Set<string>(),
         // Recorded now, because `authEnv` above was read now. See
@@ -1192,14 +1208,27 @@ export class ClaudeCodeService {
           // CLAUDE_DONE, so when it sticks the question is always "was a
           // result seen, what origin did it carry, and what did we decide".
           // One line answers all three.
+          // A turn the CLI started by itself ends on its own result — unless
+          // the user has sent something since, whose turn the conversation
+          // stays busy for.
+          const endsUnpromptedTurn = !endsUserTurn && !!session?.unpromptedTurn && !session.pendingTurnUuid;
           logger.info('[turn] result', {
             conversationId,
             subtype: resultSubtype,
             origin: (sdkMessage as { origin?: { kind?: string } }).origin?.kind ?? '(absent)',
             endsUserTurn,
+            unpromptedTurn: session?.unpromptedTurn ?? false,
             stillProcessing: this.processingSessions.has(conversationId),
-            decision: endsUserTurn ? 'emit done' : 'ignore (background)',
+            decision: endsUserTurn
+              ? 'emit done'
+              : endsUnpromptedTurn ? 'end unprompted turn' : 'ignore (background)',
           });
+
+          if (session && !endsUserTurn && session.unpromptedTurn) {
+            session.unpromptedTurn = false;
+            if (endsUnpromptedTurn) this.endUnpromptedTurn(conversationId);
+            continue;
+          }
 
           if (!endsUserTurn) {
             // Background-agent activity completing. The main conversation may
@@ -1211,7 +1240,10 @@ export class ClaudeCodeService {
 
           // The turn this uuid identified is over. Cleared so a later result
           // cannot match it, which would end a turn that has not started.
-          if (session) session.pendingTurnUuid = null;
+          if (session) {
+            session.pendingTurnUuid = null;
+            session.unpromptedTurn = false;
+          }
 
           // Sent before done, so the renderer knows the turn is waiting on a
           // usage limit by the time it decides what to do with the queue.
@@ -1933,6 +1965,8 @@ export class ClaudeCodeService {
    * did not complete in the ordinary sense.
    */
   private endStrandedTurn(conversationId: string, reason: string): void {
+    const session = this.activeSessions.get(conversationId);
+    if (session) session.unpromptedTurn = false;
     if (!this.processingSessions.has(conversationId)) {
       logger.info('[turn] backstop no-op', { conversationId, reason, stillProcessing: false });
       return;
@@ -1941,6 +1975,39 @@ export class ClaudeCodeService {
       conversationId,
       reason,
     });
+    this.processingSessions.delete(conversationId);
+    this.emitActiveQueryCount();
+    this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);
+  }
+
+  /**
+   * The CLI started a turn. When nobody sent anything, it is the CLI's own
+   * answer to a background task finishing: it streams text and runs tools
+   * like any turn, so the conversation is busy for it too — counted as
+   * running, with the renderer told a turn has begun so it shows activity and
+   * collects the turn as it would one the user sent.
+   *
+   * A turn the user sent is already marked busy when sent, which is what
+   * leaves this a no-op for it.
+   */
+  private beginUnpromptedTurn(conversationId: string): void {
+    const session = this.activeSessions.get(conversationId);
+    if (!session || this.processingSessions.has(conversationId)) return;
+    logger.info('[turn] started by the CLI', { conversationId });
+    session.unpromptedTurn = true;
+    this.processingSessions.add(conversationId);
+    // Before the running set, which the renderer also marks busy from: the
+    // turn-start handler is what records where the turn begins.
+    this.send(IPC_CHANNELS.CLAUDE_TURN_STARTED, conversationId);
+    this.emitActiveQueryCount();
+  }
+
+  /**
+   * End a turn the CLI started by itself. Quiet: the "Query Complete"
+   * notification is for answers to what the user asked.
+   */
+  private endUnpromptedTurn(conversationId: string): void {
+    logger.info('[turn] done', { conversationId, unprompted: true });
     this.processingSessions.delete(conversationId);
     this.emitActiveQueryCount();
     this.send(IPC_CHANNELS.CLAUDE_DONE, conversationId);

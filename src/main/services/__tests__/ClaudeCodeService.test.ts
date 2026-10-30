@@ -474,6 +474,88 @@ describe('ClaudeCodeService', () => {
         });
       });
 
+      it('asks the CLI to report turns starting and ending', async () => {
+        mockQuery.mockReturnValue(createMockQueryIterator([]));
+
+        await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+        expect(mockQuery.mock.calls[0][0].options.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS).toBe('1');
+      });
+
+      // Measured against the real CLI (2.1.280): a background command
+      // finishing after the turn ended starts a turn of the CLI's own —
+      // running, its output, a task-notification result, idle. It streamed
+      // and ran tools with the conversation shown as not busy.
+      it('marks the conversation busy for the turn the CLI starts by itself, and ends it on its result', async () => {
+        const sends = () => mockSend.mock.calls.map((call) => call[0]);
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          { type: 'system', subtype: 'session_state_changed', state: 'running' },
+          { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 },
+          { type: 'system', subtype: 'session_state_changed', state: 'idle' },
+          { type: 'system', subtype: 'session_state_changed', state: 'running' },
+          { type: 'result', subtype: 'success', origin: { kind: 'task-notification' }, num_turns: 1, duration_ms: 10 },
+          { type: 'system', subtype: 'session_state_changed', state: 'idle' },
+        ]));
+
+        await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+        await vi.waitFor(() => {
+          expect(sends().filter((c) => c === IPC_CHANNELS.CLAUDE_DONE)).toHaveLength(2);
+        });
+        // Only the turn the user sent says so: its own running is no new turn.
+        expect(sends().filter((c) => c === IPC_CHANNELS.CLAUDE_TURN_STARTED)).toHaveLength(1);
+        const started = sends().indexOf(IPC_CHANNELS.CLAUDE_TURN_STARTED);
+        const firstDone = sends().indexOf(IPC_CHANNELS.CLAUDE_DONE);
+        const lastDone = sends().lastIndexOf(IPC_CHANNELS.CLAUDE_DONE);
+        expect(firstDone).toBeLessThan(started);
+        expect(started).toBeLessThan(lastDone);
+        // Counted as running in between, which is what the renderer's busy
+        // state is reconciled against.
+        const runningSets = mockSend.mock.calls
+          .slice(started, lastDone)
+          .filter((call) => call[0] === IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES)
+          .map((call) => call[4]);
+        expect(runningSets).toContainEqual([TEST_CONV_ID]);
+        expect(service.getProcessingQueryCount()).toBe(0);
+        // "Query Complete" stays for answers to what the user asked.
+        expect(mockNotificationService.showQueryComplete).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps the conversation busy when the user sent something during the turn the CLI started', async () => {
+        const gates: (() => void)[] = [];
+        const gate = () => new Promise<void>((resolve) => { gates.push(resolve); });
+        mockQuery.mockReturnValue({
+          ...createMockQueryIterator([]),
+          [Symbol.asyncIterator]: async function* () {
+            yield { type: 'system', subtype: 'init', slash_commands: [], model: 'claude-3', session_id: 'sess-unprompted' };
+            yield { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 };
+            yield { type: 'system', subtype: 'session_state_changed', state: 'running' };
+            await gate();
+            yield { type: 'result', subtype: 'success', origin: { kind: 'task-notification' }, num_turns: 1, duration_ms: 10 };
+            await gate();
+            yield { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 };
+            await gate();
+          },
+        });
+        const doneCount = () => mockSend.mock.calls.filter((call) => call[0] === IPC_CHANNELS.CLAUDE_DONE).length;
+
+        await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+        await vi.waitFor(() => expect(gates).toHaveLength(1));
+        expect(doneCount()).toBe(1);
+
+        await service.sendMessage(TEST_CONV_ID, 'Second', '/home/user');
+        gates[0]();
+        await vi.waitFor(() => expect(gates).toHaveLength(2));
+        expect(doneCount()).toBe(1);
+        expect(service.getProcessingQueryCount()).toBe(1);
+
+        gates[1]();
+        await vi.waitFor(() => expect(gates).toHaveLength(3));
+        expect(doneCount()).toBe(2);
+        expect(service.getProcessingQueryCount()).toBe(0);
+        gates[2]();
+      });
+
       // And the worst case: a background-origin result with no idle message at
       // all. The stream simply ends. Something must still end the turn.
       it('emits done when the stream ends without any turn-ending result', async () => {

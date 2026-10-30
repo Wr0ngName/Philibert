@@ -1427,6 +1427,23 @@ describe('SDKMessageHandler', () => {
 
       expect(callbacks.onTaskNotification).not.toHaveBeenCalled();
     });
+
+    it('reports a turn starting and the session going idle, each to its own callback', async () => {
+      callbacks.onSessionRunning = vi.fn();
+      callbacks.onSessionIdle = vi.fn();
+      const state = (s: string) => handler.handleMessage({
+        type: 'system', subtype: 'session_state_changed', state: s, uuid: 'uuid-123', session_id: 'sess-123',
+      } as never);
+
+      await state('running');
+      expect(callbacks.onSessionRunning).toHaveBeenCalledTimes(1);
+      expect(callbacks.onSessionIdle).not.toHaveBeenCalled();
+
+      await state('requires_action');
+      await state('idle');
+      expect(callbacks.onSessionRunning).toHaveBeenCalledTimes(1);
+      expect(callbacks.onSessionIdle).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('resolveResultError', () => {

@@ -134,9 +134,11 @@ export function isHumanOriginatedResult(message: { origin?: { kind?: string } })
  * the fallback for a CLI that echoes no uuid at all, which is the only case
  * where there is nothing better to go on.
  *
- * Note this cannot be fixed by a backstop either: `session_state_changed`,
- * which the code below treats as the authoritative turn-over signal, was never
- * emitted once in 111 seconds of real session across both probes.
+ * `session_state_changed`, which the code below treats as the authoritative
+ * turn-over signal, is only emitted when the CLI runs with
+ * CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS set — it was never seen in either
+ * probe, which ran without it. The app sets it now, and the result stays what
+ * ends a turn: 'idle' only clears one whose result never came.
  */
 export function resultEndsOurTurn(
   message: {
@@ -224,6 +226,11 @@ export interface MessageHandlerCallbacks {
    * spinner can never outlive the work it represents.
    */
   onSessionIdle?: () => void;
+  /**
+   * The CLI reports a turn starting — one the user sent, or one it began by
+   * itself because a background task finished.
+   */
+  onSessionRunning?: () => void;
   /**
    * Model and token spend for one frame produced by a sub-agent, attributed to
    * the tool_use that spawned it. Emitted per frame; the consumer accumulates.
@@ -1338,6 +1345,8 @@ export class SDKMessageHandler {
       logger.info('[turn] session state', { state: systemMsg.state });
       if (systemMsg.state === 'idle') {
         this.callbacks.onSessionIdle?.();
+      } else if (systemMsg.state === 'running') {
+        this.callbacks.onSessionRunning?.();
       }
     }
 
