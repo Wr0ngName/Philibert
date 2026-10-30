@@ -82,6 +82,20 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
     }
   });
 
+  // Send a message into the running turn. Resolves to its uuid, or null when
+  // no turn is running for it to join.
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_SEND_DURING_TURN, async (_event, conversationId: string, message: string, images?: MessageImage[]) => {
+    try {
+      ensureService(claudeService, 'ClaudeCodeService');
+      validateString(conversationId, 'Conversation ID');
+      validateString(message, 'Message', { allowEmpty: (images?.length ?? 0) > 0 });
+      return await claudeService.sendDuringTurn(conversationId, message, validImages(images));
+    } catch (error) {
+      logger.error('Failed to send a message into the running turn', { error, conversationId, messageLength: message?.length });
+      throw new IpcError(formatErrorMessage('Failed to send message', error), IPC_CHANNELS.CLAUDE_SEND_DURING_TURN, ERROR_CODES.CLAUDE_SEND_FAILED, error);
+    }
+  });
+
   // Approve a pending action with optional parameters
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_APPROVE,

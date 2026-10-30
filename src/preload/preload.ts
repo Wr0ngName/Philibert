@@ -5,7 +5,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type { ElectronAPI } from '../shared/preload-api';
-import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type MessageImage, type ProjectPermissionEntry, type RendererLogEntry, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData, type UsageLimitStop, type UsageWarning } from '../shared/types';
+import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type MessageImage, type ProjectPermissionEntry, type PromptDeliveryState, type RendererLogEntry, type SessionPermissionEntry, type ToolCaptureData, type ToolResultData, type UsageLimitStop, type UsageWarning } from '../shared/types';
 
 // Create the API object that will be exposed to the renderer
 const electronAPI: ElectronAPI = {
@@ -21,6 +21,20 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke(
         IPC_CHANNELS.CLAUDE_SEND, conversationId, message, workingDir, resumeSessionId, images,
       ),
+
+    sendDuringTurn: (conversationId: string, message: string, images?: MessageImage[]) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND_DURING_TURN, conversationId, message, images),
+
+    onPromptDelivery: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        conversationId: string,
+        uuid: string,
+        state: PromptDeliveryState,
+      ) => callback(conversationId, uuid, state);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY, handler);
+    },
 
     approve: (
       conversationId: string,

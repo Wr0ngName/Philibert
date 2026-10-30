@@ -12,12 +12,32 @@
  * owns the IPC listeners is not reachable from a test.
  */
 
+import type { MessageImage } from '@shared/types';
+
 /** A prompt waiting for the current turn to finish. */
 export interface QueuedPrompt {
   /** Stable id, so the UI can list and remove individual entries. */
   id: string;
   content: string;
   queuedAt: number;
+  /**
+   * Images, only on a prompt that was sent into a turn and came back unread
+   * (see DeliveringPrompt). The composer never queues them itself.
+   */
+  images?: MessageImage[];
+}
+
+/**
+ * A prompt sent into the turn that is running, which Claude has not read yet:
+ * it does at the turn's next step, and only then does the prompt join the
+ * discussion, so it sits where Claude actually took it.
+ */
+export interface DeliveringPrompt {
+  /** The uuid the session filed it under; what its delivery is reported by. */
+  uuid: string;
+  content: string;
+  images?: MessageImage[];
+  sentAt: number;
 }
 
 /** What the caller knows at the moment a turn ends. */

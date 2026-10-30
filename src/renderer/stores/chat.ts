@@ -12,7 +12,7 @@ import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTa
 
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
-import type { QueuedPrompt } from '../utils/prompt-queue';
+import type { DeliveringPrompt, QueuedPrompt } from '../utils/prompt-queue';
 import { dueWaits, type UsageLimitWait } from '../utils/usage-limit';
 
 /**
@@ -54,6 +54,11 @@ export interface ConversationState {
    * (the turn it was waiting on is long over).
    */
   queuedPrompts: QueuedPrompt[];
+  /**
+   * Prompts sent into the running turn that Claude has not read yet, oldest
+   * first. Like the queue, not part of the transcript until they are read.
+   */
+  deliveringPrompts: DeliveringPrompt[];
   /**
    * The queue is waiting for the user, not for a turn.
    *
@@ -276,6 +281,7 @@ function createConversationState(): ConversationState {
     turnAfter: null,
     pendingActions: [],
     queuedPrompts: [],
+    deliveringPrompts: [],
     queueHeld: false,
     usageLimitWait: null,
     backgroundTasks: new Map(),
@@ -418,6 +424,9 @@ export const useChatStore = defineStore('chat', () => {
     const state = getCurrentState();
     return state?.queuedPrompts ?? [];
   });
+
+  // Current conversation's prompts sent into the running turn and not read yet.
+  const deliveringPrompts = computed((): DeliveringPrompt[] => getCurrentState()?.deliveringPrompts ?? []);
 
   /** Whether the current conversation's queue is waiting on the user. */
   const queueHeld = computed(() => getCurrentState()?.queueHeld ?? false);
@@ -2726,14 +2735,15 @@ export const useChatStore = defineStore('chat', () => {
    * cannot acquire an entry that `sendMessage` would later refuse to send and
    * which the user would then have to clear by hand.
    */
-  function queuePrompt(conversationId: string, content: string): QueuedPrompt | null {
+  function queuePrompt(conversationId: string, content: string, images?: MessageImage[]): QueuedPrompt | null {
     const trimmed = content.trim();
-    if (!trimmed) return null;
+    if (!trimmed && (!images || images.length === 0)) return null;
 
     const prompt: QueuedPrompt = {
       id: generateId(ID_PREFIXES.QUEUED_PROMPT),
       content: trimmed,
       queuedAt: Date.now(),
+      ...(images && images.length > 0 ? { images } : {}),
     };
     getConversationState(conversationId).queuedPrompts.push(prompt);
     return prompt;
@@ -2768,6 +2778,46 @@ export const useChatStore = defineStore('chat', () => {
   /** Put a prompt back at the front, after a send failed to start a turn. */
   function restoreQueuedPrompt(conversationId: string, prompt: QueuedPrompt): void {
     getConversationState(conversationId).queuedPrompts.unshift(prompt);
+  }
+
+  /** Note a prompt sent into the running turn, until Claude reads it. */
+  function addDeliveringPrompt(conversationId: string, prompt: DeliveringPrompt): void {
+    getConversationState(conversationId).deliveringPrompts.push(prompt);
+  }
+
+  function takeDeliveringPrompt(conversationId: string, uuid: string): DeliveringPrompt | null {
+    const state = conversationStates.value.get(conversationId);
+    const index = state?.deliveringPrompts.findIndex((p) => p.uuid === uuid) ?? -1;
+    return index === -1 ? null : state!.deliveringPrompts.splice(index, 1)[0];
+  }
+
+  /**
+   * Claude read a prompt sent into its turn: it joins the discussion here,
+   * after what Claude wrote before reading it and before its answer — the
+   * text streaming now is closed off, so what follows starts below it, as
+   * it does around a tool call.
+   */
+  function deliverPrompt(conversationId: string, uuid: string): ChatMessage | null {
+    const prompt = takeDeliveringPrompt(conversationId, uuid);
+    if (!prompt) return null;
+    splitStreamingForTool(conversationId);
+    return addUserMessage(prompt.content, prompt.images, conversationId);
+  }
+
+  /**
+   * A prompt sent into the turn that Claude will never read — the session
+   * ended first. Back at the front of the queue, so what the user wrote is
+   * not lost and goes out with the next turn.
+   */
+  function returnUndeliveredPrompt(conversationId: string, uuid: string): void {
+    const prompt = takeDeliveringPrompt(conversationId, uuid);
+    if (!prompt) return;
+    restoreQueuedPrompt(conversationId, {
+      id: generateId(ID_PREFIXES.QUEUED_PROMPT),
+      content: prompt.content,
+      queuedAt: prompt.sentAt,
+      ...(prompt.images && prompt.images.length > 0 ? { images: prompt.images } : {}),
+    });
   }
 
   /** Stop releasing queued prompts by themselves until the user says so. */
@@ -3003,6 +3053,11 @@ export const useChatStore = defineStore('chat', () => {
     releaseQueueHold,
     isQueueHeld,
     queueHeld,
+    // ...and sent into it, until Claude reads them
+    deliveringPrompts,
+    addDeliveringPrompt,
+    deliverPrompt,
+    returnUndeliveredPrompt,
 
     // Usage limits: getting close, and waiting one out
     usageWarning,

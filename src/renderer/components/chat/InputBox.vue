@@ -23,8 +23,10 @@ import CommandAutocomplete from './CommandAutocomplete.vue';
 
 const emit = defineEmits<{
   (e: 'send', message: string, images?: MessageImage[]): void;
+  /** Send this prompt into the running turn, for Claude to read at its next step. */
+  (e: 'send-now', message: string, images?: MessageImage[]): void;
   /** Hold this prompt until the running turn finishes. */
-  (e: 'queue', message: string): void;
+  (e: 'queue', message: string, images?: MessageImage[]): void;
   /** Send what is queued now, without waiting for a turn to end. */
   (e: 'release-queue'): void;
   /** Forget one queued prompt. */
@@ -46,6 +48,7 @@ const {
   isLoading,
   hasMessages,
   queuedPrompts,
+  deliveringPrompts,
   queueHeld,
   hasRunningBackgroundTasks,
   runningBackgroundTasksList,
@@ -155,8 +158,6 @@ const canSubmit = computed(() => {
     && !currentModeMismatch.value;
 });
 
-/** A submission now would be held rather than sent. */
-const willQueue = computed(() => isLoading.value);
 
 const hasQueuedPrompts = computed(() => queuedPrompts.value.length > 0);
 
@@ -310,20 +311,21 @@ function handleFilePick(event: Event): void {
   input.value = '';
 }
 
-function handleSubmit(): void {
+/**
+ * Submit the prompt. With no turn running it is sent. During one the user
+ * chooses, as with Stop: `send` puts it into the running turn, which Claude
+ * reads at its next step; `queue` holds it for after the turn. Attachments go
+ * either way — they are references to images already stored.
+ */
+function handleSubmit(during: 'send' | 'queue' = 'send'): void {
   if (!canSubmit.value) return;
 
   const prompt = message.value.trim();
-  if (willQueue.value) {
-    // A queued prompt is text only: it is held in memory until the running
-    // turn ends, and attachments are already stored against the
-    // conversation, so carrying them through the queue would mean two owners
-    // for the same bytes. Held back and sent with the next real submit.
-    emit('queue', prompt);
-  } else {
-    emit('send', prompt, attachments.value.length > 0 ? [...attachments.value] : undefined);
-    attachments.value = [];
-  }
+  const images = attachments.value.length > 0 ? [...attachments.value] : undefined;
+  if (!isLoading.value) emit('send', prompt, images);
+  else if (during === 'send') emit('send-now', prompt, images);
+  else emit('queue', prompt, images);
+  attachments.value = [];
   message.value = '';
   // Reset textarea height
   if (inputRef.value) {
@@ -340,7 +342,7 @@ function handleKeydown(event: KeyboardEvent): void {
 
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
-    handleSubmit();
+    handleSubmit(event.ctrlKey || event.metaKey ? 'queue' : 'send');
   }
 }
 
@@ -398,8 +400,8 @@ const stopMenuItems = computed((): ContextMenuItem[] => [
 function openStopMenu(event: MouseEvent): void {
   const button = event.currentTarget as HTMLElement;
   const box = button.getBoundingClientRect();
-  // Anchored to the button's top-left so the menu opens over the input rather
-  // than off the bottom of the window; ContextMenu clamps it to the viewport.
+  // Opened above the button, as its caret points: anchored at the button's
+  // top it used to open downward over the button itself.
   stopMenuAt.value = { x: box.left, y: box.top };
   stopMenuOpen.value = true;
 }
@@ -424,6 +426,37 @@ function handleInput(event: Event) {
       Stop, which honours the abort and so leaves the queue with no turn ending
       later to release it.
     -->
+    <!--
+      Prompts sent into the running turn that Claude has not read yet. They
+      join the discussion when it does, at its next step, so until then this
+      is the only sign that Send did something.
+    -->
+    <div
+      v-if="deliveringPrompts.length > 0"
+      class="mb-3 rounded-lg border border-primary-200 dark:border-primary-800 bg-primary-50/50 dark:bg-primary-900/10"
+      data-testid="delivering-prompts"
+    >
+      <div class="flex items-center gap-1.5 px-3 py-2 border-b border-primary-200 dark:border-primary-800 text-xs font-medium text-surface-600 dark:text-surface-300">
+        <Icon
+          name="send"
+          size="xs"
+        />
+        {{ deliveringPrompts.length }} sent
+        <span class="font-normal text-surface-400 dark:text-surface-500">
+          · Claude reads {{ deliveringPrompts.length === 1 ? 'it' : 'them' }} at its next step
+        </span>
+      </div>
+      <ul class="divide-y divide-primary-200 dark:divide-primary-800">
+        <li
+          v-for="prompt in deliveringPrompts"
+          :key="prompt.uuid"
+          class="px-3 py-2 text-xs text-surface-700 dark:text-surface-200 whitespace-pre-wrap break-words line-clamp-3"
+        >
+          {{ prompt.content }}
+        </li>
+      </ul>
+    </div>
+
     <div
       v-if="hasQueuedPrompts"
       class="mb-3 rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900/40"
@@ -571,7 +604,7 @@ function handleInput(event: Event) {
             v-else-if="speech.error.value"
             class="text-amber-600 dark:text-amber-400"
           >{{ speech.error.value }}</span>
-          <span v-else-if="willQueue">Press Enter to queue for after this turn, Shift+Enter for new line</span>
+          <span v-else-if="isLoading">Enter sends it into this turn, Ctrl+Enter queues it for after, Shift+Enter for new line</span>
           <span v-else>Press Enter to send, Shift+Enter for new line</span>
           <div class="flex items-center gap-2">
             <span
@@ -681,23 +714,58 @@ function handleInput(event: Event) {
           {{ runningBackgroundTasksList.length === 1 ? 'task' : 'tasks' }}
         </Button>
 
+        <!-- During a turn, the same two choices Stop offers in reverse: step
+             into the running turn, or leave it alone. Both labelled, one
+             click each. -->
+        <div
+          v-if="isLoading"
+          class="split-control"
+        >
+          <Button
+            variant="primary"
+            size="md"
+            :disabled="!canSubmit"
+            title="Send it into this turn: Claude reads it at its next step (Enter)"
+            @click="handleSubmit('send')"
+          >
+            <Icon
+              name="send"
+              size="sm"
+              class="mr-1"
+            />
+            Send
+          </Button>
+          <Button
+            variant="primary"
+            size="md"
+            :disabled="!canSubmit"
+            title="Queue it: sent when this turn finishes (Ctrl+Enter)"
+            @click="handleSubmit('queue')"
+          >
+            <!-- `history` is the clock glyph; there is no separate clock
+                 icon, and adding one would duplicate the same path. -->
+            <Icon
+              name="history"
+              size="sm"
+              class="mr-1"
+            />
+            Queue
+          </Button>
+        </div>
         <Button
+          v-else
           variant="primary"
           size="md"
           :disabled="!canSubmit"
-          :title="willQueue
-            ? 'Queue this prompt — it is sent when the current turn finishes'
-            : 'Send this prompt'"
-          @click="handleSubmit"
+          title="Send this prompt"
+          @click="handleSubmit()"
         >
-          <!-- `history` is the clock glyph; there is no separate clock icon,
-               and adding one would duplicate the same path. -->
           <Icon
-            :name="willQueue ? 'history' : 'send'"
+            name="send"
             size="sm"
             class="mr-1"
           />
-          {{ willQueue ? 'Queue' : 'Send' }}
+          Send
         </Button>
       </div>
     </div>
@@ -707,6 +775,7 @@ function handleInput(event: Event) {
       :x="stopMenuAt.x"
       :y="stopMenuAt.y"
       :items="stopMenuItems"
+      above
       @close="stopMenuOpen = false"
     />
   </div>

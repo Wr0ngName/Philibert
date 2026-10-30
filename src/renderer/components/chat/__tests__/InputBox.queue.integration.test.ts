@@ -120,11 +120,15 @@ async function settle() {
   for (let i = 0; i < 6; i += 1) await nextTick();
 }
 
-/** Type a prompt and press Enter, as the user does. */
+/**
+ * Type a prompt and press Ctrl+Enter, as the user does to queue: it sends
+ * when no turn is running and queues during one. (Enter during a turn sends
+ * into it instead — see InputBox.send-during-turn.integration.test.ts.)
+ */
 async function submit(wrapper: ReturnType<typeof mount>, text: string) {
   const textarea = wrapper.find('textarea');
   await textarea.setValue(text);
-  await textarea.trigger('keydown', { key: 'Enter' });
+  await textarea.trigger('keydown', { key: 'Enter', ctrlKey: true });
   await settle();
 }
 
@@ -305,7 +309,7 @@ describe('queueing prompts during a turn', () => {
     expect(wrapper.findAll('button').some((b) => b.text().includes('Send now'))).toBe(false);
   });
 
-  it('lists what is queued, so the user can see Enter did something', async () => {
+  it('lists what is queued, so the user can see queueing did something', async () => {
     const wrapper = mountHost();
     chat.setLoading(CONV, true);
     await settle();

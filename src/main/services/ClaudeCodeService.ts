@@ -72,6 +72,7 @@ import {
   MessageImage,
   ImageMediaType,
   type ChatMessage,
+  type PromptDeliveryState,
   type ClaudeAccount,
   type TaskOutputChunk,
 } from '../../shared/types';
@@ -197,6 +198,11 @@ interface SessionInstance {
    * See beginUnpromptedTurn.
    */
   unpromptedTurn: boolean;
+  /**
+   * Messages sent while a turn was running that Claude has not read yet, by
+   * uuid. See sendDuringTurn.
+   */
+  deliveringPrompts: Set<string>;
   /** The model the user selected when this session was started ('' = CLI default). */
   requestedModel: string;
   /**
@@ -659,7 +665,7 @@ export class ClaudeCodeService {
   }
 
   private async sendToExistingSession(session: SessionInstance, message: string, isSlashCommand: boolean, images?: MessageImage[]): Promise<void> {
-    const { conversationId, inputChannel, messageHandler } = session;
+    const { conversationId, messageHandler } = session;
 
     logger.info('Sending message to existing persistent session', {
       conversationId,
@@ -683,28 +689,92 @@ export class ClaudeCodeService {
       return;
     }
 
-    // Push user message to the channel. The uuid is the join key the CLI
-    // echoes back on this turn's result.
-    const turnUuid = randomUUID();
-    session.pendingTurnUuid = turnUuid;
+    await this.pushUserMessage(session, message, images);
+    logger.info('Pushed user message to persistent session channel', { conversationId });
+  }
+
+  /**
+   * Push a user message into a ready session, and return its uuid.
+   *
+   * The uuid is the join key the CLI echoes back on the result of the turn
+   * that answers it — so it becomes the turn the conversation is busy for —
+   * and on the message's lifecycle.
+   */
+  private async pushUserMessage(session: SessionInstance, message: string, images?: MessageImage[]): Promise<string> {
+    const uuid = randomUUID();
+    session.pendingTurnUuid = uuid;
     // Only awaited when there is something to read: with no attachments the
     // content IS the text, and going through an async call anyway would push
     // the message a microtask later than it used to go — a turn's start
     // delayed for the overwhelmingly common case that has no images at all.
     const userContent = images && images.length > 0
-      ? await this.userContent(conversationId, message, images)
+      ? await this.userContent(session.conversationId, message, images)
       : message;
     const userMessage: SDKUserMessage = {
-      uuid: turnUuid,
+      uuid,
       type: 'user',
       message: { role: 'user', content: userContent },
       parent_tool_use_id: null,
-      session_id: session.sdkSessionId,
+      session_id: session.sdkSessionId!,
       origin: HUMAN_ORIGIN,
     };
+    session.inputChannel.push(userMessage);
+    return uuid;
+  }
 
-    inputChannel.push(userMessage);
-    logger.info('Pushed user message to persistent session channel', { conversationId });
+  /**
+   * Send a message into the turn running now, rather than after it.
+   *
+   * The CLI takes it at the turn's next step — between two tool calls — and
+   * answers it within the same turn: measured on 2.1.280, a message sent
+   * during a command was 'queued' at once, 'started' when the command
+   * returned, and the turn's one result listed both messages. That is
+   * reported back as 'started' (see trackDelivery), which is when the
+   * renderer puts the message in the discussion.
+   *
+   * Only into a live session with a turn in flight, and nothing else: the
+   * regular send may replace the session (another login), switch its model
+   * or start a new one, and any of that would end the turn this message is
+   * meant to join. Null when there is no such turn, for the caller to fall
+   * back on sending it after.
+   *
+   * Nor is the handler reset, as it is for a new turn: its state is the
+   * running turn's — what text was already streamed, whether a usage limit
+   * refused it — and resetting it would garble or lose that.
+   */
+  async sendDuringTurn(conversationId: string, message: string, images?: MessageImage[]): Promise<string | null> {
+    const session = this.activeSessions.get(conversationId);
+    if (
+      !session
+      || session.inputChannel.isClosed()
+      || !session.sdkSessionId
+      || !this.processingSessions.has(conversationId)
+    ) {
+      logger.info('No turn to send into; the caller sends it after', { conversationId, hasSession: !!session });
+      return null;
+    }
+    const uuid = await this.pushUserMessage(session, message, images);
+    session.deliveringPrompts.add(uuid);
+    logger.info('Sent a message into the running turn', { conversationId, uuid, messageLength: message.length });
+    return uuid;
+  }
+
+  /**
+   * Pass on what became of a message sent during a turn: 'started' once
+   * Claude has it — or 'completed', should that come without a 'started' —
+   * and 'cancelled' when it never will.
+   */
+  private trackDelivery(conversationId: string, uuid: string, state: string): void {
+    const session = this.activeSessions.get(conversationId);
+    if (!session?.deliveringPrompts.has(uuid)) return;
+    const delivery: PromptDeliveryState | null =
+      state === 'started' || state === 'completed' ? 'started'
+        : state === 'cancelled' ? 'cancelled'
+          : null;
+    if (!delivery) return;
+    session.deliveringPrompts.delete(uuid);
+    logger.info('Message sent during a turn', { conversationId, uuid, delivery });
+    this.send(IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY, conversationId, uuid, delivery);
   }
 
   /**
@@ -860,6 +930,9 @@ export class ClaudeCodeService {
       },
       onSessionRunning: () => {
         this.beginUnpromptedTurn(conversationId);
+      },
+      onCommandLifecycle: (uuid: string, state: string) => {
+        this.trackDelivery(conversationId, uuid, state);
       },
       onSessionIdle: () => {
         this.endStrandedTurn(conversationId, 'session reported idle');
@@ -1059,6 +1132,7 @@ export class ClaudeCodeService {
         isResumeAttempt: shouldResume,
         pendingTurnUuid: firstTurnUuid,
         unpromptedTurn: false,
+        deliveringPrompts: new Set<string>(),
         requestedModel: selectedModel,
         announcedModels: new Set<string>(),
         // Recorded now, because `authEnv` above was read now. See
@@ -1597,6 +1671,14 @@ export class ClaudeCodeService {
     // Its live-task set goes with it: a session that is gone cannot be
     // running anything.
     this.liveBackgroundTasks.delete(conversationId);
+
+    // Nor read anything still waiting for its next step: said, so the
+    // renderer gives those messages back to the user instead of waiting on
+    // them for ever.
+    for (const uuid of instance.deliveringPrompts) {
+      this.send(IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY, conversationId, uuid, 'cancelled' satisfies PromptDeliveryState);
+    }
+    instance.deliveringPrompts.clear();
 
     // Close the input channel (stops the SDK from waiting for more input)
     instance.inputChannel.close();

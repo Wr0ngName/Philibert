@@ -26,15 +26,23 @@ interface Props {
   y: number;
   /** Items to show */
   items: ContextMenuItem[];
+  /**
+   * Open above the anchor, its bottom edge on `y`, rather than below it — for
+   * a menu raised from a button whose caret points up.
+   */
+  above?: boolean;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), { above: false });
 
 const emit = defineEmits<{
   (e: 'close'): void;
 }>();
 
 const menuRef = ref<HTMLElement | null>(null);
+
+/** Space between a menu opened above its anchor and the anchor itself. */
+const ABOVE_GAP = 4;
 
 /** Clamp the menu inside the viewport so it never renders partially off-screen. */
 const clamped = ref({ x: 0, y: 0 });
@@ -51,9 +59,10 @@ async function reclamp(): Promise<void> {
   const h = el.offsetHeight;
   const maxX = window.innerWidth - w - margin;
   const maxY = window.innerHeight - h - margin;
+  const top = props.above ? props.y - h - ABOVE_GAP : props.y;
   clamped.value = {
     x: Math.max(margin, Math.min(props.x, maxX)),
-    y: Math.max(margin, Math.min(props.y, maxY)),
+    y: Math.max(margin, Math.min(top, maxY)),
   };
 }
 

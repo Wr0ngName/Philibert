@@ -1428,6 +1428,22 @@ describe('SDKMessageHandler', () => {
       expect(callbacks.onTaskNotification).not.toHaveBeenCalled();
     });
 
+    it("passes on each sent message's lifecycle, as the CLI sends it", async () => {
+      // The shape seen from CLI 2.1.280: a top-level type outside the SDK's
+      // message union.
+      callbacks.onCommandLifecycle = vi.fn();
+      for (const state of ['queued', 'started', 'completed']) {
+        await handler.handleMessage({
+          type: 'command_lifecycle', command_uuid: 'uuid-2', state, uuid: 'u', session_id: 's',
+        } as never);
+      }
+
+      expect(callbacks.onCommandLifecycle).toHaveBeenNthCalledWith(1, 'uuid-2', 'queued');
+      expect(callbacks.onCommandLifecycle).toHaveBeenNthCalledWith(2, 'uuid-2', 'started');
+      expect(callbacks.onCommandLifecycle).toHaveBeenNthCalledWith(3, 'uuid-2', 'completed');
+      expect(callbacks.onChunk).not.toHaveBeenCalled();
+    });
+
     it('reports a turn starting and the session going idle, each to its own callback', async () => {
       callbacks.onSessionRunning = vi.fn();
       callbacks.onSessionIdle = vi.fn();

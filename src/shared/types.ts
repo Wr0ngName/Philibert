@@ -804,6 +804,13 @@ export type ThinkingMode = 'auto' | 'disabled';
 export type CompletionNotifications = 'all-done' | 'each';
 
 /**
+ * What became of a message sent while a turn was running: 'started' when
+ * Claude read it, at the turn's next step; 'cancelled' when it never will be —
+ * the session ended first.
+ */
+export type PromptDeliveryState = 'started' | 'cancelled';
+
+/**
  * Reasoning-effort level, mirroring the SDK's `EffortLevel`.
  *
  * Which of these a given model accepts differs per model and is reported by
@@ -1784,6 +1791,10 @@ export const IPC_CHANNELS = {
   CLAUDE_DONE: 'claude:done',
   /** The CLI started a turn nobody sent, its answer to a background task finishing */
   CLAUDE_TURN_STARTED: 'claude:turn-started',
+  /** Send a message into the turn running now, for Claude to read at its next step */
+  CLAUDE_SEND_DURING_TURN: 'claude:send-during-turn',
+  /** A message sent during a turn reached Claude, or never will */
+  CLAUDE_PROMPT_DELIVERY: 'claude:prompt-delivery',
   /** Abort current Claude request */
   CLAUDE_ABORT: 'claude:abort',
   /** Stop one running background task */

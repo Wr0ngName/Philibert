@@ -34,6 +34,7 @@ const { currentModeMismatch } = storeToRefs(conversationsStore);
 const {
   sendMessage,
   queuePrompt,
+  sendDuringTurn,
   releaseQueuedPrompts,
   approveAction,
   rejectAction,
@@ -114,8 +115,13 @@ function handleSend(message: string, images?: MessageImage[]) {
   nextTick(() => messageListRef.value?.scrollToBottom());
 }
 
-function handleQueue(message: string) {
-  queuePrompt(message);
+function handleQueue(message: string, images?: MessageImage[]) {
+  queuePrompt(message, images);
+}
+
+function handleSendNow(message: string, images?: MessageImage[]) {
+  void sendDuringTurn(message, images);
+  nextTick(() => messageListRef.value?.scrollToBottom());
 }
 
 function handleReleaseQueue() {
@@ -486,6 +492,7 @@ function closeToolDetail() {
     <!-- Input -->
     <InputBox
       @send="handleSend"
+      @send-now="handleSendNow"
       @queue="handleQueue"
       @release-queue="handleReleaseQueue"
       @unqueue="handleUnqueue"

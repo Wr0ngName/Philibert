@@ -429,6 +429,145 @@ describe('ClaudeCodeService', () => {
     // The turn MUST end from the renderer's point of view. The spinner is only
     // cleared by CLAUDE_DONE, so any realistic message sequence that fails to
     // produce one leaves it spinning forever with no way back.
+    // Measured against CLI 2.1.280: a message pushed during a command is
+    // lifecycle 'queued' at once, 'started' when the command returns, and the
+    // turn's one result lists both messages' uuids.
+    describe('sending into the running turn', () => {
+      /**
+       * A session whose stream is scripted per step, reading what is pushed
+       * into it. `next()` lets the stream go on to its next yield.
+       */
+      function scriptedSession(script: (pushed: { uuid: string; text: string }[]) => AsyncGenerator<unknown>) {
+        const pushed: { uuid: string; text: string }[] = [];
+        mockQuery.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+          void (async () => {
+            for await (const message of prompt) {
+              const m = message as { uuid: string; message: { content: string } };
+              pushed.push({ uuid: m.uuid, text: m.message.content });
+            }
+          })();
+          return { ...createMockQueryIterator([]), [Symbol.asyncIterator]: () => script(pushed) };
+        });
+        return pushed;
+      }
+
+      const sent = (channel: string) => mockSend.mock.calls.filter((call) => call[0] === channel);
+
+      it('pushes it into the live session, and the turn ends on the result that answers both', async () => {
+        const gates: (() => void)[] = [];
+        const gate = () => new Promise<void>((resolve) => { gates.push(resolve); });
+        const pushed = scriptedSession(async function* (seen) {
+          yield { type: 'system', subtype: 'init', slash_commands: [], model: 'claude-3', session_id: 'sess-1' };
+          await gate();
+          yield { type: 'command_lifecycle', command_uuid: seen[1].uuid, state: 'queued' };
+          yield { type: 'command_lifecycle', command_uuid: seen[1].uuid, state: 'started' };
+          yield {
+            type: 'result', subtype: 'success', num_turns: 1, duration_ms: 10,
+            user_message_uuid: seen[0].uuid, user_message_uuids: [seen[0].uuid, seen[1].uuid],
+          };
+          await gate();
+        });
+
+        await service.sendMessage(TEST_CONV_ID, 'Build the app', '/home/user');
+        await vi.waitFor(() => expect(gates).toHaveLength(1));
+
+        const uuid = await service.sendDuringTurn(TEST_CONV_ID, 'Also run the tests');
+
+        await vi.waitFor(() => expect(pushed).toHaveLength(2));
+        expect(pushed[1]).toEqual({ uuid, text: 'Also run the tests' });
+        gates[0]();
+        await vi.waitFor(() => expect(gates).toHaveLength(2));
+        expect(sent(IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY)).toEqual([
+          [IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY, TEST_CONV_ID, uuid, 'started'],
+        ]);
+        expect(sent(IPC_CHANNELS.CLAUDE_DONE)).toHaveLength(1);
+        expect(service.getProcessingQueryCount()).toBe(0);
+        gates[1]();
+      });
+
+      it('stays busy when the first turn ends without it, until the turn that answers it does', async () => {
+        const gates: (() => void)[] = [];
+        const gate = () => new Promise<void>((resolve) => { gates.push(resolve); });
+        scriptedSession(async function* (seen) {
+          yield { type: 'system', subtype: 'init', slash_commands: [], model: 'claude-3', session_id: 'sess-1' };
+          await gate();
+          yield { type: 'result', subtype: 'success', num_turns: 1, duration_ms: 10, user_message_uuid: seen[0].uuid };
+          await gate();
+          yield { type: 'command_lifecycle', command_uuid: seen[1].uuid, state: 'started' };
+          yield { type: 'result', subtype: 'success', num_turns: 1, duration_ms: 10, user_message_uuid: seen[1].uuid };
+          await gate();
+        });
+
+        await service.sendMessage(TEST_CONV_ID, 'Build the app', '/home/user');
+        await vi.waitFor(() => expect(gates).toHaveLength(1));
+        await service.sendDuringTurn(TEST_CONV_ID, 'Also run the tests');
+
+        gates[0]();
+        await vi.waitFor(() => expect(gates).toHaveLength(2));
+        expect(sent(IPC_CHANNELS.CLAUDE_DONE)).toHaveLength(0);
+        expect(service.getProcessingQueryCount()).toBe(1);
+
+        gates[1]();
+        await vi.waitFor(() => expect(gates).toHaveLength(3));
+        expect(sent(IPC_CHANNELS.CLAUDE_DONE)).toHaveLength(1);
+        gates[2]();
+      });
+
+      it('does not reset the running turn\'s message handling', async () => {
+        const gates: (() => void)[] = [];
+        const gate = () => new Promise<void>((resolve) => { gates.push(resolve); });
+        scriptedSession(async function* () {
+          yield { type: 'system', subtype: 'init', slash_commands: [], model: 'claude-3', session_id: 'sess-1' };
+          await gate();
+        });
+        const { SDKMessageHandler } = await import('../claude/SDKMessageHandler');
+        const reset = vi.spyOn(SDKMessageHandler.prototype, 'reset');
+
+        await service.sendMessage(TEST_CONV_ID, 'Build the app', '/home/user');
+        await vi.waitFor(() => expect(gates).toHaveLength(1));
+        const before = reset.mock.calls.length;
+        await service.sendDuringTurn(TEST_CONV_ID, 'Also run the tests');
+
+        expect(reset.mock.calls.length).toBe(before);
+        reset.mockRestore();
+        gates[0]();
+      });
+
+      it('sends nothing, and says so, when no turn is running', async () => {
+        expect(await service.sendDuringTurn(TEST_CONV_ID, 'hello')).toBeNull();
+
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          { type: 'system', subtype: 'init', slash_commands: [], model: 'claude-3', session_id: 'sess-1' },
+          { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 },
+        ]));
+        await service.sendMessage(TEST_CONV_ID, 'Build the app', '/home/user');
+        await vi.waitFor(() => expect(sent(IPC_CHANNELS.CLAUDE_DONE)).toHaveLength(1));
+
+        expect(await service.sendDuringTurn(TEST_CONV_ID, 'too late')).toBeNull();
+      });
+
+      it('says a message Claude never read will not be, when the session ends first', async () => {
+        const gates: (() => void)[] = [];
+        const gate = () => new Promise<void>((resolve) => { gates.push(resolve); });
+        scriptedSession(async function* () {
+          yield { type: 'system', subtype: 'init', slash_commands: [], model: 'claude-3', session_id: 'sess-1' };
+          await gate();
+          // The stream ends: the subprocess is gone.
+        });
+
+        await service.sendMessage(TEST_CONV_ID, 'Build the app', '/home/user');
+        await vi.waitFor(() => expect(gates).toHaveLength(1));
+        const uuid = await service.sendDuringTurn(TEST_CONV_ID, 'Also run the tests');
+        gates[0]();
+
+        await vi.waitFor(() => {
+          expect(sent(IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY)).toEqual([
+            [IPC_CHANNELS.CLAUDE_PROMPT_DELIVERY, TEST_CONV_ID, uuid, 'cancelled'],
+          ]);
+        });
+      });
+    });
+
     describe('turn completion across realistic message sequences', () => {
       it('emits done when the result carries an explicit human origin', async () => {
         mockQuery.mockReturnValue(createMockQueryIterator([

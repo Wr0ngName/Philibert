@@ -28,6 +28,7 @@ import type {
   McpServerInput,
   ModelInfo,
   PendingAction,
+  PromptDeliveryState,
   PermissionOptionVariant,
   PermissionScope,
   ProjectPermissionEntry,
@@ -78,6 +79,16 @@ export interface ElectronAPI {
        */
       images?: MessageImage[],
     ) => Promise<void>;
+    /**
+     * Send a message into the turn running now, for Claude to read at its
+     * next step. Resolves to the message's uuid, whose fate arrives through
+     * onPromptDelivery; null when no turn is running for it to join.
+     */
+    sendDuringTurn: (conversationId: string, message: string, images?: MessageImage[]) => Promise<string | null>;
+    /** What became of a message sent during a turn. */
+    onPromptDelivery: (
+      callback: (conversationId: string, uuid: string, state: PromptDeliveryState) => void,
+    ) => () => void;
     /** Approve a pending action for a specific conversation */
     approve: (
       conversationId: string,

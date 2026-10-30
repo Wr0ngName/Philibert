@@ -48,6 +48,7 @@ let cleanupToolUse: (() => void) | null = null;
 let cleanupError: (() => void) | null = null;
 let cleanupDone: (() => void) | null = null;
 let cleanupTurnStarted: (() => void) | null = null;
+let cleanupPromptDelivery: (() => void) | null = null;
 let cleanupSlashCommands: (() => void) | null = null;
 let cleanupActiveModel: (() => void) | null = null;
 let cleanupSubagentActivity: (() => void) | null = null;
@@ -351,15 +352,56 @@ export function useClaudeChat() {
    * The alternative the user had was to press Stop, which aborts the run and
    * every agent inside it, just to be able to say the next thing.
    */
-  function queuePrompt(content: string): void {
+  function queuePrompt(content: string, images?: MessageImage[]): void {
     const currentConvId = conversationsStore.currentConversationId;
-    if (!currentConvId || !content.trim()) return;
+    if (!currentConvId) return;
 
-    chatStore.queuePrompt(currentConvId, content);
+    if (!chatStore.queuePrompt(currentConvId, content, images)) return;
     logger.info('Prompt queued for the end of the current turn', {
       conversationId: currentConvId,
       queued: chatStore.queuedPrompts.length,
     });
+  }
+
+  /**
+   * Send a prompt into the turn that is running, for Claude to read at its
+   * next step instead of after the turn — the other choice next to queueing.
+   *
+   * It joins the discussion when Claude reads it (see deliverPrompt); until
+   * then it is listed above the input. A slash command is queued instead: it
+   * is a turn of its own, or one this GUI answers, never part of another.
+   * With no turn left to join — it ended as this was sent — it is sent the
+   * ordinary way.
+   */
+  async function sendDuringTurn(content: string, images?: MessageImage[]): Promise<void> {
+    const conversationId = conversationsStore.currentConversationId;
+    if (!conversationId || (!content.trim() && (!images || images.length === 0))) return;
+
+    if (content.trim().startsWith('/')) {
+      queuePrompt(content);
+      return;
+    }
+    if (!chatStore.isConversationLoading(conversationId)) {
+      await sendMessage(content, images);
+      return;
+    }
+
+    const plainImages = images?.map((image) => ({ ...image }));
+    let uuid: string | null;
+    try {
+      uuid = await window.electron.claude.sendDuringTurn(conversationId, content, plainImages);
+    } catch (err) {
+      // Not sent, so not lost: it waits for the turn to end like a queued one.
+      logger.error('Failed to send into the running turn — queued instead', { conversationId, err });
+      chatStore.queuePrompt(conversationId, content, images);
+      return;
+    }
+    if (!uuid) {
+      await sendMessage(content, images);
+      return;
+    }
+    chatStore.addDeliveringPrompt(conversationId, { uuid, content, images, sentAt: Date.now() });
+    logger.info('Prompt sent into the running turn', { conversationId, uuid });
   }
 
   /**
@@ -408,7 +450,7 @@ export function useClaudeChat() {
       if (!prompt) return;
 
       logger.info('Sending queued prompt', { conversationId, promptId: prompt.id });
-      const outcome = await sendMessage(prompt.content);
+      const outcome = await sendMessage(prompt.content, prompt.images);
 
       if (outcome === 'rejected') {
         // Refused before a turn began — no auth, no working directory, the
@@ -745,6 +787,14 @@ export function useClaudeChat() {
     // A turn nobody sent: the CLI answering a background task that finished.
     // It is a turn like any other — busy until its CLAUDE_DONE, and collected
     // so it is written whole even if the user switches away while it runs.
+    // A prompt sent into a turn: read by Claude, so it joins the discussion
+    // where Claude took it; or never to be read, so it goes back to the queue.
+    cleanupPromptDelivery = window.electron.claude.onPromptDelivery((conversationId, uuid, state) => {
+      logger.info('Prompt sent into a turn', { conversationId, uuid, state });
+      if (state === 'started') chatStore.deliverPrompt(conversationId, uuid);
+      else chatStore.returnUndeliveredPrompt(conversationId, uuid);
+    });
+
     cleanupTurnStarted = window.electron.claude.onTurnStarted((conversationId) => {
       logger.info('[turn] started by the CLI', { conversationId });
       chatStore.setLoading(conversationId, true);
@@ -1019,6 +1069,10 @@ export function useClaudeChat() {
       cleanupTurnStarted();
       cleanupTurnStarted = null;
     }
+    if (cleanupPromptDelivery) {
+      cleanupPromptDelivery();
+      cleanupPromptDelivery = null;
+    }
     if (cleanupSlashCommands) {
       cleanupSlashCommands();
       cleanupSlashCommands = null;
@@ -1108,6 +1162,7 @@ export function useClaudeChat() {
     // Actions
     sendMessage,
     queuePrompt,
+    sendDuringTurn,
     releaseQueuedPrompts,
     approveAction,
     rejectAction,

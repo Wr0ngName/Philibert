@@ -233,6 +233,11 @@ export interface MessageHandlerCallbacks {
    */
   onSessionRunning?: () => void;
   /**
+   * A message sent into the session changed state: 'queued', 'started' (the
+   * model has it), 'completed' or 'cancelled'.
+   */
+  onCommandLifecycle?: (uuid: string, state: string) => void;
+  /**
    * Model and token spend for one frame produced by a sub-agent, attributed to
    * the tool_use that spawned it. Emitted per frame; the consumer accumulates.
    */
@@ -451,6 +456,20 @@ export class SDKMessageHandler {
       subtype: (message as { subtype?: string }).subtype,
       hasContent: !!(message as SDKAssistantMessage).message?.content,
     });
+
+    // Where each message sent into the session stands: queued, started (the
+    // model has it), completed, or cancelled. Not in the SDK's message union,
+    // but sent by the CLI for every message carrying a uuid — measured on
+    // 2.1.280: one sent mid-turn is 'queued' at once and 'started' at the
+    // turn's next step, which is when Claude reads it.
+    const lifecycle = message as { type: string; command_uuid?: unknown; state?: unknown };
+    if (lifecycle.type === 'command_lifecycle') {
+      if (typeof lifecycle.command_uuid === 'string' && typeof lifecycle.state === 'string') {
+        logger.debug('Command lifecycle', { uuid: lifecycle.command_uuid, state: lifecycle.state });
+        this.callbacks.onCommandLifecycle?.(lifecycle.command_uuid, lifecycle.state);
+      }
+      return;
+    }
 
     switch (message.type) {
       case 'assistant':
