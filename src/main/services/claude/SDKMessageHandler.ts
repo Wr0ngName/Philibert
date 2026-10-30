@@ -12,6 +12,7 @@ import type {
   SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 
+import { describeToolUse } from '../../../shared/tool-description';
 import type { AgentRun, SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, ToolCaptureData, UsageLimitStop, UsageWarning } from '../../../shared/types';
 import logger from '../../utils/logger';
 
@@ -1371,24 +1372,6 @@ export function agentRunOf(toolUseResult: unknown): AgentRun | undefined {
   if (status === 'completed') return { id: agentId, background: false };
   if (status === 'async_launched') return { id: agentId, background: true };
   return undefined;
-}
-
-/**
- * The one-line description of a tool call shown on its row. Shared by the
- * live stream and by agent transcripts read back, so a call reads the same
- * wherever it is shown.
- */
-export function describeToolUse(toolName: string, input: Record<string, unknown>): string {
-  switch (toolName) {
-    case 'Bash': return `Run: ${((input.command as string) || '').slice(0, 80)}`;
-    case 'Read': return `Read: ${input.file_path}`;
-    case 'Edit': return `Edit: ${input.file_path}`;
-    case 'Write': return `Write: ${input.file_path}`;
-    case 'Glob': return `Search files: ${input.pattern}`;
-    case 'Grep': return `Search: ${input.pattern}`;
-    case 'Agent': return `Agent: ${((input.prompt as string) || '').slice(0, 80)}`;
-    default: return `Tool: ${toolName}`;
-  }
 }
 
 /**

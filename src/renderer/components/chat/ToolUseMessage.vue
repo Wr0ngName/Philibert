@@ -9,6 +9,7 @@
 
 import { computed } from 'vue';
 
+import { toolCallLabel } from '@shared/tool-description';
 import type { ToolUseInfo } from '@shared/types';
 
 import { useChatStore } from '../../stores/chat';
@@ -49,6 +50,8 @@ function handleToggleExpand(event: Event) {
 }
 
 const hasDetail = computed(() => !!props.toolUse.input || !!props.toolUse.outputFile);
+
+const label = computed(() => toolCallLabel(props.toolUse));
 
 function handleClick() {
   if (hasDetail.value) {
@@ -112,9 +115,12 @@ const summary = computed(() =>
       {{ toolUse.toolName }}
     </span>
 
-    <!-- Description -->
-    <span class="text-xs text-surface-400 dark:text-surface-500 truncate">
-      {{ toolUse.description }}
+    <!-- What the call is: a command's or an agent's own name for its work -->
+    <span
+      v-if="label"
+      class="text-xs text-surface-400 dark:text-surface-500 truncate"
+    >
+      {{ label }}
     </span>
 
     <!-- Summary snippet (completed task) -->

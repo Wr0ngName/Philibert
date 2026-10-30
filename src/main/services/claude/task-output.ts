@@ -15,10 +15,10 @@ import path from 'node:path';
 
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 
+import { describeToolUse } from '../../../shared/tool-description';
 import type { ChatMessage, MessageImage, TaskOutputChunk, ToolUseInfo } from '../../../shared/types';
 import type { ImageInput } from '../ImageStore';
 
-import { describeToolUse } from './SDKMessageHandler';
 import { toolResultParts, type ExtractedImage } from './tool-result-images';
 
 /** At most this much of an output is sent at once: its tail. */

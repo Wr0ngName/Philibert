@@ -152,7 +152,8 @@ describe('a background command in the discussion', () => {
     await launchBuild();
 
     expect(taskRows()).toEqual([]);
-    expect(callRows()).toEqual([expect.stringContaining('npm run build')]);
+    // Named as the background list names it, not by its command.
+    expect(callRows()).toEqual([expect.stringContaining('Build the app')]);
   });
 
   it('says Running on its call while the command runs, though the call itself is done', async () => {

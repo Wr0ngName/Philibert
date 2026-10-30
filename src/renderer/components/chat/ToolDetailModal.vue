@@ -15,6 +15,7 @@ import {
   parseAskUserQuestionEntries,
   parseAskUserQuestionResult,
 } from '@shared/ask-user-question';
+import { toolCallLabel } from '@shared/tool-description';
 import type { MessageImage, ToolUseInfo } from '@shared/types';
 
 import type { ToolCallOutput } from '../../utils/tool-output';
@@ -70,6 +71,8 @@ watch(
   },
   { immediate: true },
 );
+
+const label = computed(() => (props.toolUse ? toolCallLabel(props.toolUse) : ''));
 
 const statusDisplay = computed(() => {
   if (!props.toolUse) return { label: '', colorClass: '' };
@@ -154,8 +157,11 @@ const output = computed((): ToolCallOutput | null => {
           <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">
             {{ toolUse.toolName }}
           </h3>
-          <p class="text-xs text-surface-500 dark:text-surface-400 mt-0.5">
-            {{ toolUse.description }}
+          <p
+            v-if="label"
+            class="text-xs text-surface-500 dark:text-surface-400 mt-0.5"
+          >
+            {{ label }}
           </p>
           <div class="flex items-center gap-3 mt-1 text-xs text-surface-500 dark:text-surface-400">
             <span :class="statusDisplay.colorClass">{{ statusDisplay.label }}</span>
