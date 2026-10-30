@@ -36,6 +36,22 @@ import type ConfigService from '../ConfigService';
 import type { SessionPermissionCache } from './SessionPermissionCache';
 import { parseGenericToolInput, buildGenericToolDescription } from './tool-input-parser';
 
+/**
+ * A path in one form, whichever form it came in: as a tool takes it
+ * (`C:\Users\k\x`, `/home/k/x`) or as the CLI writes it in a rule
+ * (`//c/Users/k/x/**`, `//home/k/x`) — slashes forward, a drive as `/c`, no
+ * trailing glob or slash — so the two can be compared.
+ */
+export function comparablePath(path: string): string {
+  return path
+    .replace(/\\/g, '/')
+    .replace(/^([a-zA-Z]):\//, (_, drive: string) => `/${drive.toLowerCase()}/`)
+    .replace(/^\/\/+/, '/')
+    .replace(/^\/([a-zA-Z])\//, (_, drive: string) => `/${drive.toLowerCase()}/`)
+    .replace(/\/\*+$/, '')
+    .replace(/\/+$/, '');
+}
+
 /** Prefix used by Claude Code for user messages that answer an AskUserQuestion */
 export const ASK_USER_QUESTION_PREFIX = '[User answered AskUserQuestion]:';
 
@@ -482,7 +498,17 @@ export class PermissionManager {
     const directories = [...new Set(local.flatMap((s) => (s.type === 'addDirectories' ? s.directories : [])))];
     if (tools.length === 0 && directories.length === 0) return { suggestions };
 
-    const kept = suggestions.filter((s) => !(isProject(s) && (s.type === 'addRules' || s.type === 'addDirectories')));
+    // "This session" grants the whole tool too — the session cache allows a
+    // tool by name, whatever rule it was cached with — so its rules go to the
+    // CLI as the whole tool, and the option is named that way. The CLI may
+    // suggest a path for a file outside the project ("Read(//c/…/tasks/**)"),
+    // and passing that on named the option after a rule it did not keep to.
+    const isSession = (s: PermissionUpdate) => this.mapDestinationToScope(s.destination) === 'session';
+    const kept = suggestions
+      .filter((s) => !(isProject(s) && (s.type === 'addRules' || s.type === 'addDirectories')))
+      .map((s): PermissionUpdate => (isSession(s) && s.type === 'addRules' && s.behavior === 'allow'
+        ? { ...s, rules: [...new Set(s.rules.map((r) => r.toolName))].map((tool) => ({ toolName: tool })) }
+        : s));
     const projectDirectories: PermissionUpdate[] = directories.length > 0
       ? [{ type: 'addDirectories', directories, destination: 'localSettings' }]
       : [];
@@ -504,11 +530,39 @@ export class PermissionManager {
    * e.g. `Bash (npm run test:*)`.
    */
   private ruleText(rule: { toolName: string; ruleContent?: string }, input?: Record<string, unknown>): string {
-    if (!rule.ruleContent) return rule.toolName;
-    if (typeof input?.command === 'string' && rule.ruleContent.trim() === input.command.trim()) {
-      return 'this exact command';
+    const detail = this.ruleDetail(rule, input);
+    if (!detail) return rule.toolName;
+    return detail === 'this exact command' ? detail : `${rule.toolName} (${detail})`;
+  }
+
+  /**
+   * What a rule covers, short enough for a button: "this exact command" for
+   * the request's own command line, "this file" / "this folder" for a path
+   * that is the request's file or holds it, `…/<name>` for any other path,
+   * and the rule as written otherwise (a prefix, a domain). The command and
+   * the path are shown in full above the buttons already; repeating them
+   * made buttons as wide as the path.
+   */
+  private ruleDetail(rule: { ruleContent?: string }, input?: Record<string, unknown>): string | null {
+    const content = rule.ruleContent?.trim();
+    if (!content) return null;
+    if (typeof input?.command === 'string' && content === input.command.trim()) return 'this exact command';
+    return this.pathDetail(content, input) ?? content;
+  }
+
+  /** A path as "this file", "this folder" or `…/<name>`; null when it is not a path. */
+  private pathDetail(path: string, input?: Record<string, unknown>): string | null {
+    if (!/^(\/|~|[a-zA-Z]:[\\/])/.test(path)) return null;
+    const target = comparablePath(path);
+    const requested = [input?.file_path, input?.notebook_path, input?.path]
+      .find((p): p is string => typeof p === 'string' && p.length > 0);
+    if (requested) {
+      const file = comparablePath(requested);
+      if (file === target && !/\*$/.test(path)) return 'this file';
+      if (file.startsWith(`${target}/`) || file === target) return 'this folder';
     }
-    return `${rule.toolName} (${rule.ruleContent})`;
+    const name = target.split('/').filter(Boolean).pop();
+    return name ? `…/${name}` : path;
   }
 
   /**
@@ -575,8 +629,7 @@ export class PermissionManager {
           group.toolNames.add(rule.toolName);
           allToolNames.add(rule.toolName);
           if (rule.ruleContent) {
-            const text = this.ruleText(rule, input);
-            group.ruleDetails.push(text === 'this exact command' ? text : rule.ruleContent);
+            group.ruleDetails.push(this.ruleDetail(rule, input) ?? rule.ruleContent);
           }
         }
         if (suggestion.type === 'addRules') {
@@ -585,7 +638,7 @@ export class PermissionManager {
         }
       } else if (suggestion.type === 'addDirectories') {
         group.directories.push(...suggestion.directories);
-        const dirs = suggestion.directories.join(', ');
+        const dirs = suggestion.directories.map((d) => this.pathDetail(d, input) ?? d).join(', ');
         group.descriptions.push(`Add directories: ${dirs}`);
       } else if (suggestion.type === 'setMode') {
         group.descriptions.push(`Set mode: ${suggestion.mode}`);
@@ -632,7 +685,7 @@ export class PermissionManager {
       }
       if (hasDirectories) {
         const dirList = group.directories.length <= 2
-          ? group.directories.join(', ')
+          ? group.directories.map((d) => this.pathDetail(d, input) ?? d).join(', ')
           : `${group.directories.length} directories`;
         detailSuffix += detailSuffix ? ` + ${dirList}` : ` (${dirList})`;
       }

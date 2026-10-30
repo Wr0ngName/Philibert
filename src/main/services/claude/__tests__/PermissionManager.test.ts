@@ -14,8 +14,18 @@ import type { PermissionResult, PermissionUpdate } from '@anthropic-ai/claude-ag
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import type { PendingAction } from '../../../../shared/types';
-import { PermissionManager } from '../PermissionManager';
+import { PermissionManager, comparablePath } from '../PermissionManager';
 import { SessionPermissionCache } from '../SessionPermissionCache';
+
+describe('comparablePath', () => {
+  it('reads a CLI rule path and the tool path it covers alike', () => {
+    expect(comparablePath('//c/Users/k/tasks/**')).toBe('/c/Users/k/tasks');
+    expect(comparablePath('C:\\Users\\k\\tasks\\a.output')).toBe('/c/Users/k/tasks/a.output');
+    expect(comparablePath('c:/Users/k/tasks/')).toBe('/c/Users/k/tasks');
+    expect(comparablePath('//home/k/project/*')).toBe('/home/k/project');
+    expect(comparablePath('/home/k/project/a.ts')).toBe('/home/k/project/a.ts');
+  });
+});
 
 // Mock logger
 vi.mock('../../../utils/logger', () => ({
@@ -362,9 +372,8 @@ describe('PermissionManager', () => {
       await new Promise(resolve => setImmediate(resolve));
 
       expect(capturedAction).not.toBeNull();
-      expect(capturedAction?.permissionInfo?.description).toContain('/home/user/project');
-      expect(capturedAction?.permissionInfo?.description).toContain('/home/user/data');
-      expect(capturedAction?.permissionInfo?.description).toContain('Add directories');
+      // Named short: the full paths make the lines as wide as the paths.
+      expect(capturedAction?.permissionInfo?.description).toContain('Add directories: …/project, …/data');
     });
 
     it('should use broadest scope when multiple scopes present', async () => {
@@ -498,8 +507,8 @@ describe('PermissionManager', () => {
 
       expect(capturedAction).not.toBeNull();
       expect(capturedAction?.permissionInfo?.scopeOptions.map(o => o.label)).toEqual([
-        'Allow Bash (/home/user/project) this session',
-        'Allow Bash (/home/user/project) in project',
+        'Allow Bash (…/project) this session',
+        'Allow Bash (…/project) in project',
       ]);
       expect(capturedAction?.permissionInfo?.alwaysAllowLabel).toBe('Allow Bash in this project');
     });
@@ -569,7 +578,7 @@ describe('PermissionManager', () => {
       expect(capturedAction).not.toBeNull();
       // Scope option label should include the directory path
       expect(capturedAction?.permissionInfo?.scopeOptions[0].label).toBe(
-        'Allow Bash (/home/user/project) this session'
+        'Allow Bash (…/project) this session'
       );
     });
 
@@ -1039,11 +1048,55 @@ describe('PermissionManager', () => {
       ]);
     });
 
+    // Reported (main.log, 2026-10-30): reading a task's output file outside
+    // the project, the options read "Allow Read (//c/Users/kotik/AppData/…/
+    // tasks/**) for this session" — the CLI's folder rule, as wide as the
+    // path — while "this session" grants the whole tool.
+    const TASK_FOLDER = '//c/Users/kotik/AppData/Local/Temp/philibert-cli/claude/C--Users-kotik-Documents-git-tmp/d75d29ae-0f62-4a9c-a82a-f45f5011d60f/tasks/**';
+    const TASK_FILE = 'C:\\Users\\kotik\\AppData\\Local\\Temp\\philibert-cli\\claude\\C--Users-kotik-Documents-git-tmp\\d75d29ae-0f62-4a9c-a82a-f45f5011d60f\\tasks\\bcbety4d2.output';
+
+    it('names "this session" after the whole tool it grants, not the folder the CLI suggested', async () => {
+      const { action, result } = await requestAndApprove(
+        'Read',
+        { file_path: TASK_FILE },
+        [{ type: 'addRules', rules: [{ toolName: 'Read', ruleContent: TASK_FOLDER }], behavior: 'allow', destination: 'session' }],
+        'session',
+      );
+
+      expect(action.permissionInfo?.scopeOptions).toEqual([
+        { scope: 'session', label: 'Allow Read this session', description: 'Allow Read for this session' },
+        { scope: 'project', label: 'Allow Read in project', description: 'Allow Read for this project' },
+      ]);
+      expect(result.updatedPermissions).toEqual([
+        { type: 'addRules', rules: [{ toolName: 'Read' }], behavior: 'allow', destination: 'session' },
+      ]);
+    });
+
+    it('names a path the CLI suggests for the project "this folder" or "this file", never in full', async () => {
+      const folder = await requestAndApprove(
+        'Read',
+        { file_path: TASK_FILE },
+        [{ type: 'addRules', rules: [{ toolName: 'Read', ruleContent: TASK_FOLDER }], behavior: 'allow', destination: 'localSettings' }],
+        'project',
+      );
+      expect(folder.action.permissionInfo?.scopeOptions.filter(o => o.variant === 'narrow')).toEqual([
+        { scope: 'project', variant: 'narrow', label: 'Allow Read (this folder) in project', description: 'Allow only Read (this folder) for this project' },
+      ]);
+
+      const file = await requestAndApprove(
+        'Edit',
+        { file_path: '/home/user/project/src/a.ts' },
+        [{ type: 'addRules', rules: [{ toolName: 'Edit', ruleContent: '//home/user/project/src/a.ts' }], behavior: 'allow', destination: 'localSettings' }],
+        'project',
+      );
+      expect(file.action.permissionInfo?.scopeOptions.find(o => o.variant === 'narrow')?.label).toBe('Allow Edit (this file) in project');
+    });
+
     it('replaces the exact command the CLI suggests for the project with the whole tool, as "this session" grants', async () => {
       const { action, result } = await requestAndApprove('Bash', { command: 'touch probe-one.txt' }, BASH_SUGGESTIONS, 'project');
 
       expect(action.permissionInfo?.scopeOptions.filter(o => o.scope === 'project').map(o => o.label)).toEqual([
-        'Allow Bash (/tmp/project) in project',
+        'Allow Bash (…/project) in project',
         'Allow this exact command in project',
       ]);
       expect(result.updatedPermissions?.filter(u => u.destination === 'localSettings')).toEqual([
