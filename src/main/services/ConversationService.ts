@@ -7,7 +7,14 @@ import path from 'node:path';
 
 import { CONVERSATION_CONSTANTS } from '../../shared/constants';
 import { generateId, ID_PREFIXES } from '../../shared/id';
-import { ChatMessage, Conversation, ConversationUpdate, ConversationWindow } from '../../shared/types';
+import {
+  BackgroundTaskInfo,
+  ChatMessage,
+  Conversation,
+  ConversationUpdate,
+  ConversationWindow,
+  ToolUseInfo,
+} from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import logger from '../utils/logger';
 import { getConversationsPath, isPathWithin } from '../utils/paths';
@@ -116,6 +123,60 @@ function withoutRepeatedIds(id: string, messages: ChatMessage[] | undefined): Ch
     });
   }
   return kept;
+}
+
+/** A call as 0.25.1-rc.2 and rc.3 stored it: an Agent call's record was `agentTask`. */
+type StoredToolUse = ToolUseInfo & { agentTask?: BackgroundTaskInfo };
+
+/**
+ * A stored transcript with each task row folded into the call that started
+ * the task, so the task has one row: its call (see ToolUseInfo.task).
+ *
+ * Done where the file enters the app, like withoutRepeatedIds, so nothing
+ * downstream has to know older files differ; the next write stores the
+ * repaired list. Two things older versions wrote:
+ *
+ * - A background command drawn twice — its call, and a task row of its own,
+ *   because the first notice of the task did not name the call. The row's
+ *   record moves onto the call and the row goes. Matched by id only: the
+ *   row's task id (the call's block id, which that first notice used as the
+ *   task's id) or its tool_use id. A row matching no call here is a task with
+ *   no call in the transcript, and stays.
+ * - An Agent call's record under `agentTask` (rc.2, rc.3), read as `task`.
+ */
+function withTaskRowsOnCalls(id: string, messages: ChatMessage[]): ChatMessage[] {
+  let renamed = 0;
+  const named = messages.map((message) => {
+    const toolUse = message.toolUse as StoredToolUse | undefined;
+    if (!toolUse?.agentTask) return message;
+    renamed++;
+    const { agentTask, ...rest } = toolUse;
+    return { ...message, toolUse: { ...rest, task: rest.task ?? agentTask } };
+  });
+
+  const callIds = new Set(
+    named.flatMap((message) => (message.toolUse?.toolUseBlockId ? [message.toolUse.toolUseBlockId] : [])),
+  );
+  const rowsByCall = new Map<string, BackgroundTaskInfo>();
+  const kept = named.filter((message) => {
+    const row = message.backgroundTask;
+    if (!row) return true;
+    const callId = [row.taskId, row.toolUseId].find((candidate) => candidate !== undefined && callIds.has(candidate));
+    if (callId === undefined) return true;
+    rowsByCall.set(callId, row);
+    return false;
+  });
+
+  if (renamed === 0 && rowsByCall.size === 0) return messages;
+  logger.info('Folded task rows of a stored conversation into their calls', {
+    id, folded: rowsByCall.size, renamed,
+  });
+  return kept.map((message) => {
+    const toolUse = message.toolUse;
+    const row = toolUse?.toolUseBlockId ? rowsByCall.get(toolUse.toolUseBlockId) : undefined;
+    // A call that already has a record keeps it: the row was a second copy.
+    return toolUse && row && !toolUse.task ? { ...message, toolUse: { ...toolUse, task: row } } : message;
+  });
 }
 
 /**
@@ -356,7 +417,8 @@ export class ConversationService {
     try {
       const content = await fs.promises.readFile(filePath, 'utf-8');
       const conversation = JSON.parse(content) as Conversation;
-      return { ...conversation, messages: withoutRepeatedIds(id, conversation.messages) };
+      const messages = withTaskRowsOnCalls(id, withoutRepeatedIds(id, conversation.messages));
+      return { ...conversation, messages };
     } catch (error) {
       // A conversation that is not there is an answer: null.
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;

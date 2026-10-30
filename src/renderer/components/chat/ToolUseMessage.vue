@@ -1,7 +1,9 @@
 <script setup lang="ts">
 /**
  * Compact inline tool use indicator displayed in the message stream.
- * Shows tool name, description, and current status as a log-like entry.
+ * Shows tool name, description, and current status as a log-like entry —
+ * for a call that ran an agent or a background command, the status of that
+ * task.
  * Clickable — opens tool detail modal via emitted event.
  */
 
@@ -9,6 +11,8 @@ import { computed } from 'vue';
 
 import type { ToolUseInfo } from '@shared/types';
 
+import { useChatStore } from '../../stores/chat';
+import { rowStatusDisplay } from '../../utils/row-status';
 import Icon from '../shared/Icon.vue';
 import type { IconName } from '../shared/Icon.vue';
 import Spinner from '../shared/Spinner.vue';
@@ -16,6 +20,8 @@ import Spinner from '../shared/Spinner.vue';
 interface Props {
   /** Tool use information to display */
   toolUse: ToolUseInfo;
+  /** When the call's row was added; the start time of a task record that has none. */
+  timestamp: number;
   /** Number of sub-agent actions spawned by this tool (transitive). 0 means no sub-agent. */
   childCount?: number;
   /** Whether the sub-agent group is currently expanded */
@@ -31,6 +37,8 @@ const emit = defineEmits<{
   (e: 'open-detail', id: string): void;
   (e: 'toggle-expand', id: string): void;
 }>();
+
+const chatStore = useChatStore();
 
 const hasChildren = computed(() => props.childCount > 0);
 
@@ -64,28 +72,20 @@ const toolIcon = computed((): IconName => {
 });
 
 /**
- * Status display configuration
+ * The task this call stands for — the agent it ran, or its command running
+ * in the background. The call is that task's one row in the discussion, so
+ * the row says how the task stands: the call itself is done as soon as it
+ * has launched the task, and "Done" there would be wrong for as long as the
+ * task runs.
  */
-const statusConfig = computed(() => {
-  switch (props.toolUse.status) {
-    case 'pending':
-      return { label: 'Pending', colorClass: 'text-yellow-500 dark:text-yellow-400' };
-    case 'approved':
-      return { label: 'Approved', colorClass: 'text-blue-500 dark:text-blue-400' };
-    case 'executed':
-      return { label: 'Done', colorClass: 'text-green-500 dark:text-green-400' };
-    case 'rejected':
-      return { label: 'Rejected', colorClass: 'text-red-500 dark:text-red-400' };
-    case 'failed':
-      return { label: 'Failed', colorClass: 'text-red-500 dark:text-red-400' };
-    default:
-      return { label: '', colorClass: '' };
-  }
-});
+const task = computed(() => chatStore.taskForToolCall(props.toolUse, props.timestamp));
 
-const showSpinner = computed(() => props.toolUse.status === 'pending' || props.toolUse.status === 'approved');
-const showCheckIcon = computed(() => props.toolUse.status === 'executed');
-const showErrorIcon = computed(() => props.toolUse.status === 'rejected' || props.toolUse.status === 'failed');
+const status = computed(() => rowStatusDisplay(task.value?.status ?? props.toolUse.status));
+
+/** What the task reported when it ended, as a task's own row shows it. */
+const summary = computed(() =>
+  task.value?.status === 'completed' ? task.value.summary : undefined,
+);
 </script>
 
 <template>
@@ -117,6 +117,15 @@ const showErrorIcon = computed(() => props.toolUse.status === 'rejected' || prop
       {{ toolUse.description }}
     </span>
 
+    <!-- Summary snippet (completed task) -->
+    <span
+      v-if="summary"
+      class="text-xs text-surface-400 dark:text-surface-500 truncate max-w-[200px] hidden sm:inline"
+      :title="summary"
+    >
+      — {{ summary }}
+    </span>
+
     <!-- Expand/collapse toggle for sub-agent activity -->
     <button
       v-if="hasChildren"
@@ -140,24 +149,24 @@ const showErrorIcon = computed(() => props.toolUse.status === 'rejected' || prop
     <!-- Status indicator -->
     <div class="ml-auto flex items-center gap-1 shrink-0">
       <Spinner
-        v-if="showSpinner"
+        v-if="status.mark === 'spinner'"
         size="xs"
         class="text-primary-500"
       />
       <Icon
-        v-else-if="showCheckIcon"
+        v-else-if="status.mark === 'check'"
         name="check-circle"
         size="xs"
         class="text-green-500 dark:text-green-400"
       />
       <Icon
-        v-else-if="showErrorIcon"
+        v-else-if="status.mark === 'error'"
         name="x-circle"
         size="xs"
         class="text-red-500 dark:text-red-400"
       />
-      <span :class="['text-xs', statusConfig.colorClass]">
-        {{ statusConfig.label }}
+      <span :class="['text-xs', status.colorClass]">
+        {{ status.label }}
       </span>
       <Icon
         v-if="hasDetail"

@@ -200,6 +200,7 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
   <ToolUseMessage
     v-else-if="message.toolUse"
     :tool-use="message.toolUse"
+    :timestamp="message.timestamp"
     :child-count="props.childCount"
     :is-expanded="props.isExpanded"
     @open-detail="emit('open-tool-detail', $event)"

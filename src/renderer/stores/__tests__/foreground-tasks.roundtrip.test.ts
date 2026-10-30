@@ -209,7 +209,7 @@ describe('foreground tasks', () => {
 
     it('opens a background command on its live output, not on its launch result', async () => {
       call({ toolUseBlockId: 'toolu_build', toolName: 'Bash', input: { command: 'npm run build', run_in_background: true }, description: 'Run: npm run build' });
-      notify({ taskId: 'toolu_build', status: 'running', description: 'npm run build', backgrounded: true });
+      notify({ taskId: 'toolu_build', toolUseId: 'toolu_build', status: 'running', description: 'npm run build', backgrounded: true });
       result('toolu_build', 'Command running in background with ID: b-build');
       notify({ taskId: 'b-build', status: 'running', previousTaskId: 'toolu_build', backgrounded: true });
       await settle(20);
@@ -276,7 +276,7 @@ describe('foreground tasks', () => {
       await send(app, 'and then?');
       await settle(20);
 
-      expect(onDisk(conversationId)?.messages.find((m) => m.toolUse?.agentTask)?.toolUse?.agentTask?.status).toBe('failed');
+      expect(onDisk(conversationId)?.messages.find((m) => m.toolUse?.task)?.toolUse?.task?.status).toBe('failed');
 
       await restart();
       await clickCall('Agent');

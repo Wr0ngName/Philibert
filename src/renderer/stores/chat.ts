@@ -237,6 +237,20 @@ export function isBackgroundTask(task: BackgroundTask): boolean {
 }
 
 /**
+ * Whether a call stands for its task in the discussion: an agent, or a
+ * command in the background. A foreground command's call does not — its
+ * result is its output, and the call's own status is the command's.
+ */
+function callStandsForTask(task: BackgroundTask): boolean {
+  return task.taskType === 'agent' || isBackgroundTask(task);
+}
+
+/** The kind of task a tool runs: an Agent/Task call's is an agent, anything else's a command. */
+function taskTypeOfTool(toolName: string): 'agent' | 'command' {
+  return toolName === 'Task' || toolName === 'Agent' ? 'agent' : 'command';
+}
+
+/**
  * The record an Agent call keeps of the agent it ran, made when the call's
  * result arrives. The result says how the agent stands: launched into the
  * background, so running, or run to the end in the foreground.
@@ -2009,7 +2023,7 @@ export const useChatStore = defineStore('chat', () => {
           ...(result.taskListId ? { taskListId: result.taskListId } : {}),
           // Saved for the same reason: the call opens its agent's view by
           // this record, after a restart as much as now.
-          ...(result.agent ? { agentTask: agentTaskRecord(msg, result.agent) } : {}),
+          ...(result.agent ? { task: agentTaskRecord(msg, result.agent) } : {}),
         };
         // Images the tool produced go on the MESSAGE, not inside toolUse:
         // they are the result's content as far as the reader is concerned,
@@ -2080,10 +2094,7 @@ export const useChatStore = defineStore('chat', () => {
     const sink = messageSink(conversationId);
     if (!sink) return 'command';
     for (const m of sink) {
-      if (m.toolUse?.toolUseBlockId === toolUseId) {
-        const name = m.toolUse.toolName;
-        return name === 'Task' || name === 'Agent' ? 'agent' : 'command';
-      }
+      if (m.toolUse?.toolUseBlockId === toolUseId) return taskTypeOfTool(m.toolUse.toolName);
     }
     return 'command';
   }
@@ -2366,64 +2377,76 @@ export const useChatStore = defineStore('chat', () => {
     for (const list of [messages.value, state?.detachedTurn ?? []]) {
       const message = list.find((m) => m.backgroundTask?.taskId === taskId);
       if (message?.backgroundTask) return taskForRow(conversationId, message.backgroundTask, message.timestamp);
-      const call = list.find((m) => m.toolUse?.agentTask?.taskId === taskId);
-      if (call?.toolUse) return taskForAgentCall(conversationId, call.toolUse, call.timestamp);
+      const call = list.find((m) => m.toolUse?.task?.taskId === taskId);
+      if (call?.toolUse) return recordedTaskOfCall(conversationId, call.toolUse, call.timestamp);
     }
     return null;
   }
 
   /**
-   * The agent an Agent call ran, for its detail view: the tracked task, or
-   * the call's record of it read back as a task row's is. Null for a call
-   * with no such record — any other tool, or an Agent call from before calls
-   * kept one.
+   * The task a call ran, as tracked: under the id the call's record names,
+   * or under the call's own id — what a command's task is first tracked by,
+   * and what an agent's task states as the call that started it.
    */
-  function taskForAgentCall(conversationId: string, toolUse: ToolUseInfo, timestamp: number): BackgroundTask | null {
-    const record = toolUse.agentTask;
+  function trackedTaskOfCall(conversationId: string, toolUse: ToolUseInfo): BackgroundTask | undefined {
+    if (toolUse.task) {
+      const tracked = trackedTask(conversationId, toolUse.task.taskId);
+      if (tracked) return tracked;
+    }
+    const blockId = toolUse.toolUseBlockId;
+    if (!blockId) return undefined;
+    const tasks = conversationStates.value.get(conversationId)?.backgroundTasks;
+    for (const task of tasks?.values() ?? []) {
+      if (task.toolUseId === blockId || task.id === blockId || task.formerIds?.includes(blockId)) return task;
+    }
+    return undefined;
+  }
+
+  /**
+   * The task a call keeps a record of, read back as a task row's is. Null for
+   * a call with no record: one that ran no such task, or one saved before
+   * calls kept one.
+   */
+  function recordedTaskOfCall(conversationId: string, toolUse: ToolUseInfo, timestamp: number): BackgroundTask | null {
+    const record = toolUse.task;
     if (!record) return null;
-    const tracked = trackedTask(conversationId, record.taskId);
-    if (tracked) return tracked;
     const agentType = toolUse.input?.subagent_type;
     return {
       ...taskForRow(conversationId, record, timestamp),
-      taskType: 'agent',
+      taskType: taskTypeOfTool(toolUse.toolName),
       ...(typeof agentType === 'string' && agentType && { agentType }),
     };
   }
 
   /**
-   * The task a tool call in the current conversation started, if any: the
-   * task tracked under the call's id — the command or agent it ran — or the
-   * agent an Agent call keeps a record of.
+   * The task a call in the current conversation stands for — the agent it
+   * ran, or its command running in the background — for the call's row and
+   * its detail view. Null for any other call, a foreground command included.
    */
   function taskForToolCall(toolUse: ToolUseInfo, timestamp: number): BackgroundTask | null {
     const conversationId = currentConversationId.value;
     if (!conversationId) return null;
-    const blockId = toolUse.toolUseBlockId;
-    if (blockId) {
-      const tasks = conversationStates.value.get(conversationId)?.backgroundTasks;
-      for (const task of tasks?.values() ?? []) {
-        if (task.toolUseId === blockId || task.id === blockId || task.formerIds?.includes(blockId)) return task;
-      }
-    }
-    return taskForAgentCall(conversationId, toolUse, timestamp);
+    const tracked = trackedTaskOfCall(conversationId, toolUse);
+    if (tracked) return callStandsForTask(tracked) ? tracked : null;
+    return recordedTaskOfCall(conversationId, toolUse, timestamp);
   }
 
   /**
-   * Messages about to be stored, with each task row — and each Agent call's
-   * record of its agent — brought up to date from its tracked task, so the
-   * stored record says how the task really stands.
+   * Messages about to be stored, with each task row — and each call's record
+   * of the task it stands for — brought up to date from its tracked task, so
+   * the stored record says how the task really stands.
    * Rows of untracked tasks are left exactly as they were: nothing new is
    * known about them, and the store is no place to guess. Returns new
    * objects only for the rows it changes.
    */
   function withTasksAsTracked(conversationId: string, list: ChatMessage[]): ChatMessage[] {
     return list.map((message) => {
-      const agentTask = message.toolUse?.agentTask;
-      if (message.toolUse && agentTask) {
-        const tracked = trackedTask(conversationId, agentTask.taskId);
-        if (!tracked) return message;
-        return { ...message, toolUse: { ...message.toolUse, agentTask: taskRecord(agentTask.taskId, tracked) } };
+      const toolUse = message.toolUse;
+      if (toolUse) {
+        const tracked = trackedTaskOfCall(conversationId, toolUse);
+        if (!tracked || !callStandsForTask(tracked)) return message;
+        const record = taskRecord(toolUse.task?.taskId ?? tracked.id, tracked);
+        return { ...message, toolUse: { ...toolUse, task: record } };
       }
       if (!message.backgroundTask) return message;
       const tracked = trackedTask(conversationId, message.backgroundTask.taskId);
@@ -2431,7 +2454,6 @@ export const useChatStore = defineStore('chat', () => {
       return { ...message, backgroundTask: taskRecord(message.backgroundTask.taskId, tracked) };
     });
   }
-
 
   /**
    * Mark all in-flight tool use messages as 'executed'.

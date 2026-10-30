@@ -1204,6 +1204,21 @@ describe('SDKMessageHandler', () => {
       }));
     });
 
+    it('names the call a command launched in the background is the task of', async () => {
+      // Without it the discussion drew the task a row of its own beside
+      // the call.
+      await handler.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'toolu_bg', name: 'Bash', input: { command: 'npm run build', run_in_background: true } }] },
+        parent_tool_use_id: null,
+      } as never);
+
+      expect(callbacks.onTaskNotification).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: 'toolu_bg',
+        toolUseId: 'toolu_bg',
+      }));
+    });
+
     it('names the agent that started a command, and none for the main conversation', async () => {
       // The agent, then a frame of the agent's that starts a background
       // command, then that command — the order the CLI sends them in.

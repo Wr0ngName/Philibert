@@ -854,7 +854,7 @@ describe('useChatStore', () => {
   describe('background task lifecycle', () => {
     it('remaps the initial toolUseId-keyed entry when task_started arrives before user-message remap', () => {
       // Replays the real SDK sequence captured in production logs:
-      //  1. Tool use block detected         → running, taskId = toolu_xxx
+      //  1. Tool use block detected         → running, taskId = toolUseId = toolu_xxx
       //  2. task_started (no previousTaskId)→ running, taskId = bash_xxx, toolUseId = toolu_xxx
       //  3. User-message remap               → running, taskId = bash_xxx, previousTaskId = toolu_xxx
       //  4. task_updated                     → completed, taskId = bash_xxx
@@ -867,6 +867,7 @@ describe('useChatStore', () => {
 
       store.handleTaskNotification(TEST_CONV_ID, {
         taskId: TOOL_USE_ID,
+        toolUseId: TOOL_USE_ID,
         status: 'running',
         description: 'Replay 1',
       });

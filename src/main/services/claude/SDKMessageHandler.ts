@@ -621,8 +621,12 @@ export class SDKMessageHandler {
             toolName: toolBlock.name,
             description: description.slice(0, 100),
           });
+          // Named as the call's task — the call is the task's row in the
+          // discussion. Without toolUseId the renderer could not tell, and
+          // drew the task a second row of its own next to the call.
           this.callbacks.onTaskNotification({
             taskId: toolBlock.id,
+            toolUseId: toolBlock.id,
             status: 'running',
             description,
             backgrounded: true,

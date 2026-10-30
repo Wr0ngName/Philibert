@@ -7,7 +7,7 @@ import { ref, computed, nextTick, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, ChatMessage, MessageImage, PendingAction, PermissionOptionVariant, PermissionScope, ToolUseInfo } from '@shared/types';
-import { isBackgroundTask, useChatStore } from '../../stores/chat';
+import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
 import { useClaudeChat } from '../../composables/useClaudeChat';
@@ -310,7 +310,7 @@ function openToolDetailFor(message: ChatMessage) {
 function showToolCall(message: ChatMessage) {
   if (!message.toolUse) return;
   const task = chatStore.taskForToolCall(message.toolUse, message.timestamp);
-  if (task && (task.taskType === 'agent' || isBackgroundTask(task))) {
+  if (task) {
     openTaskDetail(task.id);
     return;
   }

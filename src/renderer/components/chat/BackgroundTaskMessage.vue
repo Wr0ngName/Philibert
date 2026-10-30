@@ -13,6 +13,7 @@ import { computed } from 'vue';
 import type { BackgroundTaskInfo } from '@shared/types';
 
 import { useChatStore } from '../../stores/chat';
+import { rowStatusDisplay } from '../../utils/row-status';
 import Icon from '../shared/Icon.vue';
 import Spinner from '../shared/Spinner.vue';
 
@@ -34,26 +35,7 @@ const task = computed(() =>
   chatStore.taskForRow(chatStore.currentConversationId ?? '', props.backgroundTask, props.timestamp),
 );
 
-const statusConfig = computed(() => {
-  switch (task.value.status) {
-    case 'running':
-      return { label: 'Running', colorClass: 'text-blue-500 dark:text-blue-400' };
-    case 'completed':
-      return { label: 'Done', colorClass: 'text-green-500 dark:text-green-400' };
-    case 'failed':
-      return { label: 'Failed', colorClass: 'text-red-500 dark:text-red-400' };
-    case 'stopped':
-      return { label: 'Stopped', colorClass: 'text-yellow-500 dark:text-yellow-400' };
-    default:
-      return { label: '', colorClass: '' };
-  }
-});
-
-const showSpinner = computed(() => task.value.status === 'running');
-const showCheckIcon = computed(() => task.value.status === 'completed');
-const showErrorIcon = computed(() =>
-  task.value.status === 'failed' || task.value.status === 'stopped'
-);
+const status = computed(() => rowStatusDisplay(task.value.status));
 </script>
 
 <template>
@@ -95,24 +77,24 @@ const showErrorIcon = computed(() =>
     <!-- Status indicator -->
     <div class="ml-auto flex items-center gap-1 shrink-0">
       <Spinner
-        v-if="showSpinner"
+        v-if="status.mark === 'spinner'"
         size="xs"
         class="text-primary-500"
       />
       <Icon
-        v-else-if="showCheckIcon"
+        v-else-if="status.mark === 'check'"
         name="check-circle"
         size="xs"
         class="text-green-500 dark:text-green-400"
       />
       <Icon
-        v-else-if="showErrorIcon"
+        v-else-if="status.mark === 'error'"
         name="x-circle"
         size="xs"
         class="text-red-500 dark:text-red-400"
       />
-      <span :class="['text-xs', statusConfig.colorClass]">
-        {{ statusConfig.label }}
+      <span :class="['text-xs', status.colorClass]">
+        {{ status.label }}
       </span>
     </div>
   </div>

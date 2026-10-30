@@ -120,17 +120,19 @@ export interface ToolUseInfo {
    */
   taskListId?: string;
   /**
-   * The agent an Agent/Task call ran, as a task record: its id (`agentId` on
-   * the call's structured result), and how it stands as of the last save,
-   * brought up to date from the tracked task the way a task row is.
+   * The task this call ran, as a task record: an Agent/Task call's agent (its
+   * id is `agentId` on the call's structured result), or a command running
+   * in the background — launched there, or moved there once it had started.
+   * How it stands as of the last save, brought up to date from the tracked
+   * task the way a task row is.
    *
-   * Clicking the call opens the agent's view — its transcript, read by this
-   * id. The tracked task does not outlive the app, so without this a
-   * reopened conversation could show only the call's prompt and final
-   * answer, and could not say how a background agent ended: its call
-   * finishes when the agent is launched.
+   * The call is the task's one row in the discussion: it shows how the task
+   * stands, and clicking it opens the task's view — an agent's transcript, a
+   * command's output. The tracked task does not outlive the app, so without
+   * this a reopened conversation could not say how such a task ended: its
+   * call finishes as soon as the task is launched.
    */
-  agentTask?: BackgroundTaskInfo;
+  task?: BackgroundTaskInfo;
 }
 
 /** Data emitted for every tool_use block in assistant messages */
@@ -165,7 +167,7 @@ export interface ToolResultData {
    * The agent an Agent/Task call ran, from its structured result: its id,
    * and whether it was launched into the background (`async_launched`)
    * rather than run to completion in the foreground (`completed`).
-   * See ToolUseInfo.agentTask.
+   * See ToolUseInfo.task.
    */
   agent?: AgentRun;
   /**
