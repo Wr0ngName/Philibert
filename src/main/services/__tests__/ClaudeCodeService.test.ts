@@ -693,6 +693,38 @@ describe('ClaudeCodeService', () => {
         expect(mockNotificationService.showTaskEnded.mock.calls).toEqual([[TEST_CONV_ID, 'Build the app']]);
       });
 
+      // Reported: closing the app gave no warning while a task ran. A turn the
+      // CLI starts by itself runs tools and agents like any other, and quitting
+      // ends it, so the close guard has to count it.
+      it('counts the turn the CLI starts by itself as work quitting would end', async () => {
+        const gates: (() => void)[] = [];
+        const gate = () => new Promise<void>((resolve) => { gates.push(resolve); });
+        mockQuery.mockReturnValue({
+          ...createMockQueryIterator([]),
+          [Symbol.asyncIterator]: async function* () {
+            yield { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 };
+            await gate();
+            yield { type: 'system', subtype: 'session_state_changed', state: 'running' };
+            await gate();
+            yield { type: 'result', subtype: 'success', origin: { kind: 'task-notification' }, num_turns: 1, duration_ms: 10 };
+            await gate();
+          },
+        });
+
+        await service.sendMessage(TEST_CONV_ID, 'Build it in the background', '/home/user');
+        await vi.waitFor(() => expect(gates).toHaveLength(1));
+        expect(service.getRunningWork().turns).toBe(0);
+
+        gates[0]();
+        await vi.waitFor(() => expect(gates).toHaveLength(2));
+        expect(service.getRunningWork().turns).toBe(1);
+
+        gates[1]();
+        await vi.waitFor(() => expect(gates).toHaveLength(3));
+        expect(service.getRunningWork().turns).toBe(0);
+        gates[2]();
+      });
+
       it('keeps the conversation busy when the user sent something during the turn the CLI started', async () => {
         const gates: (() => void)[] = [];
         const gate = () => new Promise<void>((resolve) => { gates.push(resolve); });
