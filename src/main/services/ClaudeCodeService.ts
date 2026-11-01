@@ -1725,8 +1725,12 @@ export class ClaudeCodeService {
     }
 
     // Its live-task set goes with it: a session that is gone cannot be
-    // running anything.
+    // running anything. Said to the renderer as an empty set, which is the
+    // only thing that retires a task whose own end never came — closing the
+    // subprocess ends its tasks without a word from the CLI, and with no live
+    // set after it, their rows said Running for good.
     this.liveBackgroundTasks.delete(conversationId);
+    this.send(IPC_CHANNELS.CLAUDE_BACKGROUND_TASKS_CHANGED, conversationId, [] satisfies LiveBackgroundTask[]);
 
     // Nor read anything still waiting for its next step: said, so the
     // renderer gives those messages back to the user instead of waiting on

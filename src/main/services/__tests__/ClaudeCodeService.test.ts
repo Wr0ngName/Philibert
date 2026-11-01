@@ -762,6 +762,29 @@ describe('ClaudeCodeService', () => {
         expect(mockNotificationService.showTaskEnded.mock.calls).toEqual([[TEST_CONV_ID, 'Build the app']]);
       });
 
+      // A session that ends takes its tasks with it, and the CLI says nothing
+      // of them: the renderer is told the live set is now empty, or their
+      // rows say Running for good.
+      it('tells the renderer no task is live once the session ends', async () => {
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          {
+            type: 'system',
+            subtype: 'background_tasks_changed',
+            tasks: [{ task_id: 'b-build', task_type: 'local_bash', description: 'Build the app' }],
+          },
+          { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 },
+        ]));
+
+        await service.sendMessage(TEST_CONV_ID, 'Build it in the background', '/home/user');
+
+        const liveSets = () => mockSend.mock.calls
+          .filter((call) => call[0] === IPC_CHANNELS.CLAUDE_BACKGROUND_TASKS_CHANGED)
+          .map((call) => [call[1], (call[2] as { taskId: string }[]).map((task) => task.taskId)]);
+        await vi.waitFor(() => {
+          expect(liveSets()).toEqual([[TEST_CONV_ID, ['b-build']], [TEST_CONV_ID, []]]);
+        });
+      });
+
       // Reported: closing the app gave no warning while a task ran. A turn the
       // CLI starts by itself runs tools and agents like any other, and quitting
       // ends it, so the close guard has to count it.
