@@ -19,6 +19,7 @@ const { mockFs, mockFileSystem } = vi.hoisted(() => {
     mockFileSystem: fileSystem,
     mockFs: {
       existsSync: vi.fn(),
+      readdirSync: vi.fn().mockReturnValue([]),
       mkdirSync: vi.fn(),
       constants: {
         W_OK: 2,
@@ -66,6 +67,7 @@ const { mockFs, mockFileSystem } = vi.hoisted(() => {
 vi.mock('node:fs', () => ({
   default: mockFs,
   existsSync: mockFs.existsSync,
+  readdirSync: mockFs.readdirSync,
   mkdirSync: mockFs.mkdirSync,
   constants: mockFs.constants,
   promises: mockFs.promises,
@@ -737,6 +739,12 @@ describe('ConversationService', () => {
       process.env.HOME = '/mock-home';
       mockFs.promises.access.mockResolvedValue(undefined);
       mockFs.existsSync.mockImplementation((p: string) => mockFileSystem.has(p));
+      // A folder lists what the fake file system holds under it.
+      mockFs.readdirSync.mockImplementation((dir: string) => [...new Set(
+        [...mockFileSystem.keys()]
+          .filter((p) => p.startsWith(`${dir}/`))
+          .map((p) => p.slice(dir.length + 1).split('/')[0]),
+      )]);
     });
 
     afterEach(() => {
@@ -757,7 +765,6 @@ describe('ConversationService', () => {
       mockFileSystem.set(sessionFilePath, SESSION_FILE_CONTENT);
 
       mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-        if (dir === '/mock-home/.claude/projects') return [someDir];
         if (dir === '/app/conversations') return ['conv_recover.json'];
         return [];
       });
@@ -784,7 +791,6 @@ describe('ConversationService', () => {
       );
 
       mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-        if (dir === '/mock-home/.claude/projects') return [someDir];
         if (dir === '/app/conversations') return ['conv_already_ok.json'];
         return [];
       });
@@ -804,7 +810,6 @@ describe('ConversationService', () => {
       mockFileSystem.set('/app/conversations/conv_gone.json', original);
 
       mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-        if (dir === '/mock-home/.claude/projects') return ['empty-dir'];
         if (dir === '/app/conversations') return ['conv_gone.json'];
         return [];
       });
@@ -821,7 +826,6 @@ describe('ConversationService', () => {
       mockFileSystem.set('/app/conversations/conv_no_sid.json', original);
 
       mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-        if (dir === '/mock-home/.claude/projects') return [];
         if (dir === '/app/conversations') return ['conv_no_sid.json'];
         return [];
       });

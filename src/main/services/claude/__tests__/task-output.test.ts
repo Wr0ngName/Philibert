@@ -19,7 +19,10 @@ vi.mock('../../../utils/logger', () => ({
 }));
 
 import type { ChatMessage } from '../../../../shared/types';
-import { MAX_TASK_OUTPUT_BYTES, attachTranscriptImages, cliTempRoot, locateTaskOutput, readTaskOutput, transcriptToMessages } from '../task-output';
+import {
+  MAX_TASK_OUTPUT_BYTES, attachTranscriptImages, cliTempRoot, locateTaskOutput, mergeByTime, messagesSentToAgent,
+  readTaskOutput, transcriptToMessages,
+} from '../task-output';
 
 import transcript from './fixtures/agent-transcript.json';
 
@@ -227,5 +230,61 @@ describe('readTaskOutput', () => {
   it('starts over when the file was replaced by a shorter one', async () => {
     fs.writeFileSync(file, 'new');
     expect(await readTaskOutput(file, 999)).toEqual({ text: 'new', nextByte: 3, skippedBytes: 0 });
+  });
+});
+
+describe('messagesSentToAgent', () => {
+  // The attachment record the CLI writes for a message that reaches a
+  // running agent at its next tool round (2.1.280), less its bookkeeping.
+  function queued(uuid: string, prompt: string, kind = 'coordinator', timestamp = '2026-11-02T21:08:42.000Z') {
+    return JSON.stringify({
+      type: 'attachment', uuid, timestamp,
+      attachment: { type: 'queued_command', prompt, source_uuid: 'src-1', origin: { kind }, isMeta: true },
+    });
+  }
+
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-transcript-'));
+    file = path.join(dir, 'agent-a1.jsonl');
+  });
+
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it("takes only the main conversation's messages, as the agent's file has them", () => {
+    fs.writeFileSync(file, [
+      JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-11-02T21:08:40.000Z', message: { role: 'user', content: 'Do the work' } }),
+      JSON.stringify({ type: 'attachment', uuid: 'd1', attachment: { type: 'date', date: '2026-11-02' } }),
+      queued('q1', 'Also do this'),
+      queued('q2', 'Your background command finished', 'task-notification'),
+      '',
+    ].join('\n'));
+
+    expect(messagesSentToAgent(file)).toEqual([
+      { id: 'q1', role: 'user', content: 'Also do this', timestamp: Date.parse('2026-11-02T21:08:42.000Z') },
+    ]);
+  });
+
+  it('leaves a line the CLI is still writing for the next read', () => {
+    const whole = queued('q1', 'Also do this');
+    fs.writeFileSync(file, `${whole}\n${queued('q2', 'And this').slice(0, 60)}`);
+
+    expect(messagesSentToAgent(file).map((m) => m.id)).toEqual(['q1']);
+  });
+
+  it('has nothing to give for an agent with no file', () => {
+    expect(messagesSentToAgent(path.join(dir, 'missing.jsonl'))).toEqual([]);
+  });
+});
+
+describe('mergeByTime', () => {
+  const at = (id: string, timestamp: number): ChatMessage => ({ id, role: 'user', content: id, timestamp });
+
+  it('puts each where its time falls, and one after everything at the end', () => {
+    const merged = mergeByTime([at('a', 1), at('b', 3), at('c', 5)], [at('x', 2), at('y', 9)]);
+
+    expect(merged.map((m) => m.id)).toEqual(['a', 'x', 'b', 'c', 'y']);
   });
 });

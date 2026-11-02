@@ -26,6 +26,7 @@ import { MAIN_CONSTANTS } from '../../constants/app';
 import { stripAnsi } from '../../utils/ansi';
 import logger from '../../utils/logger';
 import { getChannelSessionsDir, WindowsPaths } from '../../utils/resourcePaths';
+import { findSessionTranscript } from '../claude/transcript-files';
 
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 
@@ -857,17 +858,6 @@ export class ChannelSession {
   private findSessionJsonl(): string | null {
     const sessionId = this.discoverSessionId();
     if (!sessionId) return null;
-
-    const projectsDir = path.join(CLAUDE_HOME, 'projects');
-    const fileName = `${sessionId}.jsonl`;
-    try {
-      for (const dir of fs.readdirSync(projectsDir)) {
-        const candidate = path.join(projectsDir, dir, fileName);
-        if (fs.existsSync(candidate)) return candidate;
-      }
-    } catch {
-      // projects dir may not exist yet
-    }
-    return null;
+    return findSessionTranscript(sessionId, CLAUDE_HOME);
   }
 }

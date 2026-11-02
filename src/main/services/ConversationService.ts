@@ -20,6 +20,8 @@ import logger from '../utils/logger';
 import { getConversationsPath, isPathWithin } from '../utils/paths';
 import { generateTitleFromContent } from '../utils/stringUtils';
 
+import { findSessionTranscript } from './claude/transcript-files';
+
 /** How an incoming write differs from the one before it, when it does. */
 export interface WriteAnomaly {
   reason: string;
@@ -808,16 +810,15 @@ export class ConversationService {
     const home = process.env.HOME || process.env.USERPROFILE;
     if (!home) return;
 
-    const claudeProjectsDir = path.join(home, '.claude', 'projects');
+    const claudeDir = path.join(home, '.claude');
 
     try {
-      await fs.promises.access(claudeProjectsDir);
+      await fs.promises.access(path.join(claudeDir, 'projects'));
     } catch {
       return;
     }
 
     try {
-      const projectDirs = await fs.promises.readdir(claudeProjectsDir);
       const conversationFiles = await fs.promises.readdir(this.conversationsDir);
       let fixed = 0;
 
@@ -829,18 +830,7 @@ export class ConversationService {
           const conversation = JSON.parse(content) as Conversation;
           if (!conversation.sdkSessionId || !conversation.workingDirectory) continue;
 
-          // Search ALL project dirs for the session file by its unique ID.
-          // This avoids replicating the CLI's internal CWD escaping logic.
-          const sessionFileName = `${conversation.sdkSessionId}.jsonl`;
-          let sessionFilePath: string | null = null;
-          for (const dir of projectDirs) {
-            const candidate = path.join(claudeProjectsDir, dir, sessionFileName);
-            if (fs.existsSync(candidate)) {
-              sessionFilePath = candidate;
-              break;
-            }
-          }
-
+          const sessionFilePath = findSessionTranscript(conversation.sdkSessionId, claudeDir);
           if (!sessionFilePath) continue; // session gone entirely — leave as-is
 
           // Read the actual CWD from the session .jsonl file

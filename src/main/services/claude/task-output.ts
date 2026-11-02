@@ -137,6 +137,73 @@ export async function attachTranscriptImages(
 }
 
 /**
+ * The messages the main conversation sent an agent while it was working
+ * (SendMessage), read from the agent's transcript file.
+ *
+ * Needed beside getSubagentMessages, which returns only the transcript's
+ * user and assistant records. A message that reaches a running agent at its
+ * next tool round is recorded as neither, but as an attachment —
+ * `{ type: 'queued_command', prompt, origin: { kind: 'coordinator' } }`
+ * (CLI 2.1.280) — so the agent's view showed nothing of it while the agent
+ * went on to act on it. One that arrives as the agent ends is a user record
+ * of its own, which getSubagentMessages does return.
+ *
+ * Ids are the records' uuids, as in transcriptToMessages, so reading again
+ * keeps them. A line that is not a whole record — the last one, while the
+ * CLI is writing it — is skipped, and read in full next time.
+ */
+export function messagesSentToAgent(transcriptFile: string): ChatMessage[] {
+  let text: string;
+  try {
+    text = fs.readFileSync(transcriptFile, 'utf-8');
+  } catch {
+    return [];
+  }
+  const messages: ChatMessage[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.includes('"queued_command"')) continue;
+    let record: {
+      type?: string;
+      uuid?: string;
+      timestamp?: string;
+      attachment?: { type?: string; prompt?: unknown; origin?: { kind?: string } };
+    };
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const attachment = record.attachment;
+    if (record.type !== 'attachment' || attachment?.type !== 'queued_command') continue;
+    if (attachment.origin?.kind !== 'coordinator') continue;
+    if (typeof attachment.prompt !== 'string' || !attachment.prompt.trim() || !record.uuid) continue;
+    const stamp = Date.parse(record.timestamp ?? '');
+    messages.push({
+      id: record.uuid,
+      role: 'user',
+      content: attachment.prompt,
+      timestamp: Number.isNaN(stamp) ? 0 : stamp,
+    });
+  }
+  return messages;
+}
+
+/**
+ * `extra` placed among `messages` where its time puts it: each before the
+ * first message that came after it. Both lists are in time order.
+ */
+export function mergeByTime(messages: ChatMessage[], extra: ChatMessage[]): ChatMessage[] {
+  if (extra.length === 0) return messages;
+  const merged: ChatMessage[] = [];
+  let next = 0;
+  for (const message of messages) {
+    while (next < extra.length && extra[next].timestamp < message.timestamp) merged.push(extra[next++]);
+    merged.push(message);
+  }
+  return merged.concat(extra.slice(next));
+}
+
+/**
  * An agent's transcript as the chat messages the discussion is drawn from,
  * so the same list renders it: what it was asked, what it said, the calls it
  * made with their results.

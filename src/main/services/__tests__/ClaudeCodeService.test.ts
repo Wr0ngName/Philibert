@@ -21,15 +21,21 @@
  */
 
 import * as fs from 'fs';
+// Not mocked: the CLI's transcript files are read through node:fs, from a
+// real folder laid out as the CLI lays it out.
+import * as realFs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Use vi.hoisted to ensure mocks are available before vi.mock is called
-const { mockQuery, mockSend, mockSafeStorage, mockDialog, mockStoreData, mockNotificationService } = vi.hoisted(() => {
+const { mockQuery, mockGetSubagentMessages, mockSend, mockSafeStorage, mockDialog, mockStoreData, mockNotificationService } = vi.hoisted(() => {
   const storeData: Record<string, unknown> = {};
 
   return {
     mockQuery: vi.fn(),
+    mockGetSubagentMessages: vi.fn(),
     mockSend: vi.fn(),
     mockSafeStorage: {
       isEncryptionAvailable: vi.fn(() => true),
@@ -80,6 +86,7 @@ vi.mock('electron-store', () => ({
 // Mock the SDK
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: mockQuery,
+  getSubagentMessages: mockGetSubagentMessages,
 }));
 
 // Mock resourcePaths (uses electron's app which isn't available in tests)
@@ -124,6 +131,7 @@ import { IPC_CHANNELS } from '../../../shared/types';
 import { createMockBrowserWindow } from '../../__tests__/setup';
 import ClaudeCodeService from '../ClaudeCodeService';
 import ConfigService from '../ConfigService';
+import agentSentMessageFixture from '../claude/__tests__/fixtures/agent-sent-message.jsonl?raw';
 import { cliTempRoot } from '../claude/task-output';
 
 // Test conversation ID for multi-conversation tests
@@ -1754,6 +1762,51 @@ describe('ClaudeCodeService', () => {
       await vi.waitFor(() => {
         expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_DONE, TEST_CONV_ID);
       });
+    });
+  });
+
+  // ===========================================================================
+  // An agent's transcript, for its detail view
+  // ===========================================================================
+  describe('getAgentTranscript', () => {
+    // A real run (CLI 2.1.280): a background agent echoing five words, sent a
+    // message by the main conversation while it worked, which it acted on.
+    // The SDK's reader returns the user and assistant records only; the
+    // message is an attachment record in the agent's file.
+    const records = agentSentMessageFixture.trim().split('\n').map((line) => JSON.parse(line) as { type: string; uuid: string });
+    let configDir: string;
+
+    beforeEach(() => {
+      // The CLI's own layout, in a folder of its own.
+      configDir = realFs.mkdtempSync(path.join(os.tmpdir(), 'cli-config-'));
+      const project = path.join(configDir, 'projects', 'some-project');
+      realFs.mkdirSync(path.join(project, 'session-1', 'subagents'), { recursive: true });
+      realFs.writeFileSync(path.join(project, 'session-1.jsonl'), '');
+      realFs.writeFileSync(path.join(project, 'session-1', 'subagents', 'agent-a1.jsonl'), agentSentMessageFixture);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+      mockGetSubagentMessages.mockResolvedValue(records.filter((r) => r.type === 'user' || r.type === 'assistant'));
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      realFs.rmSync(configDir, { recursive: true, force: true });
+    });
+
+    it('shows a message the main conversation sent the agent, where the agent got it', async () => {
+      const messages = await service.getAgentTranscript(TEST_CONV_ID, 'a1', 'session-1');
+
+      expect(messages.map((m) => m.toolUse ? `call:${String(m.toolUse.input?.command)}` : `${m.role}:${m.content.slice(0, 30)}`)).toEqual([
+        'user:Run these Bash commands one at',
+        'call:echo one',
+        'call:echo two',
+        'user:PING-FROM-MAIN: when you are d',
+        'call:echo three',
+        'call:echo four',
+        'call:echo five',
+        "assistant:Now I'll run the additional co",
+        'call:echo hello',
+        'assistant:done',
+      ]);
     });
   });
 

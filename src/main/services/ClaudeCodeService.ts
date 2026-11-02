@@ -97,10 +97,12 @@ import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandle
 import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
 import { claudeAiConnectorAuthPage, readClaudeAiConnectors } from './claude/connectors';
 import {
-  attachTranscriptImages, cliTempRoot, locateTaskOutput, readTaskOutput, transcriptToMessages, type FoundImages,
+  attachTranscriptImages, cliTempRoot, locateTaskOutput, mergeByTime, messagesSentToAgent, readTaskOutput,
+  transcriptToMessages, type FoundImages,
 } from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
 import type { ExtractedImage } from './claude/tool-result-images';
+import { findAgentTranscript } from './claude/transcript-files';
 
 /**
  * An entry in the known-model catalog. `minor` is absent for the Claude 5
@@ -1967,11 +1969,15 @@ export class ClaudeCodeService {
       ...(session ? { dir: session.workingDirectory } : {}),
     });
     const found: FoundImages[] = [];
-    const messages = transcriptToMessages(
+    const transcript = transcriptToMessages(
       entries,
       (toolUseBlockId, content) => writeToolResultFile(conversationId, toolUseBlockId, content),
       (message, images) => found.push({ message, images }),
     );
+    // What the main conversation sent the agent while it worked, which
+    // getSubagentMessages leaves out; see messagesSentToAgent.
+    const file = findAgentTranscript(sessionId, agentId);
+    const messages = file ? mergeByTime(transcript, messagesSentToAgent(file)) : transcript;
     // saveOnce: the transcript is read again every few seconds while the
     // agent runs, and every read finds the same images.
     await attachTranscriptImages(found, (image) => this.imageStore.saveOnce(conversationId, image));
