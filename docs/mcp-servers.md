@@ -37,6 +37,35 @@ by hand.
 
 ---
 
+## claude.ai connectors (Settings → Tool Servers)
+
+Signed in with a claude.ai account, Claude Code also connects the account's
+**connectors** — the services added on claude.ai, such as Gmail or Google
+Drive — in every conversation, with nothing to set up. Settings lists them
+under **claude.ai connectors**, with how each stands for the current project:
+
+| Status | Meaning |
+|---|---|
+| Connected | Claude can use its tools. |
+| Needs authorising | Not authorised on claude.ai yet. Claude gets only a way to ask you to authorise it. |
+| Failed | It could not connect; the reason is shown. |
+| Off in this project | Turned off here. |
+
+A connector that needs authorising is why Claude sometimes says, out of the
+blue, that Gmail or Google Drive "need authorising": the CLI tells Claude
+mid-conversation that tools to authorise them are available.
+
+- **Authorise** opens claude.ai's page for it in your browser. Finish there,
+  then press **Check again**. Open conversations pick it up then too.
+- **Turn off** turns it off for this project — the same as `/mcp disable` in
+  Claude Code, which keeps it in `disabledMcpServers` in the project's entry of
+  `~/.claude.json`. Open conversations in the project follow at once.
+
+To check, Philibert starts Claude Code briefly in the project, without sending
+anything to Claude, so it takes a few seconds and costs nothing.
+
+---
+
 ## Before you start: can Philibert run the server?
 
 Most MCP servers are published as npm packages and their README tells you to

@@ -22,6 +22,7 @@ import type {
   GitCredentialRequest,
   GitRemoteResult,
   GitStatus,
+  ClaudeAiConnector,
   McpCommandCheck,
   McpRuntimeInfo,
   McpServerEntry,
@@ -313,6 +314,20 @@ export interface ElectronAPI {
     pickExecutable: () => Promise<string | null>;
     /** Native picker for a credentials or data file. Null when cancelled. */
     pickFile: () => Promise<string | null>;
+    /**
+     * The claude.ai connectors as a session in this project sees them, and
+     * open conversations brought up to date with any authorised since. Null
+     * when no session can start (not signed in).
+     */
+    connectors: (workingDirectory: string) => Promise<ClaudeAiConnector[] | null>;
+    /** Open, in the browser, the claude.ai page that authorises a connector. */
+    authorizeConnector: (workingDirectory: string, name: string) => Promise<void>;
+    /** Turn a connector on or off for this project. Resolves with the new list. */
+    setConnectorEnabled: (
+      workingDirectory: string,
+      name: string,
+      enabled: boolean
+    ) => Promise<ClaudeAiConnector[] | null>;
   };
 
   // Config operations

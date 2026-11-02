@@ -31,6 +31,9 @@ const mcpApi = {
   getRuntimeInfo: vi.fn(),
   pickExecutable: vi.fn(),
   pickFile: vi.fn(),
+  connectors: vi.fn(),
+  authorizeConnector: vi.fn(),
+  setConnectorEnabled: vi.fn(),
 };
 
 function stdioServer(overrides: Partial<McpServerEntry> = {}): McpServerEntry {
@@ -70,6 +73,8 @@ beforeEach(() => {
     approvalsPath: `${PROJECT}/.claude/settings.local.json`,
   });
   mcpApi.checkCommand.mockResolvedValue({ ok: true });
+  mcpApi.connectors.mockResolvedValue([]);
+  mcpApi.authorizeConnector.mockResolvedValue(undefined);
 
   (window as unknown as { electron: unknown }).electron = { mcp: mcpApi };
   setProject(PROJECT);
@@ -426,5 +431,106 @@ describe('bundled Node helper', () => {
     await flushPromises();
 
     expect(wrapper.text()).not.toContain('Use the Node included with Philibert');
+  });
+});
+
+describe('claude.ai connectors', () => {
+  const GMAIL = 'claude.ai Gmail';
+
+  /** The connector rows, as name and status. */
+  function connectorRows(wrapper: ReturnType<typeof mountPanel>): string[] {
+    return wrapper.findAll('.connector').map((row) =>
+      `${row.find('.text-sm').text()}: ${row.find('.connector-status').text()}`);
+  }
+
+  function connectorButton(wrapper: ReturnType<typeof mountPanel>, name: string, label: string) {
+    const button = wrapper.find(`[data-connector="${name}"]`).findAll('button').find((b) => b.text() === label);
+    expect(button, `expected a ${label} button for ${name}`).toBeDefined();
+    return button!;
+  }
+
+  it('lists each with how it stands, checked in the project', async () => {
+    mcpApi.connectors.mockResolvedValue([
+      { name: 'claude.ai Claude Docs', status: 'connected', toolCount: 8 },
+      { name: GMAIL, status: 'needs-auth' },
+      { name: 'claude.ai Asana', status: 'failed', error: 'Server returned 500' },
+      { name: 'claude.ai Drive', status: 'disabled' },
+    ]);
+    const wrapper = mountPanel();
+    await flushPromises();
+
+    expect(mcpApi.connectors).toHaveBeenCalledWith(PROJECT);
+    expect(connectorRows(wrapper)).toEqual([
+      'Claude Docs: Connected',
+      'Gmail: Needs authorising',
+      'Asana: Failed',
+      'Drive: Off in this project',
+    ]);
+    expect(wrapper.text()).toContain('8 tools for Claude');
+    expect(wrapper.text()).toContain('Server returned 500');
+  });
+
+  it('authorises one on claude.ai, then says what is left to do until checked again', async () => {
+    mcpApi.connectors.mockResolvedValue([{ name: GMAIL, status: 'needs-auth' }]);
+    const wrapper = mountPanel();
+    await flushPromises();
+
+    await connectorButton(wrapper, GMAIL, 'Authorise').trigger('click');
+    await flushPromises();
+
+    expect(mcpApi.authorizeConnector).toHaveBeenCalledWith(PROJECT, GMAIL);
+    expect(wrapper.text()).toContain('Finish on the claude.ai page that opened in your browser');
+
+    mcpApi.connectors.mockResolvedValue([{ name: GMAIL, status: 'connected', toolCount: 3 }]);
+    await wrapper.findAll('button').find((b) => b.text() === 'Check again')!.trigger('click');
+    await flushPromises();
+
+    expect(connectorRows(wrapper)).toEqual(['Gmail: Connected']);
+    expect(wrapper.text()).not.toContain('Finish on the claude.ai page');
+  });
+
+  it('turns one off for the project, and back on', async () => {
+    mcpApi.connectors.mockResolvedValue([{ name: GMAIL, status: 'needs-auth' }]);
+    mcpApi.setConnectorEnabled.mockResolvedValue([{ name: GMAIL, status: 'disabled' }]);
+    const wrapper = mountPanel();
+    await flushPromises();
+
+    await connectorButton(wrapper, GMAIL, 'Turn off').trigger('click');
+    await flushPromises();
+    expect(mcpApi.setConnectorEnabled).toHaveBeenCalledWith(PROJECT, GMAIL, false);
+    expect(connectorRows(wrapper)).toEqual(['Gmail: Off in this project']);
+
+    mcpApi.setConnectorEnabled.mockResolvedValue([{ name: GMAIL, status: 'needs-auth' }]);
+    await connectorButton(wrapper, GMAIL, 'Turn on').trigger('click');
+    await flushPromises();
+    expect(mcpApi.setConnectorEnabled).toHaveBeenLastCalledWith(PROJECT, GMAIL, true);
+  });
+
+  it('asks to sign in when no session can start, and says when there are none', async () => {
+    mcpApi.connectors.mockResolvedValue(null);
+    let wrapper = mountPanel();
+    await flushPromises();
+    expect(wrapper.text()).toContain('Sign in to Claude to see the connectors of your claude.ai account.');
+    wrapper.unmount();
+
+    mcpApi.connectors.mockResolvedValue([]);
+    wrapper = mountPanel();
+    await flushPromises();
+    expect(wrapper.text()).toContain('No claude.ai connectors.');
+  });
+
+  it('shows why an action failed', async () => {
+    mcpApi.connectors.mockResolvedValue([{ name: GMAIL, status: 'needs-auth' }]);
+    mcpApi.authorizeConnector.mockRejectedValue(
+      new Error("Error invoking remote method 'mcp:connector-authorize': Error: Claude Code gave no claude.ai page to authorise claude.ai Gmail."),
+    );
+    const wrapper = mountPanel();
+    await flushPromises();
+
+    await connectorButton(wrapper, GMAIL, 'Authorise').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Claude Code gave no claude.ai page to authorise claude.ai Gmail.');
+    expect(wrapper.text()).not.toContain('Error invoking remote method');
   });
 });

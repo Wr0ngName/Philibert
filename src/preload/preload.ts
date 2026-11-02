@@ -412,6 +412,15 @@ const electronAPI: ElectronAPI = {
     pickExecutable: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_PICK_EXECUTABLE),
 
     pickFile: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_PICK_FILE),
+
+    connectors: (workingDirectory: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.MCP_CONNECTORS, workingDirectory),
+
+    authorizeConnector: (workingDirectory: string, name: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.MCP_CONNECTOR_AUTHORIZE, workingDirectory, name),
+
+    setConnectorEnabled: (workingDirectory: string, name: string, enabled: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.MCP_CONNECTOR_SET_ENABLED, workingDirectory, name, enabled),
   },
 
   config: {

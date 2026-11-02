@@ -96,6 +96,9 @@ const REGISTERED_CHANNELS = {
     IPC_CHANNELS.MCP_GET_RUNTIME_INFO,
     IPC_CHANNELS.MCP_PICK_EXECUTABLE,
     IPC_CHANNELS.MCP_PICK_FILE,
+    IPC_CHANNELS.MCP_CONNECTORS,
+    IPC_CHANNELS.MCP_CONNECTOR_AUTHORIZE,
+    IPC_CHANNELS.MCP_CONNECTOR_SET_ENABLED,
     IPC_CHANNELS.CONVERSATION_LIST,
     IPC_CHANNELS.CONVERSATION_GET,
     IPC_CHANNELS.CONVERSATION_SAVE,
@@ -245,7 +248,7 @@ export function setupIPC(
     setupFilesIPC(fileWatcher, configService, getMainWindow);
     setupGitIPC(gitService, configService, fileWatcher, getMainWindow);
     setupConfigIPC(configService, getMainWindow);
-    setupMcpIPC(mcpService, getMainWindow);
+    setupMcpIPC(mcpService, claudeService, getMainWindow);
     setupProjectPermissionsIPC(projectPermissionService);
     setupConversationIPC(conversationService);
     setupUpdateIPC(updateService);

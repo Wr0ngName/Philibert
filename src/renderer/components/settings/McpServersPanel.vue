@@ -19,6 +19,7 @@ import type { McpCommandCheck, McpServerEntry, McpTransport } from '@shared/type
 import { useMcpStore } from '../../stores/mcp';
 import Button from '../shared/Button.vue';
 import Icon from '../shared/Icon.vue';
+import ClaudeAiConnectors from './ClaudeAiConnectors.vue';
 
 /** One editable environment variable or header row. */
 interface Pair {
@@ -612,6 +613,8 @@ function summaryOf(server: McpServerEntry): string {
         Changes apply to new conversations — existing ones keep the servers they
         started with.
       </p>
+
+      <ClaudeAiConnectors />
     </template>
   </div>
 </template>

@@ -1740,6 +1740,27 @@ export interface McpCommandCheck {
  * Facts about the host that the MCP settings UI needs in order to give
  * accurate guidance without the renderer touching the filesystem.
  */
+/**
+ * A claude.ai connector, as the CLI reports it for a project.
+ *
+ * Connectors are the MCP servers set up on the claude.ai account the CLI is
+ * logged in with (Gmail, Google Drive, …). The CLI fetches and connects them
+ * by itself in every session; one waiting for authorisation offers Claude
+ * only tools to authorise it, which is how they come up mid-conversation.
+ * Authorising happens on claude.ai. Turning one off is per project, as
+ * `/mcp disable` does it.
+ */
+export interface ClaudeAiConnector {
+  /** The server's name as the CLI reports it, e.g. "claude.ai Gmail". */
+  name: string;
+  /** 'disabled' is off in this project; 'needs-auth' waits for authorising on claude.ai. */
+  status: 'connected' | 'needs-auth' | 'failed' | 'pending' | 'disabled';
+  /** Why it failed, when it did. */
+  error?: string;
+  /** How many tools it gives Claude, when connected. */
+  toolCount?: number;
+}
+
 export interface McpRuntimeInfo {
   /** `process.platform` of the main process. */
   platform: string;
@@ -1966,6 +1987,12 @@ export const IPC_CHANNELS = {
   MCP_PICK_EXECUTABLE: 'mcp:pick-executable',
   /** Open a file picker for choosing a credentials/JSON file */
   MCP_PICK_FILE: 'mcp:pick-file',
+  /** The claude.ai connectors and how each stands, for a project */
+  MCP_CONNECTORS: 'mcp:connectors',
+  /** Open the claude.ai page that authorises one connector */
+  MCP_CONNECTOR_AUTHORIZE: 'mcp:connector-authorize',
+  /** Turn one connector on or off for a project */
+  MCP_CONNECTOR_SET_ENABLED: 'mcp:connector-set-enabled',
 
   // Config operations
   /** Get current configuration */

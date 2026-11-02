@@ -54,6 +54,7 @@ import {
 import {
   AgentInfo,
   AgentRun,
+  ClaudeAiConnector,
   IPC_CHANNELS,
   PendingAction,
   ActionResponse,
@@ -94,6 +95,7 @@ import {
 } from './claude';
 import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
 import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
+import { claudeAiConnectorAuthPage, readClaudeAiConnectors } from './claude/connectors';
 import {
   attachTranscriptImages, cliTempRoot, locateTaskOutput, readTaskOutput, transcriptToMessages, type FoundImages,
 } from './claude/task-output';
@@ -2783,10 +2785,14 @@ export class ClaudeCodeService {
    * the user has sent a first message.
    *
    * Returns null when there are no credentials, since the CLI cannot start.
+   *
+   * `cwd` runs it in a project, for what the CLI decides per project, such as
+   * which MCP servers are on.
    */
   private async withTemporaryQuery<T>(
     label: string,
     use: (tempQuery: Query) => Promise<T>,
+    cwd?: string,
   ): Promise<T | null> {
     const hasAuthCreds = await this.authValidator.hasAuth();
     if (!hasAuthCreds) return null;
@@ -2808,6 +2814,7 @@ export class ClaudeCodeService {
           abortController,
           env: authEnv,
           pathToClaudeCodeExecutable: ClaudeCliPaths.findBundledCli() || undefined,
+          ...(cwd ? { cwd } : {}),
         },
       });
 
@@ -2826,6 +2833,114 @@ export class ClaudeCodeService {
         }
       });
     }
+  }
+
+  /**
+   * A temporary query in a project whose failures reach the caller.
+   * withTemporaryQuery logs and swallows them, which suits a lookup that can
+   * go without; for an action the user asked for, the reason is the answer.
+   * Null still means no session could start: no credentials.
+   */
+  private async withProjectQuery<T>(
+    label: string,
+    workingDirectory: string,
+    use: (tempQuery: Query) => Promise<T>,
+  ): Promise<T | null> {
+    let failure: unknown = null;
+    const result = await this.withTemporaryQuery(label, async (tempQuery) => {
+      try {
+        return await use(tempQuery);
+      } catch (error) {
+        failure = error;
+        return null;
+      }
+    }, workingDirectory);
+    if (failure) throw failure;
+    return result;
+  }
+
+  /**
+   * The claude.ai connectors as a session in this project sees them.
+   *
+   * Open conversations are brought up to date on the way: a session fetched
+   * its connectors when it started, and keeps one it found waiting for
+   * authorisation that way until it is reconnected — so one authorised since
+   * is reconnected wherever it still waits.
+   */
+  async getClaudeAiConnectors(workingDirectory: string): Promise<ClaudeAiConnector[] | null> {
+    const connectors = await this.withProjectQuery('claudeAiConnectors', workingDirectory, readClaudeAiConnectors);
+    if (connectors) await this.reconnectAuthorisedConnectors(connectors);
+    return connectors;
+  }
+
+  private async reconnectAuthorisedConnectors(connectors: ClaudeAiConnector[]): Promise<void> {
+    const connected = new Set(connectors.filter((c) => c.status === 'connected').map((c) => c.name));
+    if (connected.size === 0) return;
+    for (const session of this.activeSessions.values()) {
+      try {
+        const waiting = (await session.query.mcpServerStatus())
+          .filter((server) => server.status === 'needs-auth' && connected.has(server.name));
+        for (const server of waiting) {
+          await session.query.reconnectMcpServer(server.name);
+          logger.info('Reconnected a claude.ai connector authorised since the session started', {
+            conversationId: session.conversationId,
+            connector: server.name,
+          });
+        }
+      } catch (error) {
+        logger.warn('Could not bring a session up to date with its connectors', {
+          conversationId: session.conversationId,
+          error,
+        });
+      }
+    }
+  }
+
+  /** The claude.ai page that authorises a connector; see claudeAiConnectorAuthPage. */
+  async getClaudeAiConnectorAuthPage(workingDirectory: string, name: string): Promise<string> {
+    const page = await this.withProjectQuery('authoriseConnector', workingDirectory, async (tempQuery) => {
+      await readClaudeAiConnectors(tempQuery);
+      return claudeAiConnectorAuthPage(tempQuery, name);
+    });
+    if (!page) throw new Error('Claude Code could not start: sign in first.');
+    logger.info('Opening the claude.ai page that authorises a connector', { connector: name });
+    return page;
+  }
+
+  /**
+   * Turn a connector on or off for a project, as `/mcp disable` does: the CLI
+   * keeps it with the project, so sessions started there after follow it.
+   * Open conversations in the project are switched too, rather than at their
+   * next start.
+   *
+   * @returns the connectors as they now stand, or null when no session can start.
+   */
+  async setClaudeAiConnectorEnabled(
+    workingDirectory: string,
+    name: string,
+    enabled: boolean,
+  ): Promise<ClaudeAiConnector[] | null> {
+    const connectors = await this.withProjectQuery('toggleConnector', workingDirectory, async (tempQuery) => {
+      // The CLI toggles only a server it has listed.
+      await readClaudeAiConnectors(tempQuery);
+      await tempQuery.toggleMcpServer(name, enabled);
+      return readClaudeAiConnectors(tempQuery);
+    });
+    logger.info('Connector turned ' + (enabled ? 'on' : 'off'), { connector: name, workingDirectory });
+
+    for (const session of this.activeSessions.values()) {
+      if (session.workingDirectory !== workingDirectory) continue;
+      try {
+        await session.query.toggleMcpServer(name, enabled);
+      } catch (error) {
+        logger.warn('Could not switch a connector in an open conversation', {
+          conversationId: session.conversationId,
+          connector: name,
+          error,
+        });
+      }
+    }
+    return connectors;
   }
 
   private async fetchModelsViaTemporarySession(): Promise<void> {

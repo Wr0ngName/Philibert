@@ -10,7 +10,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 
-import type { McpCommandCheck, McpRuntimeInfo, McpServerEntry, McpServerInput } from '@shared/types';
+import type { ClaudeAiConnector, McpCommandCheck, McpRuntimeInfo, McpServerEntry, McpServerInput } from '@shared/types';
 
 import { logger } from '../utils/logger';
 
@@ -29,6 +29,15 @@ export const useMcpStore = defineStore('mcp', () => {
   const brokenServers = computed(() =>
     servers.value.filter((s) => s.check && !s.check.ok)
   );
+
+  /**
+   * A main-process error as the user should read it: its message is written
+   * for them, but Electron prefixes it with "Error invoking remote method …".
+   */
+  function userMessage(err: unknown): string {
+    const raw = err instanceof Error ? err.message : String(err);
+    return raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(?:\w*Error):\s*/, '');
+  }
 
   function projectDir(): string {
     const dir = useSettingsStore().workingDirectory;
@@ -52,11 +61,7 @@ export const useMcpStore = defineStore('mcp', () => {
       servers.value = await operation();
       return true;
     } catch (err) {
-      // Main-process errors carry a message written for the user; Electron
-      // prefixes it with "Error invoking remote method ...", so strip that.
-      const raw = err instanceof Error ? err.message : String(err);
-      error.value = raw.replace(/^Error invoking remote method '[^']*':\s*/, '')
-        .replace(/^(?:\w*Error):\s*/, '');
+      error.value = userMessage(err);
       logger.error(`MCP ${label} failed`, err);
       return false;
     } finally {
@@ -82,9 +87,7 @@ export const useMcpStore = defineStore('mcp', () => {
       servers.value = list;
       runtimeInfo.value = info;
     } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
-      error.value = raw.replace(/^Error invoking remote method '[^']*':\s*/, '')
-        .replace(/^(?:\w*Error):\s*/, '');
+      error.value = userMessage(err);
       logger.error('MCP load failed', err);
     } finally {
       isLoading.value = false;
@@ -137,6 +140,80 @@ export const useMcpStore = defineStore('mcp', () => {
     error.value = null;
   }
 
+  // ============================================
+  // claude.ai connectors
+  // ============================================
+
+  /** The account's connectors as this project sees them; null before the first check. */
+  const connectors = ref<ClaudeAiConnector[] | null>(null);
+  /** Whether a session could be started to check them at all — no sign-in, no session. */
+  const connectorsAvailable = ref(true);
+  const isCheckingConnectors = ref(false);
+  /** The connector an action is running for. */
+  const connectorBusy = ref<string | null>(null);
+  /**
+   * Connectors whose claude.ai page was opened. Says what is left to do for
+   * as long as one still needs authorising.
+   */
+  const connectorsAuthorising = ref<string[]>([]);
+  const connectorsError = ref<string | null>(null);
+
+  function takeConnectors(list: ClaudeAiConnector[] | null): void {
+    connectorsAvailable.value = list !== null;
+    connectors.value = list ?? [];
+  }
+
+  /**
+   * Ask how the connectors stand. It starts a Claude Code session that runs
+   * nothing, which takes a few seconds; open conversations are brought up to
+   * date with any connector authorised since they started.
+   */
+  async function checkConnectors(): Promise<void> {
+    if (!hasProject.value) {
+      connectors.value = null;
+      return;
+    }
+    isCheckingConnectors.value = true;
+    connectorsError.value = null;
+    try {
+      takeConnectors(await window.electron.mcp.connectors(projectDir()));
+    } catch (err) {
+      connectorsError.value = userMessage(err);
+      logger.error('Checking the claude.ai connectors failed', err);
+    } finally {
+      isCheckingConnectors.value = false;
+    }
+  }
+
+  /** Open the claude.ai page that authorises a connector. */
+  async function authorizeConnector(name: string): Promise<void> {
+    connectorBusy.value = name;
+    connectorsError.value = null;
+    try {
+      await window.electron.mcp.authorizeConnector(projectDir(), name);
+      if (!connectorsAuthorising.value.includes(name)) connectorsAuthorising.value.push(name);
+    } catch (err) {
+      connectorsError.value = userMessage(err);
+      logger.error('Authorising a claude.ai connector failed', err);
+    } finally {
+      connectorBusy.value = null;
+    }
+  }
+
+  /** Turn a connector on or off for this project. */
+  async function setConnectorEnabled(name: string, enabled: boolean): Promise<void> {
+    connectorBusy.value = name;
+    connectorsError.value = null;
+    try {
+      takeConnectors(await window.electron.mcp.setConnectorEnabled(projectDir(), name, enabled));
+    } catch (err) {
+      connectorsError.value = userMessage(err);
+      logger.error('Turning a claude.ai connector on or off failed', err);
+    } finally {
+      connectorBusy.value = null;
+    }
+  }
+
   return {
     servers,
     runtimeInfo,
@@ -154,5 +231,14 @@ export const useMcpStore = defineStore('mcp', () => {
     pickExecutable,
     pickFile,
     clearError,
+    connectors,
+    connectorsAvailable,
+    isCheckingConnectors,
+    connectorBusy,
+    connectorsAuthorising,
+    connectorsError,
+    checkConnectors,
+    authorizeConnector,
+    setConnectorEnabled,
   };
 });

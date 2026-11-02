@@ -6,15 +6,17 @@
  * one being edited.
  */
 
-import { dialog, ipcMain, BrowserWindow } from 'electron';
+import { dialog, ipcMain, shell, BrowserWindow } from 'electron';
 
 import { IPC_CHANNELS, type McpServerInput } from '../../shared/types';
+import type ClaudeCodeService from '../services/ClaudeCodeService';
 import McpConfigService from '../services/McpConfigService';
 import { validateString, validatePath, ensureService, toSettingsIpcError } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
 export function setupMcpIPC(
   mcpService: McpConfigService,
+  claudeService: ClaudeCodeService,
   getMainWindow: () => BrowserWindow | null
 ): void {
   const requireProject = (workingDirectory: unknown): string => {
@@ -134,6 +136,47 @@ export function setupMcpIPC(
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
   });
+
+  ipcMain.handle(IPC_CHANNELS.MCP_CONNECTORS, async (_event, workingDirectory: string) => {
+    try {
+      ensureService(claudeService, 'ClaudeCodeService');
+      return await claudeService.getClaudeAiConnectors(requireProject(workingDirectory));
+    } catch (error) {
+      logger.error('Failed to read claude.ai connectors', { error });
+      throw toSettingsIpcError('Failed to check the claude.ai connectors', error);
+    }
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.MCP_CONNECTOR_AUTHORIZE,
+    async (_event, workingDirectory: string, name: string) => {
+      try {
+        ensureService(claudeService, 'ClaudeCodeService');
+        validateString(name, 'Connector name');
+        const page = await claudeService.getClaudeAiConnectorAuthPage(requireProject(workingDirectory), name);
+        await shell.openExternal(page);
+      } catch (error) {
+        logger.error('Failed to authorise a claude.ai connector', { error, name });
+        throw toSettingsIpcError(`Failed to open the page that authorises ${String(name)}`, error);
+      }
+    }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.MCP_CONNECTOR_SET_ENABLED,
+    async (_event, workingDirectory: string, name: string, enabled: boolean) => {
+      try {
+        ensureService(claudeService, 'ClaudeCodeService');
+        validateString(name, 'Connector name');
+        return await claudeService.setClaudeAiConnectorEnabled(
+          requireProject(workingDirectory), name, enabled === true,
+        );
+      } catch (error) {
+        logger.error('Failed to turn a claude.ai connector on or off', { error, name });
+        throw toSettingsIpcError('Failed to change the connector', error);
+      }
+    }
+  );
 
   logger.info('MCP IPC handlers registered');
 }
