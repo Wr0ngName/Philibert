@@ -1245,6 +1245,34 @@ describe('SDKMessageHandler', () => {
       expect(notified.find((n) => n.taskId === 'bash-2')?.parentTaskId).toBeUndefined();
     });
 
+    it("says an agent started a task when the CLI says so, even with that agent unknown", async () => {
+      // As task_started came for bfzfyzh0g (main.log, 2026-11-01): owned by a
+      // sub-agent whose own start this handler never saw. And an agent
+      // spawned by an agent, which says so by its depth.
+      await handler.handleMessage({
+        type: 'system', subtype: 'task_started', task_id: 'bash-owned', tool_use_id: 'toolu_unseen',
+        owned_by_subagent: true, is_backgrounded: false, description: 'Check available tools', task_type: 'local_bash',
+      } as never);
+      await handler.handleMessage({
+        type: 'system', subtype: 'task_started', task_id: 'agent-nested', tool_use_id: 'toolu_nested',
+        spawn_depth: 2, is_backgrounded: true, description: 'Nested', task_type: 'local_agent',
+      } as never);
+      await handler.handleMessage({
+        type: 'system', subtype: 'task_started', task_id: 'agent-top', tool_use_id: 'toolu_top',
+        spawn_depth: 1, is_backgrounded: true, description: 'Top', task_type: 'local_agent',
+      } as never);
+      await handler.handleMessage({
+        type: 'system', subtype: 'task_started', task_id: 'bash-main', tool_use_id: 'toolu_main',
+        is_backgrounded: true, description: 'npm test', task_type: 'local_bash',
+      } as never);
+
+      const notified = vi.mocked(callbacks.onTaskNotification).mock.calls.map(([n]) => n);
+      expect(notified.find((n) => n.taskId === 'bash-owned')?.startedByAgent).toBe(true);
+      expect(notified.find((n) => n.taskId === 'agent-nested')?.startedByAgent).toBe(true);
+      expect(notified.find((n) => n.taskId === 'agent-top')?.startedByAgent).toBeUndefined();
+      expect(notified.find((n) => n.taskId === 'bash-main')?.startedByAgent).toBeUndefined();
+    });
+
     it("carries a command's tool call onto its task — an agent's included, which the discussion never shows", async () => {
       // The sequence main.log recorded (2026-10-27): an agent's background
       // PowerShell run via Bash, then its task_started, owned by the agent.

@@ -16,12 +16,13 @@ import {
   parseAskUserQuestionResult,
 } from '@shared/ask-user-question';
 import { toolCallLabel } from '@shared/tool-description';
-import type { MessageImage, ToolUseInfo } from '@shared/types';
+import type { BackgroundTask, MessageImage, ToolUseInfo } from '@shared/types';
 
 import { useNowTicker } from '../../composables/useNowTicker';
 import { formatTaskDuration, toolCallTiming } from '../../utils/task-duration';
 import type { ToolCallOutput } from '../../utils/tool-output';
 import AskUserQuestionDetails from './AskUserQuestionDetails.vue';
+import StartedBy from './StartedBy.vue';
 import ToolCallView from './ToolCallView.vue';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
@@ -39,12 +40,18 @@ interface Props {
   conversationId?: string;
   /** When Claude made the call: its message's timestamp. */
   calledAt?: number;
+  /** Who made the call: an agent, the main conversation, or not known. */
+  origin?: 'agent' | 'main' | null;
+  /** The agent that made the call, when an agent did and it is known. */
+  agent?: BackgroundTask | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   images: undefined,
   conversationId: undefined,
   calledAt: undefined,
+  origin: null,
+  agent: null,
 });
 
 const timing = computed(() =>
@@ -58,6 +65,8 @@ const duration = computed(() => (timing.value ? formatTaskDuration(timing.value,
 
 const emit = defineEmits<{
   (e: 'close'): void;
+  /** Show the details of the agent that made the call. */
+  (e: 'open-task-detail', taskId: string): void;
 }>();
 
 const outputContent = ref<string | null>(null);
@@ -181,6 +190,12 @@ const output = computed((): ToolCallOutput | null => {
             <span :class="statusDisplay.colorClass">{{ statusDisplay.label }}</span>
             <span v-if="duration">Duration: {{ duration }}</span>
           </div>
+          <StartedBy
+            class="mt-1"
+            :origin="origin"
+            :agent="agent"
+            @open-agent="emit('open-task-detail', $event)"
+          />
         </div>
       </div>
 

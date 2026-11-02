@@ -1067,6 +1067,9 @@ export class SDKMessageHandler {
       // task_started: set when an agent, not the main conversation, started
       // the task. Not in sdk.d.ts; seen on the wire (2.1.280).
       owned_by_subagent?: boolean;
+      // task_started, an agent's: 1 when the main conversation spawned it,
+      // one more per agent above it.
+      spawn_depth?: number;
       // background_tasks_changed: every live task after the change
       tasks?: {
         task_id: string;
@@ -1246,6 +1249,7 @@ export class SDKMessageHandler {
         taskType: systemMsg.task_type,
         skipTranscript: systemMsg.skip_transcript,
         ownedBySubagent: systemMsg.owned_by_subagent,
+        spawnDepth: systemMsg.spawn_depth,
       });
       const isAgent = systemMsg.task_type === 'local_agent';
       if (isAgent && systemMsg.tool_use_id) {
@@ -1253,6 +1257,9 @@ export class SDKMessageHandler {
       }
       if (!systemMsg.skip_transcript) {
         const parentTaskId = this.parentTaskOf(systemMsg.tool_use_id);
+        // The CLI says so for a command (owned_by_subagent) and for an agent
+        // (spawn_depth past 1), whether or not the agent itself is known here.
+        const startedByAgent = systemMsg.owned_by_subagent === true || (systemMsg.spawn_depth ?? 1) > 1;
         this.callbacks.onTaskNotification({
           taskId: systemMsg.task_id,
           status: 'running',
@@ -1262,6 +1269,7 @@ export class SDKMessageHandler {
           ...(typeof systemMsg.is_backgrounded === 'boolean' && { backgrounded: systemMsg.is_backgrounded }),
           ...(systemMsg.subagent_type && { agentType: systemMsg.subagent_type }),
           ...(parentTaskId && { parentTaskId }),
+          ...((parentTaskId || startedByAgent) && { startedByAgent: true }),
           ...(!isAgent && systemMsg.tool_use_id && this.commandCalls.get(systemMsg.tool_use_id)),
         });
       }

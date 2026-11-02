@@ -100,16 +100,57 @@ const taskDetailSpawningTool = computed<ToolUseInfo | null>(() => {
   return message?.toolUse ?? null;
 });
 
-/** The agent that started the open task, when an agent did. */
-const taskDetailParent = computed<BackgroundTask | null>(() => {
-  const parentId = taskDetailTask.value?.parentTaskId;
-  return parentId ? chatStore.findBackgroundTask(parentId) : null;
+/**
+ * The agent behind a call or task: through the Agent call that ran it,
+ * which the call names as its parent and which is kept with the
+ * conversation, else through the agent task the main process linked it to.
+ */
+function agentBehind(parentToolUseId: string | undefined, parentTaskId: string | undefined): BackgroundTask | null {
+  return (parentToolUseId ? chatStore.agentOfCall(parentToolUseId) : null)
+    ?? (parentTaskId ? chatStore.findBackgroundTask(parentTaskId) : null);
+}
+
+/** The agent that started the open task, when an agent did and it is known. */
+const taskDetailParent = computed<BackgroundTask | null>(() =>
+  agentBehind(taskDetailSpawningTool.value?.parentToolUseId, taskDetailTask.value?.parentTaskId),
+);
+
+/**
+ * Who started the open task. An agent on any sign of one; the main
+ * conversation only when the call that started it is here and no agent
+ * made it; otherwise not known, and not said.
+ */
+const taskDetailOrigin = computed<'agent' | 'main' | null>(() => {
+  const task = taskDetailTask.value;
+  if (!task) return null;
+  const call = taskDetailSpawningTool.value;
+  if (taskDetailParent.value || call?.parentToolUseId || task.parentTaskId || task.startedByAgent) return 'agent';
+  return call ? 'main' : null;
 });
 
 // Tool detail modal state: the call's message, which holds the images the
 // call produced as well as the call.
 const toolDetailOpen = ref(false);
 const toolDetailMessage = ref<ChatMessage | null>(null);
+/**
+ * The agent whose transcript the open call was picked from. Its calls are
+ * read from its own transcript and name no parent, so the agent is kept from
+ * where the call was opened.
+ */
+const toolDetailTranscriptAgentId = ref<string | null>(null);
+
+/** The agent that made the open call, when an agent did and it is known. */
+const toolDetailAgent = computed<BackgroundTask | null>(() => {
+  if (toolDetailTranscriptAgentId.value) return chatStore.findBackgroundTask(toolDetailTranscriptAgentId.value);
+  return agentBehind(toolDetailMessage.value?.toolUse?.parentToolUseId, undefined);
+});
+
+/** Who made the open call: an agent, or the main conversation. */
+const toolDetailOrigin = computed<'agent' | 'main' | null>(() => {
+  const toolUse = toolDetailMessage.value?.toolUse;
+  if (!toolUse) return null;
+  return toolDetailTranscriptAgentId.value || toolUse.parentToolUseId ? 'agent' : 'main';
+});
 
 function handleSend(message: string, images?: MessageImage[]) {
   sendMessage(message, images);
@@ -290,7 +331,7 @@ function openToolDetail(id: string) {
   const msg = chatStore.messages.find(
     m => m.toolUse && (m.toolUse.toolUseBlockId === id || m.toolUse.actionId === id)
   );
-  if (msg) showToolCall(msg);
+  if (msg) showToolCall(msg, null);
 }
 
 /**
@@ -301,7 +342,8 @@ function openToolDetail(id: string) {
  * for a call whose parent agent is no longer in the message list.
  */
 function openToolDetailFor(message: ChatMessage) {
-  showToolCall(message);
+  // Handed over only from an agent's transcript, whose calls are that agent's.
+  showToolCall(message, taskDetailTask.value?.taskType === 'agent' ? taskDetailTask.value.id : null);
 }
 
 /**
@@ -314,7 +356,7 @@ function openToolDetailFor(message: ChatMessage) {
  * background tasks list gave for the same task. A foreground command's
  * output is its result, which Tool Details shows.
  */
-function showToolCall(message: ChatMessage) {
+function showToolCall(message: ChatMessage, transcriptAgentId: string | null) {
   if (!message.toolUse) return;
   const task = chatStore.taskForToolCall(message.toolUse, message.timestamp);
   if (task) {
@@ -322,12 +364,20 @@ function showToolCall(message: ChatMessage) {
     return;
   }
   toolDetailMessage.value = message;
+  toolDetailTranscriptAgentId.value = transcriptAgentId;
   toolDetailOpen.value = true;
 }
 
 function closeToolDetail() {
   toolDetailOpen.value = false;
   toolDetailMessage.value = null;
+  toolDetailTranscriptAgentId.value = null;
+}
+
+/** From a call's details to the details of the agent that made it. */
+function openAgentOfToolCall(taskId: string) {
+  closeToolDetail();
+  openTaskDetail(taskId);
 }
 </script>
 
@@ -433,6 +483,7 @@ function closeToolDetail() {
       :open="taskDetailOpen"
       :task="taskDetailTask"
       :conversation-id="conversationsStore.currentConversationId ?? ''"
+      :origin="taskDetailOrigin"
       :parent-task="taskDetailParent"
       :spawning-tool="taskDetailSpawningTool"
       :stopping="stoppingTask"
@@ -450,7 +501,10 @@ function closeToolDetail() {
       :images="toolDetailMessage?.images"
       :called-at="toolDetailMessage?.timestamp"
       :conversation-id="conversationsStore.currentConversationId ?? undefined"
+      :origin="toolDetailOrigin"
+      :agent="toolDetailAgent"
       @close="closeToolDetail"
+      @open-task-detail="openAgentOfToolCall"
     />
 
     <!-- Pending actions -->

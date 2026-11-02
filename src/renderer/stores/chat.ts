@@ -228,6 +228,7 @@ function liveTaskFields(notification: TaskNotification): Partial<BackgroundTask>
     ...(notification.totalTokens !== undefined && { totalTokens: notification.totalTokens }),
     ...(notification.toolUses !== undefined && { toolUses: notification.toolUses }),
     ...(notification.parentTaskId && { parentTaskId: notification.parentTaskId }),
+    ...(notification.startedByAgent && { startedByAgent: true }),
     ...(notification.toolName && { toolName: notification.toolName }),
     ...(notification.toolInput && { toolInput: notification.toolInput }),
   };
@@ -2446,6 +2447,27 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * The agent that made a call, from the call's `parentToolUseId` — the id of
+   * the Agent call that ran the agent. That call stands for the agent, so the
+   * agent is found through it, tracked or from its record, and still after
+   * the agent has gone idle or the app has restarted. Without the call in the
+   * list, a tracked agent started by that call. Null when neither is here.
+   */
+  function agentOfCall(parentToolUseId: string): BackgroundTask | null {
+    const conversationId = currentConversationId.value;
+    if (!conversationId) return null;
+    const state = conversationStates.value.get(conversationId);
+    for (const list of [messages.value, state?.detachedTurn ?? []]) {
+      const call = list.find((m) => m.toolUse?.toolUseBlockId === parentToolUseId);
+      if (call?.toolUse) return taskForToolCall(call.toolUse, call.timestamp);
+    }
+    for (const task of state?.backgroundTasks.values() ?? []) {
+      if (task.taskType === 'agent' && task.toolUseId === parentToolUseId) return task;
+    }
+    return null;
+  }
+
+  /**
    * Messages about to be stored, with each task row — and each call's record
    * of the task it stands for — brought up to date from its tracked task, so
    * the stored record says how the task really stands.
@@ -3019,6 +3041,7 @@ export const useChatStore = defineStore('chat', () => {
     taskForRow,
     findBackgroundTask,
     taskForToolCall,
+    agentOfCall,
     withTasksAsTracked,
     beginMessageBuffer,
     getBufferedMessages,

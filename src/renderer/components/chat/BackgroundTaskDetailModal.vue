@@ -29,6 +29,7 @@ import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
 import { heldListSource } from './message-list-source';
 import MessageList from './MessageList.vue';
+import StartedBy from './StartedBy.vue';
 import ToolCallView from './ToolCallView.vue';
 
 interface Props {
@@ -36,7 +37,9 @@ interface Props {
   task: BackgroundTask | null;
   /** The conversation the task belongs to. */
   conversationId: string;
-  /** The agent that started this task, when an agent did. */
+  /** Who started this task: an agent, the main conversation, or not known. */
+  origin?: 'agent' | 'main' | null;
+  /** The agent that started this task, when an agent did and it is known. */
   parentTask?: BackgroundTask | null;
   /**
    * The tool call that spawned this task, when there is one. For a command
@@ -51,6 +54,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  origin: null,
   parentTask: null,
   spawningTool: null,
   stopping: false,
@@ -268,22 +272,13 @@ const statusDisplay = computed(() => {
               :title="tokenTitle"
             >{{ tokenSummary }}</span>
             <span v-if="task.toolUses !== undefined">{{ task.toolUses }} tool {{ task.toolUses === 1 ? 'use' : 'uses' }}</span>
-            <!-- Where this task came from, when an agent rather than the main
-                 conversation started it. -->
-            <button
-              v-if="parentTask"
-              type="button"
-              class="inline-flex items-center gap-1 text-purple-600 dark:text-purple-400 hover:underline"
-              :title="parentTask.description"
-              @click="emit('open-task-detail', parentTask.id)"
-            >
-              <Icon
-                name="cpu"
-                size="xs"
-              />
-              Started by {{ parentTask.agentType ?? 'an agent' }}
-            </button>
           </div>
+          <StartedBy
+            class="mt-1"
+            :origin="origin"
+            :agent="parentTask"
+            @open-agent="emit('open-task-detail', $event)"
+          />
           <p
             v-if="isRunning && task.activity"
             class="mt-1 text-xs text-surface-600 dark:text-surface-300 truncate"

@@ -1292,6 +1292,12 @@ export interface BackgroundTask {
    */
   parentTaskId?: string;
   /**
+   * Whether an agent, not the main conversation, started this task, as the
+   * CLI states it — said even when which agent did is not known here, so the
+   * details can still say the task came from an agent.
+   */
+  startedByAgent?: boolean;
+  /**
    * The tool call a command task runs — its tool ('Bash', 'PowerShell') and
    * input, command line included. Carried on the task because a command an
    * agent started is a call in the agent's transcript, not in the
@@ -1391,6 +1397,8 @@ export interface TaskNotification {
   totalTokens?: number;
   toolUses?: number;
   parentTaskId?: string;
+  /** See BackgroundTask.startedByAgent. */
+  startedByAgent?: boolean;
   /** The tool call a command task runs; see BackgroundTask.toolInput. */
   toolName?: string;
   toolInput?: Record<string, unknown>;
