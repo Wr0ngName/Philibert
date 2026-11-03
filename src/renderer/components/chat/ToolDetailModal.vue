@@ -44,6 +44,8 @@ interface Props {
   origin?: 'agent' | 'main' | null;
   /** The agent that made the call, when an agent did and it is known. */
   agent?: BackgroundTask | null;
+  /** Agents the call's input names by id, by the input field naming each. */
+  inputAgents?: Record<string, BackgroundTask>;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -52,6 +54,7 @@ const props = withDefaults(defineProps<Props>(), {
   calledAt: undefined,
   origin: null,
   agent: null,
+  inputAgents: () => ({}),
 });
 
 const timing = computed(() =>
@@ -224,6 +227,8 @@ const output = computed((): ToolCallOutput | null => {
         :output="output"
         :images="images"
         :conversation-id="conversationId"
+        :agents="inputAgents"
+        @open-agent="emit('open-task-detail', $event)"
       />
     </div>
   </Modal>

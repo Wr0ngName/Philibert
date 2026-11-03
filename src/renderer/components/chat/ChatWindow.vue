@@ -6,6 +6,7 @@
 import { ref, computed, nextTick, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
+import { sendMessageAddress } from '@shared/send-message';
 import type { AskUserQuestionAction, AskUserQuestionAnswer, BackgroundTask, ChatMessage, MessageImage, PendingAction, PermissionOptionVariant, PermissionScope, ToolUseInfo } from '@shared/types';
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
@@ -143,6 +144,19 @@ const toolDetailTranscriptAgentId = ref<string | null>(null);
 const toolDetailAgent = computed<BackgroundTask | null>(() => {
   if (toolDetailTranscriptAgentId.value) return chatStore.findBackgroundTask(toolDetailTranscriptAgentId.value);
   return agentBehind(toolDetailMessage.value?.toolUse?.parentToolUseId, undefined);
+});
+
+/**
+ * The agent the open call names by id or name — the one a SendMessage call
+ * writes to — by the input fields naming it, so they show the agent rather
+ * than its id. Empty when the call names none, or the agent is not known here.
+ */
+const toolDetailInputAgents = computed<Record<string, BackgroundTask>>(() => {
+  const toolUse = toolDetailMessage.value?.toolUse;
+  const address = toolUse ? sendMessageAddress(toolUse.toolName, toolUse.input) : null;
+  const agent = address ? chatStore.agentAddressedAs(address.address) : null;
+  if (!address || !agent) return {};
+  return Object.fromEntries(address.fields.map((field) => [field, agent]));
 });
 
 /** Who made the open call: an agent, or the main conversation. */
@@ -503,6 +517,7 @@ function openAgentOfToolCall(taskId: string) {
       :conversation-id="conversationsStore.currentConversationId ?? undefined"
       :origin="toolDetailOrigin"
       :agent="toolDetailAgent"
+      :input-agents="toolDetailInputAgents"
       @close="closeToolDetail"
       @open-task-detail="openAgentOfToolCall"
     />

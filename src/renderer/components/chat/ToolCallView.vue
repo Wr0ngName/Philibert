@@ -12,13 +12,14 @@
 import { computed, nextTick, ref, watch } from 'vue';
 
 import { imageOnlyResultText } from '@shared/tool-images';
-import type { MessageImage } from '@shared/types';
+import type { BackgroundTask, MessageImage } from '@shared/types';
 
 import { formatTokenCount } from '../../utils/token-count';
 import { formatToolInput } from '../../utils/tool-input';
 import { formatToolOutput, type ToolCallOutput } from '../../utils/tool-output';
 import Icon from '../shared/Icon.vue';
 import Spinner from '../shared/Spinner.vue';
+import AgentLink from './AgentLink.vue';
 import MessageImages from './MessageImages.vue';
 
 interface Props {
@@ -35,6 +36,11 @@ interface Props {
    */
   images?: MessageImage[];
   conversationId?: string;
+  /**
+   * Agents the input names by id, by the input field naming each — the agent
+   * a SendMessage call writes to. Shown as the agent, not as its id.
+   */
+  agents?: Record<string, BackgroundTask>;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -43,7 +49,13 @@ const props = withDefaults(defineProps<Props>(), {
   live: false,
   images: undefined,
   conversationId: undefined,
+  agents: () => ({}),
 });
+
+const emit = defineEmits<{
+  /** Show the details of an agent the input names. */
+  (e: 'open-agent', taskId: string): void;
+}>();
 
 const hasImages = computed(() => (props.images?.length ?? 0) > 0 && !!props.conversationId);
 
@@ -123,7 +135,15 @@ watch(() => props.output?.kind, (kind) => {
           class="flex items-baseline gap-2 text-xs"
         >
           <span class="font-medium text-surface-500 dark:text-surface-400 shrink-0">{{ param.label }}</span>
-          <span class="font-mono text-surface-800 dark:text-surface-200 break-all">{{ param.value }}</span>
+          <AgentLink
+            v-if="agents[param.key]"
+            :agent="agents[param.key]"
+            @open="emit('open-agent', $event)"
+          />
+          <span
+            v-else
+            class="font-mono text-surface-800 dark:text-surface-200 break-all"
+          >{{ param.value }}</span>
         </div>
 
         <!-- …code and content as a block. -->

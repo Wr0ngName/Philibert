@@ -2468,6 +2468,23 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * The agent a SendMessage call addresses: by its id — the id its task has —
+   * or by the name its Agent call gave it. Null when no agent here has it.
+   */
+  function agentAddressedAs(address: string): BackgroundTask | null {
+    const byId = findBackgroundTask(address);
+    if (byId) return byId;
+    const conversationId = currentConversationId.value;
+    if (!conversationId) return null;
+    const state = conversationStates.value.get(conversationId);
+    for (const list of [messages.value, state?.detachedTurn ?? []]) {
+      const call = list.find((m) => m.toolUse?.toolName === 'Agent' && m.toolUse.input?.name === address);
+      if (call?.toolUse?.toolUseBlockId) return agentOfCall(call.toolUse.toolUseBlockId);
+    }
+    return null;
+  }
+
+  /**
    * Messages about to be stored, with each task row — and each call's record
    * of the task it stands for — brought up to date from its tracked task, so
    * the stored record says how the task really stands.
@@ -3042,6 +3059,7 @@ export const useChatStore = defineStore('chat', () => {
     findBackgroundTask,
     taskForToolCall,
     agentOfCall,
+    agentAddressedAs,
     withTasksAsTracked,
     beginMessageBuffer,
     getBufferedMessages,

@@ -38,6 +38,10 @@ const PARAM_LABELS: Record<string, string> = {
   prompt: 'Prompt',
   subagent_type: 'Agent',
   run_in_background: 'Run In Background',
+  // SendMessage, to a running agent.
+  to: 'To',
+  recipient: 'Recipient',
+  message: 'Message',
 };
 
 /** Length beyond which a string reads better as a block than a row. */

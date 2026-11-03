@@ -7,6 +7,7 @@
  * older label reads the same as a new one.
  */
 
+import { SEND_MESSAGE_TOOL, sendMessagePreview } from './send-message';
 import type { ToolUseInfo } from './types';
 
 /** Longest command or prompt shown when a call says nothing about itself. */
@@ -42,6 +43,7 @@ export function describeToolUse(toolName: string, input: Record<string, unknown>
     case 'Write': return `Write: ${input.file_path}`;
     case 'Glob': return `Search files: ${input.pattern}`;
     case 'Grep': return `Search: ${input.pattern}`;
+    case SEND_MESSAGE_TOOL: return excerpt(sendMessagePreview(input));
     default: return purpose;
   }
 }

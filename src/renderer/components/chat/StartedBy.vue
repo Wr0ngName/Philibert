@@ -9,10 +9,9 @@
  * replied, and without this nothing said whose command it was.
  */
 
-import { computed } from 'vue';
-
 import type { BackgroundTask } from '@shared/types';
 
+import AgentLink from './AgentLink.vue';
 import Icon from '../shared/Icon.vue';
 
 interface Props {
@@ -25,21 +24,12 @@ interface Props {
   agent?: BackgroundTask | null;
 }
 
-const props = withDefaults(defineProps<Props>(), { agent: null });
+withDefaults(defineProps<Props>(), { agent: null });
 
 const emit = defineEmits<{
   /** Show the agent's own details. */
   (e: 'open-agent', taskId: string): void;
 }>();
-
-const STATUS: Record<BackgroundTask['status'], string> = {
-  running: 'running',
-  completed: 'finished',
-  failed: 'failed',
-  stopped: 'stopped',
-};
-
-const agentStatus = computed(() => (props.agent ? STATUS[props.agent.status] : ''));
 </script>
 
 <template>
@@ -54,21 +44,12 @@ const agentStatus = computed(() => (props.agent ? STATUS[props.agent.status] : '
       />
       <span>Started by the main conversation</span>
     </template>
-    <button
+    <AgentLink
       v-else-if="agent"
-      type="button"
-      class="inline-flex items-center gap-1 min-w-0 text-purple-600 dark:text-purple-400 hover:underline"
-      :title="`Show the agent that started this: ${agent.description}`"
-      @click="emit('open-agent', agent.id)"
-    >
-      <Icon
-        name="cpu"
-        size="xs"
-      />
-      <span class="shrink-0">Started by {{ agent.agentType ?? 'an agent' }}</span>
-      <span class="truncate text-surface-600 dark:text-surface-300">— {{ agent.description }}</span>
-      <span class="shrink-0 text-surface-500 dark:text-surface-400">({{ agentStatus }})</span>
-    </button>
+      :agent="agent"
+      prefix="Started by"
+      @open="emit('open-agent', $event)"
+    />
     <template v-else>
       <Icon
         name="cpu"

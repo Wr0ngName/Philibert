@@ -130,10 +130,13 @@ describe('who started it, in the details', () => {
   }
 
   /** A background agent, as main reports one: its call, task_started, its launch result. */
-  async function launchAgent(): Promise<void> {
+  async function launchAgent(name?: string): Promise<void> {
     call({
       toolUseBlockId: 'toolu_agent', toolName: 'Agent',
-      input: { description: 'Agent reads notes.txt', subagent_type: 'builder', prompt: AGENT_PROMPT, run_in_background: true },
+      input: {
+        description: 'Agent reads notes.txt', subagent_type: 'builder', prompt: AGENT_PROMPT, run_in_background: true,
+        ...(name ? { name } : {}),
+      },
       description: 'Agent: Agent reads notes.txt',
     });
     notify({
@@ -289,6 +292,92 @@ describe('who started it, in the details', () => {
     await settle(20);
 
     expect(startedBy('Tool Details')).toBe('Started by builder — Agent reads notes.txt (running)');
+  });
+
+  describe('a message sent to an agent', () => {
+    const MESSAGE = 'when you are done, also run echo hello';
+
+    /** SendMessage as the CLI gives it: the agent's id or name in `to`, and again in `recipient`. */
+    async function sendToAgent(address: string, extra: Record<string, unknown> = {}): Promise<void> {
+      call({
+        toolUseBlockId: 'toolu_send', toolName: 'SendMessage',
+        input: { to: address, message: MESSAGE, type: 'message', recipient: address, content: MESSAGE, ...extra },
+        description: '',
+      });
+      result('toolu_send', `{"success":true,"message":"Message queued for delivery to ${address} at its next tool round."}`);
+      await settle(20);
+    }
+
+    /** The row of the SendMessage call in the discussion; its parts are spans, read without spacing. */
+    const row = () => app.findAll('.tool-use-entry').find((r) => r.text().includes('SendMessage'))!.text();
+
+    it('reads in the discussion by its summary', async () => {
+      await launchAgent();
+      await sendToAgent('agent-1', { summary: 'Also run echo hello' });
+      expect(row()).toContain('SendMessageAlso run echo hello');
+    });
+
+    it('without a summary, reads by the first line of its message', async () => {
+      await launchAgent();
+      await sendToAgent('agent-1');
+      expect(row()).toContain(`SendMessage${MESSAGE}`);
+    });
+
+    it('names the agent it went to by the name its Agent call gave it', async () => {
+      await launchAgent('reader');
+      await sendToAgent('reader');
+
+      await clickCall('SendMessage');
+
+      expect(read(inputRow('To'))).toBe('builder — Agent reads notes.txt (running)');
+    });
+
+    /** The Input rows of the open Tool Details, label and value, as read. */
+    function inputRow(label: string): HTMLElement | null {
+      return [...dialog('Tool Details')!.querySelectorAll<HTMLElement>('.flex.items-baseline')]
+        .find((row) => row.firstElementChild?.textContent?.trim() === label) ?? null;
+    }
+    const read = (row: HTMLElement | null) =>
+      [...(row?.querySelectorAll('.agent-link span') ?? [])].map((part) => (part.textContent ?? '').trim()).join(' ');
+
+    it('names the agent it went to rather than its id, and opens the agent from there', async () => {
+      await launchAgent();
+      await sendToAgent('agent-1');
+
+      await clickCall('SendMessage');
+
+      expect(read(inputRow('To'))).toBe('builder — Agent reads notes.txt (running)');
+      expect(read(inputRow('Recipient'))).toBe('builder — Agent reads notes.txt (running)');
+      expect(inputRow('To')!.textContent).not.toContain('agent-1');
+      expect(dialog('Tool Details')!.textContent).toContain(MESSAGE);
+
+      inputRow('To')!.querySelector<HTMLElement>('.agent-link')!.click();
+      await settle(20);
+      expect(dialog('Tool Details')).toBeNull();
+      expect(dialog('Task Details')?.textContent).toContain(AGENT_PROMPT);
+    });
+
+    it('still names it after the agent finished and the app restarted', async () => {
+      await launchAgent();
+      await sendToAgent('agent-1');
+      notify({ taskId: 'agent-1', status: 'completed', toolUseId: 'toolu_agent', summary: 'Done' });
+      await settle(20);
+      await endTurn();
+      await restart();
+
+      await clickCall('SendMessage');
+
+      expect(read(inputRow('To'))).toBe('builder — Agent reads notes.txt (finished)');
+    });
+
+    it('shows the id as it is when no agent here has it', async () => {
+      await sendToAgent('a481e4eafefca67f3');
+
+      await clickCall('SendMessage');
+
+      expect(inputRow('To')!.querySelector('.agent-link')).toBeNull();
+      expect(inputRow('To')!.textContent).toContain('a481e4eafefca67f3');
+    });
   });
 
   it('says the main conversation made a call it made itself', async () => {
