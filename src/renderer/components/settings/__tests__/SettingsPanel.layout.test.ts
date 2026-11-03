@@ -26,12 +26,10 @@ const ModalStub = defineComponent({
 });
 
 /** The sign-in form, with the methods the panel calls on it. */
-const AuthFormStub = defineComponent({
-  setup(_, { expose }) {
-    expose({ resetState: () => undefined, refreshAuthStatus: async () => undefined, authStatus: null });
-    return () => h('div');
-  },
-});
+const AuthFormStub = {
+  template: '<div />',
+  methods: { resetState: () => undefined, refreshAuthStatus: async () => undefined },
+};
 
 function mountPanel() {
   return mount(SettingsPanel, {
