@@ -3,7 +3,7 @@
  * Root application component
  */
 
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import { DEFAULT_CONFIG } from '@shared/types';
@@ -33,6 +33,7 @@ import ModelSelector from './components/shared/ModelSelector.vue';
 import SessionPermissionsDropdown from './components/shared/SessionPermissionsDropdown.vue';
 import SidebarResizeHandle from './components/shared/SidebarResizeHandle.vue';
 import { CHAT_MIN_WIDTH, SIDEBAR_WIDTH } from './constants/layout';
+import { CHAT_ORDER, sidebarPlaces } from './utils/sidebar-layout';
 
 const settingsStore = useSettingsStore();
 const filesStore = useFilesStore();
@@ -53,6 +54,8 @@ const historyWidth = ref(DEFAULT_CONFIG.historySidebarWidth);
 const sidebarWidth = ref(DEFAULT_CONFIG.filesSidebarWidth);
 watch(() => settingsStore.config.historySidebarWidth, (width) => { historyWidth.value = width; }, { immediate: true });
 watch(() => settingsStore.config.filesSidebarWidth, (width) => { sidebarWidth.value = width; }, { immediate: true });
+/** Which side of the discussion each sidebar sits on, and in what order. */
+const places = computed(() => sidebarPlaces(settingsStore.config.sidebarLayout));
 
 /** Stops listening for the pre-close flush request. */
 let stopFlushListener: (() => void) | null = null;
@@ -384,12 +387,16 @@ const isMac = window.electron?.platform === 'darwin';
         >
           <aside
             v-if="showHistorySidebar"
-            class="history-sidebar relative flex flex-col border-r border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900"
-            :style="{ width: `${historyWidth}px`, minWidth: `${SIDEBAR_WIDTH.MIN}px` }"
+            :class="[
+              'history-sidebar relative flex flex-col border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900',
+              places.history.side === 'left' ? 'border-r' : 'border-l',
+            ]"
+            :style="{ width: `${historyWidth}px`, minWidth: `${SIDEBAR_WIDTH.MIN}px`, order: places.history.order }"
           >
             <ConversationHistory />
             <SidebarResizeHandle
               v-model:width="historyWidth"
+              :side="places.history.side"
               :default-width="DEFAULT_CONFIG.historySidebarWidth"
               label="conversation list"
               @commit="settingsStore.setHistorySidebarWidth"
@@ -408,13 +415,17 @@ const isMac = window.electron?.platform === 'darwin';
         >
           <aside
             v-if="showFilesSidebar"
-            class="sidebar relative flex flex-col min-h-0"
-            :style="{ width: `${sidebarWidth}px`, minWidth: `${SIDEBAR_WIDTH.MIN}px` }"
+            :class="[
+              'files-sidebar relative flex flex-col min-h-0 border-surface-200 dark:border-surface-700 bg-surface-100 dark:bg-surface-800',
+              places.files.side === 'left' ? 'border-r' : 'border-l',
+            ]"
+            :style="{ width: `${sidebarWidth}px`, minWidth: `${SIDEBAR_WIDTH.MIN}px`, order: places.files.order }"
           >
             <WorkingDirectory />
             <FileTree class="flex-1" />
             <SidebarResizeHandle
               v-model:width="sidebarWidth"
+              :side="places.files.side"
               :default-width="DEFAULT_CONFIG.filesSidebarWidth"
               label="files"
               @commit="settingsStore.setFilesSidebarWidth"
@@ -425,7 +436,7 @@ const isMac = window.electron?.platform === 'darwin';
         <!-- Chat area -->
         <section
           class="flex-1 flex flex-col relative bg-white dark:bg-surface-800"
-          :style="{ minWidth: `${CHAT_MIN_WIDTH}px` }"
+          :style="{ minWidth: `${CHAT_MIN_WIDTH}px`, order: CHAT_ORDER }"
         >
           <ChatWindow />
         </section>

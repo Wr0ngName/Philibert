@@ -3,7 +3,8 @@
  * Settings panel component with OAuth login support
  */
 
-import type { CompletionNotifications, ExecutionMode, LogLevel, UpdateChannel, WhisperModelId } from '@shared/types';
+import type { CompletionNotifications, ExecutionMode, LogLevel, SidebarLayout, UpdateChannel, WhisperModelId } from '@shared/types';
+import { DEFAULT_CONFIG } from '@shared/types';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE, WHISPER_MODELS } from '@shared/speech';
 import { ref, computed, nextTick, watch, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
@@ -52,6 +53,7 @@ watch(
 
 // Local form state
 const localTheme = ref<'light' | 'dark' | 'system'>('system');
+const localSidebarLayout = ref<SidebarLayout>(DEFAULT_CONFIG.sidebarLayout);
 const localFontSize = ref(14);
 const localLineHeight = ref(1.6);
 const localLogLevel = ref<LogLevel>('info');
@@ -86,6 +88,13 @@ const isOAuthUser = computed(() =>
   authFormRef.value?.authStatus?.isAuthenticated === true
 );
 
+/** The sidebar layouts, each with a sketch of the row: D discussions, F files, the conversation between bars. */
+const sidebarLayoutOptions: { value: SidebarLayout; label: string; sketch: string }[] = [
+  { value: 'left', label: 'Both left', sketch: 'D F | Chat' },
+  { value: 'split', label: 'Either side', sketch: 'D | Chat | F' },
+  { value: 'right', label: 'Both right', sketch: 'Chat | F D' },
+];
+
 // Log level options for the selector
 const logLevelOptions: { value: LogLevel; label: string; description: string }[] = [
   { value: 'error', label: 'Error', description: 'Only errors' },
@@ -112,6 +121,7 @@ watch(
   () => config.value,
   (newConfig) => {
     localTheme.value = newConfig.theme;
+    localSidebarLayout.value = newConfig.sidebarLayout;
     localFontSize.value = newConfig.fontSize;
     localLineHeight.value = newConfig.lineHeight;
     localLogLevel.value = newConfig.logLevel;
@@ -141,6 +151,7 @@ watch(
 async function saveSettings() {
   // Save theme (also applies it), font size, and log level
   await settingsStore.setTheme(localTheme.value);
+  await settingsStore.setSidebarLayout(localSidebarLayout.value);
   await settingsStore.setFontSize(localFontSize.value);
   await settingsStore.setLineHeight(localLineHeight.value);
   await settingsStore.setLogLevel(localLogLevel.value);
@@ -161,6 +172,7 @@ async function saveSettings() {
 function cancel() {
   // Reset local state
   localTheme.value = config.value.theme;
+  localSidebarLayout.value = config.value.sidebarLayout;
   localFontSize.value = config.value.fontSize;
   localLineHeight.value = config.value.lineHeight;
   localLogLevel.value = config.value.logLevel;
@@ -266,6 +278,38 @@ function cancel() {
             @click="localTheme = option"
           >
             {{ option }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Where the sidebars sit -->
+      <div>
+        <label
+          id="sidebar-layout-label"
+          class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2"
+        >
+          Layout
+        </label>
+        <div
+          class="flex gap-2"
+          role="radiogroup"
+          aria-labelledby="sidebar-layout-label"
+        >
+          <button
+            v-for="option in sidebarLayoutOptions"
+            :key="option.value"
+            role="radio"
+            :aria-checked="localSidebarLayout === option.value"
+            :class="[
+              'flex-1 px-3 py-2 rounded-lg border text-sm transition-colors',
+              localSidebarLayout === option.value
+                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+            ]"
+            @click="localSidebarLayout = option.value"
+          >
+            <span class="block font-mono text-xs mb-1">{{ option.sketch }}</span>
+            <span class="block font-medium">{{ option.label }}</span>
           </button>
         </div>
       </div>

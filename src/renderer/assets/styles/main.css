@@ -186,11 +186,6 @@
   @apply border-l-4 border-yellow-500;
   @apply bg-yellow-50 dark:bg-yellow-900/10;
 }
-@utility sidebar {
-  /* Sidebar styling */
-  @apply bg-surface-100 dark:bg-surface-800;
-  @apply border-r border-surface-200 dark:border-surface-700;
-}
 @utility header {
   /* Header styling */
   @apply bg-white dark:bg-surface-800;

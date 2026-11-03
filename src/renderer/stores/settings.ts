@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, toRaw } from 'vue';
 
-import type { AppConfig, CompletionNotifications, EffortLevel, ExecutionMode, LogLevel, ModalSize, ThinkingMode, UpdateChannel, WhisperModelId } from '@shared/types';
+import type { AppConfig, CompletionNotifications, EffortLevel, ExecutionMode, LogLevel, ModalSize, SidebarLayout, ThinkingMode, UpdateChannel, WhisperModelId } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 
 import { useEventCleanup } from '../composables/useEventCleanup';
@@ -123,6 +123,10 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function setShowFilesSidebar(show: boolean): Promise<void> {
     await saveConfig({ showFilesSidebar: show });
+  }
+
+  async function setSidebarLayout(layout: SidebarLayout): Promise<void> {
+    await saveConfig({ sidebarLayout: layout });
   }
 
   async function setHistorySidebarWidth(width: number): Promise<void> {
@@ -302,6 +306,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setHasCompletedInitialSetup,
     setShowHistorySidebar,
     setShowFilesSidebar,
+    setSidebarLayout,
     setHistorySidebarWidth,
     setFilesSidebarWidth,
     setModalSize,

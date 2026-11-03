@@ -11,9 +11,9 @@ import SidebarResizeHandle from '../SidebarResizeHandle.vue';
 
 const mounted: Array<{ unmount: () => void }> = [];
 
-function mountHandle(width = 280) {
+function mountHandle(width = 280, side: 'left' | 'right' = 'left') {
   const wrapper = mount(SidebarResizeHandle, {
-    props: { width, defaultWidth: 280, label: 'files' },
+    props: { width, side, defaultWidth: 280, label: 'files' },
     attachTo: document.body,
   });
   mounted.push(wrapper);
@@ -104,6 +104,22 @@ describe('SidebarResizeHandle', () => {
       [SIDEBAR_WIDTH.MAX],
       [SIDEBAR_WIDTH.MIN],
     ]);
+  });
+
+  it('on a sidebar right of the discussion, is its left edge, widened by dragging leftwards', async () => {
+    const wrapper = mountHandle(280, 'right');
+    const handle = wrapper.element as HTMLElement;
+    expect(handle.classList.contains('sidebar-resize-handle--right')).toBe(true);
+
+    handle.dispatchEvent(pointer('pointerdown', 900));
+    handle.dispatchEvent(pointer('pointermove', 850));
+    handle.dispatchEvent(pointer('pointerup', 850));
+    expect(wrapper.emitted('commit')).toEqual([[330]]);
+
+    // The arrows move the edge the same way.
+    await wrapper.trigger('keydown', { key: 'ArrowLeft' });
+    await wrapper.trigger('keydown', { key: 'ArrowRight' });
+    expect(wrapper.emitted('commit')!.slice(1)).toEqual([[280 + RESIZE_KEY_STEP], [280 - RESIZE_KEY_STEP]]);
   });
 
   it('goes back to its default width on a double-click', async () => {

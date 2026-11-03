@@ -849,6 +849,13 @@ export type WhisperModelId =
   | 'small'
   | 'small.en';
 
+/**
+ * Where the two sidebars sit beside the discussion: both on its left
+ * (discussions outermost), discussions left and files right, or both on its
+ * right (discussions outermost).
+ */
+export type SidebarLayout = 'left' | 'split' | 'right';
+
 /** A dialog's size as the user dragged it, in pixels. */
 export interface ModalSize {
   width: number;
@@ -887,6 +894,8 @@ export interface AppConfig {
   showHistorySidebar: boolean;
   /** Whether to show the file browser sidebar */
   showFilesSidebar: boolean;
+  /** Where the sidebars sit beside the discussion. */
+  sidebarLayout: SidebarLayout;
   /** Width of the conversation history sidebar, in pixels, as the user dragged it. */
   historySidebarWidth: number;
   /** Width of the file browser sidebar, in pixels, as the user dragged it. */
@@ -963,6 +972,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   hasCompletedInitialSetup: false,
   showHistorySidebar: true,
   showFilesSidebar: true,
+  sidebarLayout: 'split',
   historySidebarWidth: 240,
   filesSidebarWidth: 280,
   modalSizes: {},

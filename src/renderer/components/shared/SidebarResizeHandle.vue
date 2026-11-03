@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * The right edge of a sidebar, dragged to change its width.
+ * A sidebar's edge toward the discussion, dragged to change its width.
  *
  * The width follows the pointer while dragging (`update:width`) and is
  * reported once more when the drag ends (`commit`), so the parent saves it
@@ -8,11 +8,20 @@
  * puts it back to its default.
  */
 
+import { computed } from 'vue';
+
 import { RESIZE_KEY_STEP, SIDEBAR_WIDTH } from '../../constants/layout';
 import { clamp, startPointerDrag } from '../../composables/usePointerDrag';
+import type { Side } from '../../utils/sidebar-layout';
 
 const props = defineProps<{
   width: number;
+  /**
+   * The side of the discussion the sidebar is on. The handle is its edge
+   * toward the discussion: its right edge on the left, its left edge on the
+   * right — where dragging leftwards widens it.
+   */
+  side: Side;
   defaultWidth: number;
   /** What the sidebar is, for screen readers: "Resize <label>". */
   label: string;
@@ -36,12 +45,15 @@ function drawnWidth(handle: HTMLElement): number {
   return sidebar ? Math.round(sidebar.getBoundingClientRect().width) || props.width : props.width;
 }
 
+/** How much wider a move of the edge to the right makes the sidebar. */
+const rightwards = computed(() => (props.side === 'left' ? 1 : -1));
+
 function onPointerDown(event: PointerEvent) {
   const startWidth = drawnWidth(event.currentTarget as HTMLElement);
   let width = startWidth;
   startPointerDrag(event, 'col-resize', {
     move: (dx) => {
-      width = bounded(startWidth + dx);
+      width = bounded(startWidth + rightwards.value * dx);
       emit('update:width', width);
     },
     end: () => {
@@ -59,8 +71,9 @@ function set(width: number) {
 
 function onKeydown(event: KeyboardEvent) {
   const moves: Record<string, number> = {
-    ArrowLeft: props.width - RESIZE_KEY_STEP,
-    ArrowRight: props.width + RESIZE_KEY_STEP,
+    // The arrows move the edge, as dragging does.
+    ArrowLeft: props.width - rightwards.value * RESIZE_KEY_STEP,
+    ArrowRight: props.width + rightwards.value * RESIZE_KEY_STEP,
     Home: SIDEBAR_WIDTH.MIN,
     End: SIDEBAR_WIDTH.MAX,
   };
@@ -72,7 +85,7 @@ function onKeydown(event: KeyboardEvent) {
 
 <template>
   <div
-    class="sidebar-resize-handle"
+    :class="['sidebar-resize-handle', `sidebar-resize-handle--${side}`]"
     role="separator"
     aria-orientation="vertical"
     :aria-label="`Resize ${label}`"
@@ -91,12 +104,20 @@ function onKeydown(event: KeyboardEvent) {
 .sidebar-resize-handle {
   position: absolute;
   top: 0;
-  right: -3px;
   width: 6px;
   height: 100%;
   cursor: col-resize;
   z-index: 10;
   touch-action: none;
+}
+
+/* Over the sidebar's border, on its side toward the discussion. */
+.sidebar-resize-handle--left {
+  right: -3px;
+}
+
+.sidebar-resize-handle--right {
+  left: -3px;
 }
 
 .sidebar-resize-handle:hover,
