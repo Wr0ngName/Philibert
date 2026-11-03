@@ -200,6 +200,7 @@ watch([selectedUuid, scope], () => {
     :open="open"
     title="Rewind"
     size="2xl"
+    resize-key="rewind"
     aria-description="Restore files or the conversation to an earlier turn"
     @close="emit('close')"
   >

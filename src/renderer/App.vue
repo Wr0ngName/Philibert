@@ -6,6 +6,8 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 
+import { DEFAULT_CONFIG } from '@shared/types';
+
 import { useSettingsStore } from './stores/settings';
 import { useFilesStore } from './stores/files';
 import { useConversationsStore } from './stores/conversations';
@@ -29,6 +31,8 @@ import UpdateBanner from './components/shared/UpdateBanner.vue';
 import GitControls from './components/shared/GitControls.vue';
 import ModelSelector from './components/shared/ModelSelector.vue';
 import SessionPermissionsDropdown from './components/shared/SessionPermissionsDropdown.vue';
+import SidebarResizeHandle from './components/shared/SidebarResizeHandle.vue';
+import { CHAT_MIN_WIDTH, SIDEBAR_WIDTH } from './constants/layout';
 
 const settingsStore = useSettingsStore();
 const filesStore = useFilesStore();
@@ -43,8 +47,12 @@ const { showSettings, showAbout, showSearch, showRewind, markdownViewerPath } =
   storeToRefs(uiStore);
 // Stays local: driven by setup state, not by anything the user can ask for.
 const showWizard = ref(false);
-const sidebarWidth = ref(280);
-const historyWidth = ref(240);
+// The sidebars' widths: what is saved, or where a drag has them so far. A drag
+// is saved once, when it ends.
+const historyWidth = ref(DEFAULT_CONFIG.historySidebarWidth);
+const sidebarWidth = ref(DEFAULT_CONFIG.filesSidebarWidth);
+watch(() => settingsStore.config.historySidebarWidth, (width) => { historyWidth.value = width; }, { immediate: true });
+watch(() => settingsStore.config.filesSidebarWidth, (width) => { sidebarWidth.value = width; }, { immediate: true });
 
 /** Stops listening for the pre-close flush request. */
 let stopFlushListener: (() => void) | null = null;
@@ -376,10 +384,16 @@ const isMac = window.electron?.platform === 'darwin';
         >
           <aside
             v-if="showHistorySidebar"
-            class="history-sidebar flex flex-col border-r border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900"
-            :style="{ width: `${historyWidth}px` }"
+            class="history-sidebar relative flex flex-col border-r border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-900"
+            :style="{ width: `${historyWidth}px`, minWidth: `${SIDEBAR_WIDTH.MIN}px` }"
           >
             <ConversationHistory />
+            <SidebarResizeHandle
+              v-model:width="historyWidth"
+              :default-width="DEFAULT_CONFIG.historySidebarWidth"
+              label="conversation list"
+              @commit="settingsStore.setHistorySidebarWidth"
+            />
           </aside>
         </Transition>
 
@@ -394,16 +408,25 @@ const isMac = window.electron?.platform === 'darwin';
         >
           <aside
             v-if="showFilesSidebar"
-            class="sidebar flex flex-col min-h-0"
-            :style="{ width: `${sidebarWidth}px` }"
+            class="sidebar relative flex flex-col min-h-0"
+            :style="{ width: `${sidebarWidth}px`, minWidth: `${SIDEBAR_WIDTH.MIN}px` }"
           >
             <WorkingDirectory />
             <FileTree class="flex-1" />
+            <SidebarResizeHandle
+              v-model:width="sidebarWidth"
+              :default-width="DEFAULT_CONFIG.filesSidebarWidth"
+              label="files"
+              @commit="settingsStore.setFilesSidebarWidth"
+            />
           </aside>
         </Transition>
 
         <!-- Chat area -->
-        <section class="flex-1 min-w-0 flex flex-col relative bg-white dark:bg-surface-800">
+        <section
+          class="flex-1 flex flex-col relative bg-white dark:bg-surface-800"
+          :style="{ minWidth: `${CHAT_MIN_WIDTH}px` }"
+        >
           <ChatWindow />
         </section>
       </main>

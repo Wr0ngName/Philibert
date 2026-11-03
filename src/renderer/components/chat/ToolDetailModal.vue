@@ -152,6 +152,7 @@ const output = computed((): ToolCallOutput | null => {
     :open="open"
     title="Tool Details"
     size="3xl"
+    resize-key="tool-detail"
     @close="emit('close')"
   >
     <div

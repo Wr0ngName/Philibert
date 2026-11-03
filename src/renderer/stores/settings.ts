@@ -3,9 +3,9 @@
  */
 
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, toRaw } from 'vue';
 
-import type { AppConfig, CompletionNotifications, EffortLevel, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel, WhisperModelId } from '@shared/types';
+import type { AppConfig, CompletionNotifications, EffortLevel, ExecutionMode, LogLevel, ModalSize, ThinkingMode, UpdateChannel, WhisperModelId } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 
 import { useEventCleanup } from '../composables/useEventCleanup';
@@ -123,6 +123,24 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function setShowFilesSidebar(show: boolean): Promise<void> {
     await saveConfig({ showFilesSidebar: show });
+  }
+
+  async function setHistorySidebarWidth(width: number): Promise<void> {
+    await saveConfig({ historySidebarWidth: width });
+  }
+
+  async function setFilesSidebarWidth(width: number): Promise<void> {
+    await saveConfig({ filesSidebarWidth: width });
+  }
+
+  /** Remember a dialog's size, or forget it with null so it opens at its preset. */
+  async function setModalSize(key: string, size: ModalSize | null): Promise<void> {
+    // Raw: the sizes already saved are reactive proxies in `config`, which
+    // cannot be sent to the main process.
+    const modalSizes = { ...toRaw(config.value.modalSizes) };
+    if (size) modalSizes[key] = size;
+    else delete modalSizes[key];
+    await saveConfig({ modalSizes });
   }
 
   async function setEnableNotifications(enabled: boolean): Promise<void> {
@@ -284,6 +302,9 @@ export const useSettingsStore = defineStore('settings', () => {
     setHasCompletedInitialSetup,
     setShowHistorySidebar,
     setShowFilesSidebar,
+    setHistorySidebarWidth,
+    setFilesSidebarWidth,
+    setModalSize,
     setEnableNotifications,
     setCompletionNotifications,
     setUpdateChannel,

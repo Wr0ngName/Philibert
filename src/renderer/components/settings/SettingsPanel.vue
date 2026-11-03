@@ -182,6 +182,7 @@ function cancel() {
     :open="open"
     title="Settings"
     size="md"
+    resize-key="settings"
     @close="cancel"
   >
     <div class="space-y-6">

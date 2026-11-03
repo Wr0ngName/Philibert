@@ -97,6 +97,7 @@ watch(
     :open="open"
     :title="displayName"
     size="3xl"
+    resize-key="markdown-viewer"
     :aria-description="`Rendered preview of ${displayName}`"
     @close="emit('close')"
   >

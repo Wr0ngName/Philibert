@@ -138,6 +138,7 @@ function formatTime(ts: number): string {
   <Modal
     :open="open"
     title="Search messages"
+    resize-key="search"
     @close="close"
   >
     <div class="flex flex-col gap-3 min-h-[300px]">

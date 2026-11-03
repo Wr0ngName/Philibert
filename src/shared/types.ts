@@ -849,6 +849,12 @@ export type WhisperModelId =
   | 'small'
   | 'small.en';
 
+/** A dialog's size as the user dragged it, in pixels. */
+export interface ModalSize {
+  width: number;
+  height: number;
+}
+
 /**
  * Application configuration settings
  */
@@ -881,6 +887,15 @@ export interface AppConfig {
   showHistorySidebar: boolean;
   /** Whether to show the file browser sidebar */
   showFilesSidebar: boolean;
+  /** Width of the conversation history sidebar, in pixels, as the user dragged it. */
+  historySidebarWidth: number;
+  /** Width of the file browser sidebar, in pixels, as the user dragged it. */
+  filesSidebarWidth: number;
+  /**
+   * Sizes the user gave resizable dialogs, by dialog. A dialog not listed
+   * opens at its preset size.
+   */
+  modalSizes: Record<string, ModalSize>;
   /** Whether to show native OS notifications when window is not focused */
   enableNotifications: boolean;
   /** When a notification says Claude has finished; see CompletionNotifications. */
@@ -948,6 +963,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   hasCompletedInitialSetup: false,
   showHistorySidebar: true,
   showFilesSidebar: true,
+  historySidebarWidth: 240,
+  filesSidebarWidth: 280,
+  modalSizes: {},
   enableNotifications: true,
   completionNotifications: 'all-done',
   lastConversationId: '',

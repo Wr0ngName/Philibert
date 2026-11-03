@@ -219,11 +219,12 @@ const statusDisplay = computed(() => {
     :open="open"
     title="Task Details"
     size="3xl"
+    resize-key="task-detail"
     @close="emit('close')"
   >
     <div
       v-if="task"
-      class="space-y-4"
+      class="flex flex-col gap-4 min-h-full"
     >
       <!-- Status & Description -->
       <div class="flex items-start gap-3">
@@ -397,10 +398,14 @@ const statusDisplay = computed(() => {
 </template>
 
 <style scoped>
-/* The message list fills its parent, so it is given the height to fill. */
+/*
+ * The message list fills its parent, so it is given the height to fill: 60vh,
+ * and whatever more a dialog resized taller has room for.
+ */
 .agent-transcript {
   display: flex;
   flex-direction: column;
-  height: 60vh;
+  flex: 1 0 60vh;
+  min-height: 60vh;
 }
 </style>
