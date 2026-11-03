@@ -2875,6 +2875,10 @@ export class ClaudeCodeService {
    */
   async getClaudeAiConnectors(workingDirectory: string): Promise<ClaudeAiConnector[] | null> {
     const connectors = await this.withProjectQuery('claudeAiConnectors', workingDirectory, readClaudeAiConnectors);
+    logger.info('claude.ai connectors as Claude Code lists them', {
+      workingDirectory,
+      connectors: connectors?.map((c) => `${c.name}: ${c.status}`) ?? null,
+    });
     if (connectors) await this.reconnectAuthorisedConnectors(connectors);
     return connectors;
   }
