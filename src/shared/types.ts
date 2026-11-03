@@ -856,6 +856,10 @@ export type WhisperModelId =
  */
 export type SidebarLayout = 'left' | 'split' | 'right';
 
+/** The choices for archiving inactive discussions, in days; 0 is never. */
+export const AUTO_ARCHIVE_DAYS = [0, 7, 30, 90] as const;
+export type AutoArchiveDays = (typeof AUTO_ARCHIVE_DAYS)[number];
+
 /** A dialog's size as the user dragged it, in pixels. */
 export interface ModalSize {
   width: number;
@@ -952,6 +956,11 @@ export interface AppConfig {
    * when false the wait is offered as a choice instead.
    */
   autoContinueAtUsageLimit: boolean;
+  /**
+   * Days without a message after which a discussion is listed as archived;
+   * 0 never archives one by itself. See isArchived in @shared/conversation-list.
+   */
+  autoArchiveDays: AutoArchiveDays;
 }
 
 /**
@@ -993,6 +1002,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   switchModelsOnFlag: true,
   strictModelEnforcement: false,
   autoContinueAtUsageLimit: true,
+  autoArchiveDays: 30,
 };
 
 // Conversation types
@@ -1058,6 +1068,17 @@ export interface Conversation {
    * but not exact (see `rebuildTaskList`).
    */
   taskList?: TaskListItem[];
+  /**
+   * When the user archived it. It stays archived until something newer
+   * happens in it: a message after this time brings it back by itself. See
+   * isArchived in @shared/conversation-list.
+   */
+  archivedAt?: number;
+  /**
+   * When the user brought it back from the archive. Counts as activity, so
+   * one archived for being inactive is not archived again straight away.
+   */
+  restoredAt?: number;
 }
 
 /**
@@ -1119,6 +1140,38 @@ export interface ConversationUpdate {
   lastSessionUsage?: SessionUsage;
   sessionPermissions?: SessionPermissionEntry[];
   taskList?: TaskListItem[];
+}
+
+/**
+ * What the discussions list shows of a conversation: everything but its
+ * messages and session state. Read from an index the main process keeps, so
+ * listing does not read every conversation file.
+ */
+export type ConversationSummary = Pick<
+  Conversation,
+  'id' | 'title' | 'customTitle' | 'workingDirectory' | 'createdAt' | 'updatedAt' | 'executionMode' | 'archivedAt' | 'restoredAt'
+>;
+
+/** Where a page of the discussions list starts: after this entry, in newest-first order. */
+export interface ConversationListCursor {
+  updatedAt: number;
+  id: string;
+}
+
+export interface ConversationListRequest {
+  /** The archived discussions, or the others. */
+  archived: boolean;
+  /** The user's setting; see isArchived in @shared/conversation-list. */
+  autoArchiveDays: AutoArchiveDays;
+  /** Absent for the first page. */
+  after?: ConversationListCursor;
+  limit: number;
+}
+
+export interface ConversationListPage {
+  conversations: ConversationSummary[];
+  /** Whether more entries follow the last one. */
+  hasMore: boolean;
 }
 
 /**
@@ -2031,8 +2084,14 @@ export const IPC_CHANNELS = {
   CONFIG_CHANGED: 'config:changed',
 
   // Conversation operations
-  /** Get list of all conversations */
-  CONVERSATION_LIST: 'conversation:list',
+  /** A page of the discussions list, active or archived; see ConversationListRequest. */
+  CONVERSATION_LIST_PAGE: 'conversation:list-page',
+  /** How many discussions are archived, by hand or for being inactive. */
+  CONVERSATION_ARCHIVED_COUNT: 'conversation:archived-count',
+  /** One discussion's list entry, or null when there is no such discussion. */
+  CONVERSATION_SUMMARY: 'conversation:summary',
+  /** Archive a discussion, or bring it back. */
+  CONVERSATION_SET_ARCHIVED: 'conversation:set-archived',
   /** Get a specific conversation */
   CONVERSATION_GET: 'conversation:get',
   /** Save a conversation */

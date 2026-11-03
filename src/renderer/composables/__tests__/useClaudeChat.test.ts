@@ -56,7 +56,9 @@ const mockElectron = {
     onChange: vi.fn(),
   },
   conversation: {
-    list: vi.fn(),
+    listPage: vi.fn(),
+    archivedCount: vi.fn(),
+    summary: vi.fn(),
     get: vi.fn(),
     save: vi.fn(),
     delete: vi.fn(),
@@ -102,7 +104,9 @@ describe('useClaudeChat core logic', () => {
     mockElectron.files.read.mockResolvedValue('content');
     mockElectron.files.onChange.mockReturnValue(() => {});
 
-    mockElectron.conversation.list.mockResolvedValue([]);
+    mockElectron.conversation.listPage.mockResolvedValue({ conversations: [], hasMore: false });
+    mockElectron.conversation.archivedCount.mockResolvedValue(0);
+    mockElectron.conversation.summary.mockResolvedValue(null);
     mockElectron.conversation.get.mockResolvedValue(null);
     mockElectron.conversation.save.mockResolvedValue(undefined);
     mockElectron.conversation.delete.mockResolvedValue(undefined);

@@ -59,6 +59,25 @@ const { mockFs, mockFileSystem } = vi.hoisted(() => {
           }
           fileSystem.delete(path);
         }),
+        // For the list's index: a file's content stands in for its
+        // modification time, so any change to it is seen as one.
+        stat: vi.fn().mockImplementation(async (path: string) => {
+          const content = fileSystem.get(path);
+          if (content === undefined) {
+            const error = new Error(`ENOENT: no such file or directory, stat '${path}'`) as NodeJS.ErrnoException;
+            error.code = 'ENOENT';
+            throw error;
+          }
+          let hash = 0;
+          for (let i = 0; i < content.length; i++) hash = (hash * 31 + content.charCodeAt(i)) | 0;
+          return { mtimeMs: hash, size: content.length };
+        }),
+        rename: vi.fn().mockImplementation(async (from: string, to: string) => {
+          const content = fileSystem.get(from);
+          if (content === undefined) throw new Error(`ENOENT: rename '${from}'`);
+          fileSystem.set(to, content);
+          fileSystem.delete(from);
+        }),
       },
     },
   };
@@ -73,12 +92,12 @@ vi.mock('node:fs', () => ({
   promises: mockFs.promises,
 }));
 
-vi.mock('node:path', () => ({
-  default: {
-    join: (...parts: string[]) => parts.join('/'),
-  },
-  join: (...parts: string[]) => parts.join('/'),
-}));
+vi.mock('node:path', () => {
+  const join = (...parts: string[]) => parts.join('/');
+  const basename = (p: string) => p.slice(p.lastIndexOf('/') + 1);
+  const dirname = (p: string) => p.slice(0, p.lastIndexOf('/'));
+  return { default: { join, basename, dirname }, join, basename, dirname };
+});
 
 vi.mock('../../utils/logger', () => ({
   default: {
@@ -216,12 +235,18 @@ describe('ConversationService', () => {
     });
   });
 
+  /** Every discussion not archived, in one page; archiving by inactivity off. */
+  async function listed() {
+    const page = await service.listPage({ archived: false, autoArchiveDays: 0, limit: 1000 });
+    return page.conversations;
+  }
+
   // ===========================================================================
-  // list()
+  // listPage()
   // ===========================================================================
-  describe('list()', () => {
+  describe('listPage()', () => {
     it('should return empty array when no conversations exist', async () => {
-      const conversations = await service.list();
+      const conversations = await listed();
 
       expect(conversations).toEqual([]);
     });
@@ -235,7 +260,7 @@ describe('ConversationService', () => {
       mockFileSystem.set('/app/conversations/conv_2.json', JSON.stringify(conv2));
       mockFileSystem.set('/app/conversations/conv_3.json', JSON.stringify(conv3));
 
-      const conversations = await service.list();
+      const conversations = await listed();
 
       expect(conversations.map((c) => c.id)).toEqual(['conv_2', 'conv_3', 'conv_1']);
     });
@@ -249,9 +274,9 @@ describe('ConversationService', () => {
 
       mockFileSystem.set('/app/conversations/conv_test_123.json', JSON.stringify(conv));
 
-      const conversations = await service.list();
+      const conversations = await listed();
 
-      expect(conversations[0].messages).toEqual([]);
+      expect(conversations[0]).not.toHaveProperty('messages');
     });
 
     it('should skip non-json files', async () => {
@@ -260,7 +285,7 @@ describe('ConversationService', () => {
       mockFileSystem.set('/app/conversations/notes.txt', 'some text');
       mockFileSystem.set('/app/conversations/.DS_Store', 'binary');
 
-      const conversations = await service.list();
+      const conversations = await listed();
 
       expect(conversations).toHaveLength(1);
     });
@@ -270,7 +295,7 @@ describe('ConversationService', () => {
       mockFileSystem.set('/app/conversations/valid.json', JSON.stringify(conv));
       mockFileSystem.set('/app/conversations/invalid.json', 'not json {{{');
 
-      const conversations = await service.list();
+      const conversations = await listed();
 
       expect(conversations).toHaveLength(1);
       expect(conversations[0].id).toBe('valid');
@@ -279,7 +304,7 @@ describe('ConversationService', () => {
     it('should return empty array on read error', async () => {
       mockFs.promises.readdir.mockRejectedValueOnce(new Error('Permission denied'));
 
-      const conversations = await service.list();
+      const conversations = await listed();
 
       expect(conversations).toEqual([]);
     });
@@ -342,14 +367,14 @@ describe('ConversationService', () => {
     });
 
     it('does not let one corrupt file break the list', async () => {
-      // The sidebar has to keep working: `list` skips what it cannot parse.
+      // The sidebar has to keep working: the list skips what it cannot parse.
       mockFileSystem.set('/app/conversations/invalid.json', 'invalid json {{{');
       mockFileSystem.set(
         '/app/conversations/good.json',
         JSON.stringify(createConversation({ id: 'good', title: 'Readable' })),
       );
 
-      const list = await service.list();
+      const list = await listed();
 
       expect(list.map((c) => c.id)).toEqual(['good']);
     });
@@ -575,9 +600,9 @@ describe('ConversationService', () => {
       expect(retrieved?.messages[0].content).toBe('Hello');
 
       // List
-      const list = await service.list();
+      const list = await listed();
       expect(list).toHaveLength(1);
-      expect(list[0].messages).toEqual([]); // List doesn't include messages
+      expect(list[0]).not.toHaveProperty('messages'); // List doesn't include messages
 
       // Delete
       await service.delete(conv.id);
@@ -594,7 +619,7 @@ describe('ConversationService', () => {
 
       await Promise.all([service.save(conv1), service.save(conv2), service.save(conv3)]);
 
-      const list = await service.list();
+      const list = await listed();
       expect(list).toHaveLength(3);
     });
   });
@@ -625,14 +650,15 @@ describe('ConversationService', () => {
       expect(retrieved?.sdkSessionId).toBeUndefined();
     });
 
-    it('should not strip sdkSessionId in list() (metadata includes it)', async () => {
+    it('leaves the session out of the list: it is read when the conversation is opened', async () => {
       const conv = createConversation({ sdkSessionId: 'list-session-id' });
       mockFileSystem.set(`/app/conversations/${conv.id}.json`, JSON.stringify(conv));
 
-      const list = await service.list();
+      const list = await listed();
 
       expect(list).toHaveLength(1);
-      expect(list[0].sdkSessionId).toBe('list-session-id');
+      expect(list[0]).not.toHaveProperty('sdkSessionId');
+      expect((await service.get(conv.id))?.sdkSessionId).toBe('list-session-id');
     });
 
     it('should handle updating sdkSessionId on re-save', async () => {

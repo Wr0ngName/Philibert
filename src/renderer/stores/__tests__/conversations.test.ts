@@ -98,6 +98,9 @@ describe('useConversationsStore', () => {
     const settings = useSettingsStore();
     settings.config.workingDirectory = DIR;
     settings.config.apiKey = 'test-key';
+    // The seeds' times are fixed small numbers — 1970 — so archiving by
+    // inactivity would archive every one; it is tested on its own below.
+    settings.config.autoArchiveDays = 0;
   });
 
   afterEach(() => {
@@ -172,14 +175,14 @@ describe('useConversationsStore', () => {
       });
     });
 
-    describe('sortedConversations', () => {
+    describe('listedConversations', () => {
       it('should sort by updatedAt descending (newest first)', async () => {
         seed({ id: '1', title: 'Old', updatedAt: 1000 });
         seed({ id: '2', title: 'New', updatedAt: 3000 });
         seed({ id: '3', title: 'Mid', updatedAt: 2000 });
         await store.loadConversationList();
 
-        expect(store.sortedConversations.map((c) => c.id)).toEqual(['2', '3', '1']);
+        expect(store.listedConversations.map((c) => c.id)).toEqual(['2', '3', '1']);
       });
 
       it('should not mutate original array', async () => {
@@ -188,22 +191,22 @@ describe('useConversationsStore', () => {
         await store.loadConversationList();
 
         const firstBefore = store.conversations[0].id;
-        const sorted = store.sortedConversations;
+        const sorted = store.listedConversations;
 
         expect(store.conversations[0].id).toBe(firstBefore);
         expect(sorted).not.toBe(store.conversations);
       });
 
       it('should return empty array when no conversations', () => {
-        expect(store.sortedConversations).toEqual([]);
+        expect(store.listedConversations).toEqual([]);
       });
 
       it('should handle single conversation', async () => {
         seed({ id: '1', title: 'Only' });
         await store.loadConversationList();
 
-        expect(store.sortedConversations).toHaveLength(1);
-        expect(store.sortedConversations[0].id).toBe('1');
+        expect(store.listedConversations).toHaveLength(1);
+        expect(store.listedConversations[0].id).toBe('1');
       });
     });
   });
@@ -736,6 +739,140 @@ describe('useConversationsStore', () => {
 
       expect(store.conversations).toHaveLength(1);
       expect(store.error).toBeNull();
+    });
+  });
+
+  // ===========================================================================
+  // The list in pages, and the archive
+  // ===========================================================================
+  describe('paged list and archive', () => {
+    const NOW = Date.now();
+
+    /** `count` discussions, a minute apart, the first the newest. */
+    function seedMany(count: number, newest = NOW): string[] {
+      return Array.from({ length: count }, (_, i) => {
+        const id = `conv_${String(i).padStart(3, '0')}`;
+        seed({ id, title: `Discussion ${i}`, updatedAt: newest - i * 60_000 });
+        return id;
+      });
+    }
+
+    it('lists the first page, then the next ones as more are asked for, each once', async () => {
+      const seeded = seedMany(120);
+      await store.loadConversationList();
+      expect(store.listedConversations.map((c) => c.id)).toEqual(seeded.slice(0, 50));
+      expect(store.listHasMore).toBe(true);
+
+      await store.loadMoreConversations();
+      await store.loadMoreConversations();
+      expect(store.listedConversations.map((c) => c.id)).toEqual(seeded);
+      expect(store.listHasMore).toBe(false);
+
+      // Nothing more to ask for: no request, no change.
+      await store.loadMoreConversations();
+      expect(store.listedConversations).toHaveLength(120);
+    });
+
+    it('loads the list down to the page of a discussion opened from further down, and no further', async () => {
+      const seeded = seedMany(160);
+      await store.loadConversationList();
+      const revealed = store.listRevealCount;
+
+      await store.loadConversation(seeded[70]);
+      // Listed at once, in its place, before its page has come.
+      expect(store.listedConversations.map((c) => c.id)).toEqual([...seeded.slice(0, 50), seeded[70]]);
+
+      await settle();
+      expect(store.listedConversations.map((c) => c.id)).toEqual(seeded.slice(0, 100));
+      expect(store.listHasMore).toBe(true);
+      // And then the list is told to show it.
+      expect(store.listRevealCount).toBe(revealed + 1);
+    });
+
+    it('turns the list to the archive when the discussion opened is archived', async () => {
+      const seeded = seedMany(3);
+      await store.loadConversationList();
+      await store.setConversationArchived(seeded[2], true);
+
+      await store.loadConversation(seeded[2]);
+      await settle();
+
+      expect(store.listView).toBe('archived');
+      expect(store.listedConversations.map((c) => c.id)).toEqual([seeded[2]]);
+
+      // A new discussion is an active one: the list goes back.
+      store.createNewConversation();
+      await settle();
+      expect(store.listView).toBe('active');
+    });
+
+    it('opens the last discussion at start even when it is not on the first page', async () => {
+      const seeded = seedMany(60);
+      storedConfig.lastConversationId = seeded[59];
+
+      await store.initialize();
+
+      expect(store.currentConversationId).toBe(seeded[59]);
+    });
+
+    it('moves an archived discussion to the archived list, counts it, and brings it back', async () => {
+      const seeded = seedMany(3);
+      await store.loadConversationList();
+
+      expect(await store.setConversationArchived(seeded[1], true)).toBe(true);
+      expect(store.listedConversations.map((c) => c.id)).toEqual([seeded[0], seeded[2]]);
+      expect(store.archivedCount).toBe(1);
+
+      await store.showListView('archived');
+      expect(store.listedConversations.map((c) => c.id)).toEqual([seeded[1]]);
+
+      await store.setConversationArchived(seeded[1], false);
+      expect(store.listedConversations).toEqual([]);
+      expect(store.archivedCount).toBe(0);
+      await store.showListView('active');
+      expect(store.listedConversations.map((c) => c.id)).toEqual(seeded);
+    });
+
+    it('brings back the discussion on screen when a message is sent in it after it was archived', async () => {
+      seedMany(1);
+      await store.initialize();
+      const id = store.currentConversationId!;
+      chatStore.addUserMessage('first');
+      await store.saveCurrentConversation();
+      await store.setConversationArchived(id, true);
+      expect(store.archivedCount).toBe(1);
+
+      chatStore.messages.push({ id: 'later', role: 'user', content: 'again', timestamp: Date.now() + 1000 });
+      await store.saveCurrentConversation();
+      await settle();
+
+      expect(store.listedConversations.map((c) => c.id)).toContain(id);
+      expect(store.archivedCount).toBe(0);
+    });
+
+    it('reads the list again when the archiving setting changes', async () => {
+      seed({ id: 'recent', updatedAt: NOW });
+      seed({ id: 'old', updatedAt: NOW - 45 * 24 * 60 * 60 * 1000 });
+      await store.initialize();
+      expect(store.listedConversations.map((c) => c.id)).toContain('old');
+
+      useSettingsStore().config.autoArchiveDays = 30;
+      await settle();
+
+      expect(store.listedConversations.map((c) => c.id)).not.toContain('old');
+      expect(store.listedConversations.map((c) => c.id)).toContain('recent');
+      expect(store.archivedCount).toBe(1);
+    });
+
+    it('drops from the list a discussion whose file is gone when the list is read again', async () => {
+      seed({ id: 'kept', updatedAt: NOW });
+      seed({ id: 'gone', updatedAt: NOW - 1 });
+      await store.loadConversationList();
+      files.delete('/conversations/gone.json');
+
+      await store.loadConversationList();
+
+      expect(store.conversations.map((c) => c.id)).toEqual(['kept']);
     });
   });
 

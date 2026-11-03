@@ -26,7 +26,7 @@ import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
 
-import type { Conversation, ConversationUpdate } from '@shared/types';
+import type { AutoArchiveDays, Conversation, ConversationListRequest, ConversationUpdate } from '@shared/types';
 
 /** The "disk": path → file contents. */
 export const files = new Map<string, string>();
@@ -83,7 +83,7 @@ export function fakeFsModule(): Record<string, unknown> {
       dirs.add(p);
     },
     promises: {
-      readdir: async () => {
+      readdir: async (dir: string) => {
         if (disk.holdReads) {
           await new Promise<void>((resolve) => disk.readWaiting.push(resolve));
         }
@@ -92,7 +92,10 @@ export function fakeFsModule(): Record<string, unknown> {
           err.code = 'EIO';
           throw err;
         }
-        return [...files.keys()].map((p) => p.split('/').pop() as string);
+        // The folder's own files only: the list's index sits beside it.
+        return [...files.keys()]
+          .filter((p) => p.startsWith(`${dir}/`) && !p.slice(dir.length + 1).includes('/'))
+          .map((p) => p.slice(dir.length + 1));
       },
       readFile: async (p: string) => {
         if (disk.holdReads) {
@@ -166,7 +169,34 @@ export function fakeFsModule(): Record<string, unknown> {
           throw err;
         }
       },
-      stat: async () => ({ isDirectory: () => true, size: 0 }),
+      /**
+       * A file's content stands in for its modification time, so any change
+       * to it is seen as one — the list's index trusts an entry only while
+       * its file's stat is unchanged, and a stat that never changed hid every
+       * edit from it.
+       */
+      stat: async (p: string) => {
+        if (dirs.has(p)) return { isDirectory: () => true, size: 0, mtimeMs: 0 };
+        const content = files.get(p);
+        if (content === undefined) {
+          const err = new Error(`ENOENT: ${p}`) as NodeJS.ErrnoException;
+          err.code = 'ENOENT';
+          throw err;
+        }
+        let hash = 0;
+        for (let i = 0; i < content.length; i++) hash = (hash * 31 + content.charCodeAt(i)) | 0;
+        return { isDirectory: () => false, size: content.length, mtimeMs: hash };
+      },
+      rename: async (from: string, to: string) => {
+        const content = files.get(from);
+        if (content === undefined) {
+          const err = new Error(`ENOENT: ${from}`) as NodeJS.ErrnoException;
+          err.code = 'ENOENT';
+          throw err;
+        }
+        files.set(to, content);
+        files.delete(from);
+      },
     },
   };
   return { default: api, ...api };
@@ -250,7 +280,10 @@ let conversationService: {
   get: (id: string) => Promise<Conversation | null>;
   getWindow: (id: string, limit: number) => Promise<unknown>;
   getOlder: (id: string, beforeId: string, limit: number) => Promise<unknown>;
-  list: () => Promise<Conversation[]>;
+  listPage: (request: ConversationListRequest) => Promise<unknown>;
+  archivedCount: (days: AutoArchiveDays) => Promise<number>;
+  summary: (id: string) => Promise<unknown>;
+  setArchived: (id: string, archived: boolean) => Promise<unknown>;
   delete: (id: string) => Promise<void>;
 } | null = null;
 
@@ -284,8 +317,14 @@ export async function route(channel: string, args: unknown[]): Promise<unknown> 
         return service.getWindow(args[0] as string, args[1] as number);
       case 'conversation:get-older':
         return service.getOlder(args[0] as string, args[1] as string, args[2] as number);
-      case 'conversation:list':
-        return service.list();
+      case 'conversation:list-page':
+        return service.listPage(args[0] as ConversationListRequest);
+      case 'conversation:archived-count':
+        return service.archivedCount(args[0] as AutoArchiveDays);
+      case 'conversation:summary':
+        return service.summary(args[0] as string);
+      case 'conversation:set-archived':
+        return service.setArchived(args[0] as string, args[1] as boolean);
       case 'conversation:delete':
         return service.delete(args[0] as string);
       default:

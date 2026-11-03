@@ -19,56 +19,18 @@ import { createPinia, setActivePinia } from 'pinia';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { nextTick } from 'vue';
 
-import type { Conversation, ConversationUpdate } from '@shared/types';
+import type { AutoArchiveDays, Conversation, ConversationListRequest, ConversationUpdate } from '@shared/types';
 
 type IpcHandler = (event: unknown, ...args: unknown[]) => void;
 
-const { ipcListeners, exposed, files } = vi.hoisted(() => ({
+const { ipcListeners, exposed } = vi.hoisted(() => ({
   ipcListeners: new Map<string, ((event: unknown, ...args: unknown[]) => void)[]>(),
   exposed: { api: null as Record<string, unknown> | null },
-  files: new Map<string, string>(),
 }));
 
-vi.mock('node:fs', () => {
-  const dirs = new Set<string>(['/conversations']);
-  const api = {
-    constants: { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1 },
-    existsSync: (p: string) => dirs.has(p) || files.has(p),
-    mkdirSync: (p: string) => {
-      dirs.add(p);
-    },
-    promises: {
-      readdir: async () => [...files.keys()].map((p) => p.split('/').pop() as string),
-      readFile: async (p: string) => {
-        const content = files.get(p);
-        if (content === undefined) {
-          const err = new Error(`ENOENT: ${p}`) as NodeJS.ErrnoException;
-          err.code = 'ENOENT';
-          throw err;
-        }
-        return content;
-      },
-      writeFile: async (p: string, content: string) => {
-        files.set(p, content);
-      },
-      unlink: async (p: string) => {
-        files.delete(p);
-      },
-      access: async (p: string) => {
-        if (!dirs.has(p) && !files.has(p)) {
-          const err = new Error(`ENOENT: ${p}`) as NodeJS.ErrnoException;
-          err.code = 'ENOENT';
-          throw err;
-        }
-      },
-      mkdir: async (p: string) => {
-        dirs.add(p);
-      },
-      stat: async () => ({ isDirectory: () => true, size: 0 }),
-    },
-  };
-  return { default: api, ...api };
-});
+// The shared fake disk, which behaves like the real one where the service
+// relies on it (see support/real-stack).
+vi.mock('node:fs', async () => (await import('./support/real-stack')).fakeFsModule());
 
 vi.mock('../../../main/utils/paths', () => ({
   getConversationsPath: () => '/conversations',
@@ -111,6 +73,8 @@ import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
+import { files } from './support/real-stack';
+
 import '../../../preload/preload';
 
 let conversationService: ConversationService;
@@ -130,8 +94,12 @@ async function route(channel: string, args: unknown[]): Promise<unknown> {
       );
     case IPC_CHANNELS.CONVERSATION_GET:
       return conversationService.get(args[0] as string);
-    case IPC_CHANNELS.CONVERSATION_LIST:
-      return conversationService.list();
+    case IPC_CHANNELS.CONVERSATION_LIST_PAGE:
+      return conversationService.listPage(args[0] as ConversationListRequest);
+    case IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT:
+      return conversationService.archivedCount(args[0] as AutoArchiveDays);
+    case IPC_CHANNELS.CONVERSATION_SUMMARY:
+      return conversationService.summary(args[0] as string);
     case IPC_CHANNELS.CONFIG_GET:
       return storedConfig;
     default:

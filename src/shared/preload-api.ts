@@ -12,7 +12,11 @@ import type {
   AppConfig,
   AskUserQuestionResponse,
   AuthStatus,
+  AutoArchiveDays,
   Conversation,
+  ConversationListPage,
+  ConversationListRequest,
+  ConversationSummary,
   ConversationSearchResult,
   ConversationSearchScope,
   FileChange,
@@ -352,7 +356,14 @@ export interface ElectronAPI {
 
   // Conversation operations
   conversation: {
-    list: () => Promise<Conversation[]>;
+    /** A page of the discussions list; see ConversationListRequest. */
+    listPage: (request: ConversationListRequest) => Promise<ConversationListPage>;
+    /** How many discussions are archived, by hand or for being inactive. */
+    archivedCount: (autoArchiveDays: AutoArchiveDays) => Promise<number>;
+    /** One discussion's list entry, or null when there is no such discussion. */
+    summary: (id: string) => Promise<ConversationSummary | null>;
+    /** Archive a discussion, or bring it back; returns its entry as it now stands. */
+    setArchived: (id: string, archived: boolean) => Promise<ConversationSummary>;
     get: (id: string) => Promise<Conversation | null>;
     /**
      * Full write. Kept for the main process's own writes; the renderer uses

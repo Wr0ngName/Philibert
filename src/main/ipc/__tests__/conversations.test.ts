@@ -2,7 +2,7 @@
  * Comprehensive tests for Conversations IPC handlers.
  *
  * Tests cover:
- * - CONVERSATION_LIST handler for listing all conversations
+ * - CONVERSATION_LIST_PAGE and the archiving handlers
  * - CONVERSATION_GET handler for retrieving a single conversation
  * - CONVERSATION_SAVE handler for saving conversations
  * - CONVERSATION_DELETE handler for deleting conversations
@@ -44,7 +44,10 @@ vi.mock('../../utils/logger', () => ({
 }));
 
 const mockConversationService = {
-  list: vi.fn(),
+  listPage: vi.fn(),
+  archivedCount: vi.fn(),
+  summary: vi.fn(),
+  setArchived: vi.fn(),
   get: vi.fn(),
   save: vi.fn(),
   delete: vi.fn(),
@@ -90,7 +93,10 @@ describe('Conversations IPC handlers', () => {
     });
 
     // Default mock implementations
-    mockConversationService.list.mockResolvedValue([sampleConversation]);
+    mockConversationService.listPage.mockResolvedValue({ conversations: [sampleConversation], hasMore: false });
+    mockConversationService.archivedCount.mockResolvedValue(4);
+    mockConversationService.summary.mockResolvedValue({ id: 'conv_123' });
+    mockConversationService.setArchived.mockResolvedValue({ id: 'conv_123' });
     mockConversationService.get.mockResolvedValue(sampleConversation);
     mockConversationService.save.mockResolvedValue(undefined);
     mockConversationService.delete.mockResolvedValue(undefined);
@@ -108,7 +114,10 @@ describe('Conversations IPC handlers', () => {
   // ===========================================================================
   describe('handler registration', () => {
     it('should register all conversation handlers', () => {
-      expect(handlers.has(IPC_CHANNELS.CONVERSATION_LIST)).toBe(true);
+      expect(handlers.has(IPC_CHANNELS.CONVERSATION_LIST_PAGE)).toBe(true);
+      expect(handlers.has(IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT)).toBe(true);
+      expect(handlers.has(IPC_CHANNELS.CONVERSATION_SUMMARY)).toBe(true);
+      expect(handlers.has(IPC_CHANNELS.CONVERSATION_SET_ARCHIVED)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_GET)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_SAVE)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_DELETE)).toBe(true);
@@ -116,67 +125,74 @@ describe('Conversations IPC handlers', () => {
   });
 
   // ===========================================================================
-  // CONVERSATION_LIST
+  // CONVERSATION_LIST_PAGE
   // ===========================================================================
-  describe('CONVERSATION_LIST handler', () => {
+  describe('CONVERSATION_LIST_PAGE handler', () => {
     let handler: (...args: unknown[]) => unknown;
+    const request = { archived: false, autoArchiveDays: 30, limit: 50 };
 
     beforeEach(() => {
-      handler = handlers.get(IPC_CHANNELS.CONVERSATION_LIST)!;
+      handler = handlers.get(IPC_CHANNELS.CONVERSATION_LIST_PAGE)!;
     });
 
-    it('should return list of conversations', async () => {
-      const result = await handler({});
+    it('passes a valid request to the service and returns its page', async () => {
+      const after = { updatedAt: 1000, id: 'conv_1' };
+      const result = await handler({}, { ...request, after });
 
-      expect(mockConversationService.list).toHaveBeenCalled();
-      expect(result).toEqual([sampleConversation]);
+      expect(mockConversationService.listPage).toHaveBeenCalledWith({ ...request, after });
+      expect(result).toEqual({ conversations: [sampleConversation], hasMore: false });
     });
 
-    it('should return empty array when no conversations exist', async () => {
-      mockConversationService.list.mockResolvedValue([]);
-
-      const result = await handler({});
-
-      expect(result).toEqual([]);
-    });
-
-    it('should return multiple conversations', async () => {
-      const conversations = [
-        sampleConversation,
-        { ...sampleConversation, id: 'conv_456', title: 'Another Conversation' },
-        { ...sampleConversation, id: 'conv_789', title: 'Third Conversation' },
-      ];
-      mockConversationService.list.mockResolvedValue(conversations);
-
-      const result = await handler({});
-
-      expect(result).toHaveLength(3);
+    it.each([
+      ['not an object', 'nope'],
+      ['archived not a boolean', { ...request, archived: 'yes' }],
+      ['a day count not offered', { ...request, autoArchiveDays: 12 }],
+      ['a page size of zero', { ...request, limit: 0 }],
+      ['a cursor without an id', { ...request, after: { updatedAt: 1 } }],
+      ['a cursor without a time', { ...request, after: { id: 'conv_1' } }],
+    ])('refuses %s', async (_label, bad) => {
+      await expect(handler({}, bad)).rejects.toThrow(ConfigurationError);
+      expect(mockConversationService.listPage).not.toHaveBeenCalled();
     });
 
     it('should throw when conversation service is not initialized', async () => {
       handlers.clear();
       setupConversationIPC(null as any);
-      const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_LIST)!;
+      const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_LIST_PAGE)!;
 
-      await expect(nullHandler({})).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when list returns non-array', async () => {
-      mockConversationService.list.mockResolvedValue('not-an-array');
-
-      await expect(handler({})).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when list returns null', async () => {
-      mockConversationService.list.mockResolvedValue(null);
-
-      await expect(handler({})).rejects.toThrow(ConfigurationError);
+      await expect(nullHandler({}, request)).rejects.toThrow(ConfigurationError);
     });
 
     it('should propagate service errors', async () => {
-      mockConversationService.list.mockRejectedValue(new Error('Storage error'));
+      mockConversationService.listPage.mockRejectedValue(new Error('Storage error'));
 
-      await expect(handler({})).rejects.toThrow(ConfigurationError);
+      await expect(handler({}, request)).rejects.toThrow(ConfigurationError);
+    });
+  });
+
+  // ===========================================================================
+  // Archiving
+  // ===========================================================================
+  describe('archiving handlers', () => {
+    it('counts the archived ones for a valid setting, and refuses another', async () => {
+      const count = handlers.get(IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT)!;
+      await expect(count({}, 7)).resolves.toBe(4);
+      expect(mockConversationService.archivedCount).toHaveBeenCalledWith(7);
+      await expect(count({}, '7')).rejects.toThrow(ConfigurationError);
+    });
+
+    it('reads one entry by id, and refuses an id that is not a string', async () => {
+      const summary = handlers.get(IPC_CHANNELS.CONVERSATION_SUMMARY)!;
+      await expect(summary({}, 'conv_123')).resolves.toEqual({ id: 'conv_123' });
+      await expect(summary({}, 42)).rejects.toThrow(ConfigurationError);
+    });
+
+    it('archives or brings back, and refuses a flag that is not a boolean', async () => {
+      const setArchived = handlers.get(IPC_CHANNELS.CONVERSATION_SET_ARCHIVED)!;
+      await setArchived({}, 'conv_123', true);
+      expect(mockConversationService.setArchived).toHaveBeenCalledWith('conv_123', true);
+      await expect(setArchived({}, 'conv_123', 'true')).rejects.toThrow(ConfigurationError);
+      expect(mockConversationService.setArchived).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -276,6 +276,9 @@ async function main(): Promise<void> {
     gitService?.stopWatching();
     void gitService?.credentials?.close();
     fileWatcher?.stop();
+    // Best effort: an index not saved only costs re-reading, at the next
+    // start, the conversations written since it last was.
+    void conversationService?.flushIndex();
 
     if (ipcCleanup) {
       ipcCleanup();

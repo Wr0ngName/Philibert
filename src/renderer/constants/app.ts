@@ -43,6 +43,11 @@ export const CONSTANTS = {
      */
     WINDOW_SIZE: 500,
     /**
+     * Discussions listed per page: more than fit in the sidebar of a tall
+     * screen, so one page fills it and scrolling asks for the next.
+     */
+    LIST_PAGE_SIZE: 50,
+    /**
      * The window is trimmed back to WINDOW_SIZE once it grows past this, and
      * only after a save has landed. The slack means a long turn is never
      * trimmed while it is still arriving.

@@ -79,7 +79,9 @@ export type IconName =
   | 'git-commit'
   | 'git-pull'
   | 'git-push'
-  | 'search';
+  | 'search'
+  | 'archive'
+  | 'restore';
 
 /** SVG path data for each icon */
 const iconPaths: Record<IconName, string> = {
@@ -136,6 +138,8 @@ const iconPaths: Record<IconName, string> = {
   'git-pull': 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4',
   'git-push': 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12',
   search: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z',
+  archive: 'M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4',
+  restore: 'M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6',
 };
 </script>
 

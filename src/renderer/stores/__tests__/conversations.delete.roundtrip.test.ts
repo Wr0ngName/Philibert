@@ -61,8 +61,12 @@ describe('deleting a conversation from the list', () => {
 
   /** What a fresh start would list: read back from disk, not from memory. */
   async function listedAfterRestart(): Promise<string[]> {
-    const listed = await window.electron.conversation.list();
-    return listed.map((c) => c.id);
+    // Both lists: a deleted conversation must be in neither.
+    const pages = await Promise.all(
+      [false, true].map((archived) =>
+        window.electron.conversation.listPage({ archived, autoArchiveDays: 0, limit: 1000 })),
+    );
+    return pages.flatMap((page) => page.conversations.map((c) => c.id));
   }
 
   /** Trash icon, then Delete on the confirmation, as the user does. */

@@ -54,7 +54,10 @@ describe('IPC_CHANNELS', () => {
   });
 
   it('should have all conversation channels', () => {
-    expect(IPC_CHANNELS.CONVERSATION_LIST).toBe('conversation:list');
+    expect(IPC_CHANNELS.CONVERSATION_LIST_PAGE).toBe('conversation:list-page');
+    expect(IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT).toBe('conversation:archived-count');
+    expect(IPC_CHANNELS.CONVERSATION_SUMMARY).toBe('conversation:summary');
+    expect(IPC_CHANNELS.CONVERSATION_SET_ARCHIVED).toBe('conversation:set-archived');
     expect(IPC_CHANNELS.CONVERSATION_GET).toBe('conversation:get');
     expect(IPC_CHANNELS.CONVERSATION_SAVE).toBe('conversation:save');
     expect(IPC_CHANNELS.CONVERSATION_DELETE).toBe('conversation:delete');

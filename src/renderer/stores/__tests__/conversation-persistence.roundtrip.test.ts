@@ -28,96 +28,22 @@
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { nextTick } from 'vue';
 
-import type { Conversation, ConversationUpdate } from '@shared/types';
+import type { AutoArchiveDays, Conversation, ConversationListRequest, ConversationUpdate } from '@shared/types';
 
 type IpcHandler = (event: unknown, ...args: unknown[]) => void;
 
-const { ipcListeners, exposed, files, disk } = vi.hoisted(() => ({
+const { ipcListeners, exposed } = vi.hoisted(() => ({
   ipcListeners: new Map<string, ((event: unknown, ...args: unknown[]) => void)[]>(),
   exposed: { api: null as Record<string, unknown> | null },
-  /** The "disk": path → file contents. */
-  files: new Map<string, string>(),
-  /**
-   * Control over how long a write takes.
-   *
-   * An in-memory write finishes within the same tick, which quietly removed a
-   * whole class of defect from this test's reach: saves could never actually
-   * overlap, so restoring the old "refuse to save while one is in flight"
-   * guard left every assertion passing. A real write takes long enough for
-   * the next one to be requested while it is still going, and that is exactly
-   * when messages were lost — so the disk has to be able to be slow.
-   */
-  disk: {
-    holdWrites: false,
-    waiting: [] as (() => void)[],
-    /**
-     * Writes reject while this is set.
-     *
-     * Not a hypothetical: the reported loss came from the app's own refusal to
-     * write, and a locked file, a full disk, a timeout or antivirus holding
-     * the handle on Windows arrive at the renderer identically. What the
-     * renderer does with the messages it failed to persist is the thing worth
-     * testing, and it cannot be tested while every write succeeds.
-     */
-    failWrites: false,
-  },
 }));
 
-/** An in-memory filesystem, standing in for the only truly external thing. */
-vi.mock('node:fs', () => {
-  const dirs = new Set<string>(['/conversations']);
-  const api = {
-    // The real service checks writability with fs.constants.W_OK. Leaving
-    // these out made every save throw a TypeError that the service logged and
-    // swallowed — a reminder of why the fake surface has to match the real
-    // module rather than only the calls one expects.
-    constants: { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1 },
-    existsSync: (p: string) => dirs.has(p) || files.has(p),
-    mkdirSync: (p: string) => {
-      dirs.add(p);
-    },
-    promises: {
-      readdir: async () => [...files.keys()].map((p) => p.split('/').pop() as string),
-      readFile: async (p: string) => {
-        const content = files.get(p);
-        if (content === undefined) {
-          const err = new Error(`ENOENT: ${p}`) as NodeJS.ErrnoException;
-          err.code = 'ENOENT';
-          throw err;
-        }
-        return content;
-      },
-      writeFile: async (p: string, content: string) => {
-        if (disk.holdWrites) {
-          await new Promise<void>((resolve) => disk.waiting.push(resolve));
-        }
-        if (disk.failWrites) {
-          const err = new Error(`EBUSY: resource busy or locked, open '${p}'`) as NodeJS.ErrnoException;
-          err.code = 'EBUSY';
-          throw err;
-        }
-        files.set(p, content);
-      },
-      unlink: async (p: string) => {
-        files.delete(p);
-      },
-      access: async (p: string) => {
-        if (!dirs.has(p) && !files.has(p)) {
-          const err = new Error(`ENOENT: ${p}`) as NodeJS.ErrnoException;
-          err.code = 'ENOENT';
-          throw err;
-        }
-      },
-      mkdir: async (p: string) => {
-        dirs.add(p);
-      },
-      stat: async () => ({ isDirectory: () => true, size: 0 }),
-    },
-  };
-  return { default: api, ...api };
-});
+/**
+ * An in-memory filesystem, standing in for the only truly external thing:
+ * the shared one, whose `disk` can hold writes back or fail them — see
+ * support/real-stack for why both matter here.
+ */
+vi.mock('node:fs', async () => (await import('./support/real-stack')).fakeFsModule());
 
 vi.mock('../../../main/utils/paths', () => ({
   getConversationsPath: () => '/conversations',
@@ -162,6 +88,10 @@ import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
+// settle drains a whole turn of the event loop, not a count of ticks: how
+// many ticks a write takes is the persistence code's business.
+import { disk, files, settle } from './support/real-stack';
+
 // Importing the real preload populates `exposed.api`.
 import '../../../preload/preload';
 
@@ -188,8 +118,12 @@ async function route(channel: string, args: unknown[]): Promise<unknown> {
       );
     case IPC_CHANNELS.CONVERSATION_GET:
       return conversationService.get(args[0] as string);
-    case IPC_CHANNELS.CONVERSATION_LIST:
-      return conversationService.list();
+    case IPC_CHANNELS.CONVERSATION_LIST_PAGE:
+      return conversationService.listPage(args[0] as ConversationListRequest);
+    case IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT:
+      return conversationService.archivedCount(args[0] as AutoArchiveDays);
+    case IPC_CHANNELS.CONVERSATION_SUMMARY:
+      return conversationService.summary(args[0] as string);
     case IPC_CHANNELS.CONVERSATION_DELETE:
       return conversationService.delete(args[0] as string);
     case IPC_CHANNELS.CONFIG_GET:
@@ -219,9 +153,6 @@ function emitIpc(channel: string, ...args: unknown[]) {
   }
 }
 
-async function settle(times = 8) {
-  for (let i = 0; i < times; i += 1) await nextTick();
-}
 
 /** What is actually on disk for a conversation, parsed from its JSON. */
 function onDisk(id: string): Conversation | null {

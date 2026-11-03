@@ -6,11 +6,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { CONVERSATION_CONSTANTS } from '../../shared/constants';
+import { isAfter, isArchived, newestFirst, summaryOf } from '../../shared/conversation-list';
 import { generateId, ID_PREFIXES } from '../../shared/id';
 import {
+  AutoArchiveDays,
   BackgroundTaskInfo,
   ChatMessage,
   Conversation,
+  ConversationListPage,
+  ConversationListRequest,
+  ConversationSummary,
   ConversationUpdate,
   ConversationWindow,
   ToolUseInfo,
@@ -21,6 +26,7 @@ import { getConversationsPath, isPathWithin } from '../utils/paths';
 import { generateTitleFromContent } from '../utils/stringUtils';
 
 import { findSessionTranscript } from './claude/transcript-files';
+import { ConversationIndex } from './conversation-index';
 
 /** How an incoming write differs from the one before it, when it does. */
 export interface WriteAnomaly {
@@ -205,9 +211,22 @@ export class ConversationService {
    * reading and parsing megabytes of JSON on every single save.
    */
   private lastWrittenIds: Map<string, string[]> = new Map();
+  /** The discussions list's entries; see ConversationIndex. */
+  private index: ConversationIndex;
+  /**
+   * Each conversation's writes, one after another. A write reads the file,
+   * changes it and writes it back, so two at once would each write what the
+   * other had not seen — an archive landing during a save would be lost.
+   */
+  private writeChains = new Map<string, Promise<unknown>>();
 
   constructor() {
     this.conversationsDir = getConversationsPath();
+    this.index = new ConversationIndex(
+      this.conversationsDir,
+      // Beside the folder rather than in it: everything in it is a conversation.
+      path.join(path.dirname(this.conversationsDir), 'conversation-index.json'),
+    );
     this.ensureDirSync();
     logger.info('ConversationService initialized', { dir: this.conversationsDir });
   }
@@ -279,43 +298,89 @@ export class ConversationService {
     return path.join(this.conversationsDir, `${sanitizedId}.json`);
   }
 
+  /** The file a conversation is stored in, by name within the folder. */
+  private fileNameOf(id: string): string {
+    return path.basename(this.getFilePath(id));
+  }
+
+  /** Run a write of one conversation after its writes already under way; see writeChains. */
+  private serialized<T>(id: string, write: () => Promise<T>): Promise<T> {
+    // Keyed by file, which is what two writes would collide on.
+    const key = this.fileNameOf(id);
+    const previous = this.writeChains.get(key) ?? Promise.resolve();
+    // A write that failed was reported to its own caller; the next one runs.
+    const run = previous.catch(() => undefined).then(write);
+    const settled = run.catch(() => undefined);
+    this.writeChains.set(key, settled);
+    void settled.then(() => {
+      if (this.writeChains.get(key) === settled) this.writeChains.delete(key);
+    });
+    return run;
+  }
+
   /**
-   * List all conversations (metadata only)
+   * A page of the discussions list, newest first: the archived ones or the
+   * others, after the cursor when one is given.
+   *
+   * The first page brings the index in line with the folder, so it is where a
+   * change made outside the app shows up; the pages after it read the
+   * entries as they stand, so a page does not cost a look at every file.
    */
-  async list(): Promise<Conversation[]> {
-    try {
-      const files = await fs.promises.readdir(this.conversationsDir);
-      const conversations: Conversation[] = [];
+  async listPage(request: ConversationListRequest): Promise<ConversationListPage> {
+    if (!request.after || !this.index.isLoaded) await this.index.refresh();
+    const now = Date.now();
+    const matching = this.index
+      .summaries()
+      .filter((summary) => isArchived(summary, request.autoArchiveDays, now) === request.archived)
+      .filter((summary) => !request.after || isAfter(summary, request.after))
+      .sort(newestFirst);
+    return {
+      conversations: matching.slice(0, request.limit),
+      hasMore: matching.length > request.limit,
+    };
+  }
 
-      for (const file of files) {
-        if (!file.endsWith('.json')) {
-          continue;
-        }
+  /** How many discussions are archived, by hand or for being inactive. */
+  async archivedCount(autoArchiveDays: AutoArchiveDays): Promise<number> {
+    if (!this.index.isLoaded) await this.index.refresh();
+    const now = Date.now();
+    return this.index.summaries().filter((summary) => isArchived(summary, autoArchiveDays, now)).length;
+  }
 
-        try {
-          const content = await fs.promises.readFile(
-            path.join(this.conversationsDir, file),
-            'utf-8'
-          );
-          const conversation = JSON.parse(content) as Conversation;
-          // Return without full message content for list view
-          conversations.push({
-            ...conversation,
-            messages: [], // Don't include messages in list
-          });
-        } catch (error) {
-          logger.warn('Failed to parse conversation file', { file, error });
-        }
+  /** One discussion's list entry, or null when there is no such discussion. */
+  async summary(id: string): Promise<ConversationSummary | null> {
+    if (!this.index.isLoaded) await this.index.refresh();
+    return this.index.summary(id);
+  }
+
+  /**
+   * Archive a discussion, or bring it back. Bringing it back counts as
+   * activity (`restoredAt`), so one archived for being inactive stays out of
+   * the archive for as long as one just written in would.
+   *
+   * @returns its list entry as it now stands.
+   */
+  async setArchived(id: string, archived: boolean): Promise<ConversationSummary> {
+    return this.serialized(id, async () => {
+      const conversation = await this.get(id);
+      if (!conversation) throw new Error(`Conversation not found: ${id}`);
+      const now = Date.now();
+      if (archived) {
+        conversation.archivedAt = now;
+        delete conversation.restoredAt;
+      } else {
+        delete conversation.archivedAt;
+        conversation.restoredAt = now;
       }
+      await this.persist(conversation);
+      logger.info(archived ? 'Conversation archived' : 'Conversation brought back from the archive', { id });
+      return summaryOf(conversation);
+    });
+  }
 
-      // Sort by updated date, newest first
-      conversations.sort((a, b) => b.updatedAt - a.updatedAt);
-
-      return conversations;
-    } catch (error) {
-      logger.error('Failed to list conversations', error);
-      return [];
-    }
+  /** Save the index now; for quitting. */
+  flushIndex(): Promise<void> {
+    return this.index.flush();
   }
 
   /**
@@ -435,11 +500,17 @@ export class ConversationService {
     }
   }
 
+  /** Save a whole conversation, after its writes already under way; see persist. */
+  save(conversation: Conversation): Promise<void> {
+    return this.serialized(conversation.id, () => this.persist(conversation));
+  }
+
   /**
-   * Save a conversation with retry logic for transient failures
-   * Retries up to 3 times with exponential backoff
+   * Write a conversation, with retry logic for transient failures — retries
+   * up to 3 times with exponential backoff — and record it in the index.
+   * Called only from within `serialized`.
    */
-  async save(conversation: Conversation): Promise<void> {
+  private async persist(conversation: Conversation): Promise<void> {
     const filePath = this.getFilePath(conversation.id);
     const maxRetries = MAIN_CONSTANTS.CONVERSATION.MAX_SAVE_RETRIES;
     let lastError: Error | null = null;
@@ -481,6 +552,7 @@ export class ConversationService {
         const content = JSON.stringify(updated, null, 2);
         await fs.promises.writeFile(filePath, content, 'utf-8');
         this.lastWrittenIds.set(conversation.id, ids);
+        await this.index.noteWritten(path.basename(filePath), updated);
 
         logger.debug('Conversation saved', { id: conversation.id, attempt });
         return; // Success, exit retry loop
@@ -535,7 +607,11 @@ export class ConversationService {
    * Everything else — the retry loop, the title fallback, the suspicious-write
    * report — is shared with `save`, which does the writing.
    */
-  async update(update: ConversationUpdate): Promise<void> {
+  update(update: ConversationUpdate): Promise<void> {
+    return this.serialized(update.id, () => this.applyUpdate(update));
+  }
+
+  private async applyUpdate(update: ConversationUpdate): Promise<void> {
     const stored = await this.get(update.id);
 
     const base: Conversation = stored ?? {
@@ -605,7 +681,7 @@ export class ConversationService {
       resultCount: messages.length,
     });
 
-    await this.save(merged);
+    await this.persist(merged);
   }
 
   /**
@@ -728,35 +804,40 @@ export class ConversationService {
   /**
    * Rename a conversation (updates the title)
    */
-  async rename(id: string, newTitle: string): Promise<void> {
-    const conversation = await this.get(id);
-    if (!conversation) {
-      throw new Error(`Conversation not found: ${id}`);
-    }
+  rename(id: string, newTitle: string): Promise<void> {
+    return this.serialized(id, async () => {
+      const conversation = await this.get(id);
+      if (!conversation) {
+        throw new Error(`Conversation not found: ${id}`);
+      }
 
-    // Update title and mark as custom (manually set)
-    conversation.title = newTitle.trim();
-    conversation.customTitle = true;  // Mark as manually renamed
-    await this.save(conversation);
+      // Update title and mark as custom (manually set)
+      conversation.title = newTitle.trim();
+      conversation.customTitle = true;  // Mark as manually renamed
+      await this.persist(conversation);
 
-    logger.info('Conversation renamed', { id, newTitle: newTitle.slice(0, 30) });
+      logger.info('Conversation renamed', { id, newTitle: newTitle.slice(0, 30) });
+    });
   }
 
   /**
    * Delete a conversation
    */
-  async delete(id: string): Promise<void> {
-    const filePath = this.getFilePath(id);
+  delete(id: string): Promise<void> {
+    return this.serialized(id, async () => {
+      const filePath = this.getFilePath(id);
 
-    try {
-      await fs.promises.unlink(filePath);
-      logger.info('Conversation deleted', { id });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logger.error('Failed to delete conversation', { id, error });
-        throw error;
+      try {
+        await fs.promises.unlink(filePath);
+        logger.info('Conversation deleted', { id });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          logger.error('Failed to delete conversation', { id, error });
+          throw error;
+        }
       }
-    }
+      this.index.noteDeleted(path.basename(filePath));
+    });
   }
 
   /**
@@ -770,15 +851,13 @@ export class ConversationService {
 
       for (const file of files) {
         if (!file.endsWith('.json')) continue;
-        const filePath = path.join(this.conversationsDir, file);
         try {
-          const content = await fs.promises.readFile(filePath, 'utf-8');
-          const conversation = JSON.parse(content) as Conversation;
-          if (conversation.sdkSessionId) {
+          const changed = await this.rewriteFile(file, async (conversation) => {
+            if (!conversation.sdkSessionId) return false;
             delete conversation.sdkSessionId;
-            await fs.promises.writeFile(filePath, JSON.stringify(conversation, null, 2), 'utf-8');
-            cleared++;
-          }
+            return true;
+          });
+          if (changed) cleared++;
         } catch (err) {
           logger.warn('Failed to clear session ID from conversation file', { file, error: err });
         }
@@ -824,30 +903,29 @@ export class ConversationService {
 
       for (const file of conversationFiles) {
         if (!file.endsWith('.json')) continue;
-        const filePath = path.join(this.conversationsDir, file);
         try {
-          const content = await fs.promises.readFile(filePath, 'utf-8');
-          const conversation = JSON.parse(content) as Conversation;
-          if (!conversation.sdkSessionId || !conversation.workingDirectory) continue;
+          const changed = await this.rewriteFile(file, async (conversation) => {
+            if (!conversation.sdkSessionId || !conversation.workingDirectory) return false;
 
-          const sessionFilePath = findSessionTranscript(conversation.sdkSessionId, claudeDir);
-          if (!sessionFilePath) continue; // session gone entirely — leave as-is
+            const sessionFilePath = findSessionTranscript(conversation.sdkSessionId, claudeDir);
+            if (!sessionFilePath) return false; // session gone entirely — leave as-is
 
-          // Read the actual CWD from the session .jsonl file
-          const actualCwd = await this.readCwdFromSessionFile(sessionFilePath);
-          if (!actualCwd) continue;
+            // Read the actual CWD from the session .jsonl file
+            const actualCwd = await this.readCwdFromSessionFile(sessionFilePath);
+            if (!actualCwd) return false;
 
-          // Only update if the stored CWD doesn't match the actual CWD
-          if (conversation.workingDirectory === actualCwd) continue;
+            // Only update if the stored CWD doesn't match the actual CWD
+            if (conversation.workingDirectory === actualCwd) return false;
 
-          logger.info('Recovering conversation CWD from session file', {
-            conversationId: conversation.id,
-            oldCwd: conversation.workingDirectory,
-            newCwd: actualCwd,
+            logger.info('Recovering conversation CWD from session file', {
+              conversationId: conversation.id,
+              oldCwd: conversation.workingDirectory,
+              newCwd: actualCwd,
+            });
+            conversation.workingDirectory = actualCwd;
+            return true;
           });
-          conversation.workingDirectory = actualCwd;
-          await fs.promises.writeFile(filePath, JSON.stringify(conversation, null, 2), 'utf-8');
-          fixed++;
+          if (changed) fixed++;
         } catch (err) {
           logger.warn('Failed to check conversation for recovery', { file, error: err });
         }
@@ -859,6 +937,28 @@ export class ConversationService {
     } catch (err) {
       logger.error('Failed to recover session data', { error: err });
     }
+  }
+
+  /**
+   * Change one stored file as it is, after its conversation's writes under
+   * way, and keep the index in step. The file is rewritten as read, apart
+   * from what `change` did, and only when it says it changed something.
+   *
+   * @returns whether it was rewritten.
+   */
+  private rewriteFile(
+    fileName: string,
+    change: (conversation: Conversation) => Promise<boolean>,
+  ): Promise<boolean> {
+    const filePath = path.join(this.conversationsDir, fileName);
+    // The file is named by its conversation's id; see getFilePath.
+    return this.serialized(fileName.slice(0, -'.json'.length), async () => {
+      const conversation = JSON.parse(await fs.promises.readFile(filePath, 'utf-8')) as Conversation;
+      if (!(await change(conversation))) return false;
+      await fs.promises.writeFile(filePath, JSON.stringify(conversation, null, 2), 'utf-8');
+      await this.index.noteWritten(fileName, conversation);
+      return true;
+    });
   }
 
   /**

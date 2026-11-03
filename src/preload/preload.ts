@@ -462,7 +462,14 @@ const electronAPI: ElectronAPI = {
 
   // Conversation operations
   conversation: {
-    list: () => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_LIST),
+    listPage: (request) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_LIST_PAGE, request),
+
+    archivedCount: (autoArchiveDays) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT, autoArchiveDays),
+
+    summary: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SUMMARY, id),
+
+    setArchived: (id: string, archived: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_ARCHIVED, id, archived),
 
     get: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET, id),
 

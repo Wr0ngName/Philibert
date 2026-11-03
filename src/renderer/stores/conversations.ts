@@ -6,7 +6,15 @@
 import { defineStore, storeToRefs } from 'pinia';
 import { ref, computed, watch } from 'vue';
 
-import type { ChatMessage, Conversation, ConversationUpdate } from '@shared/types';
+import { isAfter, isArchived, newestFirst } from '@shared/conversation-list';
+import type {
+  AutoArchiveDays,
+  ChatMessage,
+  Conversation,
+  ConversationListCursor,
+  ConversationSummary,
+  ConversationUpdate,
+} from '@shared/types';
 
 import { getInMemoryMessages } from '../composables/useClaudeChat';
 import { CONSTANTS } from '../constants/app';
@@ -69,9 +77,81 @@ export const useConversationsStore = defineStore('conversations', () => {
 
   const hasConversations = computed(() => conversations.value.length > 0);
 
-  const sortedConversations = computed(() => {
-    return [...conversations.value].sort((a, b) => b.updatedAt - a.updatedAt);
+  /**
+   * The discussions list: the active ones or the archived ones, loaded a page
+   * at a time as it is scrolled. `conversations` also holds discussions
+   * opened from elsewhere — search, the last one at start — so the list is
+   * those of the view, cut where the pages loaded so far end: one older than
+   * that appears when its page does, in its place.
+   */
+  const listView = ref<'active' | 'archived'>('active');
+  /** The last entry of the pages loaded, or null before the first. */
+  const listCursor = ref<ConversationListCursor | null>(null);
+  const listHasMore = ref(false);
+  const loadingMoreConversations = ref(false);
+  /** How many discussions are archived, by hand or for being inactive. */
+  const archivedCount = ref(0);
+  /** Pages asked for with an older request than this are dropped: the list was reloaded since. */
+  let listGeneration = 0;
+
+  function autoArchiveDays(): AutoArchiveDays {
+    return useSettingsStore().config.autoArchiveDays;
+  }
+
+  // The setting decides which discussions are archived, so the list is read
+  // again when it changes — and when the saved settings arrive after the
+  // first page was read with the default. Not before that first page: the
+  // list is not shown until initialize has read it.
+  watch(autoArchiveDays, () => {
+    if (listGeneration === 0) return;
+    listCursor.value = null;
+    listHasMore.value = false;
+    void loadConversationList();
   });
+
+  function inArchive(conversation: Conversation, now = Date.now()): boolean {
+    return isArchived(conversation, autoArchiveDays(), now);
+  }
+
+  const listedConversations = computed(() => {
+    const now = Date.now();
+    const archived = listView.value === 'archived';
+    const cursor = listCursor.value;
+    return conversations.value
+      .filter((c) => inArchive(c, now) === archived)
+      // The open one is listed in its place even when its page is not loaded
+      // yet — opened from search, or at start — so it is always in sight.
+      .filter((c) => !listHasMore.value || !cursor || !isAfter(c, cursor) || c.id === currentConversationId.value)
+      .sort(newestFirst);
+  });
+
+  /**
+   * Counts the times the list was brought to the open conversation, for the
+   * list to show its row: once its pages are loaded, and only then — showing
+   * it earlier, at the end of what was loaded, brought the end of the list
+   * into reach and loaded a page above it, pushing it away again.
+   */
+  const listRevealCount = ref(0);
+
+  /**
+   * Bring the list to an opened conversation: the list it belongs to — one
+   * opened from search or at start may be archived while the active list is
+   * shown, or the reverse — loaded down to its page, so its row is in its
+   * place among the others. Its row is where the user sees which one is open.
+   */
+  async function followInList(conversation: Conversation): Promise<void> {
+    const view = inArchive(conversation) ? 'archived' : 'active';
+    if (listView.value !== view) await showListView(view);
+    const stillOpen = () => currentConversationId.value === conversation.id;
+    while (stillOpen() && listHasMore.value && listCursor.value && isAfter(conversation, listCursor.value)) {
+      const before = listCursor.value;
+      await loadMoreConversations();
+      // A page that did not come — a failure, or one already being loaded
+      // as the user scrolls — ends it here rather than asking again.
+      if (listCursor.value === before) break;
+    }
+    if (stillOpen()) listRevealCount.value += 1;
+  }
 
   /**
    * True when the active conversation was started in a different execution
@@ -92,30 +172,137 @@ export const useConversationsStore = defineStore('conversations', () => {
   // Actions
 
   /**
-   * Load the list of all conversations (metadata only)
+   * Put list entries into `conversations`. An entry already held keeps what
+   * the list does not carry — the messages and session state of one that is
+   * open.
+   */
+  function mergeSummaries(summaries: ConversationSummary[]): void {
+    // Migration: stamp the current execution mode onto any conversation that
+    // doesn't already have one. We do this in memory only; the file gets
+    // updated on the next save. This preserves the user's expectation that
+    // pre-existing conversations "belong to" whatever mode they're currently
+    // in, while keeping any newly created conversation anchored to its
+    // creation mode for future mode-switch detection.
+    const currentMode = useSettingsStore().executionMode;
+    const indexById = new Map(conversations.value.map((c, index) => [c.id, index]));
+    for (const summary of summaries) {
+      const at = indexById.get(summary.id);
+      if (at !== undefined) {
+        // The entry is what the disk says: a field it leaves out is not set
+        // there — an archive mark removed when the discussion was brought
+        // back must go here too. The execution mode stamped above stays.
+        const kept: Conversation = { ...conversations.value[at] };
+        delete kept.customTitle;
+        delete kept.archivedAt;
+        delete kept.restoredAt;
+        conversations.value[at] = { ...kept, ...summary, executionMode: summary.executionMode ?? kept.executionMode };
+      } else {
+        indexById.set(summary.id, conversations.value.length);
+        conversations.value.push({
+          ...summary,
+          executionMode: summary.executionMode ?? currentMode,
+          messages: [],
+        });
+      }
+    }
+  }
+
+  /** Ask again how many discussions are archived. */
+  async function refreshArchivedCount(): Promise<void> {
+    try {
+      archivedCount.value = await window.electron.conversation.archivedCount(autoArchiveDays());
+    } catch (err) {
+      logger.warn('Failed to count archived conversations', { error: err });
+    }
+  }
+
+  /**
+   * Load the first page of the list shown — active or archived — and the
+   * archived count. The pages after it come with loadMoreConversations.
    */
   async function loadConversationList(): Promise<void> {
+    const generation = ++listGeneration;
     isLoading.value = true;
     error.value = null;
     try {
-      const list = await window.electron.conversation.list();
-      // Migration: stamp the current execution mode onto any conversation that
-      // doesn't already have one. We do this in memory only; the file gets
-      // updated on the next save. This preserves the user's expectation that
-      // pre-existing conversations "belong to" whatever mode they're currently
-      // in, while keeping any newly created conversation anchored to its
-      // creation mode for future mode-switch detection.
-      const settingsStore = useSettingsStore();
-      const currentMode = settingsStore.executionMode;
-      conversations.value = list.map((c: Conversation) =>
-        c.executionMode ? c : { ...c, executionMode: currentMode },
+      const page = await window.electron.conversation.listPage({
+        archived: listView.value === 'archived',
+        autoArchiveDays: autoArchiveDays(),
+        limit: CONSTANTS.CONVERSATION.LIST_PAGE_SIZE,
+      });
+      if (generation !== listGeneration) return;
+      // Read afresh: what is not on this page comes back with its own page,
+      // and what is gone from the disk goes from the list. Only what is held
+      // stays regardless — the conversation on screen, and those still at
+      // work in the background, which their turns read from here.
+      conversations.value = conversations.value.filter(
+        (c) =>
+          c.id === currentConversationId.value ||
+          chatStore.isConversationLoading(c.id) ||
+          chatStore.conversationHasPendingActions(c.id),
       );
-      logger.debug('Loaded conversation list', { count: list.length });
+      mergeSummaries(page.conversations);
+      listCursor.value = page.conversations.at(-1) ?? null;
+      listHasMore.value = page.hasMore;
+      logger.debug('Loaded conversation list', { view: listView.value, count: page.conversations.length, hasMore: page.hasMore });
     } catch (err) {
       logger.error('Failed to load conversations', err);
       error.value = 'Failed to load conversations';
     } finally {
-      isLoading.value = false;
+      if (generation === listGeneration) isLoading.value = false;
+    }
+    await refreshArchivedCount();
+  }
+
+  /** The next page of the list shown, when there is one and none is loading. */
+  async function loadMoreConversations(): Promise<void> {
+    const cursor = listCursor.value;
+    if (!listHasMore.value || !cursor || loadingMoreConversations.value) return;
+    const generation = listGeneration;
+    loadingMoreConversations.value = true;
+    try {
+      const page = await window.electron.conversation.listPage({
+        archived: listView.value === 'archived',
+        autoArchiveDays: autoArchiveDays(),
+        after: { updatedAt: cursor.updatedAt, id: cursor.id },
+        limit: CONSTANTS.CONVERSATION.LIST_PAGE_SIZE,
+      });
+      if (generation !== listGeneration) return;
+      mergeSummaries(page.conversations);
+      listCursor.value = page.conversations.at(-1) ?? cursor;
+      listHasMore.value = page.hasMore;
+    } catch (err) {
+      logger.error('Failed to load more conversations', err);
+      error.value = 'Failed to load more conversations';
+    } finally {
+      loadingMoreConversations.value = false;
+    }
+  }
+
+  /** Show the active discussions or the archived ones, from their first page. */
+  async function showListView(view: 'active' | 'archived'): Promise<void> {
+    if (listView.value === view) return;
+    listView.value = view;
+    listCursor.value = null;
+    listHasMore.value = false;
+    await loadConversationList();
+  }
+
+  /**
+   * Archive a discussion, or bring it back. One that is open stays open: it
+   * only moves between the lists.
+   */
+  async function setConversationArchived(id: string, archived: boolean): Promise<boolean> {
+    try {
+      const summary = await window.electron.conversation.setArchived(id, archived);
+      mergeSummaries([summary]);
+      logger.info(archived ? 'Archived conversation' : 'Brought a conversation back from the archive', { id });
+      await refreshArchivedCount();
+      return true;
+    } catch (err) {
+      logger.error('Failed to archive or restore conversation', { id, archived, error: err });
+      error.value = archived ? 'Failed to archive the conversation' : 'Failed to bring the conversation back';
+      return false;
     }
   }
 
@@ -169,6 +356,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       currentConversationId.value = id;
       chatStore.setCurrentConversation(id);
       persistLastConversationId(id);
+      void followInList(conversation);
 
       // Restore the persisted session usage so the context-usage bar can
       // render straight away — without this it stays blank until the next
@@ -472,6 +660,10 @@ export const useConversationsStore = defineStore('conversations', () => {
     } else {
       conversations.value.push(listEntry);
     }
+
+    // A message in an archived discussion brings it back (see isArchived):
+    // the count of archived ones changed with it.
+    if (existing && inArchive(existing) && !inArchive(listEntry)) void refreshArchivedCount();
   }
 
   /**
@@ -893,6 +1085,8 @@ export const useConversationsStore = defineStore('conversations', () => {
     chatStore.clearMessages();
 
     persistLastConversationId(id);
+    // A new one is active: it is listed there once it has a message.
+    if (listView.value !== 'active') void showListView('active');
 
     logger.info('Created new conversation', { id });
     return id;
@@ -1212,7 +1406,8 @@ export const useConversationsStore = defineStore('conversations', () => {
       // Remove from list
       const index = conversations.value.findIndex((c: Conversation) => c.id === id);
       if (index !== -1) {
-        conversations.value.splice(index, 1);
+        const [removed] = conversations.value.splice(index, 1);
+        if (inArchive(removed)) void refreshArchivedCount();
       }
 
       // Clear conversation state from chat store
@@ -1393,9 +1588,9 @@ export const useConversationsStore = defineStore('conversations', () => {
       try {
         const config = await window.electron.config.get();
         if (config.lastConversationId) {
-          const exists = conversations.value.some(
-            (c: Conversation) => c.id === config.lastConversationId
-          );
+          // Asked rather than looked up in the list: it may be on a page not
+          // loaded, or in the archive.
+          const exists = (await window.electron.conversation.summary(config.lastConversationId)) !== null;
           if (exists) {
             restored = await loadConversation(config.lastConversationId);
           }
@@ -1467,11 +1662,19 @@ export const useConversationsStore = defineStore('conversations', () => {
     // Getters
     currentConversation,
     hasConversations,
-    sortedConversations,
+    listedConversations,
+    listView,
+    listHasMore,
+    loadingMoreConversations,
+    archivedCount,
+    listRevealCount,
     currentModeMismatch,
 
     // Actions
     loadConversationList,
+    loadMoreConversations,
+    showListView,
+    setConversationArchived,
     loadConversation,
     switchConversation,
     saveCurrentConversation,

@@ -7,7 +7,14 @@ import * as path from 'node:path';
 
 import { app, ipcMain } from 'electron';
 
-import { Conversation, ConversationUpdate, IPC_CHANNELS } from '../../shared/types';
+import {
+  AUTO_ARCHIVE_DAYS,
+  AutoArchiveDays,
+  Conversation,
+  ConversationListRequest,
+  ConversationUpdate,
+  IPC_CHANNELS,
+} from '../../shared/types';
 import { ConfigurationError, ValidationError, ERROR_CODES } from '../errors';
 import ConversationService from '../services/ConversationService';
 import { ImageStore } from '../services/ImageStore';
@@ -18,6 +25,17 @@ import logger from '../utils/logger';
 function validateMessageCount(value: unknown, label: string, field: string): void {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     throw new ValidationError(`${label} must be a positive number`, field, ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+  }
+}
+
+/** One of the setting's choices, AUTO_ARCHIVE_DAYS. */
+function validateAutoArchiveDays(value: unknown): void {
+  if (!(AUTO_ARCHIVE_DAYS as readonly unknown[]).includes(value)) {
+    throw new ValidationError(
+      `autoArchiveDays must be one of ${AUTO_ARCHIVE_DAYS.join(', ')}`,
+      'autoArchiveDays',
+      ERROR_CODES.VALIDATION_TYPE_MISMATCH,
+    );
   }
 }
 
@@ -82,24 +100,63 @@ export function setupConversationIPC(conversationService: ConversationService): 
     },
   );
 
-  // List all conversations
-  ipcMain.handle(IPC_CHANNELS.CONVERSATION_LIST, async () => {
+  // A page of the discussions list
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_LIST_PAGE, async (_event, request: ConversationListRequest) => {
     try {
-      logger.info('IPC: conversation:list called');
-
-      // Validate service
       ensureService(conversationService, 'ConversationService');
-
-      const conversations = await conversationService.list();
-
-      if (!Array.isArray(conversations)) {
-        throw new ConfigurationError('Invalid conversation list returned', ERROR_CODES.CONVERSATION_LOAD_FAILED);
+      validateObject(request, 'List request');
+      if (typeof request.archived !== 'boolean') {
+        throw new ValidationError('archived must be a boolean', 'archived', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
       }
-
-      return conversations;
+      validateAutoArchiveDays(request.autoArchiveDays);
+      validateMessageCount(request.limit, 'Page size', 'limit');
+      if (request.after !== undefined) {
+        validateObject(request.after, 'List cursor');
+        validateString(request.after.id, 'List cursor id');
+        if (typeof request.after.updatedAt !== 'number' || !Number.isFinite(request.after.updatedAt)) {
+          throw new ValidationError('List cursor time must be a number', 'after', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+        }
+      }
+      return await conversationService.listPage(request);
     } catch (error) {
       logger.error('Failed to list conversations', { error });
       throw new ConfigurationError(formatErrorMessage('Failed to list conversations', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT, async (_event, autoArchiveDays: AutoArchiveDays) => {
+    try {
+      ensureService(conversationService, 'ConversationService');
+      validateAutoArchiveDays(autoArchiveDays);
+      return await conversationService.archivedCount(autoArchiveDays);
+    } catch (error) {
+      logger.error('Failed to count archived conversations', { error });
+      throw new ConfigurationError(formatErrorMessage('Failed to count archived conversations', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SUMMARY, async (_event, id: string) => {
+    try {
+      ensureService(conversationService, 'ConversationService');
+      validateString(id, 'Conversation ID');
+      return await conversationService.summary(id);
+    } catch (error) {
+      logger.error('Failed to read a conversation summary', { error, id });
+      throw new ConfigurationError(formatErrorMessage('Failed to read the conversation', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_ARCHIVED, async (_event, id: string, archived: boolean) => {
+    try {
+      ensureService(conversationService, 'ConversationService');
+      validateString(id, 'Conversation ID');
+      if (typeof archived !== 'boolean') {
+        throw new ValidationError('archived must be a boolean', 'archived', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+      }
+      return await conversationService.setArchived(id, archived);
+    } catch (error) {
+      logger.error('Failed to archive or restore a conversation', { error, id, archived });
+      throw new ConfigurationError(formatErrorMessage('Failed to archive the conversation', error), ERROR_CODES.CONVERSATION_SAVE_FAILED, error);
     }
   });
 

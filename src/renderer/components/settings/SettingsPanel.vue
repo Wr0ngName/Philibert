@@ -3,7 +3,7 @@
  * Settings panel component with OAuth login support
  */
 
-import type { CompletionNotifications, ExecutionMode, LogLevel, SidebarLayout, UpdateChannel, WhisperModelId } from '@shared/types';
+import type { AutoArchiveDays, CompletionNotifications, ExecutionMode, LogLevel, SidebarLayout, UpdateChannel, WhisperModelId } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE, WHISPER_MODELS } from '@shared/speech';
 import { ref, computed, nextTick, watch, onMounted } from 'vue';
@@ -54,6 +54,7 @@ watch(
 // Local form state
 const localTheme = ref<'light' | 'dark' | 'system'>('system');
 const localSidebarLayout = ref<SidebarLayout>(DEFAULT_CONFIG.sidebarLayout);
+const localAutoArchiveDays = ref<AutoArchiveDays>(DEFAULT_CONFIG.autoArchiveDays);
 const localFontSize = ref(14);
 const localLineHeight = ref(1.6);
 const localLogLevel = ref<LogLevel>('info');
@@ -95,6 +96,14 @@ const sidebarLayoutOptions: { value: SidebarLayout; label: string; sketch: strin
   { value: 'right', label: 'Both right', sketch: 'Chat | F D' },
 ];
 
+/** After how long without a message a discussion is archived by itself. */
+const autoArchiveOptions: { value: AutoArchiveDays; label: string }[] = [
+  { value: 0, label: 'Never' },
+  { value: 7, label: '1 week' },
+  { value: 30, label: '1 month' },
+  { value: 90, label: '3 months' },
+];
+
 // Log level options for the selector
 const logLevelOptions: { value: LogLevel; label: string; description: string }[] = [
   { value: 'error', label: 'Error', description: 'Only errors' },
@@ -122,6 +131,7 @@ watch(
   (newConfig) => {
     localTheme.value = newConfig.theme;
     localSidebarLayout.value = newConfig.sidebarLayout;
+    localAutoArchiveDays.value = newConfig.autoArchiveDays;
     localFontSize.value = newConfig.fontSize;
     localLineHeight.value = newConfig.lineHeight;
     localLogLevel.value = newConfig.logLevel;
@@ -152,6 +162,7 @@ async function saveSettings() {
   // Save theme (also applies it), font size, and log level
   await settingsStore.setTheme(localTheme.value);
   await settingsStore.setSidebarLayout(localSidebarLayout.value);
+  await settingsStore.setAutoArchiveDays(localAutoArchiveDays.value);
   await settingsStore.setFontSize(localFontSize.value);
   await settingsStore.setLineHeight(localLineHeight.value);
   await settingsStore.setLogLevel(localLogLevel.value);
@@ -173,6 +184,7 @@ function cancel() {
   // Reset local state
   localTheme.value = config.value.theme;
   localSidebarLayout.value = config.value.sidebarLayout;
+  localAutoArchiveDays.value = config.value.autoArchiveDays;
   localFontSize.value = config.value.fontSize;
   localLineHeight.value = config.value.lineHeight;
   localLogLevel.value = config.value.logLevel;
@@ -310,6 +322,40 @@ function cancel() {
           >
             <span class="block font-mono text-xs mb-1">{{ option.sketch }}</span>
             <span class="block font-medium">{{ option.label }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Archiving inactive discussions -->
+      <div>
+        <label
+          id="auto-archive-label"
+          class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-1"
+        >
+          Archive discussions inactive for
+        </label>
+        <p class="text-xs text-surface-500 dark:text-surface-400 mb-2">
+          They move to Archived in the discussions list, and come back with their next message.
+        </p>
+        <div
+          class="flex gap-2"
+          role="radiogroup"
+          aria-labelledby="auto-archive-label"
+        >
+          <button
+            v-for="option in autoArchiveOptions"
+            :key="option.value"
+            role="radio"
+            :aria-checked="localAutoArchiveDays === option.value"
+            :class="[
+              'flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition-colors',
+              localAutoArchiveDays === option.value
+                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+            ]"
+            @click="localAutoArchiveDays = option.value"
+          >
+            {{ option.label }}
           </button>
         </div>
       </div>

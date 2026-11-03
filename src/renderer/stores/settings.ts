@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, toRaw } from 'vue';
 
-import type { AppConfig, CompletionNotifications, EffortLevel, ExecutionMode, LogLevel, ModalSize, SidebarLayout, ThinkingMode, UpdateChannel, WhisperModelId } from '@shared/types';
+import type { AppConfig, AutoArchiveDays, CompletionNotifications, EffortLevel, ExecutionMode, LogLevel, ModalSize, SidebarLayout, ThinkingMode, UpdateChannel, WhisperModelId } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 
 import { useEventCleanup } from '../composables/useEventCleanup';
@@ -127,6 +127,10 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function setSidebarLayout(layout: SidebarLayout): Promise<void> {
     await saveConfig({ sidebarLayout: layout });
+  }
+
+  async function setAutoArchiveDays(days: AutoArchiveDays): Promise<void> {
+    await saveConfig({ autoArchiveDays: days });
   }
 
   async function setHistorySidebarWidth(width: number): Promise<void> {
@@ -307,6 +311,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setShowHistorySidebar,
     setShowFilesSidebar,
     setSidebarLayout,
+    setAutoArchiveDays,
     setHistorySidebarWidth,
     setFilesSidebarWidth,
     setModalSize,

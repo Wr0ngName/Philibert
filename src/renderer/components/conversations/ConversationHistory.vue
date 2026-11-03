@@ -5,7 +5,7 @@
  */
 
 import { storeToRefs } from 'pinia';
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue';
 
 import { useConversationsStore } from '../../stores/conversations';
 import { useChatStore } from '../../stores/chat';
@@ -15,11 +15,86 @@ import Icon from '../shared/Icon.vue';
 
 const conversationsStore = useConversationsStore();
 const {
-  sortedConversations,
+  listedConversations,
+  listView,
+  listHasMore,
+  loadingMoreConversations,
+  archivedCount,
+  listRevealCount,
   currentConversationId,
   isLoading,
   isSaving,
 } = storeToRefs(conversationsStore);
+
+const showingArchive = computed(() => listView.value === 'archived');
+
+/*
+ * Infinite scrolling: a marker after the last row asks for the next page
+ * when it comes within reach of the list's bottom edge. Watched again after
+ * each page, because the observer only reports a change: a page too short to
+ * push the marker out of reach would otherwise be the last one asked for.
+ */
+const scroller = ref<HTMLElement | null>(null);
+const endMarker = ref<HTMLElement | null>(null);
+let observer: IntersectionObserver | null = null;
+
+/** How close to the bottom the next page is asked for, so it is there before it is needed. */
+const LOAD_AHEAD = '200px';
+
+function watchEnd() {
+  observer?.disconnect();
+  observer = null;
+  if (!scroller.value || !endMarker.value || !listHasMore.value) return;
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void loadMore();
+    },
+    { root: scroller.value, rootMargin: `0px 0px ${LOAD_AHEAD} 0px` },
+  );
+  observer.observe(endMarker.value);
+}
+
+async function loadMore() {
+  await conversationsStore.loadMoreConversations();
+  await nextTick();
+  watchEnd();
+}
+
+watch([endMarker, listHasMore], () => watchEnd(), { flush: 'post' });
+onBeforeUnmount(() => observer?.disconnect());
+
+/**
+ * The open discussion's row brought into sight when the store has brought the
+ * list to it (listRevealCount) — opened from search, say, far down the list
+ * or in the archive. Not on every change to the list: a row moving as its
+ * discussion is written in, or a page arriving as the user scrolls, must not
+ * pull the list away from where the user is reading it.
+ */
+watch(
+  listRevealCount,
+  async () => {
+    await nextTick();
+    const id = currentConversationId.value;
+    if (!id || !scroller.value) return;
+    const row = [...scroller.value.querySelectorAll<HTMLElement>('[data-conversation-id]')].find(
+      (element) => element.dataset.conversationId === id,
+    );
+    row?.scrollIntoView({ block: 'nearest' });
+  },
+  { flush: 'post' },
+);
+
+async function showView(view: 'active' | 'archived') {
+  confirmDeleteId.value = null;
+  renamingId.value = null;
+  await conversationsStore.showListView(view);
+  scroller.value?.scrollTo({ top: 0 });
+}
+
+async function handleArchiveClick(id: string, event: Event) {
+  event.stopPropagation();
+  await conversationsStore.setConversationArchived(id, !showingArchive.value);
+}
 
 const chatStore = useChatStore();
 const {
@@ -184,11 +259,37 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
       </div>
     </div>
 
+    <!-- Active or archived -->
+    <div
+      class="flex gap-1 px-3 py-1.5 border-b border-surface-200 dark:border-surface-700 text-xs"
+      role="tablist"
+      aria-label="Which discussions to list"
+    >
+      <button
+        v-for="view in (['active', 'archived'] as const)"
+        :key="view"
+        role="tab"
+        :aria-selected="listView === view"
+        :class="[
+          'px-2 py-0.5 rounded-md transition-colors',
+          listView === view
+            ? 'bg-surface-200 dark:bg-surface-700 text-surface-800 dark:text-surface-100 font-medium'
+            : 'text-surface-500 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-800',
+        ]"
+        @click="showView(view)"
+      >
+        {{ view === 'active' ? 'Active' : `Archived${archivedCount > 0 ? ` (${archivedCount})` : ''}` }}
+      </button>
+    </div>
+
     <!-- Conversation List -->
-    <div class="flex-1 overflow-y-auto">
+    <div
+      ref="scroller"
+      class="flex-1 overflow-y-auto"
+    >
       <!-- Loading state -->
       <div
-        v-if="isLoading && sortedConversations.length === 0"
+        v-if="isLoading && listedConversations.length === 0"
         class="flex items-center justify-center py-8"
       >
         <Spinner size="md" />
@@ -196,21 +297,31 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
 
       <!-- Empty state -->
       <div
-        v-else-if="sortedConversations.length === 0"
+        v-else-if="listedConversations.length === 0"
         class="flex flex-col items-center justify-center py-8 px-4 text-center"
       >
         <Icon
-          name="chat"
+          :name="showingArchive ? 'archive' : 'chat'"
           size="xl"
           class="text-surface-300 dark:text-surface-600 mb-3"
           style="width: 3rem; height: 3rem;"
         />
-        <p class="text-sm text-surface-500 dark:text-surface-400">
-          No conversations yet
-        </p>
-        <p class="text-xs text-surface-400 dark:text-surface-500 mt-1">
-          Start chatting to create your first conversation
-        </p>
+        <template v-if="showingArchive">
+          <p class="text-sm text-surface-500 dark:text-surface-400">
+            No archived discussions
+          </p>
+          <p class="text-xs text-surface-400 dark:text-surface-500 mt-1">
+            Archive one from its menu, or let inactive ones be archived in Settings
+          </p>
+        </template>
+        <template v-else>
+          <p class="text-sm text-surface-500 dark:text-surface-400">
+            No conversations yet
+          </p>
+          <p class="text-xs text-surface-400 dark:text-surface-500 mt-1">
+            Start chatting to create your first conversation
+          </p>
+        </template>
       </div>
 
       <!-- Conversations -->
@@ -219,9 +330,10 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
         class="divide-y divide-surface-100 dark:divide-surface-700"
       >
         <div
-          v-for="conversation in sortedConversations"
+          v-for="conversation in listedConversations"
           :key="conversation.id"
           class="group relative"
+          :data-conversation-id="conversation.id"
         >
           <!-- Confirmation overlay -->
           <div
@@ -321,6 +433,17 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
                       size="xs"
                     />
                   </button>
+                  <!-- Archive, or bring back -->
+                  <button
+                    class="p-1 rounded-sm hover:bg-surface-200 dark:hover:bg-surface-600 text-surface-400 hover:text-primary-500 dark:hover:text-primary-400 transition-colors"
+                    :title="showingArchive ? 'Bring back from the archive' : 'Archive conversation'"
+                    @click="handleArchiveClick(conversation.id, $event)"
+                  >
+                    <Icon
+                      :name="showingArchive ? 'restore' : 'archive'"
+                      size="xs"
+                    />
+                  </button>
                   <!-- Delete button -->
                   <button
                     class="p-1 rounded-sm hover:bg-surface-200 dark:hover:bg-surface-600 text-surface-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
@@ -337,6 +460,20 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
             </div>
           </button>
         </div>
+      </div>
+
+      <!-- The next page is asked for when this comes within reach -->
+      <div
+        v-if="listHasMore && listedConversations.length > 0"
+        ref="endMarker"
+        class="flex items-center justify-center py-3"
+        data-testid="list-end-marker"
+      >
+        <Spinner
+          v-if="loadingMoreConversations"
+          size="sm"
+          class="text-surface-400"
+        />
       </div>
     </div>
   </div>
