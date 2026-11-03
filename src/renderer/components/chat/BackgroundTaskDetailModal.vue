@@ -224,7 +224,7 @@ const statusDisplay = computed(() => {
   >
     <div
       v-if="task"
-      class="flex flex-col gap-4 min-h-full"
+      class="flex flex-col gap-4 h-full"
     >
       <!-- Status & Description -->
       <div class="flex items-start gap-3">
@@ -399,13 +399,16 @@ const statusDisplay = computed(() => {
 
 <style scoped>
 /*
- * The message list fills its parent, so it is given the height to fill: 60vh,
- * and whatever more a dialog resized taller has room for.
+ * The message list fills its parent, so it is given the height to fill: 60vh
+ * in a dialog that fits its content, and in one resized, whatever the dialog
+ * has room for — more when dragged taller, less when dragged shorter, down to
+ * a few messages' worth. Never more than the room left, or the dialog would
+ * scroll around a list that scrolls itself.
  */
 .agent-transcript {
   display: flex;
   flex-direction: column;
-  flex: 1 0 60vh;
-  min-height: 60vh;
+  flex: 1 1 60vh;
+  min-height: 12rem;
 }
 </style>
