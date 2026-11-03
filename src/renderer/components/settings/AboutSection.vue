@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * About dialog — what this installation is made of.
+ * The About tab of settings — what this installation is made of.
  *
  * Every value comes from the running installation rather than a build
  * constant, so it is useful in a bug report: the bundled CLI's installed
@@ -16,31 +16,27 @@ import type { AboutInfo } from '@shared/types';
 import { logger } from '../../utils/logger';
 import Button from '../shared/Button.vue';
 import Icon from '../shared/Icon.vue';
-import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
 
 interface Props {
-  open: boolean;
+  /** Whether the tab is shown; the information is read each time it is. */
+  active: boolean;
 }
 
 const props = defineProps<Props>();
-
-const emit = defineEmits<{
-  (e: 'close'): void;
-}>();
 
 const info = ref<AboutInfo | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const copied = ref(false);
 
-// Loaded when the dialog opens rather than on mount: it spawns the whisper
-// binary to ask its version, which is not worth doing for a dialog that may
-// never be opened.
+// Read when the tab is shown rather than on mount: it spawns the whisper
+// binary to ask its version, which is not worth doing for a tab that may
+// never be looked at.
 watch(
-  () => props.open,
-  async (isOpen) => {
-    if (!isOpen) return;
+  () => props.active,
+  async (active) => {
+    if (!active) return;
     loading.value = true;
     error.value = null;
     copied.value = false;
@@ -64,52 +60,46 @@ function shown(value: string | null | undefined): string {
 interface Row {
   label: string;
   value: string;
-  /** Rendered monospace — paths and versions read better that way. */
-  mono?: boolean;
 }
 
-const versionRows = computed((): Row[] => {
-  const i = info.value;
-  if (!i) return [];
-  return [
-    { label: 'Philibert', value: shown(i.appVersion), mono: true },
-    { label: 'Claude Code CLI', value: shown(i.claudeCodeVersion), mono: true },
-    { label: 'Claude Agent SDK', value: shown(i.agentSdkVersion), mono: true },
-    { label: 'whisper.cpp', value: shown(i.whisperVersion), mono: true },
-  ];
-});
+interface Group {
+  title: string;
+  rows: Row[];
+}
 
-const runtimeRows = computed((): Row[] => {
+const groups = computed((): Group[] => {
   const i = info.value;
   if (!i) return [];
-  const rows: Row[] = [
-    { label: 'Electron', value: shown(i.electronVersion), mono: true },
-    { label: 'Chromium', value: shown(i.chromeVersion), mono: true },
-    { label: 'Node', value: shown(i.nodeVersion), mono: true },
-    { label: 'Platform', value: `${i.platform} ${i.arch}`, mono: true },
+  const runtime: Row[] = [
+    { label: 'Electron', value: shown(i.electronVersion) },
+    { label: 'Chromium', value: shown(i.chromeVersion) },
+    { label: 'Node', value: shown(i.nodeVersion) },
+    { label: 'Platform', value: `${i.platform} ${i.arch}` },
   ];
   // Only Windows builds have an online/offline distinction.
-  if (i.bundleType) {
-    rows.push({ label: 'Bundle', value: i.bundleType, mono: true });
-  }
-  return rows;
-});
-
-const pathRows = computed((): Row[] => {
-  const i = info.value;
-  if (!i) return [];
-  const rows: Row[] = [
-    { label: 'User data', value: i.userDataPath, mono: true },
-    { label: 'Log file', value: i.logPath, mono: true },
+  if (i.bundleType) runtime.push({ label: 'Bundle', value: i.bundleType });
+  return [
+    {
+      title: 'Versions',
+      rows: [
+        { label: 'Philibert', value: shown(i.appVersion) },
+        { label: 'Claude Code CLI', value: shown(i.claudeCodeVersion) },
+        { label: 'Claude Agent SDK', value: shown(i.agentSdkVersion) },
+        { label: 'whisper.cpp', value: shown(i.whisperVersion) },
+      ],
+    },
+    { title: 'Runtime', rows: runtime },
+    {
+      title: 'Locations',
+      rows: [
+        { label: 'User data', value: i.userDataPath },
+        { label: 'Log file', value: i.logPath },
+        // Shown even when missing, because its absence is what explains
+        // dictation being unavailable.
+        { label: 'Speech binary', value: i.whisperBinaryPath ?? 'not bundled in this build' },
+      ],
+    },
   ];
-  // Shown when present because its absence is what explains dictation being
-  // unavailable, and shown as such when missing for the same reason.
-  rows.push({
-    label: 'Speech binary',
-    value: i.whisperBinaryPath ?? 'not bundled in this build',
-    mono: true,
-  });
-  return rows;
 });
 
 /**
@@ -127,18 +117,14 @@ function openRepository(): void {
 }
 
 /**
- * Copy everything as plain text, which is the point of the dialog: it saves
+ * Copy everything as plain text, which is the point of the tab: it saves
  * transcribing a dozen version numbers into a bug report by hand.
  */
 async function copyAll(): Promise<void> {
   const i = info.value;
   if (!i) return;
 
-  const lines = [
-    ...versionRows.value,
-    ...runtimeRows.value,
-    ...pathRows.value,
-  ].map(row => `${row.label}: ${row.value}`);
+  const lines = groups.value.flatMap(group => group.rows).map(row => `${row.label}: ${row.value}`);
   if (i.repositoryUrl) lines.push(`Repository: ${i.repositoryUrl}`);
   if (i.license) lines.push(`License: ${i.license}`);
 
@@ -146,115 +132,63 @@ async function copyAll(): Promise<void> {
     // Through the main process; see MessageItem.copyContent for why.
     await window.electron.clipboard.writeText(lines.join('\n'));
     copied.value = true;
-  } catch (error) {
+  } catch (cause) {
     // Leave the button state alone rather than claiming success, and say why
     // rather than failing silently.
-    logger.error('Failed to copy the about information', error);
+    logger.error('Failed to copy the about information', cause);
   }
 }
 </script>
 
 <template>
-  <Modal
-    :open="open"
-    title="About Philibert"
-    size="lg"
-    @close="emit('close')"
+  <div
+    v-if="loading"
+    class="flex items-center gap-2 p-4 text-sm text-surface-500"
   >
-    <div
-      v-if="loading"
-      class="flex items-center gap-2 p-4 text-sm text-surface-500"
+    <Spinner size="sm" />
+    Reading version information…
+  </div>
+
+  <div
+    v-else-if="error"
+    class="p-3 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg"
+  >
+    {{ error }}
+  </div>
+
+  <div
+    v-else-if="info"
+    class="space-y-4"
+  >
+    <section
+      v-for="group in groups"
+      :key="group.title"
     >
-      <Spinner size="sm" />
-      Reading version information…
-    </div>
-
-    <div
-      v-else-if="error"
-      class="p-3 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg"
-    >
-      {{ error }}
-    </div>
-
-    <div
-      v-else-if="info"
-      class="space-y-4"
-    >
-      <section>
-        <h3 class="text-xs font-medium text-surface-500 dark:text-surface-400 uppercase tracking-wide mb-2">
-          Versions
-        </h3>
-        <dl class="space-y-1">
-          <div
-            v-for="row in versionRows"
-            :key="row.label"
-            class="flex items-baseline gap-3 text-sm"
-          >
-            <dt class="w-40 shrink-0 text-surface-500 dark:text-surface-400">
-              {{ row.label }}
-            </dt>
-            <dd
-              class="min-w-0 break-all text-surface-800 dark:text-surface-200"
-              :class="{ 'font-mono text-xs': row.mono }"
-            >
-              {{ row.value }}
-            </dd>
-          </div>
-        </dl>
-      </section>
-
-      <section>
-        <h3 class="text-xs font-medium text-surface-500 dark:text-surface-400 uppercase tracking-wide mb-2">
-          Runtime
-        </h3>
-        <dl class="space-y-1">
-          <div
-            v-for="row in runtimeRows"
-            :key="row.label"
-            class="flex items-baseline gap-3 text-sm"
-          >
-            <dt class="w-40 shrink-0 text-surface-500 dark:text-surface-400">
-              {{ row.label }}
-            </dt>
-            <dd
-              class="min-w-0 break-all text-surface-800 dark:text-surface-200"
-              :class="{ 'font-mono text-xs': row.mono }"
-            >
-              {{ row.value }}
-            </dd>
-          </div>
-        </dl>
-      </section>
-
-      <section>
-        <h3 class="text-xs font-medium text-surface-500 dark:text-surface-400 uppercase tracking-wide mb-2">
-          Locations
-        </h3>
-        <dl class="space-y-1">
-          <div
-            v-for="row in pathRows"
-            :key="row.label"
-            class="flex items-baseline gap-3 text-sm"
-          >
-            <dt class="w-40 shrink-0 text-surface-500 dark:text-surface-400">
-              {{ row.label }}
-            </dt>
-            <dd
-              class="min-w-0 break-all font-mono text-xs text-surface-800 dark:text-surface-200"
-            >
-              {{ row.value }}
-            </dd>
-          </div>
-        </dl>
-      </section>
-
-      <section
-        v-if="info.repositoryUrl || info.license"
-        class="pt-3 border-t border-surface-200 dark:border-surface-700 flex items-center justify-between gap-3"
-      >
-        <div class="min-w-0 text-xs text-surface-500 dark:text-surface-400">
-          <span v-if="info.license">{{ info.license }} licensed</span>
+      <h3 class="text-xs font-medium text-surface-500 dark:text-surface-400 uppercase tracking-wide mb-2">
+        {{ group.title }}
+      </h3>
+      <dl class="space-y-1">
+        <div
+          v-for="row in group.rows"
+          :key="row.label"
+          class="flex items-baseline gap-3 text-sm"
+        >
+          <dt class="w-40 shrink-0 text-surface-500 dark:text-surface-400">
+            {{ row.label }}
+          </dt>
+          <dd class="min-w-0 break-all font-mono text-xs text-surface-800 dark:text-surface-200">
+            {{ row.value }}
+          </dd>
         </div>
+      </dl>
+    </section>
+
+    <section class="pt-3 border-t border-surface-200 dark:border-surface-700 flex flex-wrap items-center gap-3">
+      <span
+        v-if="info.license"
+        class="text-xs text-surface-500 dark:text-surface-400"
+      >{{ info.license }} licensed</span>
+      <div class="ml-auto flex items-center gap-2">
         <Button
           v-if="info.repositoryUrl"
           variant="secondary"
@@ -269,15 +203,9 @@ async function copyAll(): Promise<void> {
           />
           Repository
         </Button>
-      </section>
-    </div>
-
-    <template #footer>
-      <div class="flex items-center justify-between gap-2 w-full">
         <Button
           variant="secondary"
           size="sm"
-          :disabled="!info"
           @click="copyAll"
         >
           <Icon
@@ -287,14 +215,7 @@ async function copyAll(): Promise<void> {
           />
           {{ copied ? 'Copied' : 'Copy details' }}
         </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          @click="emit('close')"
-        >
-          Close
-        </Button>
       </div>
-    </template>
-  </Modal>
+    </section>
+  </div>
 </template>

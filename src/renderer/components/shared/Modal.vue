@@ -32,6 +32,12 @@ interface Props {
    * the size to be remembered by: dialogs that share a key share a size.
    */
   resizeKey?: string;
+  /**
+   * The size the dialog has until the user resizes it, and goes back to when
+   * the grip is double-clicked; kept within the window like a dragged size.
+   * Without it, the dialog fits its content.
+   */
+  defaultSize?: ModalSize;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -41,6 +47,7 @@ const props = withDefaults(defineProps<Props>(), {
   closeOnEscape: true,
   ariaDescription: '',
   resizeKey: undefined,
+  defaultSize: undefined,
 });
 
 // Only a resizable dialog reaches for the settings, so the others stay
@@ -62,7 +69,7 @@ function fitted(size: ModalSize): ModalSize {
 }
 
 const customSize = computed<ModalSize | null>(() => {
-  const size = draggedSize.value ?? savedSize.value;
+  const size = draggedSize.value ?? savedSize.value ?? props.defaultSize ?? null;
   return size ? fitted(size) : null;
 });
 

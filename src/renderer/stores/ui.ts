@@ -3,7 +3,7 @@
  *
  * These were local refs in App.vue, which is fine while a button next to them
  * is the only thing that opens them. Slash commands changed that: `/mcp` has
- * to open Settings scrolled to Tool Servers, and the command dispatcher is
+ * to open Settings at its Tool servers tab, and the command dispatcher is
  * nowhere near App.vue's template. A store keeps one owner of the state
  * instead of threading callbacks through the component tree.
  *
@@ -14,46 +14,37 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 
-/** A region of the settings panel a command can ask to be shown. */
-export type SettingsSection = 'auth' | 'mcp';
+import type { SettingsTab } from '@shared/settings-tabs';
 
 export const useUiStore = defineStore('ui', () => {
   const showSettings = ref(false);
-  const showAbout = ref(false);
   const showSearch = ref(false);
 
   /**
-   * Section the settings panel should scroll to once it is open.
+   * Tab the settings dialog should turn to once it is open.
    *
-   * Read through takeSettingsSection(), which clears it. If it stayed set, the
-   * panel would jump back to that section on every subsequent open — so
-   * running `/mcp` once would make Settings always open at Tool Servers.
+   * Read through takeSettingsTab(), which clears it. If it stayed set, the
+   * dialog would turn back to that tab on every later open — so running
+   * `/mcp` once would make Settings always open at Tool servers.
    */
-  const pendingSettingsSection = ref<SettingsSection | null>(null);
+  const pendingSettingsTab = ref<SettingsTab | null>(null);
 
-  function openSettings(section: SettingsSection | null = null): void {
-    pendingSettingsSection.value = section;
+  /** Open settings, at the given tab or at the one it was last left on. */
+  function openSettings(tab: SettingsTab | null = null): void {
+    pendingSettingsTab.value = tab;
     showSettings.value = true;
   }
 
   function closeSettings(): void {
     showSettings.value = false;
-    pendingSettingsSection.value = null;
+    pendingSettingsTab.value = null;
   }
 
-  /** The requested section, consumed: a second call returns null. */
-  function takeSettingsSection(): SettingsSection | null {
-    const section = pendingSettingsSection.value;
-    pendingSettingsSection.value = null;
-    return section;
-  }
-
-  function openAbout(): void {
-    showAbout.value = true;
-  }
-
-  function closeAbout(): void {
-    showAbout.value = false;
+  /** The requested tab, consumed: a second call returns null. */
+  function takeSettingsTab(): SettingsTab | null {
+    const tab = pendingSettingsTab.value;
+    pendingSettingsTab.value = null;
+    return tab;
   }
 
   function openSearch(): void {
@@ -93,16 +84,13 @@ export const useUiStore = defineStore('ui', () => {
 
   return {
     showSettings,
-    showAbout,
     showSearch,
-    pendingSettingsSection,
+    pendingSettingsTab,
     markdownViewerPath,
     showRewind,
     openSettings,
     closeSettings,
-    takeSettingsSection,
-    openAbout,
-    closeAbout,
+    takeSettingsTab,
     openSearch,
     closeSearch,
     openMarkdownViewer,

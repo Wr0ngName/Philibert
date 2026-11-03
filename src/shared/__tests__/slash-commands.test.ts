@@ -147,13 +147,13 @@ describe('dispositionFor', () => {
     expect(dispositionFor(cmd('rewind'))).toEqual({ kind: 'gui', action: 'rewind' });
   });
 
-  it('routes /mcp to the tool servers panel', () => {
-    expect(dispositionFor(cmd('mcp'))).toMatchObject({ kind: 'navigate', target: 'settings-mcp' });
+  it('routes /mcp to the tool servers tab', () => {
+    expect(dispositionFor(cmd('mcp'))).toMatchObject({ kind: 'navigate', tab: 'tools' });
   });
 
-  it('routes /login and /logout to the authentication section', () => {
-    expect(dispositionFor(cmd('login'))).toMatchObject({ kind: 'navigate', target: 'settings-auth' });
-    expect(dispositionFor(cmd('logout'))).toMatchObject({ kind: 'navigate', target: 'settings-auth' });
+  it('routes /login and /logout to the account tab', () => {
+    expect(dispositionFor(cmd('login'))).toMatchObject({ kind: 'navigate', tab: 'account' });
+    expect(dispositionFor(cmd('logout'))).toMatchObject({ kind: 'navigate', tab: 'account' });
   });
 
   it('matches the name case-insensitively', () => {

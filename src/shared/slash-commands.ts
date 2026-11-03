@@ -31,6 +31,7 @@
  * merely to describe it — descriptions come from the SDK rows.
  */
 
+import type { SettingsTab } from './settings-tabs';
 import type { SlashCommandInfo } from './types';
 
 /** A command the GUI implements itself, rendering the answer into the chat. */
@@ -47,8 +48,6 @@ export type GuiCommandAction =
   | 'agents'
   | 'rewind';
 
-/** A GUI surface a command can hand the user to. */
-export type CommandNavigationTarget = 'settings' | 'settings-auth' | 'settings-mcp' | 'about';
 
 /**
  * How a resolved command should be handled.
@@ -59,7 +58,8 @@ export type CommandNavigationTarget = 'settings' | 'settings-auth' | 'settings-m
 export type CommandDisposition =
   | { kind: 'sdk' }
   | { kind: 'gui'; action: GuiCommandAction }
-  | { kind: 'navigate'; target: CommandNavigationTarget; message: string }
+  /** Opens settings at the tab, or at the one it was last left on for null. */
+  | { kind: 'navigate'; tab: SettingsTab | null; message: string }
   | { kind: 'unavailable'; message: string };
 
 /**
@@ -91,12 +91,12 @@ export const GUI_DISPOSITIONS: Readonly<Record<string, CommandDisposition>> = {
   // to hunt for the control.
   config: {
     kind: 'navigate',
-    target: 'settings',
+    tab: null,
     message: 'Opening **Settings**, where everything the CLI\'s `/config` covers lives.',
   },
   permissions: {
     kind: 'navigate',
-    target: 'settings',
+    tab: null,
     message:
       'Opening **Settings**. Tool permissions are requested as tools are first used, ' +
       'and the ones this session has already granted are listed in the shield menu ' +
@@ -104,7 +104,7 @@ export const GUI_DISPOSITIONS: Readonly<Record<string, CommandDisposition>> = {
   },
   'allowed-tools': {
     kind: 'navigate',
-    target: 'settings',
+    tab: null,
     message:
       'Opening **Settings**. Tool permissions are requested as tools are first used, ' +
       'and the ones this session has already granted are listed in the shield menu ' +
@@ -112,23 +112,23 @@ export const GUI_DISPOSITIONS: Readonly<Record<string, CommandDisposition>> = {
   },
   login: {
     kind: 'navigate',
-    target: 'settings-auth',
-    message: 'Opening **Settings → Authentication**, where you can switch account or re-authenticate.',
+    tab: 'account',
+    message: 'Opening **Settings → Account**, where you can switch account or re-authenticate.',
   },
   logout: {
     kind: 'navigate',
-    target: 'settings-auth',
-    message: 'Opening **Settings → Authentication**. Use **Logout** there to sign out.',
+    tab: 'account',
+    message: 'Opening **Settings → Account**. Use **Logout** there to sign out.',
   },
   mcp: {
     kind: 'navigate',
-    target: 'settings-mcp',
+    tab: 'tools',
     // Deliberately does not mention `claude mcp add`: its default and `user`
     // scopes write to $CLAUDE_CONFIG_DIR/.claude.json, and Philibert points
     // that variable at its own config directory, so a server added that way
     // from a terminal is invisible here. See docs/mcp-servers.md.
     message:
-      'Opening **Settings → Tool Servers**. Philibert writes both files Claude Code needs — ' +
+      'Opening **Settings → Tool servers**. Philibert writes both files Claude Code needs — ' +
       '`.mcp.json` and the matching approval in `.claude/settings.local.json` — so a server ' +
       'added there is ready to use. Changes apply to **new conversations**; this one keeps the ' +
       'servers it started with.',

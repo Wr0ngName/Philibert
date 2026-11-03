@@ -20,7 +20,6 @@ import WorkingDirectory from './components/files/WorkingDirectory.vue';
 import FileTree from './components/files/FileTree.vue';
 import MarkdownViewerModal from './components/files/MarkdownViewerModal.vue';
 import ConversationHistory from './components/conversations/ConversationHistory.vue';
-import AboutPanel from './components/settings/AboutPanel.vue';
 import SettingsPanel from './components/settings/SettingsPanel.vue';
 import InitWizard from './components/wizard/InitWizard.vue';
 import ErrorBoundary from './components/shared/ErrorBoundary.vue';
@@ -44,7 +43,7 @@ const { isLoading, needsSetup, hasCompletedInitialSetup, showHistorySidebar, sho
 // too — `/mcp` has to reach Settings from the command dispatcher, which is
 // nowhere near this template.
 const uiStore = useUiStore();
-const { showSettings, showAbout, showSearch, showRewind, markdownViewerPath } =
+const { showSettings, showSearch, showRewind, markdownViewerPath } =
   storeToRefs(uiStore);
 // Stays local: driven by setup state, not by anything the user can ask for.
 const showWizard = ref(false);
@@ -253,26 +252,7 @@ const isMac = window.electron?.platform === 'darwin';
           </button>
           <button
             class="btn-icon"
-            title="About Philibert — versions and paths"
-            @click="uiStore.openAbout()"
-          >
-            <svg
-              class="w-5 h-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-              />
-            </svg>
-          </button>
-          <button
-            class="btn-icon"
-            title="Settings"
+            title="Settings and About"
             @click="uiStore.openSettings()"
           >
             <svg
@@ -446,12 +426,6 @@ const isMac = window.electron?.platform === 'darwin';
       <SettingsPanel
         :open="showSettings"
         @close="uiStore.closeSettings()"
-      />
-
-      <!-- About Modal -->
-      <AboutPanel
-        :open="showAbout"
-        @close="uiStore.closeAbout()"
       />
 
       <!-- Conversation search -->

@@ -20,7 +20,6 @@ import {
   dispositionFor,
   findCommand,
   parseSlashInput,
-  type CommandNavigationTarget,
   type GuiCommandAction,
 } from '@shared/slash-commands';
 import type { AboutInfo, AgentInfo, SlashCommandInfo } from '@shared/types';
@@ -29,20 +28,12 @@ import { useChatStore } from '../stores/chat';
 import { useConversationsStore } from '../stores/conversations';
 import { useFilesStore } from '../stores/files';
 import { useSettingsStore } from '../stores/settings';
-import { useUiStore, type SettingsSection } from '../stores/ui';
+import { useUiStore } from '../stores/ui';
 import { logger } from '../utils/logger';
 import { formatModelId } from '../utils/model';
 
 /** CLAUDE.md locations, in the order the CLI itself reads them. */
 const PROJECT_MEMORY_FILE = 'CLAUDE.md';
-
-/** Which settings section each navigation target wants. */
-const NAVIGATION_SECTIONS: Record<CommandNavigationTarget, SettingsSection | null> = {
-  settings: null,
-  'settings-auth': 'auth',
-  'settings-mcp': 'mcp',
-  about: null,
-};
 
 /** Render a byte/token count with thousands separators. */
 function formatCount(value: number): string {
@@ -81,7 +72,7 @@ export function renderCommandList(commands: readonly SlashCommandInfo[]): string
     return (
       '## Commands\n\n' +
       'No commands are available yet — the list comes from Claude Code, and it could not ' +
-      'be reached. Check **Settings → Authentication**, since the CLI cannot start without ' +
+      'be reached. Check **Settings → Account**, since the CLI cannot start without ' +
       'credentials.'
     );
   }
@@ -264,7 +255,7 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
       `- the log file at \`${info.logPath}\``,
       `- the version line: Philibert ${info.appVersion}, Claude Code ${info.claudeCodeVersion ?? 'unknown'}, ${info.platform}/${info.arch}`,
       '',
-      '`/doctor` prints all of it, and **About** has a **Copy details** button.',
+      '`/doctor` prints all of it, and **Settings → About** has a **Copy details** button.',
       '',
       '_For a problem with Claude itself rather than this app, `/bug` in the CLI reports ' +
         'to Anthropic with the conversation attached._',
@@ -316,7 +307,7 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
       return (
         '## Subagents\n\n' +
         'None available — the list comes from Claude Code, and it could not be reached. ' +
-        'Check **Settings → Authentication**, since the CLI cannot start without credentials.'
+        'Check **Settings → Account**, since the CLI cannot start without credentials.'
       );
     }
 
@@ -525,16 +516,10 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
         await runGuiAction(disposition.action, parsed.args);
         return true;
 
-      case 'navigate': {
-        const section = NAVIGATION_SECTIONS[disposition.target];
-        if (disposition.target === 'about') {
-          uiStore.openAbout();
-        } else {
-          uiStore.openSettings(section);
-        }
+      case 'navigate':
+        uiStore.openSettings(disposition.tab);
         reply(disposition.message);
         return true;
-      }
 
       case 'unavailable':
         reply(disposition.message);

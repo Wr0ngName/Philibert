@@ -1,19 +1,30 @@
 <script setup lang="ts">
 /**
- * Settings panel component with OAuth login support
+ * Settings, one dialog in tabs: the account, how the app looks, the
+ * discussions, the tool servers, the advanced settings and what this
+ * installation is made of.
+ *
+ * Every tab stays mounted, hidden when not shown, so Save writes what was
+ * changed on any of them, Cancel forgets all of it, and the sign-in form
+ * keeps its state while another tab is looked at.
  */
 
 import type { AutoArchiveDays, CompletionNotifications, ExecutionMode, LogLevel, SidebarLayout, UpdateChannel, WhisperModelId } from '@shared/types';
-import { DEFAULT_CONFIG } from '@shared/types';
+import { AUTO_ARCHIVE_DAYS, DEFAULT_CONFIG } from '@shared/types';
+import type { SettingsTab } from '@shared/settings-tabs';
+import { SETTINGS_TABS } from '@shared/settings-tabs';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE, WHISPER_MODELS } from '@shared/speech';
 import { ref, computed, nextTick, watch, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
 
+import { SETTINGS_DIALOG_SIZE } from '../../constants/layout';
 import { useSettingsStore } from '../../stores/settings';
 import { useUiStore } from '../../stores/ui';
 import Button from '../shared/Button.vue';
 import Modal from '../shared/Modal.vue';
 import AuthForm from '../shared/AuthForm.vue';
+import ToggleSwitch from '../shared/ToggleSwitch.vue';
+import AboutSection from './AboutSection.vue';
 import McpServersPanel from './McpServersPanel.vue';
 
 interface Props {
@@ -30,26 +41,67 @@ const settingsStore = useSettingsStore();
 const uiStore = useUiStore();
 const { config, isSaving } = storeToRefs(settingsStore);
 
-// Scroll targets for commands that open this panel at a particular control:
-// `/login` wants Authentication, `/mcp` wants Tool Servers. Without this the
-// panel opens at the top and the user has to hunt for what they asked for.
-const authSectionRef = ref<HTMLElement | null>(null);
-const mcpSectionRef = ref<HTMLElement | null>(null);
+const TAB_LABELS: Record<SettingsTab, string> = {
+  account: 'Account',
+  appearance: 'Appearance',
+  discussions: 'Discussions',
+  tools: 'Tool servers',
+  advanced: 'Advanced',
+  about: 'About',
+};
 
+/** The tab shown; kept between opens, so settings reopens where it was left. */
+const activeTab = ref<SettingsTab>(SETTINGS_TABS[0]);
+const pageScroller = ref<HTMLElement | null>(null);
+
+const tabId = (tab: SettingsTab) => `settings-tab-${tab}`;
+const pageId = (tab: SettingsTab) => `settings-page-${tab}`;
+
+function showTab(tab: SettingsTab): void {
+  activeTab.value = tab;
+}
+
+// Each tab is read from its top: one scrolled down is no place to start another.
+watch(activeTab, () => {
+  if (pageScroller.value) pageScroller.value.scrollTop = 0;
+});
+
+/** Arrow keys, Home and End move between tabs, as a vertical tab list does. */
+function onTabKeydown(event: KeyboardEvent): void {
+  const index = SETTINGS_TABS.indexOf(activeTab.value);
+  const last = SETTINGS_TABS.length - 1;
+  const targets: Record<string, number> = {
+    ArrowDown: index === last ? 0 : index + 1,
+    ArrowUp: index === 0 ? last : index - 1,
+    Home: 0,
+    End: last,
+  };
+  const target = targets[event.key];
+  if (target === undefined) return;
+  event.preventDefault();
+  const tab = SETTINGS_TABS[target];
+  showTab(tab);
+  void nextTick(() => document.getElementById(tabId(tab))?.focus());
+}
+
+// A command that opens settings for one of its tabs (`/login`, `/mcp`) turns
+// to it; consumed, so a later open does not turn to it again.
 watch(
   () => props.open,
-  async (open) => {
+  (open) => {
     if (!open) return;
-    // Consumed, so a later open does not jump to the same place again.
-    const section = uiStore.takeSettingsSection();
-    if (!section) return;
-
-    // After the modal has rendered, or there is nothing to scroll yet.
-    await nextTick();
-    const target = section === 'auth' ? authSectionRef.value : mcpSectionRef.value;
-    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const tab = uiStore.takeSettingsTab();
+    if (tab) showTab(tab);
   },
+  { immediate: true },
 );
+
+/** The classes of a choice among several, chosen or not. */
+function choiceClasses(chosen: boolean): string {
+  return chosen
+    ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+    : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700';
+}
 
 // Local form state
 const localTheme = ref<'light' | 'dark' | 'system'>('system');
@@ -96,13 +148,46 @@ const sidebarLayoutOptions: { value: SidebarLayout; label: string; sketch: strin
   { value: 'right', label: 'Both right', sketch: 'Chat | F D' },
 ];
 
-/** After how long without a message a discussion is archived by itself. */
-const autoArchiveOptions: { value: AutoArchiveDays; label: string }[] = [
-  { value: 0, label: 'Never' },
-  { value: 7, label: '1 week' },
-  { value: 30, label: '1 month' },
-  { value: 90, label: '3 months' },
-];
+/** The archive slider's stops, a week to a year; 0, never, is the switch beside it. */
+type ArchiveAfter = Exclude<AutoArchiveDays, 0>;
+const archiveStops = AUTO_ARCHIVE_DAYS.filter((days): days is ArchiveAfter => days !== 0);
+const ARCHIVE_STOP_LABELS: Record<ArchiveAfter, string> = {
+  7: '1 week',
+  14: '2 weeks',
+  30: '1 month',
+  60: '2 months',
+  90: '3 months',
+  180: '6 months',
+  365: '1 year',
+};
+
+/**
+ * The delay last set on the slider, so turning archiving off and back on
+ * returns to it rather than to the default.
+ */
+const lastArchiveAfter = ref<ArchiveAfter>(DEFAULT_CONFIG.autoArchiveDays as ArchiveAfter);
+
+const autoArchiveOn = computed({
+  get: () => localAutoArchiveDays.value !== 0,
+  set: (on: boolean) => {
+    localAutoArchiveDays.value = on ? lastArchiveAfter.value : 0;
+  },
+});
+
+/** The slider's position: an index into archiveStops. */
+const archiveStopIndex = computed({
+  get: () => archiveStops.indexOf(lastArchiveAfter.value),
+  set: (index: number) => {
+    lastArchiveAfter.value = archiveStops[index];
+    localAutoArchiveDays.value = lastArchiveAfter.value;
+  },
+});
+
+/** Take the archive setting from the config, slider position included. */
+function loadAutoArchive(days: AutoArchiveDays): void {
+  localAutoArchiveDays.value = days;
+  if (days !== 0) lastArchiveAfter.value = days;
+}
 
 // Log level options for the selector
 const logLevelOptions: { value: LogLevel; label: string; description: string }[] = [
@@ -125,29 +210,39 @@ const completionNotificationOptions: { value: CompletionNotifications; label: st
   },
 ];
 
-// Sync with store when modal opens
-watch(
-  () => config.value,
-  (newConfig) => {
-    localTheme.value = newConfig.theme;
-    localSidebarLayout.value = newConfig.sidebarLayout;
-    localAutoArchiveDays.value = newConfig.autoArchiveDays;
-    localFontSize.value = newConfig.fontSize;
-    localLineHeight.value = newConfig.lineHeight;
-    localLogLevel.value = newConfig.logLevel;
-    localEnableNotifications.value = newConfig.enableNotifications;
-    localCompletionNotifications.value = newConfig.completionNotifications;
-    localAutoContinueAtUsageLimit.value = newConfig.autoContinueAtUsageLimit;
-    localUpdateChannel.value = newConfig.updateChannel;
-    localExecutionMode.value = newConfig.executionMode;
-    localSpeechEnabled.value = newConfig.speechEnabled;
-    localSpeechModel.value = newConfig.speechModel;
-    localSpeechLanguage.value = newConfig.speechLanguage;
-  },
-  { immediate: true }
-);
+const executionModeOptions: { value: ExecutionMode; label: string; description: string }[] = [
+  { value: 'sdk', label: 'SDK', description: 'Credit pool billing, full features' },
+  { value: 'channel', label: 'Channel', description: 'Subscription billing, no credit cap' },
+];
 
-// Refresh auth status when modal opens
+const updateChannelOptions: { value: UpdateChannel; label: string; description: string }[] = [
+  { value: 'stable', label: 'Stable', description: 'Production releases only' },
+  { value: 'rc', label: 'Release Candidate', description: 'Test upcoming versions early' },
+];
+
+/** Put every field back to what the config says. */
+function loadFromConfig(): void {
+  const saved = config.value;
+  localTheme.value = saved.theme;
+  localSidebarLayout.value = saved.sidebarLayout;
+  loadAutoArchive(saved.autoArchiveDays);
+  localFontSize.value = saved.fontSize;
+  localLineHeight.value = saved.lineHeight;
+  localLogLevel.value = saved.logLevel;
+  localEnableNotifications.value = saved.enableNotifications;
+  localCompletionNotifications.value = saved.completionNotifications;
+  localAutoContinueAtUsageLimit.value = saved.autoContinueAtUsageLimit;
+  localUpdateChannel.value = saved.updateChannel;
+  localExecutionMode.value = saved.executionMode;
+  localSpeechEnabled.value = saved.speechEnabled;
+  localSpeechModel.value = saved.speechModel;
+  localSpeechLanguage.value = saved.speechLanguage;
+}
+
+// Sync with the store whenever the config changes
+watch(() => config.value, loadFromConfig, { immediate: true });
+
+// Refresh auth status when the dialog opens
 watch(
   () => props.open,
   async (isOpen) => {
@@ -181,21 +276,7 @@ async function saveSettings() {
 }
 
 function cancel() {
-  // Reset local state
-  localTheme.value = config.value.theme;
-  localSidebarLayout.value = config.value.sidebarLayout;
-  localAutoArchiveDays.value = config.value.autoArchiveDays;
-  localFontSize.value = config.value.fontSize;
-  localLineHeight.value = config.value.lineHeight;
-  localLogLevel.value = config.value.logLevel;
-  localEnableNotifications.value = config.value.enableNotifications;
-  localCompletionNotifications.value = config.value.completionNotifications;
-  localAutoContinueAtUsageLimit.value = config.value.autoContinueAtUsageLimit;
-  localUpdateChannel.value = config.value.updateChannel;
-  localExecutionMode.value = config.value.executionMode;
-  localSpeechEnabled.value = config.value.speechEnabled;
-  localSpeechModel.value = config.value.speechModel;
-  localSpeechLanguage.value = config.value.speechLanguage;
+  loadFromConfig();
   authFormRef.value?.resetState();
   emit('close');
 }
@@ -205,456 +286,439 @@ function cancel() {
   <Modal
     :open="open"
     title="Settings"
-    size="md"
+    size="3xl"
     resize-key="settings"
+    :default-size="SETTINGS_DIALOG_SIZE"
     @close="cancel"
   >
-    <div class="space-y-6">
-      <!-- Authentication Section -->
-      <div ref="authSectionRef">
-        <AuthForm
-          ref="authFormRef"
-          :show-title="true"
-        />
+    <div class="flex h-full min-h-0 gap-6">
+      <div
+        role="tablist"
+        aria-label="Settings"
+        aria-orientation="vertical"
+        class="w-40 shrink-0 flex flex-col gap-1"
+      >
+        <button
+          v-for="tab in SETTINGS_TABS"
+          :id="tabId(tab)"
+          :key="tab"
+          type="button"
+          role="tab"
+          :aria-selected="activeTab === tab"
+          :aria-controls="pageId(tab)"
+          :tabindex="activeTab === tab ? 0 : -1"
+          :class="[
+            'px-3 py-2 rounded-lg text-left text-sm transition-colors',
+            activeTab === tab
+              ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 font-medium'
+              : 'text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+          ]"
+          @click="showTab(tab)"
+          @keydown="onTabKeydown"
+        >
+          {{ TAB_LABELS[tab] }}
+        </button>
       </div>
 
-      <!-- Execution Mode (OAuth/Pro/Max users only) -->
-      <div v-if="isOAuthUser">
-        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
-          Execution Mode
-        </label>
-        <div class="flex gap-2">
-          <button
-            :class="[
-              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
-              localExecutionMode === 'sdk'
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-            ]"
-            @click="localExecutionMode = 'sdk'"
-          >
-            <div class="font-medium">
-              SDK
-            </div>
-            <div class="text-xs opacity-75">
-              Credit pool billing, full features
-            </div>
-          </button>
-          <button
-            :class="[
-              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
-              localExecutionMode === 'channel'
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-            ]"
-            @click="localExecutionMode = 'channel'"
-          >
-            <div class="font-medium">
-              Channel
-            </div>
-            <div class="text-xs opacity-75">
-              Subscription billing, no credit cap
-            </div>
-          </button>
-        </div>
+      <div
+        ref="pageScroller"
+        class="flex-1 min-w-0 overflow-y-auto pr-1"
+      >
+        <!-- Account -->
         <div
-          v-if="localExecutionMode === 'channel'"
-          class="mt-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200"
+          v-show="activeTab === 'account'"
+          :id="pageId('account')"
+          role="tabpanel"
+          :aria-labelledby="tabId('account')"
+          class="space-y-6"
         >
-          Channel mode uses your Pro/Max subscription for billing with no credit cap.
-          Trade-offs: no real-time streaming (replies arrive complete), no mid-session model switching.
-          Takes effect on the next new conversation.
-        </div>
-      </div>
+          <AuthForm
+            ref="authFormRef"
+            :show-title="true"
+          />
 
-      <!-- Tool servers (MCP) for the active project -->
-      <div ref="mcpSectionRef">
-        <McpServersPanel />
-      </div>
-
-      <!-- Theme -->
-      <div>
-        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
-          Theme
-        </label>
-        <div class="flex gap-2">
-          <button
-            v-for="option in ['light', 'dark', 'system'] as const"
-            :key="option"
-            :class="[
-              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium capitalize transition-colors',
-              localTheme === option
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-            ]"
-            @click="localTheme = option"
-          >
-            {{ option }}
-          </button>
-        </div>
-      </div>
-
-      <!-- Where the sidebars sit -->
-      <div>
-        <label
-          id="sidebar-layout-label"
-          class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2"
-        >
-          Layout
-        </label>
-        <div
-          class="flex gap-2"
-          role="radiogroup"
-          aria-labelledby="sidebar-layout-label"
-        >
-          <button
-            v-for="option in sidebarLayoutOptions"
-            :key="option.value"
-            role="radio"
-            :aria-checked="localSidebarLayout === option.value"
-            :class="[
-              'flex-1 px-3 py-2 rounded-lg border text-sm transition-colors',
-              localSidebarLayout === option.value
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-            ]"
-            @click="localSidebarLayout = option.value"
-          >
-            <span class="block font-mono text-xs mb-1">{{ option.sketch }}</span>
-            <span class="block font-medium">{{ option.label }}</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Archiving inactive discussions -->
-      <div>
-        <label
-          id="auto-archive-label"
-          class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-1"
-        >
-          Archive discussions inactive for
-        </label>
-        <p class="text-xs text-surface-500 dark:text-surface-400 mb-2">
-          They move to Archived in the discussions list, and come back with their next message.
-        </p>
-        <div
-          class="flex gap-2"
-          role="radiogroup"
-          aria-labelledby="auto-archive-label"
-        >
-          <button
-            v-for="option in autoArchiveOptions"
-            :key="option.value"
-            role="radio"
-            :aria-checked="localAutoArchiveDays === option.value"
-            :class="[
-              'flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition-colors',
-              localAutoArchiveDays === option.value
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-            ]"
-            @click="localAutoArchiveDays = option.value"
-          >
-            {{ option.label }}
-          </button>
-        </div>
-      </div>
-
-      <!-- Font Size -->
-      <div>
-        <label
-          for="font-size"
-          class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2"
-        >
-          Font Size: {{ localFontSize }}px
-        </label>
-        <input
-          id="font-size"
-          v-model.number="localFontSize"
-          type="range"
-          min="12"
-          max="20"
-          step="1"
-          class="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg appearance-none cursor-pointer"
-        >
-        <div class="flex justify-between text-xs text-surface-400 mt-1">
-          <span>12px</span>
-          <span>20px</span>
-        </div>
-      </div>
-
-      <!-- Line Height -->
-      <div>
-        <label
-          for="line-height"
-          class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2"
-        >
-          Line Spacing: {{ localLineHeight.toFixed(1) }}
-        </label>
-        <input
-          id="line-height"
-          v-model.number="localLineHeight"
-          type="range"
-          min="1.0"
-          max="2.4"
-          step="0.1"
-          class="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg appearance-none cursor-pointer"
-        >
-        <div class="flex justify-between text-xs text-surface-400 mt-1">
-          <span>Compact</span>
-          <span>Spacious</span>
-        </div>
-      </div>
-
-      <!-- Log Level -->
-      <div>
-        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
-          Log Level
-        </label>
-        <div class="grid grid-cols-2 gap-2">
-          <button
-            v-for="option in logLevelOptions"
-            :key="option.value"
-            :class="[
-              'px-3 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
-              localLogLevel === option.value
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-            ]"
-            @click="localLogLevel = option.value"
-          >
-            <div class="font-medium">
-              {{ option.label }}
+          <!-- Execution Mode (OAuth/Pro/Max users only) -->
+          <div v-if="isOAuthUser">
+            <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+              Execution Mode
+            </label>
+            <div class="flex gap-2">
+              <button
+                v-for="option in executionModeOptions"
+                :key="option.value"
+                :class="['flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left', choiceClasses(localExecutionMode === option.value)]"
+                @click="localExecutionMode = option.value"
+              >
+                <div class="font-medium">
+                  {{ option.label }}
+                </div>
+                <div class="text-xs opacity-75">
+                  {{ option.description }}
+                </div>
+              </button>
             </div>
-            <div class="text-xs opacity-75">
-              {{ option.description }}
-            </div>
-          </button>
-        </div>
-      </div>
-
-      <!-- Dictation. Hidden entirely when this build has no whisper binary,
-           rather than offered and failing on click. -->
-      <div v-if="speechAvailable">
-        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
-          Dictation
-        </label>
-        <div class="flex items-center justify-between mb-3">
-          <div class="pr-4">
-            <div class="text-sm text-surface-700 dark:text-surface-300">
-              Microphone input
-            </div>
-            <div class="text-xs text-surface-500 dark:text-surface-400">
-              Transcribed on this machine — the recording is never uploaded.
-              The first use downloads the selected model.
-            </div>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            :class="[
-              'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
-              localSpeechEnabled
-                ? 'bg-primary-500'
-                : 'bg-surface-300 dark:bg-surface-600',
-            ]"
-            :aria-checked="localSpeechEnabled"
-            @click="localSpeechEnabled = !localSpeechEnabled"
-          >
-            <span
-              :class="[
-                'inline-block h-4 w-4 rounded-full bg-white transition-transform',
-                localSpeechEnabled ? 'translate-x-6' : 'translate-x-1',
-              ]"
-            />
-          </button>
-        </div>
-
-        <template v-if="localSpeechEnabled">
-          <label class="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1">
-            Model
-          </label>
-          <div class="grid grid-cols-2 gap-2 mb-3">
-            <button
-              v-for="model in speechModels"
-              :key="model.id"
-              :class="[
-                'px-3 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
-                localSpeechModel === model.id
-                  ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                  : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-              ]"
-              @click="localSpeechModel = model.id"
+            <div
+              v-if="localExecutionMode === 'channel'"
+              class="mt-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200"
             >
-              <div class="font-medium">
-                {{ model.label }}
-              </div>
-              <div class="text-xs opacity-75">
-                {{ formatModelSize(model.approxBytes) }}
-                <template v-if="downloadedModels.includes(model.id)">
-                  · downloaded
-                </template>
-              </div>
-            </button>
-          </div>
-
-          <label
-            for="speech-language"
-            class="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1"
-          >
-            Language
-          </label>
-          <input
-            id="speech-language"
-            v-model="localSpeechLanguage"
-            class="input-base"
-            :placeholder="WHISPER_AUTO_LANGUAGE"
-          >
-          <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
-            A language code such as <code>en</code> or <code>fr</code>, or
-            <code>auto</code> to detect it. English-only models ignore this.
-          </div>
-        </template>
-      </div>
-
-      <!-- Notifications -->
-      <div>
-        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
-          System Notifications
-        </label>
-        <div class="flex items-center justify-between p-3 rounded-lg border border-surface-300 dark:border-surface-600">
-          <div class="flex-1">
-            <div class="text-sm font-medium text-surface-700 dark:text-surface-300">
-              Desktop Notifications
-            </div>
-            <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
-              Show notifications when window is not focused
+              Channel mode uses your Pro/Max subscription for billing with no credit cap.
+              Trade-offs: no real-time streaming (replies arrive complete), no mid-session model switching.
+              Takes effect on the next new conversation.
             </div>
           </div>
-          <button
-            :class="[
-              'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-              localEnableNotifications
-                ? 'bg-primary-600'
-                : 'bg-surface-300 dark:bg-surface-600',
-            ]"
-            role="switch"
-            :aria-checked="localEnableNotifications"
-            aria-label="Toggle desktop notifications"
-            @click="localEnableNotifications = !localEnableNotifications"
-          >
-            <span
-              :class="[
-                'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-                localEnableNotifications ? 'translate-x-6' : 'translate-x-1',
-              ]"
-            />
-          </button>
+
+          <!-- Usage limit -->
+          <div>
+            <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+              Usage Limit
+            </label>
+            <div class="flex items-center justify-between gap-4 p-3 rounded-lg border border-surface-300 dark:border-surface-600">
+              <div class="flex-1">
+                <div class="text-sm font-medium text-surface-700 dark:text-surface-300">
+                  Continue automatically at usage limit
+                </div>
+                <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
+                  When a claude.ai usage limit stops a task, wait for the limit to reset and continue
+                  it. When off, the wait is offered as a choice instead.
+                </div>
+              </div>
+              <ToggleSwitch
+                v-model="localAutoContinueAtUsageLimit"
+                label="Toggle continuing automatically at usage limit"
+              />
+            </div>
+          </div>
         </div>
+
+        <!-- Appearance -->
         <div
-          v-if="localEnableNotifications"
-          class="flex gap-2 mt-2"
-          role="radiogroup"
-          aria-label="When to notify that Claude has finished"
+          v-show="activeTab === 'appearance'"
+          :id="pageId('appearance')"
+          role="tabpanel"
+          :aria-labelledby="tabId('appearance')"
+          class="space-y-6"
         >
-          <button
-            v-for="option in completionNotificationOptions"
-            :key="option.value"
-            :class="[
-              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
-              localCompletionNotifications === option.value
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-            ]"
-            role="radio"
-            :aria-checked="localCompletionNotifications === option.value"
-            @click="localCompletionNotifications = option.value"
-          >
-            <div class="font-medium">
-              {{ option.label }}
-            </div>
-            <div class="text-xs opacity-75">
-              {{ option.description }}
-            </div>
-          </button>
-        </div>
-      </div>
-
-      <!-- Usage limit -->
-      <div>
-        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
-          Usage Limit
-        </label>
-        <div class="flex items-center justify-between p-3 rounded-lg border border-surface-300 dark:border-surface-600">
-          <div class="flex-1">
-            <div class="text-sm font-medium text-surface-700 dark:text-surface-300">
-              Continue automatically at usage limit
-            </div>
-            <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
-              When a claude.ai usage limit stops a task, wait for the limit to reset and continue
-              it. When off, the wait is offered as a choice instead.
+          <div>
+            <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+              Theme
+            </label>
+            <div class="flex gap-2">
+              <button
+                v-for="option in ['light', 'dark', 'system'] as const"
+                :key="option"
+                :class="['flex-1 px-4 py-2 rounded-lg border text-sm font-medium capitalize transition-colors', choiceClasses(localTheme === option)]"
+                @click="localTheme = option"
+              >
+                {{ option }}
+              </button>
             </div>
           </div>
-          <button
-            :class="[
-              'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-              localAutoContinueAtUsageLimit
-                ? 'bg-primary-600'
-                : 'bg-surface-300 dark:bg-surface-600',
-            ]"
-            role="switch"
-            :aria-checked="localAutoContinueAtUsageLimit"
-            aria-label="Toggle continuing automatically at usage limit"
-            @click="localAutoContinueAtUsageLimit = !localAutoContinueAtUsageLimit"
-          >
-            <span
-              :class="[
-                'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-                localAutoContinueAtUsageLimit ? 'translate-x-6' : 'translate-x-1',
-              ]"
-            />
-          </button>
-        </div>
-      </div>
 
-      <!-- Update Channel -->
-      <div>
-        <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
-          Update Channel
-        </label>
-        <div class="flex gap-2">
-          <button
-            :class="[
-              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
-              localUpdateChannel === 'stable'
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-            ]"
-            @click="localUpdateChannel = 'stable'"
-          >
-            <div class="font-medium">
-              Stable
+          <!-- Where the sidebars sit -->
+          <div>
+            <label
+              id="sidebar-layout-label"
+              class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2"
+            >
+              Layout
+            </label>
+            <div
+              class="flex gap-2"
+              role="radiogroup"
+              aria-labelledby="sidebar-layout-label"
+            >
+              <button
+                v-for="option in sidebarLayoutOptions"
+                :key="option.value"
+                role="radio"
+                :aria-checked="localSidebarLayout === option.value"
+                :class="['flex-1 px-3 py-2 rounded-lg border text-sm transition-colors', choiceClasses(localSidebarLayout === option.value)]"
+                @click="localSidebarLayout = option.value"
+              >
+                <span class="block font-mono text-xs mb-1">{{ option.sketch }}</span>
+                <span class="block font-medium">{{ option.label }}</span>
+              </button>
             </div>
-            <div class="text-xs opacity-75">
-              Production releases only
+          </div>
+
+          <div>
+            <label
+              for="font-size"
+              class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2"
+            >
+              Font Size: {{ localFontSize }}px
+            </label>
+            <input
+              id="font-size"
+              v-model.number="localFontSize"
+              type="range"
+              min="12"
+              max="20"
+              step="1"
+              class="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg appearance-none cursor-pointer"
+            >
+            <div class="flex justify-between text-xs text-surface-400 mt-1">
+              <span>12px</span>
+              <span>20px</span>
             </div>
-          </button>
-          <button
-            :class="[
-              'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left',
-              localUpdateChannel === 'rc'
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-            ]"
-            @click="localUpdateChannel = 'rc'"
-          >
-            <div class="font-medium">
-              Release Candidate
+          </div>
+
+          <div>
+            <label
+              for="line-height"
+              class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2"
+            >
+              Line Spacing: {{ localLineHeight.toFixed(1) }}
+            </label>
+            <input
+              id="line-height"
+              v-model.number="localLineHeight"
+              type="range"
+              min="1.0"
+              max="2.4"
+              step="0.1"
+              class="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg appearance-none cursor-pointer"
+            >
+            <div class="flex justify-between text-xs text-surface-400 mt-1">
+              <span>Compact</span>
+              <span>Spacious</span>
             </div>
-            <div class="text-xs opacity-75">
-              Test upcoming versions early
+          </div>
+        </div>
+
+        <!-- Discussions -->
+        <div
+          v-show="activeTab === 'discussions'"
+          :id="pageId('discussions')"
+          role="tabpanel"
+          :aria-labelledby="tabId('discussions')"
+          class="space-y-6"
+        >
+          <!-- Archiving inactive discussions -->
+          <div>
+            <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+              Archive
+            </label>
+            <div class="p-3 rounded-lg border border-surface-300 dark:border-surface-600">
+              <div class="flex items-center justify-between gap-4">
+                <div class="flex-1">
+                  <div class="text-sm font-medium text-surface-700 dark:text-surface-300">
+                    Archive inactive discussions
+                  </div>
+                  <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
+                    They move to Archived in the discussions list, and come back with their next message.
+                  </div>
+                </div>
+                <ToggleSwitch
+                  v-model="autoArchiveOn"
+                  label="Toggle archiving inactive discussions"
+                />
+              </div>
+              <div
+                v-if="autoArchiveOn"
+                class="mt-4"
+              >
+                <label
+                  for="auto-archive-after"
+                  class="block text-sm text-surface-700 dark:text-surface-300 mb-2"
+                >
+                  After {{ ARCHIVE_STOP_LABELS[lastArchiveAfter] }} without a message
+                </label>
+                <input
+                  id="auto-archive-after"
+                  v-model.number="archiveStopIndex"
+                  type="range"
+                  min="0"
+                  :max="archiveStops.length - 1"
+                  step="1"
+                  :aria-valuetext="ARCHIVE_STOP_LABELS[lastArchiveAfter]"
+                  class="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg appearance-none cursor-pointer"
+                >
+                <div class="flex justify-between text-xs text-surface-400 mt-1">
+                  <span>{{ ARCHIVE_STOP_LABELS[archiveStops[0]] }}</span>
+                  <span>{{ ARCHIVE_STOP_LABELS[archiveStops[archiveStops.length - 1]] }}</span>
+                </div>
+              </div>
             </div>
-          </button>
+          </div>
+
+          <!-- Notifications -->
+          <div>
+            <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+              System Notifications
+            </label>
+            <div class="flex items-center justify-between gap-4 p-3 rounded-lg border border-surface-300 dark:border-surface-600">
+              <div class="flex-1">
+                <div class="text-sm font-medium text-surface-700 dark:text-surface-300">
+                  Desktop Notifications
+                </div>
+                <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
+                  Show notifications when window is not focused
+                </div>
+              </div>
+              <ToggleSwitch
+                v-model="localEnableNotifications"
+                label="Toggle desktop notifications"
+              />
+            </div>
+            <div
+              v-if="localEnableNotifications"
+              class="flex gap-2 mt-2"
+              role="radiogroup"
+              aria-label="When to notify that Claude has finished"
+            >
+              <button
+                v-for="option in completionNotificationOptions"
+                :key="option.value"
+                :class="['flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left', choiceClasses(localCompletionNotifications === option.value)]"
+                role="radio"
+                :aria-checked="localCompletionNotifications === option.value"
+                @click="localCompletionNotifications = option.value"
+              >
+                <div class="font-medium">
+                  {{ option.label }}
+                </div>
+                <div class="text-xs opacity-75">
+                  {{ option.description }}
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <!-- Dictation. Hidden entirely when this build has no whisper binary,
+               rather than offered and failing on click. -->
+          <div v-if="speechAvailable">
+            <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+              Dictation
+            </label>
+            <div class="flex items-center justify-between gap-4 mb-3">
+              <div class="flex-1">
+                <div class="text-sm text-surface-700 dark:text-surface-300">
+                  Microphone input
+                </div>
+                <div class="text-xs text-surface-500 dark:text-surface-400">
+                  Transcribed on this machine — the recording is never uploaded.
+                  The first use downloads the selected model.
+                </div>
+              </div>
+              <ToggleSwitch
+                v-model="localSpeechEnabled"
+                label="Toggle microphone input"
+              />
+            </div>
+
+            <template v-if="localSpeechEnabled">
+              <label class="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1">
+                Model
+              </label>
+              <div class="grid grid-cols-2 gap-2 mb-3">
+                <button
+                  v-for="model in speechModels"
+                  :key="model.id"
+                  :class="['px-3 py-2 rounded-lg border text-sm font-medium transition-colors text-left', choiceClasses(localSpeechModel === model.id)]"
+                  @click="localSpeechModel = model.id"
+                >
+                  <div class="font-medium">
+                    {{ model.label }}
+                  </div>
+                  <div class="text-xs opacity-75">
+                    {{ formatModelSize(model.approxBytes) }}
+                    <template v-if="downloadedModels.includes(model.id)">
+                      · downloaded
+                    </template>
+                  </div>
+                </button>
+              </div>
+
+              <label
+                for="speech-language"
+                class="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1"
+              >
+                Language
+              </label>
+              <input
+                id="speech-language"
+                v-model="localSpeechLanguage"
+                class="input-base"
+                :placeholder="WHISPER_AUTO_LANGUAGE"
+              >
+              <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
+                A language code such as <code>en</code> or <code>fr</code>, or
+                <code>auto</code> to detect it. English-only models ignore this.
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Tool servers (MCP) for the active project -->
+        <div
+          v-show="activeTab === 'tools'"
+          :id="pageId('tools')"
+          role="tabpanel"
+          :aria-labelledby="tabId('tools')"
+        >
+          <McpServersPanel />
+        </div>
+
+        <!-- Advanced -->
+        <div
+          v-show="activeTab === 'advanced'"
+          :id="pageId('advanced')"
+          role="tabpanel"
+          :aria-labelledby="tabId('advanced')"
+          class="space-y-6"
+        >
+          <div>
+            <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+              Update Channel
+            </label>
+            <div class="flex gap-2">
+              <button
+                v-for="option in updateChannelOptions"
+                :key="option.value"
+                :class="['flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors text-left', choiceClasses(localUpdateChannel === option.value)]"
+                @click="localUpdateChannel = option.value"
+              >
+                <div class="font-medium">
+                  {{ option.label }}
+                </div>
+                <div class="text-xs opacity-75">
+                  {{ option.description }}
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+              Log Level
+            </label>
+            <div class="grid grid-cols-2 gap-2">
+              <button
+                v-for="option in logLevelOptions"
+                :key="option.value"
+                :class="['px-3 py-2 rounded-lg border text-sm font-medium transition-colors text-left', choiceClasses(localLogLevel === option.value)]"
+                @click="localLogLevel = option.value"
+              >
+                <div class="font-medium">
+                  {{ option.label }}
+                </div>
+                <div class="text-xs opacity-75">
+                  {{ option.description }}
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- About -->
+        <div
+          v-show="activeTab === 'about'"
+          :id="pageId('about')"
+          role="tabpanel"
+          :aria-labelledby="tabId('about')"
+        >
+          <AboutSection :active="open && activeTab === 'about'" />
         </div>
       </div>
     </div>

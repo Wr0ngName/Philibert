@@ -44,6 +44,7 @@ const COMMANDS: SlashCommandInfo[] = [
   cmd('agents', { builtin: true }),
   cmd('mcp', { builtin: true }),
   cmd('login', { builtin: true }),
+  cmd('config', { builtin: true }),
   cmd('vim', { builtin: true }),
   cmd('compact', { builtin: true }),
   cmd('deploy', { description: 'Ship it' }),
@@ -349,23 +350,33 @@ describe('commands that open a GUI surface', () => {
     useChatStore().setCurrentConversation(CONV);
   });
 
-  it('/mcp opens settings at the tool servers section', async () => {
+  it('/mcp opens settings at the tool servers tab', async () => {
     const ui = useUiStore();
     const { handleSlashCommand } = dispatcher();
 
     expect(await handleSlashCommand('/mcp')).toBe(true);
     expect(ui.showSettings).toBe(true);
-    expect(ui.pendingSettingsSection).toBe('mcp');
+    expect(ui.pendingSettingsTab).toBe('tools');
   });
 
-  it('/login opens settings at the authentication section', async () => {
+  it('/login opens settings at the account tab', async () => {
     const ui = useUiStore();
     const { handleSlashCommand } = dispatcher();
 
     await handleSlashCommand('/login');
 
     expect(ui.showSettings).toBe(true);
-    expect(ui.pendingSettingsSection).toBe('auth');
+    expect(ui.pendingSettingsTab).toBe('account');
+  });
+
+  it('/config opens settings at the tab it was last left on', async () => {
+    const ui = useUiStore();
+    const { handleSlashCommand } = dispatcher();
+
+    await handleSlashCommand('/config');
+
+    expect(ui.showSettings).toBe(true);
+    expect(ui.pendingSettingsTab).toBeNull();
   });
 
   it('/rewind opens the rewind dialog', async () => {
@@ -383,7 +394,7 @@ describe('commands that open a GUI surface', () => {
 
     await handleSlashCommand('/mcp');
 
-    expect(chat.messages.at(-1)?.content).toContain('Tool Servers');
+    expect(chat.messages.at(-1)?.content).toContain('Settings → Tool servers');
   });
 });
 

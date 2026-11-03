@@ -856,8 +856,11 @@ export type WhisperModelId =
  */
 export type SidebarLayout = 'left' | 'split' | 'right';
 
-/** The choices for archiving inactive discussions, in days; 0 is never. */
-export const AUTO_ARCHIVE_DAYS = [0, 7, 30, 90] as const;
+/**
+ * The choices for archiving inactive discussions, in days: 0 is never, the
+ * others are the slider's stops from a week to a year, shortest first.
+ */
+export const AUTO_ARCHIVE_DAYS = [0, 7, 14, 30, 60, 90, 180, 365] as const;
 export type AutoArchiveDays = (typeof AUTO_ARCHIVE_DAYS)[number];
 
 /** A dialog's size as the user dragged it, in pixels. */

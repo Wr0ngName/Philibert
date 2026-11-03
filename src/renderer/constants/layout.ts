@@ -24,5 +24,12 @@ export const MODAL_SIZE = {
   VIEWPORT_MARGIN: 16,
 } as const;
 
+/**
+ * The settings dialog until it is resized: room for its tabs beside the
+ * widest of their pages, and the same height whichever tab is shown, so
+ * moving between tabs does not make the dialog jump.
+ */
+export const SETTINGS_DIALOG_SIZE = { width: 880, height: 680 } as const;
+
 /** How far an arrow key moves a resize handle. */
 export const RESIZE_KEY_STEP = 16;
