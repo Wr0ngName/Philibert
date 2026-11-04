@@ -1003,9 +1003,10 @@ export class PermissionManager {
 
       pending.resolve(result);
 
-      // Auto-resolve other pending permissions now covered by the updated cache
-      if (response.alwaysAllow && this.sessionPermissionCache && this.conversationId) {
-        this.autoResolveCachedPermissions();
+      // The asks still open that this grant covers are answered by it too,
+      // whatever its scope.
+      if (response.alwaysAllow) {
+        this.autoResolveCoveredPermissions(this.wholeToolGrants(result.updatedPermissions));
       }
     } else {
       logger.info('Action rejected by user', {
@@ -1023,14 +1024,37 @@ export class PermissionManager {
   }
 
   /**
-   * Auto-resolve any pending permissions that are now covered by the session cache.
-   * Called after an "always allow" approval updates the cache.
+   * The tools an "always allow" grants whole, whatever its scope: its allow
+   * rules with no rule content. A rule with content ("Bash(npm test:*)")
+   * allows only what the CLI matches against it, which is not worked out
+   * here, so it covers no other ask.
    */
-  private autoResolveCachedPermissions(): void {
+  private wholeToolGrants(updates: PermissionUpdate[] | undefined): Set<string> {
+    const tools = new Set<string>();
+    for (const update of updates ?? []) {
+      if ((update.type === 'addRules' || update.type === 'replaceRules') && update.behavior === 'allow') {
+        for (const rule of update.rules) {
+          if (!rule.ruleContent) tools.add(rule.toolName);
+        }
+      }
+    }
+    return tools;
+  }
+
+  /**
+   * Auto-resolve any pending permissions an "always allow" now covers: the
+   * tools it granted whole, in any scope, and whatever the session cache
+   * allows. The session cache alone was the check before, so "this session"
+   * answered the other open asks for the tool and "this project" — kept in
+   * the project's settings, not in the cache — left them waiting.
+   */
+  private autoResolveCoveredPermissions(grantedTools: ReadonlySet<string>): void {
     const toResolve: PendingPermission[] = [];
 
     for (const [actionId, pending] of this.pendingPermissions) {
-      if (this.sessionPermissionCache!.isAllowed(this.conversationId!, pending.toolName, pending.input)) {
+      const cached = !!this.sessionPermissionCache && !!this.conversationId
+        && this.sessionPermissionCache.isAllowed(this.conversationId, pending.toolName, pending.input);
+      if (grantedTools.has(pending.toolName) || cached) {
         toResolve.push(pending);
         this.pendingPermissions.delete(actionId);
       }
@@ -1038,7 +1062,7 @@ export class PermissionManager {
 
     for (const pending of toResolve) {
       pending.cleanupAbortHandler?.();
-      logger.info('Auto-resolved pending permission from cache', {
+      logger.info('Auto-resolved pending permission covered by an always-allow', {
         actionId: pending.actionId,
         toolName: pending.toolName,
       });

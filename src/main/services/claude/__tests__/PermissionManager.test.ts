@@ -1598,6 +1598,82 @@ describe('PermissionManager', () => {
       expect(executedActionIds).toContain(capturedActions[2].id);
     });
 
+    describe('other open asks, when a tool is allowed for the project', () => {
+      // What the CLI suggests for a command: only the exact command line,
+      // kept for the project. No session rule, so nothing lands in the
+      // session cache whichever option is chosen.
+      const projectSuggestion = (command: string): PermissionUpdate[] => [{
+        type: 'addRules',
+        rules: [{ toolName: 'Bash', ruleContent: command }],
+        behavior: 'allow',
+        destination: 'localSettings',
+      }];
+
+      async function threeOpenAsks(): Promise<{
+        pm: PermissionManager;
+        actions: PendingAction[];
+        executed: string[];
+        settled: Promise<unknown>[];
+        write: Promise<unknown>;
+      }> {
+        const actions: PendingAction[] = [];
+        const executed: string[] = [];
+        const pm = new PermissionManager(
+          mockConfigService,
+          (action: PendingAction) => { actions.push(action); },
+          new SessionPermissionCache(),
+          'conv-1',
+          (actionId: string) => { executed.push(actionId); },
+        );
+        const canUseTool = pm.createCanUseToolCallback();
+        const signal = new AbortController().signal;
+        const settled = ['ls', 'pwd'].map((command, i) => canUseTool('Bash', { command }, {
+          signal, toolUseID: `id-${i}`, requestId: 'r', suggestions: projectSuggestion(command),
+        }));
+        const write = canUseTool('Write', { file_path: '/t.txt', content: 'hi' }, {
+          signal, toolUseID: 'id-w', requestId: 'r', suggestions: undefined,
+        });
+        await new Promise(resolve => setImmediate(resolve));
+        expect(actions).toHaveLength(3);
+        return { pm, actions, executed, settled, write };
+      }
+
+      it('answers the other asks for that tool, as "this session" does', async () => {
+        const { pm, actions, executed, settled } = await threeOpenAsks();
+
+        pm.handleActionResponse({
+          conversationId: 'conv-1',
+          actionId: actions[0].id,
+          approved: true,
+          alwaysAllow: true,
+          chosenScope: 'project',
+        });
+
+        const results = await Promise.all(settled) as { behavior: string }[];
+        expect(results.map((r) => r.behavior)).toEqual(['allow', 'allow']);
+        expect(executed).toEqual([actions[1].id]);
+        // The Write ask is for another tool and still waits.
+        expect(pm.getPendingCount()).toBe(1);
+      });
+
+      it('leaves them open when only that one command was allowed', async () => {
+        // The project's narrow option keeps the CLI's own rule, "Bash(ls)",
+        // which does not cover "pwd".
+        const { pm, actions } = await threeOpenAsks();
+
+        pm.handleActionResponse({
+          conversationId: 'conv-1',
+          actionId: actions[0].id,
+          approved: true,
+          alwaysAllow: true,
+          chosenScope: 'project',
+          chosenVariant: 'narrow',
+        });
+
+        expect(pm.getPendingCount()).toBe(2);
+      });
+    });
+
     it('should NOT auto-resolve pending permissions for different tools', async () => {
       const cache = new SessionPermissionCache();
       const conversationId = 'conv-1';
