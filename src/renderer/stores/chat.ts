@@ -546,7 +546,7 @@ export const useChatStore = defineStore('chat', () => {
    * sharing with the on-screen list.
    *
    * While a conversation is in view its buffer IS the on-screen list, so that
-   * the two cannot diverge (see `bufferTarget`). The moment it leaves, the
+   * the two cannot diverge (see `beginMessageBuffer`). The moment it leaves, the
    * sharing has to stop or the background turn would write into whatever the
    * user is now looking at.
    *
@@ -653,7 +653,16 @@ export const useChatStore = defineStore('chat', () => {
     // whether or not the conversation is the one on screen.
     const state = conversationStates.value.get(conversationId);
     if (state && !windowReachesEnd(conversationId)) return state.detachedTurn;
-    return windowList(conversationId);
+    const window_ = windowList(conversationId);
+    if (window_) return window_;
+    // Off screen with no window in memory: a turn the CLI started there on
+    // its own, answering a background task. There is nothing loaded for it
+    // to follow, so it collects apart from the history — written after it,
+    // and put after it when the conversation is opened. It used to be
+    // collected in an empty buffer, which is a claim to be the window plus
+    // everything since; opening the conversation then showed that turn and
+    // nothing above it.
+    return state?.detachedTurn ?? null;
   }
 
   /**
@@ -693,6 +702,24 @@ export const useChatStore = defineStore('chat', () => {
    * Start buffering messages for a conversation, seeded with what is on
    * screen now. Called when a turn starts, so the buffer is already a
    * complete history if the user switches away mid-turn.
+   *
+   * The buffer is the on-screen list ITSELF, not a copy. It used to be seeded
+   * as a copy at turn start, and from then on `messageSink` wrote to the
+   * on-screen list for as long as the conversation stayed in view — so
+   * everything the first half of a turn produced went into one array and the
+   * buffer kept the stale snapshot.
+   *
+   * That was not a cosmetic difference. The buffer is authoritative twice:
+   * `loadConversation` prefers it to the saved file when the user switches
+   * back ("they're more up-to-date than the saved file"), and the turn's
+   * completion saves it. So a buffer missing the first half of a turn made
+   * those messages vanish on switching back.
+   *
+   * Sharing the array removes the divergence rather than trying to keep two
+   * copies in step. It detaches by itself at exactly the right moment:
+   * `loadMessages` assigns a NEW array to `messages` when another conversation
+   * comes on screen, leaving the buffer holding the window of the one that
+   * left — which is what the background path then appends to.
    */
   function beginMessageBuffer(conversationId: string): void {
     const state = getConversationState(conversationId);
@@ -702,39 +729,13 @@ export const useChatStore = defineStore('chat', () => {
     // put a second claimant on the same messages — and a buffer is treated as
     // a complete history when the user comes back, which a lone turn is not.
     if (!windowReachesEnd(conversationId)) return;
-    state.bufferedMessages = bufferTarget(conversationId);
+    // Off screen, a buffer is only ever one it already had: a window that
+    // left the screen with a turn in it. One that has none has no window in
+    // memory to start from — see `messageSink`, which collects its turn apart
+    // from its history instead.
+    if (conversationId !== currentConversationId.value) return;
+    state.bufferedMessages = messages.value;
     state.bufferingMessages = true;
-  }
-
-  /**
-   * The array a conversation's buffer should be.
-   *
-   * For the conversation on screen this is the on-screen list ITSELF, not a
-   * copy. The buffer used to be seeded as a copy at turn start, and from then
-   * on `messageSink` wrote to the on-screen list for as long as the
-   * conversation stayed in view — so everything the first half of a turn
-   * produced went into one array and the buffer kept the stale snapshot.
-   *
-   * That was not a cosmetic difference. The buffer is authoritative twice:
-   * `loadConversation` prefers it to the saved file when the user switches
-   * back ("they're more up-to-date than the saved file"), and the turn's
-   * completion saves it over that file. So a buffer missing the first half of
-   * a turn made those messages vanish on switching back, and then deleted
-   * them from disk.
-   *
-   * Sharing the array removes the divergence rather than trying to keep two
-   * copies in step. It detaches by itself at exactly the right moment:
-   * `loadMessages` assigns a NEW array to `messages` when another conversation
-   * comes on screen, leaving the buffer holding the complete history of the
-   * one that left — which is what the background path then appends to.
-   */
-  function bufferTarget(conversationId: string): ChatMessage[] {
-    if (conversationId === currentConversationId.value) return messages.value;
-    // A conversation that is not on screen has no list to share; it starts
-    // from whatever it already had. Not expected — a turn starts in the
-    // conversation the user is looking at — but it must not silently adopt
-    // another conversation's messages.
-    return conversationStates.value.get(conversationId)?.bufferedMessages ?? [];
   }
 
   /**
@@ -1190,7 +1191,7 @@ export const useChatStore = defineStore('chat', () => {
    *
    * Everything that replaces `messages` wholesale has to call this. While a
    * conversation is in view its buffer IS the on-screen array (see
-   * `bufferTarget`), so assigning a new array leaves the buffer holding the
+   * `beginMessageBuffer`), so assigning a new array leaves the buffer holding the
    * previous one — and because `loadConversation` prefers the buffer to the
    * saved file, a stale buffer resurrects whatever was replaced. `/clear`
    * demonstrated it: the cleared messages stayed in the buffer and came back
@@ -1238,7 +1239,7 @@ export const useChatStore = defineStore('chat', () => {
 
     // Re-point a running turn's buffer at the list that is now on screen.
     //
-    // This is the other half of sharing the array (see `bufferTarget`). When
+    // This is the other half of sharing the array (see `beginMessageBuffer`). When
     // the user switches back into a conversation whose turn is still running,
     // this replaces `messages` with a fresh array — so without re-pointing,
     // the buffer would be left referring to the array from before the switch
