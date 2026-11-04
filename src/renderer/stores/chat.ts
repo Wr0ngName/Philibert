@@ -1904,7 +1904,11 @@ export const useChatStore = defineStore('chat', () => {
     const sink = messageSink(conversationId);
     if (!sink) return;
 
-    splitStreamingForTool(conversationId);
+    // Only a call of the main conversation interrupts what Claude is writing.
+    // An agent's call is shown under the agent, not here, and a background
+    // agent's frames arrive in the middle of the reply: closing the message
+    // at one of them broke the reply off wherever it was, mid-word included.
+    if (!capture.parentToolUseId) splitStreamingForTool(conversationId);
 
     handleTaskListCapture(conversationId, capture);
 

@@ -41,6 +41,7 @@ vi.mock('../../utils/logger', () => ({
 }));
 
 import { SDKMessageHandler } from '../../../main/services/claude/SDKMessageHandler';
+import { topLevelSequence } from '../../utils/message-tree';
 import { useChatStore } from '../chat';
 
 const CONV = 'conv-real-stream';
@@ -58,10 +59,19 @@ function loadFixture(name: string): unknown[] {
  * Replay a captured stream the way the app does: the real handler turns SDK
  * messages into the same callbacks ClaudeCodeService forwards over IPC, and
  * each one is applied to the real store exactly as useClaudeChat applies it.
+ *
+ * `interleaved` puts other frames from the same stream in front of the
+ * fixture message at that index — a background agent's frames arrive in the
+ * middle of the main reply in the same way.
  */
-async function replay(name: string): Promise<ReturnType<typeof useChatStore>> {
+async function replay(
+  name: string,
+  interleaved: ReadonlyMap<number, readonly unknown[]> = new Map(),
+  setUp: (chat: ReturnType<typeof useChatStore>) => void = () => {},
+): Promise<ReturnType<typeof useChatStore>> {
   const chat = useChatStore();
   chat.setCurrentConversation(CONV);
+  setUp(chat);
 
   const handler = new SDKMessageHandler({
     onChunk: (chunk: string) => chat.appendChunk(CONV, chunk),
@@ -78,7 +88,10 @@ async function replay(name: string): Promise<ReturnType<typeof useChatStore>> {
     onSystemNote: () => {},
   });
 
-  for (const message of loadFixture(name)) {
+  for (const [index, message] of loadFixture(name).entries()) {
+    for (const frame of interleaved.get(index) ?? []) {
+      await handler.handleMessage(frame as never);
+    }
     await handler.handleMessage(message as never);
   }
   chat.finishStreaming(CONV);
@@ -140,5 +153,69 @@ describe('a real reply on screen', () => {
       .map((m) => (m.toolUse ? `tool:${m.toolUse.toolName}` : 'text'));
 
     expect(shape).toEqual(['text', 'tool:Bash', 'text', 'tool:Bash', 'text']);
+  });
+
+  describe('while a background agent works', () => {
+    const AGENT_CALL = 'toolu_background_agent';
+
+    /**
+     * A tool call from the agent, as the stream carries it: the real
+     * tool_use frame from the other fixture, attributed to the agent through
+     * `parent_tool_use_id`, as every frame from a sub-agent is.
+     */
+    function agentToolCall(): unknown {
+      const frame = loadFixture('stream-text-tools-text.jsonl').find(
+        (m) => (m as { type: string }).type === 'assistant'
+          && (m as { message: { content: { type: string }[] } }).message.content.some((b) => b.type === 'tool_use'),
+      ) as Record<string, unknown>;
+      return { ...frame, parent_tool_use_id: AGENT_CALL };
+    }
+
+    /** The agent the user launched earlier, as its row in the discussion. */
+    function launchAgent(chat: ReturnType<typeof useChatStore>): void {
+      chat.addAutoToolUseMessage(CONV, {
+        toolUseBlockId: AGENT_CALL,
+        toolName: 'Agent',
+        description: 'Survey the machine',
+        input: { description: 'Survey the machine', prompt: 'Survey', run_in_background: true },
+      });
+    }
+
+    /** The text of each message in the main discussion, as rendered. */
+    function mainText(chat: ReturnType<typeof useChatStore>): string[] {
+      return topLevelSequence(chat.messages)
+        .filter((m) => !m.toolUse && m.content !== '')
+        .map((m) => m.content);
+    }
+
+    it('does not break the reply where the agent ran a tool', async () => {
+      // The report: a line break in the middle of a word, now and then. A
+      // background agent's frames share the main stream, and one of its
+      // tool calls landing between "Sunlight loo" and "ks white" used to
+      // close the reply's message there — the agent's call is shown under
+      // the agent, not in the discussion, so what the user saw was the
+      // reply carrying on in a new message, mid-word.
+      const chat = await replay(
+        'stream-three-paragraphs.jsonl',
+        new Map([[13, [agentToolCall()]]]),
+        launchAgent,
+      );
+
+      const texts = mainText(chat);
+      expect(texts).toHaveLength(1);
+      expect(texts[0]).toMatch(/^Sunlight looks white/);
+      expect(texts[0]).not.toMatch(/[a-z]\n+[a-z]/);
+    });
+
+    it('still shows the agent\'s call, under the agent', async () => {
+      const chat = await replay(
+        'stream-three-paragraphs.jsonl',
+        new Map([[13, [agentToolCall()]]]),
+        launchAgent,
+      );
+
+      const call = chat.messages.find((m) => m.toolUse?.parentToolUseId === AGENT_CALL);
+      expect(call?.toolUse?.toolName).toBe('Bash');
+    });
   });
 });

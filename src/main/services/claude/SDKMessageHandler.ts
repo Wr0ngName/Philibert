@@ -618,6 +618,7 @@ export class SDKMessageHandler {
         logger.info('Tool use block detected', {
           toolUseId: toolBlock.id,
           toolName: toolBlock.name,
+          parentToolUseId,
           runInBackground: !!input.run_in_background,
           inputKeys: Object.keys(input),
           inputPreview: JSON.stringify(input).slice(0, 200),
