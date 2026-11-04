@@ -19,6 +19,28 @@ import logger from '../../utils/logger';
 import { toolResultParts, type ExtractedImage } from './tool-result-images';
 
 /**
+ * System messages whose raw copy is logged at debug, not info: progress that
+ * streams in by the dozen, and kinds that already have a line of their own
+ * ("Task started", "Task notification received", "Task updated",
+ * "[turn] session state", "SDK init received").
+ *
+ * At info, every system message took 13 lines, and these made up 51% of
+ * main.log: 4,087 of 4,364 entries in a capture from 2026-11-04, task_progress
+ * alone 2,315 of them. With a 5 MB file and one rotated copy, that left about
+ * ten hours of history, and minutes under load. A discussion that "got wiped"
+ * came within one rotation of having no trace at all.
+ */
+const ROUTINE_SYSTEM_SUBTYPES: ReadonlySet<string> = new Set([
+  'task_progress',
+  'thinking_tokens',
+  'session_state_changed',
+  'task_started',
+  'task_notification',
+  'task_updated',
+  'init',
+]);
+
+/**
  * Best-effort extraction of an error string from an SDK result message.
  *
  * The SDK exposes errors as `errors: string[]` on SDKResultError (sdk.d.ts:3304).
@@ -1096,8 +1118,10 @@ export class SDKMessageHandler {
       tool_use_id?: string;
     };
 
-    // Log ALL system messages at info level for debugging task flow
-    logger.info('System message received', {
+    // Every system message, raw, for tracing task flow — at info only for the
+    // kinds nothing else logs. See ROUTINE_SYSTEM_SUBTYPES.
+    const level = ROUTINE_SYSTEM_SUBTYPES.has(systemMsg.subtype ?? '') ? 'debug' : 'info';
+    logger[level]('System message received', {
       subtype: systemMsg.subtype,
       allKeys: Object.keys(message),
       rawPreview: JSON.stringify(message).slice(0, 500),

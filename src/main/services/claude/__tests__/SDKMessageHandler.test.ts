@@ -207,6 +207,27 @@ describe('SDKMessageHandler', () => {
       });
     });
 
+    it('logs routine system messages raw at debug, and the rest at info', async () => {
+      // A task_progress arrives by the dozen while a task runs; at info its
+      // raw copy filled half of main.log. A compaction is rare and has no
+      // line of its own, so its raw copy is the only trace of it.
+      const logger = (await import('../../../utils/logger')).default;
+      const rawAt = async (subtype: string): Promise<string[]> => {
+        vi.mocked(logger.info).mockClear();
+        vi.mocked(logger.debug).mockClear();
+        await handler.handleMessage({ type: 'system', subtype, session_id: 's', uuid: 'u' } as never);
+        return (['info', 'debug'] as const).filter((level) =>
+          vi.mocked(logger[level]).mock.calls.some(([text]) => text === 'System message received'));
+      };
+
+      for (const routine of ['task_progress', 'thinking_tokens', 'session_state_changed', 'task_started', 'task_notification', 'task_updated', 'init']) {
+        expect(await rawAt(routine), routine).toEqual(['debug']);
+      }
+      for (const rare of ['compact_boundary', 'status', 'background_tasks_changed', 'vcs_state_changed']) {
+        expect(await rawAt(rare), rare).toEqual(['info']);
+      }
+    });
+
     it('changes nothing the user sees', async () => {
       await handler.handleMessage(heartbeat as never);
 
