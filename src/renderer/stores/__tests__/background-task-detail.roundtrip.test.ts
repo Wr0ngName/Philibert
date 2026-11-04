@@ -150,13 +150,35 @@ describe('background tasks, panel and detail', () => {
     vi.useRealTimers();
   });
 
-  it("reads like the CLI's row: the agent's type, what it is doing, time and tokens", () => {
-    const agentRow = panelRows().find((r) => r.text.includes('builder'));
-    expect(agentRow?.text).toContain('Reworking fetchItem in useCrudStore.ts');
-    expect(agentRow?.text).toContain('↓ 160.8k tokens');
-    // What it is for is still there, in its title, not overwritten.
+  it("reads: the agent's type, what it is for, what it is doing, time and tokens", () => {
+    // What it is for sits between type and step, as the Task Details heading
+    // names it: two agents of one type are otherwise told apart only by a
+    // step that changes every few seconds.
     const row = app.findAll('.background-task-panel .task-item').find((r) => r.text().includes('builder'));
+    expect(row?.findAll('span').map((s) => s.text()).filter(Boolean)).toEqual([
+      'builder',
+      'Agent reads notes.txt',
+      '· Reworking fetchItem in useCrudStore.ts',
+      '0s · ↓ 160.8k tokens',
+    ]);
     expect(row?.attributes('title')).toBe('Agent reads notes.txt');
+  });
+
+  it("shows an agent's description alone until it reports a step", () => {
+    notify({ taskId: 'agent-2', status: 'running', description: 'Agent checks the tests', toolUseId: 'toolu_agent2', taskType: 'agent', agentType: 'reviewer' });
+    return settle(20).then(() => {
+      const row = app.findAll('.background-task-panel .task-item').find((r) => r.text().includes('reviewer'));
+      expect(row?.find('.task-description').text()).toBe('Agent checks the tests');
+      expect(row?.find('.task-activity').exists()).toBe(false);
+    });
+  });
+
+  it("keeps a command's row as it was: one line, its description written once", () => {
+    const row = app.findAll('.background-task-panel .task-item')
+      .find((r) => r.text().includes('Run the main loop'));
+    expect(row?.find('.task-description').exists()).toBe(false);
+    expect(row?.find('.task-activity').text()).toBe('Run the main loop');
+    expect(row?.text().split('Run the main loop')).toHaveLength(2);
   });
 
   it('puts what an agent started under that agent, and what the main conversation started at the top', () => {

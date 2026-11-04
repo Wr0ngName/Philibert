@@ -42,9 +42,12 @@ function toggleCollapsed(): void {
   collapsed.value = !collapsed.value;
 }
 
-/** What the row says the task is doing: its live activity, or what it is for. */
-function rowText(task: BackgroundTask): string {
-  return task.activity ?? task.description;
+/**
+ * What an agent is doing now, when that says something its description does
+ * not: absent before the first progress line, and never a repeat of it.
+ */
+function agentStep(task: BackgroundTask): string | null {
+  return task.activity && task.activity !== task.description ? task.activity : null;
 }
 
 /** "8m 0s · ↓ 160.8k tokens", as the CLI's row ends. */
@@ -125,9 +128,21 @@ function rowStats(task: BackgroundTask): string {
             v-if="row.task.taskType === 'agent' && row.task.agentType"
             class="text-xs font-mono font-medium text-purple-600 dark:text-purple-400 shrink-0"
           >{{ row.task.agentType }}</span>
-          <span class="text-xs text-surface-700 dark:text-surface-300 truncate">
-            {{ rowText(row.task) }}
-          </span>
+          <!-- An agent: what it is for, as the Task Details heading names it,
+               so two agents of one type can be told apart; then what it is
+               doing now, the CLI's progress line. A command's row already
+               reads well with one line, so it keeps it. -->
+          <span
+            v-if="row.task.taskType === 'agent'"
+            class="task-description text-xs text-surface-700 dark:text-surface-300 truncate min-w-0"
+          >{{ row.task.description }}</span>
+          <span
+            v-if="row.task.taskType !== 'agent' || agentStep(row.task)"
+            class="task-activity text-xs truncate min-w-0"
+            :class="row.task.taskType === 'agent'
+              ? 'text-surface-500 dark:text-surface-400'
+              : 'text-surface-700 dark:text-surface-300'"
+          >{{ row.task.taskType === 'agent' ? `· ${agentStep(row.task)}` : row.task.activity ?? row.task.description }}</span>
         </div>
         <span class="text-xs text-surface-400 shrink-0 tabular-nums">
           {{ rowStats(row.task) }}
