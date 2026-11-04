@@ -52,7 +52,6 @@ let cleanupPromptDelivery: (() => void) | null = null;
 let cleanupSlashCommands: (() => void) | null = null;
 let cleanupActiveModel: (() => void) | null = null;
 let cleanupSubagentActivity: (() => void) | null = null;
-let cleanupUserTurnUuid: (() => void) | null = null;
 let cleanupTaskNotification: (() => void) | null = null;
 let cleanupBackgroundTasksChanged: (() => void) | null = null;
 let cleanupUsageUpdate: (() => void) | null = null;
@@ -179,7 +178,7 @@ export function useClaudeChat() {
     chatStore.clearModifiedFiles(currentConvId);
 
     // Add user message to chat
-    chatStore.addUserMessage(content, images);
+    const userMessage = chatStore.addUserMessage(content, images);
 
     // Commands this GUI answers itself stop here: the prompt is never sent, no
     // turn is started and no tokens are spent. The user's message is added
@@ -189,7 +188,7 @@ export function useClaudeChat() {
       return 'handled';
     }
 
-    return startTurn(currentConvId, content, images);
+    return startTurn(currentConvId, userMessage);
   }
 
   /**
@@ -202,7 +201,8 @@ export function useClaudeChat() {
    * limit, which is the one turn that starts while the user may be looking at
    * a different conversation.
    */
-  async function startTurn(conversationId: string, content: string, images?: MessageImage[]): Promise<SendOutcome> {
+  async function startTurn(conversationId: string, userMessage: ChatMessage): Promise<SendOutcome> {
+    const { content, images } = userMessage;
     // Start assistant message for streaming - pass conversation ID for proper tracking
     chatStore.startAssistantMessage(conversationId);
     chatStore.setLoading(conversationId, true);
@@ -241,7 +241,13 @@ export function useClaudeChat() {
       // reactive state, and Electron cannot copy a reactive proxy across the
       // process boundary, so the send threw here before main ever saw it.
       const plainImages = images?.map((image) => ({ ...image }));
-      await window.electron.claude.send(conversationId, content, effectiveCwd, resumeSessionId, plainImages);
+      const turnUuid = await window.electron.claude.send(
+        conversationId, content, effectiveCwd, resumeSessionId, plainImages,
+      );
+      // The uuid the CLI filed this turn's file checkpoint under: what makes
+      // the message a point the rewind dialog can return to. Null for a turn
+      // that has none, such as a slash command.
+      if (turnUuid) chatStore.labelUserTurn(conversationId, userMessage.id, turnUuid);
       // New work means the user has moved past whatever stopped the queue, so
       // queued prompts go back to releasing on their own.
       chatStore.releaseQueueHold(conversationId);
@@ -310,8 +316,10 @@ export function useClaudeChat() {
       });
       chatStore.setError(conversationId, null);
       chatStore.clearModifiedFiles(conversationId);
-      chatStore.addUserMessage(USAGE_LIMIT_CONTINUE_PROMPT, undefined, conversationId);
-      await startTurn(conversationId, USAGE_LIMIT_CONTINUE_PROMPT);
+      await startTurn(
+        conversationId,
+        chatStore.addUserMessage(USAGE_LIMIT_CONTINUE_PROMPT, undefined, conversationId),
+      );
     } finally {
       continuing.delete(conversationId);
     }
@@ -919,11 +927,6 @@ export function useClaudeChat() {
       logger.debug('Received slash commands from SDK', { conversationId, count: commands.length });
     });
 
-    // Claude Code's transcript id for each user turn — the rewind target.
-    cleanupUserTurnUuid = window.electron.claude.onUserTurnUuid((conversationId, uuid) => {
-      chatStore.recordUserTurnUuid(conversationId, uuid);
-    });
-
     // Handle background task notifications - route to correct conversation
     cleanupTaskNotification = window.electron.claude.onTaskNotification((conversationId, notification) => {
       logger.info('Received task notification', {
@@ -1102,10 +1105,6 @@ export function useClaudeChat() {
     if (cleanupSubagentActivity) {
       cleanupSubagentActivity();
       cleanupSubagentActivity = null;
-    }
-    if (cleanupUserTurnUuid) {
-      cleanupUserTurnUuid();
-      cleanupUserTurnUuid = null;
     }
     if (cleanupBackgroundTasksChanged) {
       cleanupBackgroundTasksChanged();

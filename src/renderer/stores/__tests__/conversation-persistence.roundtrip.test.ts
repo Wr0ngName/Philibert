@@ -97,6 +97,9 @@ import '../../../preload/preload';
 
 let conversationService: ConversationService;
 
+/** What the next `claude:send` calls resolve to, in order; null once empty. */
+const sentTurnUuids: string[] = [];
+
 /** Config the renderer reads at startup, as the main process would supply it. */
 let storedConfig: Record<string, unknown> = {};
 
@@ -106,6 +109,9 @@ let storedConfig: Record<string, unknown> = {};
  */
 async function route(channel: string, args: unknown[]): Promise<unknown> {
   switch (channel) {
+    case IPC_CHANNELS.CLAUDE_SEND:
+      // The uuid main sent the turn under: its rewind target.
+      return sentTurnUuids.shift() ?? null;
     case IPC_CHANNELS.CONVERSATION_SAVE:
       return conversationService.save(args[0] as Conversation);
     case IPC_CHANNELS.CONVERSATION_UPDATE:
@@ -194,6 +200,7 @@ describe('a conversation through the real persistence stack', () => {
     disk.holdWrites = false;
     disk.failWrites = false;
     disk.waiting.length = 0;
+    sentTurnUuids.length = 0;
 
     if (!exposed.api) throw new Error('preload did not expose its API');
     (globalThis as unknown as { window: Record<string, unknown> }).window.electron = exposed.api;
@@ -603,12 +610,15 @@ describe('a conversation through the real persistence stack', () => {
     const id = conversations.createNewConversation();
     await settle();
 
+    // The uuid main sends that turn under, which is what a rewind targets.
+    sentTurnUuids.push('turn-uuid-1');
     await send(wrapper, 'the question kept by the rewind');
-    // The CLI's id for that turn, which is what a rewind targets.
-    emitIpc(IPC_CHANNELS.CLAUDE_USER_TURN_UUID, id, 'turn-uuid-1');
     streamAssistant(id, 'an answer that will be rewound away');
     emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
     await settle();
+    // Written with the message, or a reopened conversation could not be
+    // rewound to it — the checkpoint survives a resume, the label must too.
+    expect(onDisk(id)?.messages[0].turnUuid).toBe('turn-uuid-1');
 
     await send(wrapper, 'a second question, also rewound away');
     streamAssistant(id, 'and its answer');

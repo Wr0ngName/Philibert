@@ -421,6 +421,64 @@ describe('ClaudeCodeService', () => {
       expect(pushedBy.first).not.toBe(pushedBy.second);
     });
 
+    it('returns the uuid each turn was pushed under: its rewind target', async () => {
+      // The CLI files a turn's file checkpoint under the uuid it was sent
+      // with, and never echoes it back (no --replay-user-messages), so the
+      // send is the only place the renderer can learn it. Measured against
+      // the real CLI (2.1.280): rewindFiles(<that uuid>) finds a checkpoint;
+      // any other uuid gets "No file checkpoint found for this message." —
+      // the error a rewind showed while the app labelled turns with uuids of
+      // messages the CLI had sent it, not ones it filed checkpoints under.
+      const pushed: string[] = [];
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      mockQuery.mockImplementation(({ prompt }: { prompt: AsyncIterable<{ uuid: string }> }) => {
+        void (async () => {
+          for await (const message of prompt) pushed.push(message.uuid);
+        })();
+        return {
+          ...createMockQueryIterator([]),
+          [Symbol.asyncIterator]: async function* () {
+            yield { type: 'system', subtype: 'init', session_id: 'sess-rewind', slash_commands: [] };
+            await held;
+          },
+        };
+      });
+
+      const first = await service.sendMessage(TEST_CONV_ID, 'first', '/home/user/project');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const second = await service.sendMessage(TEST_CONV_ID, 'second', '/home/user/project');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(pushed).toHaveLength(2);
+      expect(first).toBe(pushed[0]);
+      expect(second).toBe(pushed[1]);
+      release();
+    });
+
+    it('returns no rewind target for a slash command, which gets no checkpoint', async () => {
+      // Measured against the real CLI (2.1.280): /cost and /compact are sent
+      // and answered, but rewindFiles(<their uuid>) finds no checkpoint — the
+      // CLI takes one only for a turn that queries the model.
+      let pushed: string | null = null;
+      mockQuery.mockImplementation(({ prompt }: { prompt: AsyncIterable<{ uuid: string }> }) => {
+        void (async () => {
+          for await (const message of prompt) {
+            pushed = message.uuid;
+            break;
+          }
+        })();
+        return createMockQueryIterator([]);
+      });
+
+      const target = await service.sendMessage(TEST_CONV_ID, '/cost', '/home/user/project');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(pushed).not.toBeNull();
+      expect(target).toBeNull();
+    });
+
     it('declares it on an open-input session, which is what the SDK requires', async () => {
       // The declaration only has an effect on an interactive stream-json
       // session. Were the prompt ever changed to a plain string, the option
@@ -1052,7 +1110,7 @@ describe('ClaudeCodeService', () => {
   describe('tool permission handling', () => {
     let capturedCanUseTool: (...args: unknown[]) => unknown;
     let finishIterator: () => void;
-    let sendMessagePromise: Promise<void>;
+    let sendMessagePromise: Promise<string | null>;
 
     beforeEach(async () => {
       await configService.setOAuthToken(
@@ -1278,7 +1336,7 @@ describe('ClaudeCodeService', () => {
     let capturedCanUseTool: (...args: unknown[]) => unknown;
     let permissionPromise: ReturnType<typeof capturedCanUseTool>;
     let finishIterator: () => void;
-    let sendMessagePromise: Promise<void>;
+    let sendMessagePromise: Promise<string | null>;
 
     beforeEach(async () => {
       await configService.setOAuthToken(

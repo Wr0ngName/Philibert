@@ -188,12 +188,6 @@ export function resultEndsOurTurn(
 export interface MessageHandlerCallbacks {
   onChunk: (chunk: string) => void;
   onSlashCommands: (commands: SlashCommandInfo[]) => void;
-  /**
-   * The CLI's transcript id for a turn the user typed, as echoed back in its
-   * SDKUserMessageReplay. It is the target `/rewind` restores to, so the
-   * renderer records it against the message it just displayed.
-   */
-  onUserTurnUuid?: (uuid: string) => void;
   onTaskNotification: (notification: TaskNotification) => void;
   /**
    * The SDK's authoritative live-task list, pushed whenever the set changes.
@@ -706,35 +700,14 @@ export class SDKMessageHandler {
     };
 
     // A user message's content is a string for a typed turn and an array of
-    // blocks when it carries tool results. Narrowed once here, since both the
-    // uuid capture below and the tool-result handling need to know which.
+    // blocks when it carries tool results.
+    //
+    // A turn's rewind target is not read here: the CLI files its checkpoint
+    // under the uuid we sent it with, and echoes typed turns back only under
+    // --replay-user-messages, which the SDK does not pass — see sendMessage.
     const contentBlocks = Array.isArray(userMsg.message?.content)
       ? userMsg.message.content
       : undefined;
-
-    // Capture the transcript id of a turn the user actually typed.
-    //
-    // The CLI echoes each user message back as SDKUserMessageReplay, which
-    // carries the uuid it filed the turn under — and that uuid is what
-    // rewindFiles() and resumeSessionAt take as their target. Reading it here
-    // beats inventing one client-side: an id the CLI did not assign would be
-    // rejected, and a rewind that silently targets nothing is worse than no
-    // rewind at all.
-    //
-    // Only real turns qualify. Tool results also arrive as user messages (that
-    // is what the rest of this method is for), as do synthetic ones the CLI
-    // composes itself, and neither is a point a user could sensibly go back to.
-    const isToolResult = contentBlocks?.some((block) => block.type === 'tool_result') ?? false;
-
-    if (
-      userMsg.uuid &&
-      !isToolResult &&
-      !userMsg.isSynthetic &&
-      isHumanOriginatedResult(userMsg) &&
-      this.callbacks.onUserTurnUuid
-    ) {
-      this.callbacks.onUserTurnUuid(userMsg.uuid);
-    }
 
     // Extract tool result content for the detail view
     if (contentBlocks) {

@@ -934,27 +934,20 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
-   * Record Claude Code's transcript id against the user turn it belongs to.
+   * Give a user message the uuid its turn was sent under — the id the CLI
+   * filed the turn's file checkpoint under, and so its rewind target.
    *
-   * Assigned to the newest user message that does not have one yet. The CLI
-   * echoes a turn back right after it is pushed and before any assistant
-   * content, so the newest unlabelled user message is the one it refers to.
+   * By message id, not by position: the send resolves after the message was
+   * added, and by then other user messages may have joined the list (a prompt
+   * sent into the turn, delivered as Claude reads it).
    *
-   * Goes through messageSink so a conversation running in the background gets
-   * its ids too — otherwise its turns would silently become un-rewindable just
-   * for having been started from another tab.
+   * Goes through messageSink so a conversation the user switched away from
+   * mid-send still gets its id — otherwise its turn would silently become
+   * un-rewindable just for having been left.
    */
-  function recordUserTurnUuid(conversationId: string, uuid: string): void {
-    const sink = messageSink(conversationId);
-    if (!sink) return;
-
-    for (let i = sink.length - 1; i >= 0; i -= 1) {
-      const message = sink[i];
-      if (message.role !== 'user') continue;
-      if (message.turnUuid) return; // Newest user turn is already labelled.
-      message.turnUuid = uuid;
-      return;
-    }
+  function labelUserTurn(conversationId: string, messageId: string, turnUuid: string): void {
+    const message = messageSink(conversationId)?.find((candidate) => candidate.id === messageId);
+    if (message?.role === 'user') message.turnUuid = turnUuid;
   }
 
   /**
@@ -3027,7 +3020,7 @@ export const useChatStore = defineStore('chat', () => {
     addUserMessage,
     addAssistantMessage,
     addSystemMessage,
-    recordUserTurnUuid,
+    labelUserTurn,
     truncateAfterUserTurn,
     pendingTruncationFor,
     clearPendingTruncation,

@@ -4,7 +4,7 @@
  * Two operations, both easy to get subtly wrong and both destructive if they
  * are:
  *
- *   - recordUserTurnUuid pairs Claude Code's transcript id with the message it
+ *   - labelUserTurn pairs the uuid a turn was sent under with the message it
  *     belongs to. Pair it with the wrong message and a rewind restores the
  *     wrong turn — it writes files, so that is not recoverable from the app.
  *   - truncateAfterUserTurn drops the turns a conversation rewind discarded.
@@ -19,32 +19,37 @@ import { useChatStore } from '../chat';
 
 const CONV = 'conv-rewind';
 
-describe('recordUserTurnUuid', () => {
+describe('labelUserTurn', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
   });
 
-  it('labels the newest user message', () => {
+  it('labels the message it names, not the newest one', () => {
+    // The send resolves after its message was added, and a prompt sent into
+    // the running turn can join the list in between. That prompt has no
+    // checkpoint of its own (it is folded into the turn), so labelling "the
+    // newest user message" would give it this turn's id.
     const store = useChatStore();
     store.setCurrentConversation(CONV);
-    store.addUserMessage('first');
-    store.addUserMessage('second');
+    const sent = store.addUserMessage('started the turn');
+    store.addUserMessage('sent into the turn');
 
-    store.recordUserTurnUuid(CONV, 'uuid-2');
+    store.labelUserTurn(CONV, sent.id, 'uuid-1');
 
-    const users = store.messages.filter((m) => m.role === 'user');
-    expect(users[0].turnUuid).toBeUndefined();
-    expect(users[1].turnUuid).toBe('uuid-2');
+    expect(store.messages.filter((m) => m.role === 'user').map((m) => m.turnUuid)).toEqual([
+      'uuid-1',
+      undefined,
+    ]);
   });
 
-  it('labels each turn as it arrives', () => {
+  it('labels each turn with its own id', () => {
     const store = useChatStore();
     store.setCurrentConversation(CONV);
 
-    store.addUserMessage('first');
-    store.recordUserTurnUuid(CONV, 'uuid-1');
-    store.addUserMessage('second');
-    store.recordUserTurnUuid(CONV, 'uuid-2');
+    const first = store.addUserMessage('first');
+    store.labelUserTurn(CONV, first.id, 'uuid-1');
+    const second = store.addUserMessage('second');
+    store.labelUserTurn(CONV, second.id, 'uuid-2');
 
     expect(store.messages.filter((m) => m.role === 'user').map((m) => m.turnUuid)).toEqual([
       'uuid-1',
@@ -52,47 +57,31 @@ describe('recordUserTurnUuid', () => {
     ]);
   });
 
-  it('ignores a second id for a turn already labelled', () => {
-    // The CLI can echo more than one user message per turn — tool results come
-    // back the same way. Overwriting would retarget a turn the user may already
-    // have selected in the rewind dialog.
+  it('never labels an assistant message', () => {
     const store = useChatStore();
     store.setCurrentConversation(CONV);
-    store.addUserMessage('only');
+    const answer = store.addAssistantMessage('unprompted');
 
-    store.recordUserTurnUuid(CONV, 'uuid-1');
-    store.recordUserTurnUuid(CONV, 'uuid-stray');
+    store.labelUserTurn(CONV, answer.id, 'uuid-1');
 
-    expect(store.messages[0].turnUuid).toBe('uuid-1');
+    expect(store.messages[0].turnUuid).toBeUndefined();
   });
 
-  it('skips over assistant messages to reach the user turn', () => {
+  it('does nothing for a message that is not there', () => {
     const store = useChatStore();
     store.setCurrentConversation(CONV);
     store.addUserMessage('prompt');
-    store.addAssistantMessage('answer');
 
-    store.recordUserTurnUuid(CONV, 'uuid-1');
-
-    expect(store.messages.find((m) => m.role === 'user')?.turnUuid).toBe('uuid-1');
-    expect(store.messages.find((m) => m.role === 'assistant')?.turnUuid).toBeUndefined();
-  });
-
-  it('does nothing when there is no user message yet', () => {
-    const store = useChatStore();
-    store.setCurrentConversation(CONV);
-    store.addAssistantMessage('unprompted');
-
-    expect(() => store.recordUserTurnUuid(CONV, 'uuid-1')).not.toThrow();
+    expect(() => store.labelUserTurn(CONV, 'msg-gone', 'uuid-1')).not.toThrow();
     expect(store.messages[0].turnUuid).toBeUndefined();
   });
 
   it('does nothing for a conversation that is neither on screen nor buffered', () => {
     const store = useChatStore();
     store.setCurrentConversation(CONV);
-    store.addUserMessage('prompt');
+    const prompt = store.addUserMessage('prompt');
 
-    store.recordUserTurnUuid('some-other-conversation', 'uuid-x');
+    store.labelUserTurn('some-other-conversation', prompt.id, 'uuid-x');
 
     expect(store.messages[0].turnUuid).toBeUndefined();
   });
@@ -106,11 +95,9 @@ describe('truncateAfterUserTurn', () => {
   function seed() {
     const store = useChatStore();
     store.setCurrentConversation(CONV);
-    store.addUserMessage('turn one');
-    store.recordUserTurnUuid(CONV, 'uuid-1');
+    store.labelUserTurn(CONV, store.addUserMessage('turn one').id, 'uuid-1');
     store.addAssistantMessage('answer one');
-    store.addUserMessage('turn two');
-    store.recordUserTurnUuid(CONV, 'uuid-2');
+    store.labelUserTurn(CONV, store.addUserMessage('turn two').id, 'uuid-2');
     store.addAssistantMessage('answer two');
     return store;
   }

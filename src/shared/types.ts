@@ -285,12 +285,13 @@ export interface ChatMessage {
   /** If set, this message represents an inline background task indicator */
   backgroundTask?: BackgroundTaskInfo;
   /**
-   * For a user message, the id Claude Code filed this turn under in its
-   * transcript, as echoed back in its SDKUserMessageReplay.
+   * For a user message that started a turn, the uuid it was sent under —
+   * which Claude Code files that turn's file checkpoint under.
    *
    * It is what a rewind targets, so only messages carrying one can be rewound
-   * to — which excludes anything sent before this field existed, and anything
-   * a session never acknowledged.
+   * to — which excludes slash commands and messages sent into a running turn
+   * (neither gets a checkpoint), and anything sent before the send returned
+   * this uuid.
    */
   turnUuid?: string;
 }
@@ -1948,8 +1949,6 @@ export const IPC_CHANNELS = {
   CLAUDE_REWIND_PREVIEW: 'claude:rewind-preview',
   /** Perform the rewind. */
   CLAUDE_REWIND_APPLY: 'claude:rewind-apply',
-  /** The CLI's transcript id for the user turn just sent. */
-  CLAUDE_USER_TURN_UUID: 'claude:user-turn-uuid',
   /** Built-in command action (clear, compact, etc.) */
   /** Get available models from SDK */
   CLAUDE_GET_MODELS: 'claude:get-models',

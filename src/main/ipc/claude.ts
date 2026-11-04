@@ -73,7 +73,8 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
 
       // An empty message is normally refused, but a message that is only
       // images is a real thing to send: a screenshot with no question.
-      await claudeService.sendMessage(
+      // Resolves to the uuid the turn was sent under: its rewind target.
+      return await claudeService.sendMessage(
         conversationId, message, workingDir, resumeSessionId, validImages(images),
       );
     } catch (error) {

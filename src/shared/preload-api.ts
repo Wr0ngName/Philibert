@@ -71,7 +71,12 @@ export interface ActiveQueryStatus {
 export interface ElectronAPI {
   // Claude operations
   claude: {
-    /** Send a message to Claude for a specific conversation */
+    /**
+     * Send a message to Claude for a specific conversation. Resolves to the
+     * uuid it was sent under — the CLI files the turn's file checkpoint under
+     * it, so it is the turn's rewind target — or null when it did not go to
+     * the CLI as a message of ours.
+     */
     send: (
       conversationId: string,
       message: string,
@@ -83,7 +88,7 @@ export interface ElectronAPI {
        * the main process reads them back to build the image content blocks.
        */
       images?: MessageImage[],
-    ) => Promise<void>;
+    ) => Promise<string | null>;
     /**
      * Send a message into the turn running now, for Claude to read at its
      * next step. Resolves to the message's uuid, whose fate arrives through
@@ -158,11 +163,6 @@ export interface ElectronAPI {
     onTurnStarted: (callback: (conversationId: string) => void) => () => void;
     /** Slash commands updated for a conversation */
     onSlashCommands: (callback: (conversationId: string, commands: SlashCommandInfo[]) => void) => () => void;
-    /**
-     * The CLI's transcript id for the user turn just sent. It is the target a
-     * rewind restores to, so the renderer stores it on the message it shows.
-     */
-    onUserTurnUuid: (callback: (conversationId: string, uuid: string) => void) => () => void;
     /** Models changed */
     onModelsChanged: (callback: (models: ModelInfo[]) => void) => () => void;
     /** The model the CLI reports it is actually running for a conversation */

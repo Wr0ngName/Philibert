@@ -127,6 +127,25 @@ interface CatalogEntry {
 const HUMAN_ORIGIN = { kind: 'human' } as const;
 
 /**
+ * Why files cannot be rewound while a conversation has no running session.
+ *
+ * Not because the checkpoints are gone: the CLI keeps them in the session's
+ * transcript and restores them on resume — measured (2.1.280), a turn's
+ * checkpoint was found again by a resumed session. But only a running
+ * session can read them, and only once it has taken a turn: before that,
+ * rewindFiles answers "rewindFiles: no turn received yet".
+ */
+const NO_SESSION_TO_REWIND_WITH =
+  'Claude Code is not running for this conversation, and files can only be restored ' +
+  'through it. Send a message first; the checkpoints of earlier turns are kept, ' +
+  'including across restarts.';
+
+/** Whether a message is sent as a slash command rather than as a prompt. */
+function isSlashCommandText(message: string): boolean {
+  return message.trim().startsWith('/');
+}
+
+/**
  * The task-list tools, named explicitly because the CLI no longer offers them.
  *
  * The todo panel is built from TaskCreate and TaskUpdate calls, and it stopped
@@ -484,8 +503,27 @@ export class ClaudeCodeService {
    * @param message - The message content
    * @param workingDirectory - The working directory for file operations
    * @param resumeSessionId - Optional SDK session ID to resume conversation context
+   * @returns The turn's rewind target: the uuid the message was sent under,
+   *   which is what the CLI files the turn's file checkpoint under. The CLI
+   *   never echoes it back (it replays user messages only with
+   *   --replay-user-messages, which the SDK does not pass), so this is the
+   *   only place it can come from.
+   *
+   *   Null when there is no checkpoint to rewind to. Measured against the CLI
+   *   (2.1.280) with `rewindFiles(uuid, { dryRun: true })`: a message that
+   *   starts a turn has one, and it survives the session being resumed;
+   *   `/cost` and `/compact` have none ("No file checkpoint found for this
+   *   message"), because the CLI takes one only for a turn that queries the
+   *   model. So a slash command gets null, as does a message that did not go
+   *   to the CLI as ours (channel mode, refused, failed).
    */
-  async sendMessage(conversationId: string, message: string, workingDirectory: string, resumeSessionId?: string, images?: MessageImage[]): Promise<void> {
+  async sendMessage(conversationId: string, message: string, workingDirectory: string, resumeSessionId?: string, images?: MessageImage[]): Promise<string | null> {
+    const uuid = await this.deliverMessage(conversationId, message, workingDirectory, resumeSessionId, images);
+    return isSlashCommandText(message) ? null : uuid;
+  }
+
+  /** sendMessage, returning the uuid the message went under whatever it was. */
+  private async deliverMessage(conversationId: string, message: string, workingDirectory: string, resumeSessionId?: string, images?: MessageImage[]): Promise<string | null> {
     // Channel mode: delegate to ChannelService (only valid with OAuth auth)
     const currentConfig = await this.configService.getConfig();
     if (currentConfig.executionMode === 'channel' && currentConfig.authMethod === 'oauth') {
@@ -504,7 +542,7 @@ export class ClaudeCodeService {
       this.processingSessions.add(conversationId);
       this.emitActiveQueryCount();
       await this.channelService.sendMessage(conversationId, message, workingDirectory, resumeSessionId);
-      return;
+      return null;
     }
 
     // Resource limit caps *concurrently running* turns, not open sessions.
@@ -521,7 +559,7 @@ export class ClaudeCodeService {
         conversationId,
       });
       this.emitError(conversationId, errorMsg);
-      return;
+      return null;
     }
 
     // Commands the GUI answers itself are intercepted in the renderer, before
@@ -532,7 +570,7 @@ export class ClaudeCodeService {
     // reaches this point is meant for the CLI.
 
     // Check if this is a slash command (starts with /)
-    const isSlashCommand = message.trim().startsWith('/');
+    const isSlashCommand = isSlashCommandText(message);
 
     // Mark this conversation as actively processing
     this.processingSessions.add(conversationId);
@@ -543,7 +581,7 @@ export class ClaudeCodeService {
       this.processingSessions.delete(conversationId);
       this.emitActiveQueryCount();
       this.emitError(conversationId, 'Not authenticated. Please login with your Claude account or add an API key in Settings.');
-      return;
+      return null;
     }
 
     // Get selected model to apply to the session
@@ -567,10 +605,9 @@ export class ClaudeCodeService {
       });
       const resumeFrom = resumeSessionId ?? existingSession.sdkSessionId ?? undefined;
       this.cleanupSession(conversationId);
-      await this.startNewSession(
+      return this.startNewSession(
         conversationId, message, workingDirectory, isSlashCommand, resumeFrom, images,
       );
-      return;
     }
 
     if (existingSession && !existingSession.inputChannel.isClosed()) {
@@ -596,13 +633,11 @@ export class ClaudeCodeService {
             conversationId, error,
           });
           this.cleanupSession(conversationId);
-          await this.startNewSession(conversationId, message, workingDirectory, isSlashCommand, resumeSessionId, images);
-          return;
+          return this.startNewSession(conversationId, message, workingDirectory, isSlashCommand, resumeSessionId, images);
         }
       }
       // Reuse existing session — push message to channel
-      await this.sendToExistingSession(existingSession, message, isSlashCommand, images);
-      return;
+      return this.sendToExistingSession(existingSession, message, isSlashCommand, images);
     }
 
     // If there's a dead session, clean it up first
@@ -612,7 +647,7 @@ export class ClaudeCodeService {
     }
 
     // Create new persistent session
-    await this.startNewSession(conversationId, message, workingDirectory, isSlashCommand, resumeSessionId, images);
+    return this.startNewSession(conversationId, message, workingDirectory, isSlashCommand, resumeSessionId, images);
   }
 
   /**
@@ -676,7 +711,7 @@ export class ClaudeCodeService {
     return blocks;
   }
 
-  private async sendToExistingSession(session: SessionInstance, message: string, isSlashCommand: boolean, images?: MessageImage[]): Promise<void> {
+  private async sendToExistingSession(session: SessionInstance, message: string, isSlashCommand: boolean, images?: MessageImage[]): Promise<string | null> {
     const { conversationId, messageHandler } = session;
 
     logger.info('Sending message to existing persistent session', {
@@ -698,11 +733,12 @@ export class ClaudeCodeService {
     if (!session.sdkSessionId) {
       logger.error('Session ready but no session_id available', { conversationId });
       this.emitError(conversationId, 'Session initialization failed. Please try again.');
-      return;
+      return null;
     }
 
-    await this.pushUserMessage(session, message, images);
-    logger.info('Pushed user message to persistent session channel', { conversationId });
+    const uuid = await this.pushUserMessage(session, message, images);
+    logger.info('Pushed user message to persistent session channel', { conversationId, uuid });
+    return uuid;
   }
 
   /**
@@ -849,7 +885,7 @@ export class ClaudeCodeService {
     isSlashCommand: boolean,
     resumeSessionId?: string,
     images?: MessageImage[],
-  ): Promise<void> {
+  ): Promise<string | null> {
     // Create abort controller for this session
     const abortController = new AbortController();
 
@@ -877,9 +913,6 @@ export class ClaudeCodeService {
       onSlashCommands: (commands: SlashCommandInfo[]) => {
         this.cachedSlashCommands = commands;
         this.emitSlashCommands(conversationId, commands);
-      },
-      onUserTurnUuid: (uuid: string) => {
-        this.send(IPC_CHANNELS.CLAUDE_USER_TURN_UUID, conversationId, uuid);
       },
       onTaskNotification: (notification: TaskNotification) => {
         this.emitTaskNotification(conversationId, notification);
@@ -1260,10 +1293,13 @@ export class ClaudeCodeService {
       logger.info('Pushed first user message to new persistent session', {
         conversationId,
         resumeSessionId: resumeSessionId?.slice(0, 20),
+        uuid: firstTurnUuid,
       });
+      return firstTurnUuid;
     } catch (error) {
       this.handleQueryError(conversationId, error as Error, messageHandler);
       this.cleanupSession(conversationId);
+      return null;
     }
   }
 
@@ -2302,9 +2338,7 @@ export class ClaudeCodeService {
     if (!session) {
       return {
         canRewind: false,
-        error:
-          'This conversation has no live Claude Code session, so there are no file ' +
-          'checkpoints to restore from. Checkpoints last as long as the session.',
+        error: NO_SESSION_TO_REWIND_WITH,
         filesChanged: [],
         insertions: 0,
         deletions: 0,
@@ -2362,9 +2396,7 @@ export class ClaudeCodeService {
       if (!session) {
         return {
           ok: false,
-          error:
-            'This conversation has no live Claude Code session, so there are no file ' +
-            'checkpoints to restore from. Checkpoints last as long as the session.',
+          error: NO_SESSION_TO_REWIND_WITH,
           filesChanged: [],
           insertions: 0,
           deletions: 0,

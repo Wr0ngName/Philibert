@@ -132,16 +132,6 @@ const electronAPI: ElectronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_SLASH_COMMANDS, handler);
     },
 
-    onUserTurnUuid: (callback) => {
-      const handler = (
-        _event: Electron.IpcRendererEvent,
-        conversationId: string,
-        uuid: Parameters<typeof callback>[1]
-      ) => callback(conversationId, uuid);
-      ipcRenderer.on(IPC_CHANNELS.CLAUDE_USER_TURN_UUID, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_USER_TURN_UUID, handler);
-    },
-
     onModelsChanged: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

@@ -11,10 +11,12 @@
  * before anything is written. The preview is re-run whenever the target or the
  * scope changes, because a stale preview is worse than none.
  *
- * Only turns Claude Code acknowledged can be targeted: the rewind point is the
- * transcript id it echoed back, and a turn without one is not a place the CLI
- * can return to. Those are listed as disabled rather than hidden, so a short
- * list does not look like a bug.
+ * Only a message that started a turn can be targeted: the rewind point is the
+ * uuid it was sent under, which the CLI files that turn's file checkpoint
+ * under (see ClaudeCodeService.sendMessage). Slash commands and messages sent
+ * into a running turn get no checkpoint, so they carry no uuid and are not a
+ * place the CLI can return to. Those are listed as disabled rather than
+ * hidden, so a short list does not look like a bug.
  */
 
 import { computed, ref, watch } from 'vue';
@@ -39,7 +41,7 @@ const emit = defineEmits<{
 
 const chatStore = useChatStore();
 
-/** Turn the rewind targets, by transcript id. */
+/** Turn the rewind targets, by the uuid it was sent under. */
 const selectedUuid = ref<string | null>(null);
 const scope = ref<RewindScope>('both');
 const preview = ref<RewindPreview | null>(null);
@@ -212,9 +214,9 @@ watch([selectedUuid, scope], () => {
         There is nothing to rewind to yet.
       </p>
       <p>
-        A turn can be rewound once Claude Code has acknowledged it, and checkpoints last as
-        long as the session. Turns from a conversation that has since been reopened cannot be
-        restored.
+        A turn can be rewound to when it is a message you sent that Claude Code started a
+        turn with. Slash commands and messages sent while Claude was working are part of
+        another turn, so they are not points to rewind to.
       </p>
     </div>
 
