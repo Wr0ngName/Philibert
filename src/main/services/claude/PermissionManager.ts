@@ -34,6 +34,7 @@ import logger from '../../utils/logger';
 import type ConfigService from '../ConfigService';
 
 import type { SessionPermissionCache } from './SessionPermissionCache';
+import type { CanUseToolRequest } from './can-use-tool-requests';
 import { parseGenericToolInput, buildGenericToolDescription } from './tool-input-parser';
 
 /**
@@ -69,6 +70,8 @@ interface PendingPermission {
   narrowProject?: PermissionUpdate[];
   /** Allowed once at most: see PendingAction.onceOnly. */
   onceOnly?: boolean;
+  /** Only the person may answer it: see noteCanUseToolRequest. */
+  manualApprovalRequired?: boolean;
   /** Cleanup function to remove the abort event listener */
   cleanupAbortHandler?: () => void;
 }
@@ -113,6 +116,8 @@ export class PermissionManager {
   private configService: ConfigService;
   private pendingPermissions: Map<string, PendingPermission> = new Map();
   private pendingQuestions: Map<string, PendingQuestion> = new Map();
+  /** Tool uses whose ask the CLI said only a person may approve, not yet asked. */
+  private manualApprovalToolUses = new Set<string>();
   private emitToolUse: ToolUseEmitter;
   private emitToolExecuted?: ToolExecutedEmitter;
   private emitQuestionFollowUp?: AskUserQuestionFollowUpEmitter;
@@ -132,12 +137,30 @@ export class PermissionManager {
   }
 
   /**
+   * What the CLI said about an ask that the SDK does not pass to canUseTool
+   * (see can-use-tool-requests.ts), noted before canUseTool is called for it.
+   *
+   * An ask a safety check requires a person to approve — `rm -rf /`, a
+   * variable that may be empty in `rm -f $P/*` — comes whatever is allowed,
+   * and no rule can stop it coming. So it is allowed once or denied: no
+   * "allow for this session/project" that would not do what it says, and
+   * neither this app's own session grants nor another ask's "always" answer
+   * it in the person's place.
+   */
+  noteCanUseToolRequest(request: CanUseToolRequest): void {
+    if (request.manualApprovalRequired) this.manualApprovalToolUses.add(request.toolUseId);
+  }
+
+  /**
    * Create the canUseTool callback for custom permission handling
    * This is called by the SDK when Claude wants to use a tool
    */
   createCanUseToolCallback(): CanUseTool {
     return async (toolName, input, options): Promise<PermissionResult> => {
       const actionId = generateId(ID_PREFIXES.ACTION);
+      const manualApprovalRequired = this.manualApprovalToolUses.delete(options.toolUseID);
+      // Neither ask may be remembered: allowed once, at most.
+      const onceOnly = manualApprovalRequired || !!options.suppressAlwaysAllowRule;
 
       // Why the CLI asked and what it offers decide what the card can offer —
       // and are what a "it keeps asking" report has to be traced from.
@@ -148,6 +171,7 @@ export class PermissionManager {
         decisionReason: options.decisionReason,
         suggestions: options.suggestions,
         ...(options.suppressAlwaysAllowRule ? { suppressAlwaysAllowRule: true } : {}),
+        ...(manualApprovalRequired ? { manualApprovalRequired: true } : {}),
       });
 
       // Check if operation was aborted
@@ -168,9 +192,10 @@ export class PermissionManager {
         return this.handleAskUserQuestionRequest(actionId, input, options.signal);
       }
 
-      // Auto-approve read operations if configured
+      // Auto-approve read operations if configured — and neither this nor the
+      // session's grants below answer an ask only the person may.
       const config = await this.configService.getConfig();
-      if (config.autoApproveReads && this.isReadOnlyTool(toolName)) {
+      if (!manualApprovalRequired && config.autoApproveReads && this.isReadOnlyTool(toolName)) {
         logger.debug('Auto-approving read operation', { toolName });
         return {
           behavior: 'allow',
@@ -179,7 +204,7 @@ export class PermissionManager {
       }
 
       // Check session permission cache (persists across queries)
-      if (this.sessionPermissionCache && this.conversationId) {
+      if (!manualApprovalRequired && this.sessionPermissionCache && this.conversationId) {
         if (this.sessionPermissionCache.isAllowed(this.conversationId, toolName, input)) {
           logger.debug('Session permission cache hit', { toolName, conversationId: this.conversationId });
           return {
@@ -191,9 +216,10 @@ export class PermissionManager {
 
       // Create pending action for UI (include permission info from SDK suggestions)
       // When the CLI says this ask must not offer "don't ask again" — the rule
-      // it would write grants more than this one action — the card offers
-      // allowing it once, and nothing more.
-      const offered = options.suppressAlwaysAllowRule
+      // it would write grants more than this one action — or that only the
+      // person may approve it, the card offers allowing it once, and nothing
+      // more.
+      const offered = onceOnly
         ? undefined
         : this.withProjectScopeSuggestions(toolName, options.suggestions);
       const suggestions = offered?.suggestions;
@@ -209,7 +235,7 @@ export class PermissionManager {
           }
           : undefined;
       const created = this.createPendingAction(actionId, toolName, input, permissionInfo, permissionContext);
-      const action = created && options.suppressAlwaysAllowRule ? { ...created, onceOnly: true } : created;
+      const action = created && onceOnly ? { ...created, onceOnly: true } : created;
       if (!action) {
         logger.warn('Could not create action for tool', { toolName });
         return {
@@ -231,7 +257,8 @@ export class PermissionManager {
           reject,
           suggestions,
           ...(narrowProject ? { narrowProject } : {}),
-          ...(options.suppressAlwaysAllowRule ? { onceOnly: true } : {}),
+          ...(onceOnly ? { onceOnly: true } : {}),
+          ...(manualApprovalRequired ? { manualApprovalRequired: true } : {}),
         };
 
         // Set up named abort handler so it can be removed after resolution
@@ -1053,7 +1080,8 @@ export class PermissionManager {
     const toResolve: PendingPermission[] = [];
 
     for (const [actionId, pending] of this.pendingPermissions) {
-      const cached = !!this.sessionPermissionCache && !!this.conversationId
+      if (pending.manualApprovalRequired) continue;
+      const cached =!!this.sessionPermissionCache && !!this.conversationId
         && this.sessionPermissionCache.isAllowed(this.conversationId, pending.toolName, pending.input);
       if (grantedTools.has(pending.toolName) || cached) {
         toResolve.push(pending);

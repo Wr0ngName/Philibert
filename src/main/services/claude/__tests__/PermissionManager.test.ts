@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { PendingAction } from '../../../../shared/types';
 import { PermissionManager, comparablePath } from '../PermissionManager';
 import { SessionPermissionCache } from '../SessionPermissionCache';
+import { observeCanUseToolRequests } from '../can-use-tool-requests';
 
 describe('comparablePath', () => {
   it('reads a CLI rule path and the tool path it covers alike', () => {
@@ -1942,6 +1943,124 @@ describe('PermissionManager', () => {
       // Should approve normally
       expect(result!.behavior).toBe('allow');
       // No errors - everything works without cache
+    });
+  });
+
+  describe('an ask only the person may approve (a safety check)', () => {
+    // The CLI's control request for `rm -rf /` with Bash allowed in the
+    // project's settings, as CLI 2.1.280 wrote it to stdout (probe, 2026-11-04).
+    // The SDK passes canUseTool its suggestions and reason, not
+    // classifier_approvable.
+    const RAW_REQUEST = '{"type":"control_request","request_id":"f2a28a79-d010-4126-b36c-614727908ff0","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash","input":{"command":"rm -rf /","description":"probe"},"description":"probe","permission_suggestions":[],"decision_reason":"Dangerous rm operation on critical path: /","decision_reason_type":"safetyCheck","classifier_approvable":false,"tool_use_id":"toolu_danger"}}\n';
+    const DANGER_INPUT = { command: 'rm -rf /', description: 'probe' };
+    const dangerOptions = () => ({
+      signal: new AbortController().signal, toolUseID: 'toolu_danger', requestId: 'f2a28a79-d010-4126-b36c-614727908ff0',
+      suggestions: [] as PermissionUpdate[], decisionReason: 'Dangerous rm operation on critical path: /',
+    });
+
+    /** The request goes through the stdout observer, as the CLI's does. */
+    async function cliWrites(manager: PermissionManager, raw: string): Promise<void> {
+      const observer = observeCanUseToolRequests((request) => manager.noteCanUseToolRequest(request));
+      observer.resume();
+      await new Promise<void>((resolve) => observer.end(raw, resolve));
+    }
+
+    const sessionBashCache = (conversationId: string) => {
+      const cache = new SessionPermissionCache();
+      cache.addPermissions(conversationId, [{ type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow', destination: 'session' }]);
+      return cache;
+    };
+
+    it('is allowed once or denied: no "this session" or "in project" it could not keep to', async () => {
+      const cache = new SessionPermissionCache();
+      const manager = new PermissionManager(mockConfigService, emitToolUse, cache, 'conv-1');
+      await cliWrites(manager, RAW_REQUEST);
+
+      const pending = manager.createCanUseToolCallback()('Bash', DANGER_INPUT, dangerOptions());
+      await new Promise(resolve => setImmediate(resolve));
+      expect(capturedAction?.onceOnly).toBe(true);
+      expect(capturedAction?.permissionInfo).toBeUndefined();
+      expect(capturedAction?.permissionContext?.decisionReason).toBe('Dangerous rm operation on critical path: /');
+
+      // An "always" that reaches main anyway is taken as once, and grants nothing.
+      manager.handleActionResponse({ actionId: capturedAction!.id, conversationId: 'conv-1', approved: true, alwaysAllow: true, chosenScope: 'session' });
+      const result = await pending as Extract<PermissionResult, { behavior: 'allow' }>;
+      expect(result.behavior).toBe('allow');
+      expect(result.updatedPermissions).toBeUndefined();
+      expect(cache.isAllowed('conv-1', 'Bash', {})).toBe(false);
+    });
+
+    it("is asked although the session's grant of the tool answers its other asks", async () => {
+      const manager = new PermissionManager(mockConfigService, emitToolUse, sessionBashCache('conv-1'), 'conv-1');
+      const canUseTool = manager.createCanUseToolCallback();
+
+      // The grant still answers an ordinary ask with the same arguments.
+      const ordinary = await canUseTool('Bash', DANGER_INPUT, { ...dangerOptions(), toolUseID: 'toolu_plain' });
+      expect(ordinary?.behavior).toBe('allow');
+      expect(capturedAction).toBeNull();
+
+      await cliWrites(manager, RAW_REQUEST);
+      void canUseTool('Bash', DANGER_INPUT, dangerOptions());
+      await new Promise(resolve => setImmediate(resolve));
+      expect(capturedAction?.toolName).toBe('Bash');
+      expect(capturedAction?.onceOnly).toBe(true);
+    });
+
+    it('is asked although reads are approved automatically', async () => {
+      mockConfigService.getConfig.mockResolvedValue({ autoApproveReads: true });
+      const manager = new PermissionManager(mockConfigService, emitToolUse);
+      await cliWrites(manager, RAW_REQUEST.replace('"tool_name":"Bash"', '"tool_name":"Read"'));
+
+      void manager.createCanUseToolCallback()('Read', { file_path: '/etc/shadow' }, dangerOptions());
+      await new Promise(resolve => setImmediate(resolve));
+      expect(capturedAction?.toolName).toBe('Read');
+    });
+
+    it('stays open when another ask for the tool is allowed always', async () => {
+      const actions: PendingAction[] = [];
+      const manager = new PermissionManager(mockConfigService, (action) => actions.push(action), new SessionPermissionCache(), 'conv-1');
+      const canUseTool = manager.createCanUseToolCallback();
+      await cliWrites(manager, RAW_REQUEST);
+
+      const danger = canUseTool('Bash', DANGER_INPUT, dangerOptions());
+      const plain = canUseTool('Bash', { command: 'ls' }, {
+        signal: new AbortController().signal, toolUseID: 'toolu_ls', requestId: 'r-ls',
+        suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'ls' }], behavior: 'allow', destination: 'localSettings' }],
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      const [dangerAction, plainAction] = actions;
+      manager.handleActionResponse({ actionId: plainAction.id, conversationId: 'conv-1', approved: true, alwaysAllow: true, chosenScope: 'session' });
+      expect((await plain)?.behavior).toBe('allow');
+
+      let settled = false;
+      void danger.then(() => { settled = true; });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+
+      manager.handleActionResponse({ actionId: dangerAction.id, conversationId: 'conv-1', approved: false });
+      expect((await danger)?.behavior).toBe('deny');
+    });
+
+    it('marks only the tool use the CLI marked, once', async () => {
+      const manager = new PermissionManager(mockConfigService, emitToolUse);
+      // The same ask without the safety check: the CLI's ordinary request.
+      await cliWrites(manager, RAW_REQUEST.replace('"classifier_approvable":false', '"classifier_approvable":true'));
+      const canUseTool = manager.createCanUseToolCallback();
+
+      void canUseTool('Bash', DANGER_INPUT, dangerOptions());
+      await new Promise(resolve => setImmediate(resolve));
+      expect(capturedAction?.onceOnly).toBeUndefined();
+      expect(capturedAction?.permissionInfo?.scopeOptions.map(o => o.scope)).toEqual(['session', 'project']);
+
+      await cliWrites(manager, RAW_REQUEST);
+      void canUseTool('Bash', DANGER_INPUT, dangerOptions());
+      await new Promise(resolve => setImmediate(resolve));
+      expect(capturedAction?.onceOnly).toBe(true);
+
+      // Its next ask is a new one, with whatever the CLI says of it.
+      void canUseTool('Bash', DANGER_INPUT, dangerOptions());
+      await new Promise(resolve => setImmediate(resolve));
+      expect(capturedAction?.onceOnly).toBeUndefined();
     });
   });
 });

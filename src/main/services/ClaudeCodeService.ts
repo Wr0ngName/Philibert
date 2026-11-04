@@ -95,6 +95,7 @@ import {
 } from './claude';
 import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
 import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
+import { observeCanUseToolRequests, type CanUseToolRequest } from './claude/can-use-tool-requests';
 import { claudeAiConnectorAuthPage, readClaudeAiConnectors } from './claude/connectors';
 import {
   attachTranscriptImages, cliTempRoot, locateTaskOutput, mergeByTime, messagesSentToAgent, readTaskOutput,
@@ -125,6 +126,11 @@ interface CatalogEntry {
  * our turns apart from harness-driven ones.
  */
 const HUMAN_ORIGIN = { kind: 'human' } as const;
+
+/** A listener for a SpawnedProcess's 'exit' or 'error' event. */
+type SpawnedProcessListener =
+  | ((code: number | null, signal: NodeJS.Signals | null) => void)
+  | ((error: Error) => void);
 
 /**
  * Why files cannot be rewound while a conversation has no running session.
@@ -1200,7 +1206,7 @@ export class ClaudeCodeService {
           ...(shouldResume ? { resume: resumeSessionId } : {}),
           ...(rewindPoint ? { resumeSessionAt: rewindPoint } : {}),
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {
-            return this.spawnSDKProcess(options, conversationId);
+            return this.spawnSDKProcess(options, conversationId, (request) => permissionManager.noteCanUseToolRequest(request));
           },
         },
       });
@@ -1501,9 +1507,15 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Spawn the SDK process with platform-specific handling
+   * Spawn the SDK process with platform-specific handling. Its stdout reaches
+   * the SDK through an observer that reports each permission ask as the CLI
+   * wrote it, with the fields the SDK does not pass to canUseTool.
    */
-  private spawnSDKProcess(options: SpawnOptions, conversationId: string): SpawnedProcess {
+  private spawnSDKProcess(
+    options: SpawnOptions,
+    conversationId: string,
+    onCanUseToolRequest: (request: CanUseToolRequest) => void,
+  ): SpawnedProcess {
     let spawnFile: string = options.command;
     let spawnArgs: string[] = options.args;
     let extraEnv: Record<string, string> = {};
@@ -1538,7 +1550,22 @@ export class ClaudeCodeService {
 
     this.setupProcessLogging(childProcess, conversationId);
 
-    return childProcess as SpawnedProcess;
+    // Spawned with piped stdio, so both streams exist.
+    const stdin = childProcess.stdin!;
+    const stdout = childProcess.stdout!.pipe(observeCanUseToolRequests(onCanUseToolRequest));
+    // pipe() does not carry an error over; the SDK reads it off the stream it holds.
+    childProcess.stdout!.on('error', (error) => stdout.destroy(error));
+    return {
+      stdin,
+      stdout,
+      get killed() { return childProcess.killed; },
+      get exitCode() { return childProcess.exitCode; },
+      get signalCode() { return childProcess.signalCode; },
+      kill: (signal) => childProcess.kill(signal),
+      on(event: 'exit' | 'error', listener: SpawnedProcessListener) { childProcess.on(event, listener); },
+      once(event: 'exit' | 'error', listener: SpawnedProcessListener) { childProcess.once(event, listener); },
+      off(event: 'exit' | 'error', listener: SpawnedProcessListener) { childProcess.off(event, listener); },
+    };
   }
 
   /**
