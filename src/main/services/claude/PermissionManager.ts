@@ -193,12 +193,14 @@ export class PermissionManager {
       // When the CLI says this ask must not offer "don't ask again" — the rule
       // it would write grants more than this one action — the card offers
       // allowing it once, and nothing more.
-      const { suggestions, narrowProject } = options.suppressAlwaysAllowRule
-        ? { suggestions: undefined, narrowProject: undefined }
-        : this.withProjectScopeSuggestions(toolName, options.suggestions);
-      const permissionInfo = options.suppressAlwaysAllowRule
+      const offered = options.suppressAlwaysAllowRule
         ? undefined
-        : this.describePermissionSuggestions(toolName, suggestions, input, narrowProject);
+        : this.withProjectScopeSuggestions(toolName, options.suggestions);
+      const suggestions = offered?.suggestions;
+      const narrowProject = offered?.narrowProject;
+      const permissionInfo = offered
+        ? this.describePermissionSuggestions(toolName, offered.suggestions, input, offered.narrowProject)
+        : undefined;
       const permissionContext: PermissionContext | undefined =
         (options.blockedPath || options.decisionReason)
           ? {
@@ -494,15 +496,27 @@ export class PermissionManager {
    * own narrower project rules are replaced by it. Global suggestions are
    * left as they are, and alone they do not make a project option.
    *
-   * No project option when nothing is granted: no suggestion at all (the SDK
-   * does that for requests it deliberately won't generalize), only a deny,
-   * or a mode that is not a tool grant (the plan-mode exits).
+   * With no suggestion at all, the project option is the requesting tool,
+   * as "this session" is. The CLI suggests its rules one command at a time
+   * and leaves out what it cannot write one for — a pipeline in a compound
+   * PowerShell command, an argument it cannot check — so such a request came
+   * with no suggestion, and offered "this session" but nothing for the
+   * project. Not a refusal: that is `suppressAlwaysAllowRule`, which never
+   * reaches here. And the CLI checks what comes back anyway, dropping a
+   * whole-tool rule for a tool that must not have one.
+   *
+   * No project option when nothing is granted: only a deny, or a mode that
+   * is not a tool grant (the plan-mode exits).
    */
   private withProjectScopeSuggestions(
     toolName: string,
     suggestions?: PermissionUpdate[]
-  ): { suggestions?: PermissionUpdate[]; narrowProject?: PermissionUpdate[] } {
-    if (!suggestions || suggestions.length === 0) return { suggestions };
+  ): { suggestions: PermissionUpdate[]; narrowProject?: PermissionUpdate[] } {
+    if (!suggestions || suggestions.length === 0) {
+      return {
+        suggestions: [{ type: 'addRules', rules: [{ toolName }], behavior: 'allow', destination: 'localSettings' }],
+      };
+    }
 
     const isProject = (s: PermissionUpdate) => this.mapDestinationToScope(s.destination) === 'project';
     // The CLI's own narrower project rules (this exact command, a prefix, a
@@ -623,23 +637,10 @@ export class PermissionManager {
    */
   private describePermissionSuggestions(
     toolName: string,
-    suggestions?: PermissionUpdate[],
+    suggestions: PermissionUpdate[],
     input?: Record<string, unknown>,
     narrowProject?: PermissionUpdate[],
   ): PermissionSuggestionInfo | undefined {
-    if (!suggestions || suggestions.length === 0) {
-      return {
-        alwaysAllowLabel: `Allow ${toolName} this session`,
-        description: `Allow ${toolName} for this session`,
-        scope: 'session' as PermissionScope,
-        scopeOptions: [{
-          scope: 'session' as PermissionScope,
-          label: `Allow ${toolName} this session`,
-          description: `Allow ${toolName} for this session`,
-        }],
-      };
-    }
-
     const SCOPE_PRIORITY: Record<PermissionScope, number> = { session: 0, project: 1, global: 2 };
     const SCOPE_LABELS: Record<PermissionScope, string> = {
       session: 'for this session',

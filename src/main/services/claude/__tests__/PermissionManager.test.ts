@@ -64,56 +64,29 @@ describe('PermissionManager', () => {
   });
 
   describe('describePermissionSuggestions (via public API)', () => {
-    it('should return synthetic session scope when no suggestions provided', async () => {
-      const canUseTool = permissionManager.createCanUseToolCallback();
-      const signal = new AbortController().signal;
+    // From main.log, 2026-11-04 13:33:52: two pipelines joined by ';'. The
+    // CLI suggests rules one command at a time and writes none for a
+    // pipeline in a compound command, so this came with no suggestion at all
+    // — and no "don't ask again" restriction either.
+    const UNSUGGESTED = `gh api "repos/eth0izzle/security-skills/git/trees/HEAD?recursive=1" --jq '.tree[].path' | Select-String fusion; gh api "repos/willwebster5/ClaudeStrike/git/trees/HEAD?recursive=1" --jq '.tree[].path' | Select-String -Pattern "fusion|workflow"`;
 
-      // Call without suggestions
-      canUseTool('Bash', { command: 'ls' }, {
-        signal,
-        toolUseID: 'test-id',
-        requestId: 'test-request-id',
-        suggestions: undefined,
+    for (const [what, suggestions] of [['no suggestions', undefined], ['an empty suggestion list', []]] as const) {
+      it(`offers the tool this session and in the project when the CLI sent ${what}`, async () => {
+        const canUseTool = permissionManager.createCanUseToolCallback();
+        canUseTool('PowerShell', { command: UNSUGGESTED }, {
+          signal: new AbortController().signal,
+          toolUseID: 'test-id',
+          requestId: 'test-request-id',
+          suggestions: suggestions as PermissionUpdate[] | undefined,
+        });
+        await new Promise(resolve => setImmediate(resolve));
+
+        expect(capturedAction?.permissionInfo?.scopeOptions.map(o => [o.scope, o.label])).toEqual([
+          ['session', 'Allow PowerShell this session'],
+          ['project', 'Allow PowerShell in project'],
+        ]);
       });
-
-      // Wait for next tick to allow action to be emitted
-      await new Promise(resolve => setImmediate(resolve));
-
-      expect(capturedAction).not.toBeNull();
-      expect(capturedAction?.permissionInfo).toEqual({
-        alwaysAllowLabel: 'Allow Bash this session',
-        description: 'Allow Bash for this session',
-        scope: 'session',
-        scopeOptions: [
-          { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
-        ],
-      });
-    });
-
-    it('should return synthetic session scope when suggestions array is empty', async () => {
-      const canUseTool = permissionManager.createCanUseToolCallback();
-      const signal = new AbortController().signal;
-
-      // Call with empty suggestions array
-      canUseTool('Bash', { command: 'ls' }, {
-        signal,
-        toolUseID: 'test-id',
-        requestId: 'test-request-id',
-        suggestions: [],
-      });
-
-      await new Promise(resolve => setImmediate(resolve));
-
-      expect(capturedAction).not.toBeNull();
-      expect(capturedAction?.permissionInfo).toEqual({
-        alwaysAllowLabel: 'Allow Bash this session',
-        description: 'Allow Bash for this session',
-        scope: 'session',
-        scopeOptions: [
-          { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
-        ],
-      });
-    });
+    }
 
     it('should create session-scoped label for session destination', async () => {
       const canUseTool = permissionManager.createCanUseToolCallback();
@@ -1215,10 +1188,21 @@ describe('PermissionManager', () => {
       expect(result).toMatchObject({ behavior: 'allow', updatedPermissions: [narrow] });
     });
 
-    it('offers no project option when the SDK made no suggestion', async () => {
-      const { action } = await requestAndApprove('Bash', { command: 'a && b' }, undefined, 'session');
+    it('saves the whole tool for the project when the CLI made no suggestion', async () => {
+      const { result } = await requestAndApprove('PowerShell', { command: 'a | b; c | d' }, undefined, 'project');
 
-      expect(action.permissionInfo?.scopeOptions.map(o => o.scope)).toEqual(['session']);
+      expect(result).toMatchObject({
+        behavior: 'allow',
+        updatedPermissions: [
+          { type: 'addRules', rules: [{ toolName: 'PowerShell' }], behavior: 'allow', destination: 'localSettings' },
+        ],
+      });
+    });
+
+    it('saves nothing for the project when only this session was chosen', async () => {
+      const { result } = await requestAndApprove('PowerShell', { command: 'a | b; c | d' }, undefined, 'session');
+
+      expect((result as { updatedPermissions?: unknown[] }).updatedPermissions ?? []).toEqual([]);
     });
 
     it('offers no project option for a mode that is not a file-edit grant', async () => {
