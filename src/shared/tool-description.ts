@@ -28,6 +28,11 @@ function excerpt(value: unknown): string {
   return (typeof value === 'string' ? value : '').slice(0, EXCERPT_LENGTH);
 }
 
+/** "<prefix>: <value>", or nothing when the call has no such value to name it by. */
+function namedBy(prefix: string, value: unknown): string {
+  return typeof value === 'string' && value.trim() ? `${prefix}: ${value.trim()}` : '';
+}
+
 /**
  * The label for a call of `toolName` with `input`. Empty when there is
  * nothing to add to the tool's name, which the row shows anyway.
@@ -43,6 +48,10 @@ export function describeToolUse(toolName: string, input: Record<string, unknown>
     case 'Write': return `Write: ${input.file_path}`;
     case 'Glob': return `Search files: ${input.pattern}`;
     case 'Grep': return `Search: ${input.pattern}`;
+    // What was searched for, and the page fetched: its whole address, which
+    // the row cuts at its end, so the site stays in view.
+    case 'WebSearch': return namedBy('Web search', input.query);
+    case 'WebFetch': return namedBy('Fetch', input.url);
     case SEND_MESSAGE_TOOL: return excerpt(sendMessagePreview(input));
     default: return purpose;
   }

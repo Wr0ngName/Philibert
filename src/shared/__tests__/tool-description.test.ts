@@ -43,6 +43,18 @@ describe('describeToolUse', () => {
     expect(describeToolUse('Grep', { pattern: 'todo', description: 'ignored' })).toBe('Search: todo');
   });
 
+  it('names a web search by its query, and a fetch by the address it fetched', () => {
+    expect(describeToolUse('WebSearch', { query: 'electron 42 release notes', allowed_domains: ['electronjs.org'] }))
+      .toBe('Web search: electron 42 release notes');
+    expect(describeToolUse('WebFetch', { url: 'https://docs.gitlab.com/ee/api/packages.html', prompt: 'How are packages listed?' }))
+      .toBe('Fetch: https://docs.gitlab.com/ee/api/packages.html');
+  });
+
+  it('adds nothing to a web search or fetch whose input names nothing', () => {
+    expect(describeToolUse('WebSearch', { query: '  ' })).toBe('');
+    expect(describeToolUse('WebFetch', { prompt: 'Summarise' })).toBe('');
+  });
+
   it('adds nothing to the tool name for any other call that says nothing about itself', () => {
     expect(describeToolUse('mcp__gsc__query', { site: 'x' })).toBe('');
     expect(describeToolUse('mcp__gsc__query', { description: 'Top queries this week' })).toBe('Top queries this week');

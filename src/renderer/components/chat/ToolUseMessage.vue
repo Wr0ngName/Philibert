@@ -116,9 +116,11 @@ const summary = computed(() =>
     </span>
 
     <!-- What the call is: a command's or an agent's own name for its work -->
+    <!-- Whole on hover: a fetched address is often longer than the row. -->
     <span
       v-if="label"
       class="text-xs text-surface-400 dark:text-surface-500 truncate"
+      :title="label"
     >
       {{ label }}
     </span>
