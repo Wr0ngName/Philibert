@@ -33,6 +33,7 @@ import { ConversationService } from '../../../main/services/ConversationService'
 import '../../../preload/preload';
 import ConversationSearch from '../../components/chat/ConversationSearch.vue';
 import ConversationHistory from '../../components/conversations/ConversationHistory.vue';
+import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
@@ -246,5 +247,84 @@ describe('the discussions list', () => {
     await settle();
     expect(rows(wrapper)).toHaveLength(3);
     expect(tab('Archived').text()).toBe('Archived');
+  });
+
+  describe('a discussion just started', () => {
+    const newRow = (wrapper: ReturnType<typeof mount>) => wrapper.find('.new-discussion-row');
+    const highlighted = (wrapper: ReturnType<typeof mount>) =>
+      wrapper.findAll('.group').filter((r) => r.find('button.bg-primary-50').exists()).map((r) => r.attributes('data-conversation-id'));
+    const startNew = async (wrapper: ReturnType<typeof mount>) => {
+      await wrapper.find('button[title="New conversation"]').trigger('click');
+      await settle();
+    };
+    const savedIds = () => [...files.keys()].filter((f) => f.startsWith('/conversations/')).sort();
+
+    it('is listed, open, before anything is typed, and the one it left is not', async () => {
+      seedMany(3);
+      const wrapper = await open();
+      await rows(wrapper).find((r) => r.text().includes('Discussion 1'))!.find('button').trigger('click');
+      await settle();
+      expect(highlighted(wrapper)).toEqual(['conv_001']);
+
+      await startNew(wrapper);
+
+      const store = useConversationsStore();
+      expect(newRow(wrapper).exists()).toBe(true);
+      expect(newRow(wrapper).attributes('data-conversation-id')).toBe(store.currentConversationId);
+      expect(newRow(wrapper).text()).toContain('New discussion');
+      expect(newRow(wrapper).text()).toContain('/home/user/project');
+      expect(highlighted(wrapper)).toEqual([]);
+      // First in the list, above the others.
+      expect(wrapper.find('.divide-y > div').classes()).toContain('new-discussion-row');
+    });
+
+    it('is gone when another one is opened with nothing typed, and nothing was written for it', async () => {
+      seedMany(3);
+      const wrapper = await open();
+      const before = savedIds();
+      await startNew(wrapper);
+      expect(newRow(wrapper).exists()).toBe(true);
+
+      await rows(wrapper).find((r) => r.text().includes('Discussion 2'))!.find('button').trigger('click');
+      await settle();
+
+      expect(newRow(wrapper).exists()).toBe(false);
+      expect(highlighted(wrapper)).toEqual(['conv_002']);
+      expect(rows(wrapper)).toHaveLength(3);
+      expect(savedIds()).toEqual(before);
+    });
+
+    it('becomes its own row once something is said in it', async () => {
+      seedMany(2);
+      const wrapper = await open();
+      await startNew(wrapper);
+      const id = useConversationsStore().currentConversationId!;
+
+      useChatStore().addUserMessage('Sort the photos by date');
+      await useConversationsStore().saveCurrentConversation();
+      await settle();
+
+      expect(newRow(wrapper).exists()).toBe(false);
+      expect(rows(wrapper)).toHaveLength(3);
+      expect(rows(wrapper)[0].attributes('data-conversation-id')).toBe(id);
+      expect(rows(wrapper)[0].text()).toContain('Sort the photos by date');
+      expect(highlighted(wrapper)).toEqual([id]);
+    });
+
+    it('is listed instead of "No conversations yet" when it is the first', async () => {
+      const wrapper = await open();
+      await startNew(wrapper);
+      expect(newRow(wrapper).exists()).toBe(true);
+      expect(wrapper.text()).not.toContain('No conversations yet');
+    });
+
+    it('is not in the Archived tab', async () => {
+      seedMany(2);
+      const wrapper = await open();
+      await startNew(wrapper);
+      await wrapper.findAll('[role="tab"]').find((t) => t.text().startsWith('Archived'))!.trigger('click');
+      await settle();
+      expect(newRow(wrapper).exists()).toBe(false);
+    });
   });
 });

@@ -16,6 +16,7 @@ import Icon from '../shared/Icon.vue';
 const conversationsStore = useConversationsStore();
 const {
   listedConversations,
+  newDiscussionRow,
   listView,
   listHasMore,
   loadingMoreConversations,
@@ -80,6 +81,16 @@ watch(
       (element) => element.dataset.conversationId === id,
     );
     row?.scrollIntoView({ block: 'nearest' });
+  },
+  { flush: 'post' },
+);
+
+/** A discussion just started: its row, at the top, brought into sight. */
+const newDiscussionRowEl = ref<HTMLElement | null>(null);
+watch(
+  () => newDiscussionRow.value?.id,
+  (id) => {
+    if (id) newDiscussionRowEl.value?.scrollIntoView({ block: 'nearest' });
   },
   { flush: 'post' },
 );
@@ -289,7 +300,7 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
     >
       <!-- Loading state -->
       <div
-        v-if="isLoading && listedConversations.length === 0"
+        v-if="isLoading && listedConversations.length === 0 && !newDiscussionRow"
         class="flex items-center justify-center py-8"
       >
         <Spinner size="md" />
@@ -297,7 +308,7 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
 
       <!-- Empty state -->
       <div
-        v-else-if="listedConversations.length === 0"
+        v-else-if="listedConversations.length === 0 && !newDiscussionRow"
         class="flex flex-col items-center justify-center py-8 px-4 text-center"
       >
         <Icon
@@ -329,6 +340,22 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
         v-else
         class="divide-y divide-surface-100 dark:divide-surface-700"
       >
+        <!-- The discussion just started, open and not saved yet: listed so
+             the list shows where the user is. Its own row once saved. -->
+        <div
+          v-if="newDiscussionRow"
+          ref="newDiscussionRowEl"
+          class="new-discussion-row px-3 py-2.5 bg-primary-50 dark:bg-primary-900/20"
+          :data-conversation-id="newDiscussionRow.id"
+          aria-current="true"
+        >
+          <p class="text-sm font-medium italic truncate text-primary-700 dark:text-primary-300">
+            New discussion
+          </p>
+          <p class="text-xs text-surface-500 dark:text-surface-400 mt-0.5 truncate">
+            {{ newDiscussionRow.workingDirectory }}
+          </p>
+        </div>
         <div
           v-for="conversation in listedConversations"
           :key="conversation.id"

@@ -126,6 +126,22 @@ export const useConversationsStore = defineStore('conversations', () => {
       .sort(newestFirst);
   });
 
+  /** The last discussion "New conversation" started; see newDiscussionRow. */
+  const startedConversationId = ref<string | null>(null);
+
+  /**
+   * The row of a discussion just started and not saved yet: the open one,
+   * listed (in the active list) before anything is typed, so the list shows
+   * where the user is. It becomes the discussion's own row once it is saved,
+   * and is gone once another one is opened — nothing is written for it.
+   */
+  const newDiscussionRow = computed((): { id: string; workingDirectory: string } | null => {
+    const id = currentConversationId.value;
+    if (!id || id !== startedConversationId.value || listView.value !== 'active') return null;
+    if (conversations.value.some((c) => c.id === id)) return null;
+    return { id, workingDirectory: useSettingsStore().workingDirectory };
+  });
+
   /**
    * Counts the times the list was brought to the open conversation, for the
    * list to show its row: once its pages are loaded, and only then — showing
@@ -1080,6 +1096,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     // nothing. Switching first detaches that buffer with the history intact,
     // and the clear then applies to the new conversation, which has none.
     currentConversationId.value = id;
+    startedConversationId.value = id;
     chatStore.setCurrentConversation(id);
 
     // Clear current chat messages
@@ -1654,6 +1671,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     currentConversation,
     hasConversations,
     listedConversations,
+    newDiscussionRow,
     listView,
     listHasMore,
     loadingMoreConversations,
