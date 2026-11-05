@@ -92,6 +92,10 @@ describe('foreground tasks', () => {
       .find((d) => d.textContent?.includes(title)) ?? null;
   }
 
+  function stopButton(view: HTMLElement): HTMLButtonElement | undefined {
+    return [...view.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.includes('Stop task'));
+  }
+
   /** Click the discussion's row for the call whose row reads `text`. */
   async function clickCall(text: string): Promise<void> {
     const row = app.findAll('.tool-use-entry').find((r) => r.text().includes(text));
@@ -232,6 +236,44 @@ describe('foreground tasks', () => {
 
       expect(dialog('Task Details')).toBeNull();
       expect(dialog('Tool Details')?.textContent).toContain('notes.txt');
+      // Ended: nothing to stop.
+      expect(stopButton(dialog('Tool Details')!)).toBeUndefined();
+    });
+
+    // Reported: Tool Details of an agent's foreground command, running for
+    // six minutes, had no Stop as the task views do. The CLI makes such a
+    // command a task a few seconds in and stops it like any other.
+    it('offers Stop for a foreground command still running, and stops it through the CLI', async () => {
+      const stopped: unknown[][] = [];
+      mainHandlers.set('claude:stop-task', (_event, ...args) => { stopped.push(args); });
+      call({ toolUseBlockId: 'toolu_wait', toolName: 'Bash', input: { command: 'until grep -q ok test.log; do sleep 10; done', description: 'Block until test log is complete' }, description: 'Block until test log is complete' });
+      notify({ taskId: 'b-wait', status: 'running', description: 'Block until test log is complete', toolUseId: 'toolu_wait', taskType: 'command', backgrounded: false, startedByAgent: true });
+      await settle(20);
+
+      // An agent's call reads executed once allowed, while its command runs on.
+      emitIpc('claude:tool-executed', conversationId, chat.messages.find((m) => m.toolUse?.toolUseBlockId === 'toolu_wait')!.toolUse!.actionId);
+      await settle(20);
+
+      await clickCall('Block until test log is complete');
+      const details = dialog('Tool Details')!;
+      expect(dialog('Task Details')).toBeNull();
+      expect(details.textContent).toContain('Running');
+      expect(details.textContent).not.toContain('Completed');
+      stopButton(details)!.click();
+      await settle(20);
+      expect(stopped).toEqual([[conversationId, 'b-wait']]);
+
+      // The CLI answers with the task stopped: nothing left to stop.
+      notify({ taskId: 'b-wait', status: 'stopped', toolUseId: 'toolu_wait' });
+      await settle(20);
+      expect(stopButton(dialog('Tool Details')!)).toBeUndefined();
+    });
+
+    it('offers no Stop before the CLI has made the command a task', async () => {
+      call({ toolUseBlockId: 'toolu_quick', toolName: 'Bash', input: { command: 'ls' }, description: 'Run: ls' });
+      await settle(20);
+      await clickCall('ls');
+      expect(stopButton(dialog('Tool Details')!)).toBeUndefined();
     });
   });
 

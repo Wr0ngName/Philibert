@@ -23,13 +23,13 @@ import { formatModelId } from '../../utils/model';
 import { formatTaskDuration } from '../../utils/task-duration';
 import { formatTokenCount } from '../../utils/token-count';
 import type { ToolCallOutput } from '../../utils/tool-output';
-import Button from '../shared/Button.vue';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
 import { heldListSource } from './message-list-source';
 import MessageList from './MessageList.vue';
 import StartedBy from './StartedBy.vue';
+import StopTaskButton from './StopTaskButton.vue';
 import ToolCallView from './ToolCallView.vue';
 
 interface Props {
@@ -363,36 +363,12 @@ const statusDisplay = computed(() => {
       <!-- Stopping a task. Only offered while it is actually running; the
            status here is live, so the button disappears once the task ends
            rather than offering to stop something already finished. -->
-      <div
+      <StopTaskButton
         v-if="isRunning"
-        class="pt-2 border-t border-surface-200 dark:border-surface-700"
-      >
-        <div
-          v-if="stopError"
-          class="text-xs text-red-500 mb-2 p-2 bg-red-50 dark:bg-red-900/20 rounded-lg"
-        >
-          {{ stopError }}
-        </div>
-        <Button
-          variant="danger"
-          size="sm"
-          :disabled="stopping"
-          @click="emit('stop', task.id)"
-        >
-          <Spinner
-            v-if="stopping"
-            size="xs"
-            class="mr-1"
-          />
-          <Icon
-            v-else
-            name="close"
-            size="xs"
-            class="mr-1"
-          />
-          {{ stopping ? 'Stopping…' : 'Stop task' }}
-        </Button>
-      </div>
+        :stopping="stopping"
+        :stop-error="stopError"
+        @stop="emit('stop', task.id)"
+      />
     </div>
   </Modal>
 </template>

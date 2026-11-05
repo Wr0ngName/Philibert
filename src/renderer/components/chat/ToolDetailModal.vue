@@ -23,6 +23,7 @@ import { formatTaskDuration, toolCallTiming } from '../../utils/task-duration';
 import type { ToolCallOutput } from '../../utils/tool-output';
 import AskUserQuestionDetails from './AskUserQuestionDetails.vue';
 import StartedBy from './StartedBy.vue';
+import StopTaskButton from './StopTaskButton.vue';
 import ToolCallView from './ToolCallView.vue';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
@@ -46,6 +47,15 @@ interface Props {
   agent?: BackgroundTask | null;
   /** Agents the call's input names by id, by the input field naming each. */
   inputAgents?: Record<string, BackgroundTask>;
+  /**
+   * The command the call is waiting on, while it runs: what Stop stops. A
+   * command in the foreground has a task too, only it is not shown as one.
+   */
+  runningTask?: BackgroundTask | null;
+  /** A stop was asked for and has not been answered yet. */
+  stopping?: boolean;
+  /** Why the last stop failed. */
+  stopError?: string | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -55,11 +65,17 @@ const props = withDefaults(defineProps<Props>(), {
   origin: null,
   agent: null,
   inputAgents: () => ({}),
+  runningTask: null,
+  stopping: false,
+  stopError: null,
 });
 
-const timing = computed(() =>
-  props.toolUse && props.calledAt !== undefined ? toolCallTiming(props.toolUse, props.calledAt) : null,
-);
+const timing = computed(() => {
+  if (!props.toolUse || props.calledAt === undefined) return null;
+  // Its command still running: counted from the call, up to now.
+  if (props.runningTask) return { startedAt: props.toolUse.startedAt ?? props.calledAt };
+  return toolCallTiming(props.toolUse, props.calledAt);
+});
 
 /** Ticks only while this is open on a call still running, as the task view does. */
 const now = useNowTicker(() => props.open && timing.value?.completedAt === undefined && !!timing.value);
@@ -70,6 +86,8 @@ const emit = defineEmits<{
   (e: 'close'): void;
   /** Show the details of the agent that made the call. */
   (e: 'open-task-detail', taskId: string): void;
+  /** Stop the command the call is waiting on. */
+  (e: 'stop', taskId: string): void;
 }>();
 
 const outputContent = ref<string | null>(null);
@@ -100,8 +118,18 @@ watch(
 
 const label = computed(() => (props.toolUse ? toolCallLabel(props.toolUse) : ''));
 
+/**
+ * Still going: waiting for an answer, or its command still running. An
+ * agent's call reads "executed" as soon as it is allowed, while the command
+ * it started runs on.
+ */
+const inProgress = computed(() =>
+  !!props.runningTask || props.toolUse?.status === 'pending' || props.toolUse?.status === 'approved',
+);
+
 const statusDisplay = computed(() => {
   if (!props.toolUse) return { label: '', colorClass: '' };
+  if (props.runningTask) return { label: 'Running', colorClass: 'text-blue-500' };
   switch (props.toolUse.status) {
     case 'pending':
       return { label: 'Pending', colorClass: 'text-yellow-500' };
@@ -166,7 +194,7 @@ const output = computed((): ToolCallOutput | null => {
       <div class="flex items-start gap-3">
         <div :class="['shrink-0 mt-0.5', statusDisplay.colorClass]">
           <Spinner
-            v-if="toolUse.status === 'pending' || toolUse.status === 'approved'"
+            v-if="inProgress"
             size="sm"
           />
           <Icon
@@ -229,6 +257,16 @@ const output = computed((): ToolCallOutput | null => {
         :conversation-id="conversationId"
         :agents="inputAgents"
         @open-agent="emit('open-task-detail', $event)"
+      />
+
+      <!-- A command the call is still waiting on can be stopped, as the
+           tasks in the background can: the CLI makes it a task of its own a
+           few seconds in, and stops it like any other. -->
+      <StopTaskButton
+        v-if="runningTask"
+        :stopping="stopping"
+        :stop-error="stopError"
+        @stop="emit('stop', runningTask.id)"
       />
     </div>
   </Modal>

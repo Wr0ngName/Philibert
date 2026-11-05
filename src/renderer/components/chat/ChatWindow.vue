@@ -146,6 +146,12 @@ const toolDetailAgent = computed<BackgroundTask | null>(() => {
   return agentBehind(toolDetailMessage.value?.toolUse?.parentToolUseId, undefined);
 });
 
+/** The command the open call is waiting on, while it runs: what its Stop stops. */
+const toolDetailRunningTask = computed<BackgroundTask | null>(() => {
+  const toolUse = toolDetailMessage.value?.toolUse;
+  return toolUse ? chatStore.runningTaskOfCall(toolUse) : null;
+});
+
 /**
  * The agent the open call names by id or name — the one a SendMessage call
  * writes to — by the input fields naming it, so they show the agent rather
@@ -386,6 +392,7 @@ function closeToolDetail() {
   toolDetailOpen.value = false;
   toolDetailMessage.value = null;
   toolDetailTranscriptAgentId.value = null;
+  stopTaskError.value = null;
 }
 
 /** From a call's details to the details of the agent that made it. */
@@ -518,8 +525,12 @@ function openAgentOfToolCall(taskId: string) {
       :origin="toolDetailOrigin"
       :agent="toolDetailAgent"
       :input-agents="toolDetailInputAgents"
+      :running-task="toolDetailRunningTask"
+      :stopping="stoppingTask"
+      :stop-error="stopTaskError"
       @close="closeToolDetail"
       @open-task-detail="openAgentOfToolCall"
+      @stop="stopTaskFromDetail"
     />
 
     <!-- Pending actions -->

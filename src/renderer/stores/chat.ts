@@ -2445,6 +2445,20 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * The task a call is waiting on while it runs — what stopping the call
+   * stops. Unlike taskForToolCall, a command in the foreground has one: the
+   * CLI makes it a task a few seconds in (`task_started`, not backgrounded)
+   * and stops it like any other, an agent's command included (measured,
+   * CLI 2.1.280). Null once the task has ended, or before the CLI started it.
+   */
+  function runningTaskOfCall(toolUse: ToolUseInfo): BackgroundTask | null {
+    const conversationId = currentConversationId.value;
+    if (!conversationId) return null;
+    const tracked = trackedTaskOfCall(conversationId, toolUse);
+    return tracked?.status === 'running' ? tracked : null;
+  }
+
+  /**
    * The agent that made a call, from the call's `parentToolUseId` — the id of
    * the Agent call that ran the agent. That call stands for the agent, so the
    * agent is found through it, tracked or from its record, and still after
@@ -3056,6 +3070,7 @@ export const useChatStore = defineStore('chat', () => {
     taskForRow,
     findBackgroundTask,
     taskForToolCall,
+    runningTaskOfCall,
     agentOfCall,
     agentAddressedAs,
     withTasksAsTracked,
