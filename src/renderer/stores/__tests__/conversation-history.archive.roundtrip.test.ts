@@ -70,9 +70,11 @@ function seedMany(count: number): string[] {
   const now = Date.now();
   return Array.from({ length: count }, (_, i) => {
     const id = `conv_${String(i).padStart(3, '0')}`;
+    // Renamed: a title other than its first message, which the search finds.
     const conversation: Conversation = {
       id,
       title: `Discussion ${i}`,
+      customTitle: true,
       workingDirectory: '/home/user/project',
       messages: [{ id: `${id}-m`, role: 'user', content: `needle number ${i} here`, timestamp: now - i * 60_000 }],
       createdAt: now - i * 60_000,

@@ -599,16 +599,13 @@ describe('useConversationsStore', () => {
       expect(onDisk('conv_1')?.title).toBe('How do I fix this bug?');
     });
 
-    it('should truncate long titles', async () => {
-      chatStore.addUserMessage(
-        'This is a very long message that should be truncated because it exceeds the maximum title length',
-      );
+    it('keeps a long first message whole as the title: the list cuts it at its own width', async () => {
+      const message = 'This is a very long message that the list used to cut at fifty characters, whatever its width';
+      chatStore.addUserMessage(message);
 
       await store.saveCurrentConversation();
 
-      const title = onDisk('conv_1')?.title ?? '';
-      expect(title.length).toBeLessThanOrEqual(50);
-      expect(title).toContain('...');
+      expect(onDisk('conv_1')?.title).toBe(message);
     });
 
     it('should update conversation in list', async () => {

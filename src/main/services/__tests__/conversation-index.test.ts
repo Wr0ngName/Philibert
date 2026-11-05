@@ -20,12 +20,14 @@ let root: string;
 let dir: string;
 let indexFile: string;
 
+/** A discussion titled, as one not renamed is, by its first message. */
 function conversation(id: string, overrides: Partial<Conversation> = {}): Conversation {
+  const title = overrides.title ?? `Title ${id}`;
   return {
     id,
-    title: `Title ${id}`,
+    title,
     workingDirectory: '/project',
-    messages: [{ id: `${id}-m`, role: 'user', content: 'hello', timestamp: 1 }],
+    messages: [{ id: `${id}-m`, role: 'user', content: title, timestamp: 1 }],
     createdAt: 1,
     updatedAt: 2,
     ...overrides,
@@ -95,6 +97,25 @@ describe('ConversationIndex', () => {
     await index.refresh();
 
     expect(index.summaries().map((s) => s.id)).toEqual(['a']);
+  });
+
+  // An index saved before titles were listed whole kept them cut at 50.
+  it('rebuilds an index saved by an earlier version, so a title cut short is listed whole', async () => {
+    const first = 'Look through the logs of the last three days and tell me what failed and why';
+    const cut = `${first.slice(0, 47)}...`;
+    write(conversation('a', { title: cut, messages: [{ id: 'a-m', role: 'user', content: first, timestamp: 1 }] }));
+    const earlier = new ConversationIndex(dir, indexFile);
+    await earlier.refresh();
+    await earlier.noteWritten('a.json', conversation('a'));
+    await earlier.flush();
+    const saved = JSON.parse(fs.readFileSync(indexFile, 'utf-8'));
+    saved.version = 1;
+    saved.entries['a.json'].summary.title = cut;
+    fs.writeFileSync(indexFile, JSON.stringify(saved));
+
+    const index = new ConversationIndex(dir, indexFile);
+    await index.refresh();
+    expect(index.summary('a')?.title).toBe(first);
   });
 
   it('rebuilds from the files when the saved index is unreadable', async () => {

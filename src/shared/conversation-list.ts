@@ -12,7 +12,8 @@
  *   brought back from the archive — is older than the setting's days.
  */
 
-import type { AutoArchiveDays, ConversationListCursor, ConversationSummary } from './types';
+import { titleFromMessages } from './conversation-title';
+import type { AutoArchiveDays, Conversation, ConversationListCursor, ConversationSummary } from './types';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -36,11 +37,15 @@ export function isAfter(entry: ConversationListCursor, cursor: ConversationListC
   return newestFirst(entry, cursor) > 0;
 }
 
-/** The list entry of a conversation: what ConversationSummary keeps of it. */
-export function summaryOf(conversation: ConversationSummary): ConversationSummary {
+/**
+ * The list entry of a conversation: what ConversationSummary keeps of it.
+ * Its title is the one its first message gives it, unless it was renamed —
+ * so a title saved cut short, as titles once were, is listed whole.
+ */
+export function summaryOf(conversation: Conversation): ConversationSummary {
   return {
     id: conversation.id,
-    title: conversation.title,
+    title: (!conversation.customTitle && titleFromMessages(conversation.messages)) || conversation.title,
     workingDirectory: conversation.workingDirectory,
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,

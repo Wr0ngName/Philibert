@@ -32,8 +32,11 @@ interface SavedIndex {
   entries: Record<string, IndexEntry>;
 }
 
-/** Bumped when an entry's shape changes, so an older index is rebuilt. */
-const INDEX_VERSION = 1;
+/**
+ * Bumped when an entry's shape or content changes, so an older index is
+ * rebuilt. 2: titles listed whole, where 1 kept them as saved, cut at 50.
+ */
+const INDEX_VERSION = 2;
 /** Files looked at together during a refresh. */
 const STAT_BATCH = 64;
 /** Saving waits for writes to settle: a turn saves its conversation often. */

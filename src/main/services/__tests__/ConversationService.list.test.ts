@@ -27,12 +27,14 @@ import { ConversationService } from '../ConversationService';
 let root: string;
 let service: ConversationService;
 
+/** A discussion titled, as one not renamed is, by its first message. */
 function conversation(id: string, updatedAt: number, overrides: Partial<Conversation> = {}): Conversation {
+  const title = overrides.title ?? `Title ${id}`;
   return {
     id,
-    title: `Title ${id}`,
+    title,
     workingDirectory: '/project',
-    messages: [{ id: `${id}-m`, role: 'user', content: 'hello', timestamp: updatedAt }],
+    messages: [{ id: `${id}-m`, role: 'user', content: title, timestamp: updatedAt }],
     createdAt: updatedAt,
     updatedAt,
     ...overrides,

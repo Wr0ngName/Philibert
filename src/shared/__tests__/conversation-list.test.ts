@@ -78,4 +78,25 @@ describe('summaryOf', () => {
       archivedAt: 3,
     });
   });
+
+  // Titles were cut at 50 characters when saved: listed whole now, without a save.
+  it('lists a discussion that was not renamed under its whole first message', () => {
+    const first = 'Look through the logs of the last three days and tell me what failed and why';
+    const conversation: Conversation = {
+      id: 'conv_1',
+      title: `${first.slice(0, 47)}...`,
+      workingDirectory: '/project',
+      messages: [{ id: 'm', role: 'user', content: first, timestamp: 1 }],
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    expect(summaryOf(conversation).title).toBe(first);
+  });
+
+  it('keeps the saved title of a discussion with nothing said yet', () => {
+    const conversation: Conversation = {
+      id: 'conv_1', title: 'New Conversation', workingDirectory: '/project', messages: [], createdAt: 1, updatedAt: 1,
+    };
+    expect(summaryOf(conversation).title).toBe('New Conversation');
+  });
 });

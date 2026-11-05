@@ -43,13 +43,3 @@ export const PREVIEW_SIZES = {
   /** Extra large for comprehensive output */
   EXTRA_LARGE: 2000,
 } as const;
-
-/**
- * Conversation related constants
- */
-export const CONVERSATION_CONSTANTS = {
-  /** Maximum length for conversation titles */
-  TITLE_MAX_LENGTH: 50,
-  /** Length at which to truncate titles with ellipsis */
-  TITLE_TRUNCATE_LENGTH: 47,
-} as const;

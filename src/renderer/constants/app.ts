@@ -2,13 +2,13 @@
  * Renderer process constants
  * Centralized configuration values for the Vue frontend
  *
- * NOTE: Shared constants (FILE_CONSTANTS, CONVERSATION_CONSTANTS, PREVIEW_SIZES)
+ * NOTE: Shared constants (FILE_CONSTANTS, PREVIEW_SIZES)
  * are imported from src/shared/constants.ts to avoid duplication.
  */
-import { FILE_CONSTANTS, CONVERSATION_CONSTANTS, PREVIEW_SIZES } from '../../shared/constants';
+import { FILE_CONSTANTS, PREVIEW_SIZES } from '../../shared/constants';
 
 // Re-export shared constants for convenience
-export { FILE_CONSTANTS, CONVERSATION_CONSTANTS, PREVIEW_SIZES };
+export { FILE_CONSTANTS, PREVIEW_SIZES };
 
 export const CONSTANTS = {
   /** Auto-save configuration */
@@ -16,12 +16,8 @@ export const CONSTANTS = {
     /** Delay before auto-saving changes - 2 seconds */
     DELAY_MS: 2000,
   },
-  /** Conversation-related limits (from shared constants) */
+  /** Conversation-related limits */
   CONVERSATION: {
-    /** Maximum length for conversation titles */
-    TITLE_MAX_LENGTH: CONVERSATION_CONSTANTS.TITLE_MAX_LENGTH,
-    /** Length at which to truncate titles with ellipsis */
-    TITLE_TRUNCATE_LENGTH: CONVERSATION_CONSTANTS.TITLE_TRUNCATE_LENGTH,
     /** Timeout for save operations - 30 seconds */
     SAVE_TIMEOUT_MS: 30000,
     /**

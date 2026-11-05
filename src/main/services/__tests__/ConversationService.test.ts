@@ -423,7 +423,7 @@ describe('ConversationService', () => {
       expect(saved.title).toBe('Help me write a function');
     });
 
-    it('should truncate long auto-generated titles', async () => {
+    it('titles a discussion with its whole first message, which the list cuts to its width', async () => {
       const longMessage = 'A'.repeat(100);
       const conv = createConversation({
         title: '',
@@ -437,8 +437,7 @@ describe('ConversationService', () => {
       const savedContent = mockFileSystem.get('/app/conversations/conv_test_123.json');
       const saved = JSON.parse(savedContent!);
 
-      expect(saved.title.length).toBeLessThanOrEqual(53); // 50 + '...'
-      expect(saved.title.endsWith('...')).toBe(true);
+      expect(saved.title).toBe(longMessage);
     });
 
     it('should not overwrite existing title', async () => {

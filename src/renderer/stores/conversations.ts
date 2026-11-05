@@ -7,6 +7,7 @@ import { defineStore, storeToRefs } from 'pinia';
 import { ref, computed, watch } from 'vue';
 
 import { isAfter, isArchived, newestFirst } from '@shared/conversation-list';
+import { titleFromMessages } from '@shared/conversation-title';
 import type {
   AutoArchiveDays,
   ChatMessage,
@@ -1445,19 +1446,9 @@ export const useConversationsStore = defineStore('conversations', () => {
     return chatStore.isConversationLoading(id);
   }
 
-  /**
-   * Generate a title from the first user message
-   */
+  /** The title the messages give a discussion; see conversation-title.ts. */
   function generateTitle(messages: ChatMessage[]): string {
-    const firstUserMessage = messages.find((m) => m.role === 'user');
-    if (firstUserMessage) {
-      const content = firstUserMessage.content.trim();
-      if (content.length <= CONSTANTS.CONVERSATION.TITLE_MAX_LENGTH) {
-        return content;
-      }
-      return content.slice(0, CONSTANTS.CONVERSATION.TITLE_TRUNCATE_LENGTH) + '...';
-    }
-    return 'New Conversation';
+    return titleFromMessages(messages) ?? 'New Conversation';
   }
 
   /**

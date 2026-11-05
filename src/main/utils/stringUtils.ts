@@ -57,23 +57,3 @@ export function sanitizeForLog(str: string, maxLength: number = PREVIEW_SIZES.SM
     .map((c) => (c.charCodeAt(0) < 32 || c.charCodeAt(0) > 126 ? '?' : c))
     .join('');
 }
-
-/**
- * Generate a title from message content.
- * Truncates to max length with ellipsis if needed.
- *
- * @param content - The message content to generate title from
- * @param maxLength - Maximum title length (defaults to 50)
- * @returns Truncated title string
- */
-export function generateTitleFromContent(
-  content: string,
-  maxLength: number = PREVIEW_SIZES.TINY
-): string {
-  const trimmed = content.trim();
-  if (trimmed.length <= maxLength) {
-    return trimmed;
-  }
-  // Leave room for ellipsis (3 chars)
-  return trimmed.slice(0, maxLength - 3) + '...';
-}

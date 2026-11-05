@@ -5,8 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { CONVERSATION_CONSTANTS } from '../../shared/constants';
 import { isAfter, isArchived, newestFirst, summaryOf } from '../../shared/conversation-list';
+import { titleFromMessages } from '../../shared/conversation-title';
 import { generateId, ID_PREFIXES } from '../../shared/id';
 import {
   AutoArchiveDays,
@@ -23,7 +23,6 @@ import {
 import { MAIN_CONSTANTS } from '../constants/app';
 import logger from '../utils/logger';
 import { getConversationsPath, isPathWithin } from '../utils/paths';
-import { generateTitleFromContent } from '../utils/stringUtils';
 
 import { findSessionTranscript } from './claude/transcript-files';
 import { ConversationIndex } from './conversation-index';
@@ -526,14 +525,8 @@ export class ConversationService {
         };
 
         // Generate title from first user message if not set
-        if (!updated.title && updated.messages.length > 0) {
-          const firstUserMessage = updated.messages.find((m) => m.role === 'user');
-          if (firstUserMessage) {
-            updated.title = generateTitleFromContent(
-              firstUserMessage.content,
-              CONVERSATION_CONSTANTS.TITLE_MAX_LENGTH
-            );
-          }
+        if (!updated.title) {
+          updated.title = titleFromMessages(updated.messages) ?? updated.title;
         }
 
         // Say something when a write looks like it loses history, and write it
