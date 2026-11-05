@@ -437,16 +437,14 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
                   <!-- Tasks running in the background, no turn streaming:
                        work still going on there. Not on the open one,
                        whose tasks panel shows them, as for the spinner. -->
+                  <!-- The same chip as the list's activity one above. -->
                   <span
                     v-else-if="backgroundTaskCount(conversation.id) > 0 && currentConversationId !== conversation.id"
-                    class="background-tasks-indicator shrink-0 inline-flex items-center gap-0.5 text-xs text-primary-500 dark:text-primary-400"
+                    class="background-tasks-indicator shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded text-blue-600 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/30"
                     :title="backgroundTasksTitle(conversation.id)"
                     :aria-label="backgroundTasksTitle(conversation.id)"
                   >
-                    <Icon
-                      name="cpu"
-                      size="xs"
-                    />
+                    <Spinner size="xs" />
                     <span class="tabular-nums">{{ backgroundTaskCount(conversation.id) }}</span>
                   </span>
                   <p
