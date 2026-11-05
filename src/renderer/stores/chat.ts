@@ -242,6 +242,11 @@ export function isBackgroundTask(task: BackgroundTask): boolean {
   return task.backgrounded !== false;
 }
 
+/** Running now, beside the turn rather than as part of it. */
+function isRunningInBackground(task: BackgroundTask): boolean {
+  return task.status === 'running' && isBackgroundTask(task);
+}
+
 /**
  * Whether a call stands for its task in the discussion: an agent, or a
  * command in the background. A foreground command's call does not — its
@@ -459,7 +464,7 @@ export const useChatStore = defineStore('chat', () => {
    * turn, not something running beside it, so it is not listed here.
    */
   const runningBackgroundTasksList = computed(() =>
-    Array.from(backgroundTasks.value.values()).filter(t => t.status === 'running' && isBackgroundTask(t))
+    Array.from(backgroundTasks.value.values()).filter(isRunningInBackground)
   );
 
   const hasRunningBackgroundTasks = computed(() => runningBackgroundTasksList.value.length > 0);
@@ -581,6 +586,19 @@ export const useChatStore = defineStore('chat', () => {
   function conversationHasPendingActions(conversationId: string): boolean {
     const state = conversationStates.value.get(conversationId);
     return (state?.pendingActions.length ?? 0) > 0;
+  }
+
+  /**
+   * How many of a discussion's tasks run in the background now, as
+   * runningBackgroundTasksList counts the open one's: for the discussions
+   * list, where a discussion can have work going on with no turn streaming.
+   */
+  function runningBackgroundTaskCount(conversationId: string): number {
+    let count = 0;
+    for (const task of conversationStates.value.get(conversationId)?.backgroundTasks.values() ?? []) {
+      if (isRunningInBackground(task)) count += 1;
+    }
+    return count;
   }
 
   // ============================================
@@ -2992,6 +3010,7 @@ export const useChatStore = defineStore('chat', () => {
     hasBackgroundTasks,
     backgroundTasksList,
     runningBackgroundTasksList,
+    runningBackgroundTaskCount,
     hasRunningBackgroundTasks,
     taskListItems,
     hasTaskListItems,

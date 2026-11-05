@@ -249,6 +249,52 @@ describe('the discussions list', () => {
     expect(tab('Archived').text()).toBe('Archived');
   });
 
+  describe('a discussion with tasks running in the background', () => {
+    const indicator = (wrapper: ReturnType<typeof mount>, id: string) =>
+      wrapper.find(`[data-conversation-id="${id}"] .background-tasks-indicator`);
+    const notify = (id: string, notification: Parameters<ReturnType<typeof useChatStore>['handleTaskNotification']>[1]) =>
+      useChatStore().handleTaskNotification(id, notification);
+
+    it('says so, with how many, while no turn streams there', async () => {
+      seedMany(3);
+      const wrapper = await open();
+      notify('conv_002', { taskId: 'b-1', status: 'running', description: 'Watch the tests', taskType: 'command', backgrounded: true });
+      notify('conv_002', { taskId: 'a-1', status: 'running', description: 'Review the auth module', taskType: 'agent', agentType: 'reviewer' });
+      await settle();
+
+      expect(indicator(wrapper, 'conv_002').exists()).toBe(true);
+      expect(indicator(wrapper, 'conv_002').text()).toBe('2');
+      expect(indicator(wrapper, 'conv_002').attributes('title')).toBe('2 background tasks running');
+      expect(indicator(wrapper, 'conv_001').exists()).toBe(false);
+
+      // One ends, then the other: gone with the last.
+      notify('conv_002', { taskId: 'b-1', status: 'completed' });
+      await settle();
+      expect(indicator(wrapper, 'conv_002').attributes('title')).toBe('1 background task running');
+      notify('conv_002', { taskId: 'a-1', status: 'stopped' });
+      await settle();
+      expect(indicator(wrapper, 'conv_002').exists()).toBe(false);
+    });
+
+    it('does not count a command its turn is waiting on', async () => {
+      seedMany(2);
+      const wrapper = await open();
+      notify('conv_001', { taskId: 'b-fg', status: 'running', description: 'List files', taskType: 'command', backgrounded: false });
+      await settle();
+      expect(indicator(wrapper, 'conv_001').exists()).toBe(false);
+    });
+
+    it('is not shown on the open discussion, whose tasks panel shows them', async () => {
+      seedMany(2);
+      const wrapper = await open();
+      await rows(wrapper).find((r) => r.text().includes('Discussion 1'))!.find('button').trigger('click');
+      await settle();
+      notify('conv_001', { taskId: 'b-1', status: 'running', description: 'Watch the tests', taskType: 'command', backgrounded: true });
+      await settle();
+      expect(indicator(wrapper, 'conv_001').exists()).toBe(false);
+    });
+  });
+
   describe('a discussion just started', () => {
     const newRow = (wrapper: ReturnType<typeof mount>) => wrapper.find('.new-discussion-row');
     const highlighted = (wrapper: ReturnType<typeof mount>) =>

@@ -137,6 +137,15 @@ function isConversationActive(conversationId: string): boolean {
   return chatStore.isConversationLoading(conversationId);
 }
 
+function backgroundTaskCount(conversationId: string): number {
+  return chatStore.runningBackgroundTaskCount(conversationId);
+}
+
+function backgroundTasksTitle(conversationId: string): string {
+  const count = backgroundTaskCount(conversationId);
+  return `${count} background ${count === 1 ? 'task' : 'tasks'} running`;
+}
+
 const deletingId = ref<string | null>(null);
 const confirmDeleteId = ref<string | null>(null);
 const renamingId = ref<string | null>(null);
@@ -425,6 +434,21 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
                     size="xs"
                     class="shrink-0 text-primary-400"
                   />
+                  <!-- Tasks running in the background, no turn streaming:
+                       work still going on there. Not on the open one,
+                       whose tasks panel shows them, as for the spinner. -->
+                  <span
+                    v-else-if="backgroundTaskCount(conversation.id) > 0 && currentConversationId !== conversation.id"
+                    class="background-tasks-indicator shrink-0 inline-flex items-center gap-0.5 text-xs text-primary-500 dark:text-primary-400"
+                    :title="backgroundTasksTitle(conversation.id)"
+                    :aria-label="backgroundTasksTitle(conversation.id)"
+                  >
+                    <Icon
+                      name="cpu"
+                      size="xs"
+                    />
+                    <span class="tabular-nums">{{ backgroundTaskCount(conversation.id) }}</span>
+                  </span>
                   <p
                     class="text-sm font-medium truncate"
                     :class="
