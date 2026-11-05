@@ -497,7 +497,7 @@ describe('PermissionManager', () => {
           rules: [
             {
               toolName: 'Bash',
-              ruleContent: 'command contains "git"',
+              ruleContent: 'git:*',
             },
           ],
           behavior: 'allow',
@@ -523,7 +523,7 @@ describe('PermissionManager', () => {
           { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
           { scope: 'project', label: 'Allow Bash in project', description: 'Allow Bash for this project' },
           // The CLI's own narrower rule stays available as a second choice.
-          { scope: 'project', variant: 'narrow', label: 'Allow Bash (command contains "git") in project', description: 'Allow only Bash (command contains "git") for this project' },
+          { scope: 'project', variant: 'narrow', label: 'Allow Bash (git:*) in project', description: 'Allow only Bash (git:*) for this project' },
         ],
       });
     });
@@ -1140,6 +1140,44 @@ describe('PermissionManager', () => {
         { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow', destination: 'localSettings' },
         { type: 'addDirectories', directories: ['/tmp/project'], destination: 'localSettings' },
       ]);
+    });
+
+    // main.log, 2026-11-05 19:11:10: the CLI split the line into four rules,
+    // with its variable filled in and its own quoting; written out, the
+    // project's narrow button ran to three lines.
+    it('counts the commands of the line in the narrow option instead of writing each out', async () => {
+      const file = 'C:\\Users\\kotik\\AppData\\Local\\Temp\\philibert-cli\\claude\\C--Users-kotik-Documents-git-tmp-tofu-fou-unity\\51eb269a-a241-4472-8135-26796db0478c\\tasks\\bjm82j1ga.output';
+      const command = `f='${file}'; until [ -s "$f" ] && grep -qE "^\\?\\?|^ M|Fast-forward|fatal|error|Aborting|Already up to date" "$f"; do sleep 2; done; cat "$f"`;
+      const rules = [
+        { toolName: 'Bash', ruleContent: '[ -s "$f" ]' },
+        { toolName: 'Bash', ruleContent: `grep -qE '^\\?\\?|^ M|Fast-forward|fatal|error|Aborting|Already up to date' '${file}'` },
+        { toolName: 'Bash', ruleContent: 'sleep 2' },
+        { toolName: 'Bash', ruleContent: `cat '${file}'` },
+      ];
+      const suggestions: PermissionUpdate[] = [{ type: 'addRules', rules, behavior: 'allow', destination: 'localSettings' }];
+      const { action, result } = await requestAndApprove('Bash', { command, description: 'Wait for the checkout and merge to finish', run_in_background: true }, suggestions, 'project');
+
+      const narrow = action.permissionInfo!.scopeOptions.find((o) => o.variant === 'narrow')!;
+      expect(narrow.label).toBe('Allow these 4 commands of the line in project');
+      expect(narrow.description).toBe('Allow only these 4 commands of the line for this project');
+      for (const option of action.permissionInfo!.scopeOptions) {
+        expect(option.label).not.toContain('bjm82j1ga');
+        expect(option.description).not.toContain('bjm82j1ga');
+      }
+      // Shortened on screen only: the rules the CLI wrote are what it gets.
+      permissionManager = new PermissionManager(mockConfigService, emitToolUse);
+      const canUseTool = permissionManager.createCanUseToolCallback();
+      const pending = canUseTool('Bash', { command }, { signal: new AbortController().signal, toolUseID: 't2', requestId: 'r2', suggestions });
+      await new Promise(resolve => setImmediate(resolve));
+      permissionManager.handleActionResponse({ actionId: capturedAction!.id, conversationId: 'conv-1', approved: true, alwaysAllow: true, chosenScope: 'project', chosenVariant: 'narrow' });
+      expect((await pending as Extract<PermissionResult, { behavior: 'allow' }>).updatedPermissions).toEqual(suggestions);
+      expect(result.behavior).toBe('allow');
+    });
+
+    it('still names a prefix the CLI suggests, which the line does not say', async () => {
+      const suggestions: PermissionUpdate[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm run:*' }], behavior: 'allow', destination: 'localSettings' }];
+      const { action } = await requestAndApprove('Bash', { command: 'npm run build' }, suggestions, 'project');
+      expect(action.permissionInfo!.scopeOptions.find((o) => o.variant === 'narrow')!.label).toBe('Allow Bash (npm run:*) in project');
     });
 
     it('offers "Allow PowerShell in project" for a one-off PowerShell pipeline (main.log, 2026-10-29)', async () => {

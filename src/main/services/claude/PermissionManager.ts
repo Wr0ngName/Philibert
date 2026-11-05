@@ -53,6 +53,9 @@ export function comparablePath(path: string): string {
     .replace(/\/+$/, '');
 }
 
+/** The tools whose input is a command line, which the CLI writes rules for one command at a time. */
+const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
+
 /** Prefix used by Claude Code for user messages that answer an AskUserQuestion */
 export const ASK_USER_QUESTION_PREFIX = '[User answered AskUserQuestion]:';
 
@@ -624,6 +627,33 @@ export class PermissionManager {
   }
 
   /**
+   * What a set of rules covers, short enough for a button. The CLI splits a
+   * command line into one rule per command in it ("[ -s \"$f\" ]", a whole
+   * grep with its path, "sleep 2", a whole cat with its path): those are
+   * pieces of the line shown in full above the buttons, so they are counted,
+   * not written out again — written out, they made a button three lines
+   * long. A rule that says something the line does not — a prefix
+   * ("npm run:*"), a domain, a path — is still named, as ruleText names it.
+   */
+  private rulesText(rules: { toolName: string; ruleContent?: string }[], input?: Record<string, unknown>): string {
+    // By the rule, not by finding its text in the line: the CLI writes the
+    // command with its variables filled in and its own quoting (the line's
+    // `cat "$f"` came back as `cat 'C:\…\bjm82j1ga.output'`, main.log
+    // 2026-11-05), so the text is not there to find.
+    const isPiece = (rule: { toolName: string; ruleContent?: string }) => {
+      const content = rule.ruleContent?.trim();
+      return !!content && SHELL_TOOLS.has(rule.toolName) && !content.includes('*');
+    };
+    const pieces = rules.filter(isPiece);
+    if (pieces.length === 0 || (rules.length === 1 && this.ruleDetail(rules[0], input) === 'this exact command')) {
+      return rules.map((r) => this.ruleText(r, input)).join(', ');
+    }
+    const counted = pieces.length === 1 ? 'this command of the line' : `these ${pieces.length} commands of the line`;
+    const named = rules.filter((r) => !isPiece(r)).map((r) => this.ruleText(r, input));
+    return [counted, ...named].join(', ');
+  }
+
+  /**
    * What a rule covers, short enough for a button: "this exact command" for
    * the request's own command line, "this file" / "this folder" for a path
    * that is the request's file or holds it, `…/<name>` for any other path,
@@ -786,11 +816,11 @@ export class PermissionManager {
       // The project's second option: only what the CLI itself suggested.
       if (scope === 'project' && narrowProject) {
         const narrowRules = narrowProject.flatMap((s) => (s.type === 'addRules' ? s.rules : []));
-        const what = narrowRules.map((r) => this.ruleText(r, input)).join(', ');
+        const what = this.rulesText(narrowRules, input);
         scopeOptions.push({
           scope,
           variant: 'narrow',
-          label: what === 'this exact command' ? 'Allow this exact command in project' : `Allow ${what} in project`,
+          label: `Allow ${what} in project`,
           description: `Allow only ${what} ${SCOPE_LABELS.project}`,
         });
       }
