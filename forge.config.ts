@@ -159,6 +159,20 @@ const config: ForgeConfig = {
       // at once — a peak this build host cannot afford. Sequential installs
       // are slightly slower but hold a much lower high-water mark.
       const npmFlags = ['--no-package-lock', '--no-save', '--no-audit', '--no-fund'];
+
+      // The packaged app's package.json is ours as written, devDependencies
+      // included, and with no lock file npm resolves every one of them from
+      // the registry before installing anything — even with --omit=dev,
+      // which only skips installing them. So a dev tool's release broke the
+      // build: playwright 1.65.0 was published needing a playwright-core
+      // 1.65.0 not yet on the registry, and the v0.25.7 Linux build, ten
+      // seconds later, failed with ETARGET. Nothing installed here needs a
+      // dev tool, and the packaged app never runs one: they are left out.
+      const packagedPkgPath = path.join(buildPath, 'package.json');
+      const packagedPkg = JSON.parse(fs.readFileSync(packagedPkgPath, 'utf8'));
+      delete packagedPkg.devDependencies;
+      fs.writeFileSync(packagedPkgPath, `${JSON.stringify(packagedPkg, null, 2)}\n`);
+
       for (const mod of pinnedModules) {
         console.log(`Installing external module: ${mod}`);
         await runNpm(['install', ...npmFlags, mod]);
