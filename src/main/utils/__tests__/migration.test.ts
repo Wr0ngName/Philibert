@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 
 // Mock electron
 const mockGetPath = vi.fn();
@@ -35,7 +36,9 @@ vi.mock('../logger', () => ({
 
 import { migrateFromOldApp, finishCredentialMigration } from '../migration';
 
-const FAKE_APPDATA = '/tmp/test-appdata';
+// A folder of its own, removed once the file's tests are done.
+const FAKE_APPDATA = fs.mkdtempSync(path.join(os.tmpdir(), 'philibert-migration-test-'));
+afterAll(() => fs.rmSync(FAKE_APPDATA, { recursive: true, force: true }));
 const OLD_DIR = path.join(FAKE_APPDATA, 'ClineGUI');
 const NEW_DIR = path.join(FAKE_APPDATA, 'Philibert');
 
