@@ -808,6 +808,32 @@ describe('a conversation through the real persistence stack', () => {
       expect(chat.taskListItems).toEqual(before);
     });
 
+    // Claude names its tasks by id ("task #3 done"): the list shows each by
+    // that id, once Claude Code has given it one — not the call's block id.
+    it('shows each item by the id Claude names it by, before and after a restart', async () => {
+      const wrapper = mountApp();
+      const ids = () => wrapper.findAll('.task-list-panel .task-list-id').map((s) => s.text());
+      const id = conversations.createNewConversation();
+      await settle();
+      await send(wrapper, 'plan the work');
+
+      taskCall(id, 'toolu_1', 'TaskCreate', { subject: 'Write the parser' });
+      await settle();
+      expect(wrapper.find('.task-list-panel').text()).toContain('Write the parser');
+      expect(ids()).toEqual([]);
+
+      taskCreated(id, 'toolu_1', '1');
+      taskCall(id, 'toolu_2', 'TaskCreate', { subject: 'Cover it with tests' });
+      taskCreated(id, 'toolu_2', '2');
+      streamAssistant(id, 'starting');
+      emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
+      await settle(40);
+      expect(ids()).toEqual(['#1', '#2']);
+
+      const reloaded = await restart(id);
+      expect(reloaded.findAll('.task-list-panel .task-list-id').map((s) => s.text())).toEqual(['#1', '#2']);
+    });
+
     it('keeps the order the model created them in', async () => {
       const wrapper = mountApp();
       const id = await conversationWithTasks(wrapper);

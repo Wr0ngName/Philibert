@@ -18,6 +18,7 @@ import type { BackgroundTask, ChatMessage, ToolUseInfo } from '@shared/types';
 
 import { useNowTicker } from '../../composables/useNowTicker';
 import { useAgentTranscript, useCommandOutput } from '../../composables/useTaskDetailFeed';
+import { namedTaskId } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { formatModelId } from '../../utils/model';
 import { formatTaskDuration } from '../../utils/task-duration';
@@ -259,6 +260,11 @@ const statusDisplay = computed(() => {
           </h3>
           <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-surface-500 dark:text-surface-400">
             <span :class="statusDisplay.colorClass">{{ statusDisplay.label }}</span>
+            <span
+              v-if="namedTaskId(task)"
+              class="task-id font-mono select-all"
+              title="The id Claude names this task by"
+            >ID: {{ namedTaskId(task) }}</span>
             <span v-if="duration">Duration: {{ duration }}</span>
             <!-- This agent's own model. A sub-agent runs the model named in
                  its definition when it has one and otherwise inherits the

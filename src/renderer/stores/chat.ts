@@ -242,6 +242,16 @@ export function isBackgroundTask(task: BackgroundTask): boolean {
   return task.backgrounded !== false;
 }
 
+/**
+ * The id Claude names a task by ("bjm82j1ga", an agent's "a9662ab2…"): the
+ * one its output file and its messages use. Null while the task still has
+ * its tool call's block id — a command started in the background has it
+ * until Claude Code gives the task its own — which Claude never uses.
+ */
+export function namedTaskId(task: BackgroundTask): string | null {
+  return task.id === task.toolUseId ? null : task.id;
+}
+
 /** Running now, beside the turn rather than as part of it. */
 function isRunningInBackground(task: BackgroundTask): boolean {
   return task.status === 'running' && isBackgroundTask(task);
@@ -1725,6 +1735,7 @@ export const useChatStore = defineStore('chat', () => {
         activeForm: typeof input.activeForm === 'string' ? input.activeForm : undefined,
         status: 'pending',
         updatedAt: Date.now(),
+        awaitingId: true,
       };
       state.taskListItems.set(capture.toolUseBlockId, item);
       logger.info('TaskList: create captured', { toolUseBlockId: capture.toolUseBlockId, subject });
@@ -1836,6 +1847,9 @@ export const useChatStore = defineStore('chat', () => {
         input: toolUse.input,
         description: toolUse.description,
       });
+      // Its SDK id recorded: the id Claude uses, so it is shown.
+      const created = toolUse.taskListId ? state.taskListItems.get(toolUse.taskListId) : undefined;
+      if (created?.awaitingId) delete created.awaitingId;
       replayed += 1;
     }
 
@@ -1861,7 +1875,9 @@ export const useChatStore = defineStore('chat', () => {
       return;
     }
     state.taskListItems.delete(toolUseBlockId);
-    state.taskListItems.set(taskId, { ...pending, id: taskId });
+    const answered: TaskListItem = { ...pending, id: taskId };
+    delete answered.awaitingId;
+    state.taskListItems.set(taskId, answered);
     logger.info('TaskList: pending entry rekeyed', { toolUseBlockId, taskId });
   }
 

@@ -1302,6 +1302,11 @@ export interface TaskListItem {
   status: 'pending' | 'in_progress' | 'completed' | 'deleted';
   /** Local timestamp of the last mutation */
   updatedAt: number;
+  /**
+   * Created, and Claude Code has not answered with its id yet: `id` is the
+   * TaskCreate call's block id, which Claude never uses, so it is not shown.
+   */
+  awaitingId?: boolean;
 }
 
 /**

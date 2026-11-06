@@ -357,6 +357,17 @@ describe('rebuildTaskList', () => {
     expect(store.getTaskListItems(CONV).map((t) => [t.subject, t.status])).toEqual([
       ['one', 'pending'],
     ]);
+    // Its id is the call's block id, which Claude never names it by.
+    expect(store.getTaskListItems(CONV)[0].awaitingId).toBe(true);
+  });
+
+  it('takes the recorded id for the one Claude names the task by', () => {
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+
+    store.rebuildTaskList(CONV, [taskMessage('toolu_1', 'TaskCreate', { subject: 'one' }, 'task_1')]);
+
+    expect(store.getTaskListItems(CONV)[0]).not.toHaveProperty('awaitingId');
   });
 
   it('ignores every other tool', () => {

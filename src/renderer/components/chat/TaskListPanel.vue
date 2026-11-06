@@ -113,6 +113,13 @@ function itemIcon(item: TaskListItem): 'check-circle' | 'chevron-right' {
           />
         </span>
 
+        <!-- Its id, as Claude names it ("task #3"); not before Claude Code
+             has given it one. -->
+        <span
+          v-if="!item.awaitingId"
+          class="task-list-id shrink-0 text-xs font-mono tabular-nums text-surface-400 dark:text-surface-500"
+        >#{{ item.id }}</span>
+
         <!-- Subject + optional activeForm hint -->
         <span
           class="text-xs truncate"

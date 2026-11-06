@@ -159,9 +159,34 @@ describe('background tasks, panel and detail', () => {
       'builder',
       'Agent reads notes.txt',
       '· Reworking fetchItem in useCrudStore.ts',
+      'agent-1',
       '0s · ↓ 160.8k tokens',
     ]);
     expect(row?.attributes('title')).toBe('Agent reads notes.txt');
+  });
+
+  // Claude names tasks by id ("bjm82j1ga finished"); the list is where the
+  // user can tell which task that is.
+  it('shows each task by the id Claude names it by, in the list and in its details', async () => {
+    expect(app.findAll('.background-task-panel .task-item .task-id').map((s) => s.text()).sort())
+      .toEqual(['agent-1', 'bash-agent', 'bash-main']);
+
+    const view = await openTask('Run the main loop');
+    expect(view.querySelector('.task-id')?.textContent).toBe('ID: bash-main');
+  });
+
+  it("does not show a task's tool call id, before Claude Code has given it its own", async () => {
+    // A command started in the background: its first notification carries
+    // the tool call's block id as the task's id.
+    notify({ taskId: 'toolu_build', toolUseId: 'toolu_build', status: 'running', description: 'npm run build', taskType: 'command', backgrounded: true });
+    await settle(20);
+    const row = app.findAll('.background-task-panel .task-item').find((r) => r.text().includes('npm run build'))!;
+    expect(row.find('.task-id').exists()).toBe(false);
+
+    notify({ taskId: 'b-build', previousTaskId: 'toolu_build', status: 'running', backgrounded: true });
+    await settle(20);
+    const named = app.findAll('.background-task-panel .task-item').find((r) => r.text().includes('npm run build'))!;
+    expect(named.find('.task-id').text()).toBe('b-build');
   });
 
   it("shows an agent's description alone until it reports a step", () => {

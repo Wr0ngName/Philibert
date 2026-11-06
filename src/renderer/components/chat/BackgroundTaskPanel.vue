@@ -14,6 +14,7 @@ import { computed, ref } from 'vue';
 import type { BackgroundTask } from '@shared/types';
 
 import { useNowTicker } from '../../composables/useNowTicker';
+import { namedTaskId } from '../../stores/chat';
 import { formatTaskDuration } from '../../utils/task-duration';
 import { taskTreeRows } from '../../utils/task-tree';
 import { formatTokenCount } from '../../utils/token-count';
@@ -144,6 +145,12 @@ function rowStats(task: BackgroundTask): string {
               : 'text-surface-700 dark:text-surface-300'"
           >{{ row.task.taskType === 'agent' ? `· ${agentStep(row.task)}` : row.task.activity ?? row.task.description }}</span>
         </div>
+        <!-- Its id, as Claude names it: the way to tell which task a
+             message of Claude's is about. -->
+        <span
+          v-if="namedTaskId(row.task)"
+          class="task-id text-xs font-mono text-surface-400 dark:text-surface-500 shrink-0"
+        >{{ namedTaskId(row.task) }}</span>
         <span class="text-xs text-surface-400 shrink-0 tabular-nums">
           {{ rowStats(row.task) }}
         </span>
