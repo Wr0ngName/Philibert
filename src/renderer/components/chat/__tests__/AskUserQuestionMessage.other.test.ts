@@ -138,4 +138,17 @@ describe('the free-text answer of a multi-select question', () => {
     expect(chosen(card)).toEqual(['Rebase']);
     expect(await send(card)).toBe('Rebase');
   });
+
+  it('is checked again by typing in its field, without its field being focused anew', async () => {
+    const card = mountCard(true);
+    const field = card.find('.question-other input');
+    await field.trigger('focus');
+    await card.find('.question-other-mark').trigger('click');
+    expect(chosen(card)).toEqual([]);
+
+    await field.setValue('Squash it');
+
+    expect(chosen(card)).toEqual(['Other']);
+    expect(await send(card)).toBe('Squash it');
+  });
 });
