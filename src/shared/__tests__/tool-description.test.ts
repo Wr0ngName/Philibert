@@ -55,6 +55,33 @@ describe('describeToolUse', () => {
     expect(describeToolUse('WebFetch', { prompt: 'Summarise' })).toBe('');
   });
 
+  // Reported: a TaskUpdate row said nothing of what it did. The inputs are
+  // the CLI's, as its transcripts record them.
+  it('says what a task update does to which task', () => {
+    expect(describeToolUse('TaskUpdate', { taskId: '1', status: 'in_progress' })).toBe('Task #1: in progress');
+    expect(describeToolUse('TaskUpdate', { taskId: '1', status: 'completed' })).toBe('Task #1: completed');
+    expect(describeToolUse('TaskUpdate', { taskId: '1', status: 'pending' })).toBe('Task #1: back to pending');
+    expect(describeToolUse('TaskUpdate', { taskId: '1', status: 'deleted' })).toBe('Task #1: deleted');
+    expect(describeToolUse('TaskUpdate', { taskId: '2', addBlockedBy: ['1'] })).toBe('Task #2: blocked by #1');
+    expect(describeToolUse('TaskUpdate', { taskId: '2', addBlocks: ['3', '4'], owner: 'researcher' }))
+      .toBe('Task #2: owner researcher, blocks #3, #4');
+    expect(describeToolUse('TaskUpdate', { taskId: '4', subject: 'Merge main', activeForm: 'Merging main' }))
+      .toBe('Task #4: renamed to "Merge main", progress line updated');
+    expect(describeToolUse('TaskUpdate', { taskId: '5', metadata: { k: null } })).toBe('Task #5: metadata updated');
+  });
+
+  it("does not take a task's new description for what the update is for", () => {
+    const description = 'Living docs converted to symbol anchors. The two audit reports deliberately keep their line citations.';
+    expect(describeToolUse('TaskUpdate', { taskId: '9', description })).toBe('Task #9: description updated');
+    expect(describeToolUse('TaskUpdate', { taskId: '13', status: 'completed', description }))
+      .toBe('Task #13: completed, description updated');
+  });
+
+  it('names the task alone when an update changes nothing it can name', () => {
+    expect(describeToolUse('TaskUpdate', { taskId: '3' })).toBe('Task #3');
+    expect(describeToolUse('TaskUpdate', { taskId: '3', status: 'bogus' })).toBe('Task #3');
+  });
+
   it('adds nothing to the tool name for any other call that says nothing about itself', () => {
     expect(describeToolUse('mcp__gsc__query', { site: 'x' })).toBe('');
     expect(describeToolUse('mcp__gsc__query', { description: 'Top queries this week' })).toBe('Top queries this week');

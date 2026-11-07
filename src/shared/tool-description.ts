@@ -8,7 +8,7 @@
  */
 
 import { SEND_MESSAGE_TOOL, sendMessagePreview } from './send-message';
-import type { ToolUseInfo } from './types';
+import type { TaskListItem, ToolUseInfo } from './types';
 
 /** Longest command or prompt shown when a call says nothing about itself. */
 const EXCERPT_LENGTH = 80;
@@ -33,6 +33,46 @@ function namedBy(prefix: string, value: unknown): string {
   return typeof value === 'string' && value.trim() ? `${prefix}: ${value.trim()}` : '';
 }
 
+/** A status as a TaskUpdate sets it, in words. */
+const TASK_STATUS_WORDS: Record<TaskListItem['status'], string> = {
+  pending: 'back to pending',
+  in_progress: 'in progress',
+  completed: 'completed',
+  deleted: 'deleted',
+};
+
+/** Fields a TaskUpdate rewrites without the row having room to show the new value. */
+const TASK_TEXT_FIELDS: ReadonlyArray<[field: string, name: string]> = [
+  ['description', 'description'],
+  ['activeForm', 'progress line'],
+  ['metadata', 'metadata'],
+];
+
+function taskIds(value: unknown): string {
+  return Array.isArray(value) ? value.map((id) => `#${String(id)}`).join(', ') : '';
+}
+
+/**
+ * What a TaskUpdate does, read off its input (the CLI's TaskUpdate schema):
+ * "Task #3: completed", "Task #4: renamed to "Merge main", blocked by #3",
+ * "Task #9: description updated".
+ */
+function describeTaskUpdate(input: Record<string, unknown>): string {
+  const changes: string[] = [];
+  const status = input.status as TaskListItem['status'] | undefined;
+  if (status && status in TASK_STATUS_WORDS) changes.push(TASK_STATUS_WORDS[status]);
+  if (typeof input.subject === 'string' && input.subject.trim()) changes.push(`renamed to "${input.subject.trim()}"`);
+  if (typeof input.owner === 'string' && input.owner.trim()) changes.push(`owner ${input.owner.trim()}`);
+  const blockedBy = taskIds(input.addBlockedBy);
+  if (blockedBy) changes.push(`blocked by ${blockedBy}`);
+  const blocks = taskIds(input.addBlocks);
+  if (blocks) changes.push(`blocks ${blocks}`);
+  const rewritten = TASK_TEXT_FIELDS.filter(([field]) => input[field] !== undefined).map(([, name]) => name);
+  if (rewritten.length > 0) changes.push(`${rewritten.join(', ')} updated`);
+  const task = input.taskId === undefined ? 'Task' : `Task #${String(input.taskId)}`;
+  return changes.length > 0 ? `${task}: ${changes.join(', ')}` : task;
+}
+
 /**
  * The label for a call of `toolName` with `input`. Empty when there is
  * nothing to add to the tool's name, which the row shows anyway.
@@ -53,6 +93,9 @@ export function describeToolUse(toolName: string, input: Record<string, unknown>
     case 'WebSearch': return namedBy('Web search', input.query);
     case 'WebFetch': return namedBy('Fetch', input.url);
     case SEND_MESSAGE_TOOL: return excerpt(sendMessagePreview(input));
+    // Its description, when it has one, is the task's new description,
+    // not what the call is for.
+    case 'TaskUpdate': return describeTaskUpdate(input);
     default: return purpose;
   }
 }
