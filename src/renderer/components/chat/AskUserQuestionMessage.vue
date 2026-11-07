@@ -39,13 +39,16 @@ const fallbackDescription = computed(() => props.action.details.fallbackDescript
 /**
  * Per-question state.
  *
- * For non-multiSelect: `selectedLabels` has at most 1 entry; an empty string
- *   in `otherText` means no free-text override.
- * For multiSelect: `selectedLabels` accumulates choices; `otherText` is appended
- *   as a comma-separated free-text addition.
+ * The free-text answer is a choice like the options: `otherSelected` says
+ * whether it is chosen, `otherText` holds what was typed.
+ * For non-multiSelect: one choice at most — an option in `selectedLabels`,
+ *   or the free text.
+ * For multiSelect: `selectedLabels` accumulates choices, and the free text,
+ *   when chosen, is added to them.
  */
 interface QuestionState {
   selectedLabels: Set<string>;
+  otherSelected: boolean;
   otherText: string;
   notes: string;
 }
@@ -55,6 +58,7 @@ const states = ref<QuestionState[]>([]);
 function initStates(): void {
   states.value = questions.value.map(() => ({
     selectedLabels: new Set<string>(),
+    otherSelected: false,
     otherText: '',
     notes: '',
   }));
@@ -77,13 +81,60 @@ function toggleOption(qIndex: number, label: string): void {
   } else {
     state.selectedLabels.clear();
     state.selectedLabels.add(label);
-    // Clear any free-text override when an option is picked
-    state.otherText = '';
+    state.otherSelected = false;
   }
+}
+
+/** Choose the free-text answer: what typing in it, or focusing it, does. */
+function selectOther(qIndex: number): void {
+  const state = states.value[qIndex];
+  if (!questions.value[qIndex].multiSelect) state.selectedLabels.clear();
+  state.otherSelected = true;
+}
+
+const otherInputs = ref<Record<number, HTMLInputElement | null>>({});
+
+/**
+ * A click on the free-text row's mark: in a multi-select question, it
+ * unchecks the free text when checked; otherwise it chooses it and puts the
+ * cursor in its field.
+ */
+function toggleOther(qIndex: number): void {
+  const state = states.value[qIndex];
+  if (questions.value[qIndex].multiSelect && state.otherSelected) {
+    state.otherSelected = false;
+    return;
+  }
+  selectOther(qIndex);
+  otherInputs.value[qIndex]?.focus();
+}
+
+/** The free text, when it is chosen and says something. */
+function chosenOtherText(state: QuestionState): string {
+  return state.otherSelected ? state.otherText.trim() : '';
 }
 
 function isSelected(qIndex: number, label: string): boolean {
   return states.value[qIndex].selectedLabels.has(label);
+}
+
+/** A choice's row, chosen or not: the options and the free text alike. */
+function choiceClass(selected: boolean): string[] {
+  return [
+    'text-left rounded-md border px-3 py-2 transition-colors',
+    selected
+      ? 'bg-blue-100 dark:bg-blue-900/30 border-blue-500'
+      : 'bg-surface-50 dark:bg-surface-800 border-surface-300 dark:border-surface-600 hover:bg-surface-100 dark:hover:bg-surface-700',
+  ];
+}
+
+/** A choice's mark: a check box in a multi-select question, else a radio. */
+function markClass(multiSelect: boolean | undefined, selected: boolean): string[] {
+  const shape = multiSelect ? 'rounded' : 'rounded-full';
+  const look = selected
+    ? multiSelect ? 'bg-blue-500 border-blue-500' : 'bg-blue-500 border-blue-500 ring-2 ring-blue-200 dark:ring-blue-800'
+    : 'border-surface-400 dark:border-surface-500';
+  return ['inline-block w-3.5 h-3.5 shrink-0 border', shape, look];
 }
 
 /** Preview of the currently focused option in a single-select question */
@@ -118,14 +169,8 @@ const canSubmit = computed(() => {
   if (truncated.value) {
     return truncatedAnswer.value.trim().length > 0;
   }
-  return states.value.every((state, i) => {
-    const hasSelection = state.selectedLabels.size > 0;
-    const hasOther = state.otherText.trim().length > 0;
-    // Multi-select questions can submit with just "Other"
-    if (questions.value[i].multiSelect) return hasSelection || hasOther;
-    // Single-select requires either an option or "Other"
-    return hasSelection || hasOther;
-  });
+  // An option, or a chosen free text that says something.
+  return states.value.every((state) => state.selectedLabels.size > 0 || chosenOtherText(state) !== '');
 });
 
 function submit(): void {
@@ -142,7 +187,7 @@ function submit(): void {
   const answers: AskUserQuestionAnswer[] = questions.value.map((q, i) => {
     const state = states.value[i];
     const labels = [...state.selectedLabels];
-    const other = state.otherText.trim();
+    const other = chosenOtherText(state);
     let answer: string;
 
     if (q.multiSelect) {
@@ -296,39 +341,21 @@ onUnmounted(() => {
               v-for="option in question.options"
               :key="option.label"
               type="button"
-              :class="[
-                'text-left rounded-md border px-3 py-2 transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500',
-                isSelected(qIndex, option.label)
-                  ? 'bg-blue-100 dark:bg-blue-900/30 border-blue-500'
-                  : 'bg-surface-50 dark:bg-surface-800 border-surface-300 dark:border-surface-600 hover:bg-surface-100 dark:hover:bg-surface-700',
-              ]"
+              class="question-option focus:outline-none focus:ring-2 focus:ring-primary-500"
+              :class="choiceClass(isSelected(qIndex, option.label))"
+              :aria-pressed="isSelected(qIndex, option.label)"
               @click="toggleOption(qIndex, option.label)"
               @mouseenter="focusOption(qIndex, option.label)"
               @focus="focusOption(qIndex, option.label)"
             >
               <div class="flex items-start gap-2">
                 <span
-                  v-if="question.multiSelect"
-                  :class="[
-                    'mt-0.5 inline-block w-3.5 h-3.5 rounded border',
-                    isSelected(qIndex, option.label)
-                      ? 'bg-blue-500 border-blue-500'
-                      : 'border-surface-400 dark:border-surface-500',
-                  ]"
-                  aria-hidden="true"
-                />
-                <span
-                  v-else
-                  :class="[
-                    'mt-0.5 inline-block w-3.5 h-3.5 rounded-full border',
-                    isSelected(qIndex, option.label)
-                      ? 'bg-blue-500 border-blue-500 ring-2 ring-blue-200 dark:ring-blue-800'
-                      : 'border-surface-400 dark:border-surface-500',
-                  ]"
+                  class="mt-0.5"
+                  :class="markClass(question.multiSelect, isSelected(qIndex, option.label))"
                   aria-hidden="true"
                 />
                 <div class="flex-1">
-                  <div class="text-sm font-medium text-surface-900 dark:text-surface-100">
+                  <div class="question-option-label text-sm font-medium text-surface-900 dark:text-surface-100">
                     {{ option.label }}
                   </div>
                   <div
@@ -340,6 +367,35 @@ onUnmounted(() => {
                 </div>
               </div>
             </button>
+            <!-- The free-text answer: a choice like the others. Focusing
+                 its field chooses it; choosing another option in a
+                 single-select question unchooses it. -->
+            <div
+              class="question-other flex items-center gap-2"
+              :class="choiceClass(states[qIndex].otherSelected)"
+            >
+              <button
+                type="button"
+                class="question-other-mark flex focus:outline-none focus:ring-2 focus:ring-primary-500 rounded"
+                :aria-pressed="states[qIndex].otherSelected"
+                :aria-label="question.multiSelect ? 'Add your own answer' : 'Answer with your own words'"
+                @click="toggleOther(qIndex)"
+              >
+                <span
+                  :class="markClass(question.multiSelect, states[qIndex].otherSelected)"
+                  aria-hidden="true"
+                />
+              </button>
+              <input
+                :ref="(el) => { otherInputs[qIndex] = el as HTMLInputElement | null }"
+                v-model="states[qIndex].otherText"
+                type="text"
+                :placeholder="question.multiSelect ? 'Other (added to selection)…' : 'Other…'"
+                class="flex-1 min-w-0 rounded border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-900 px-2 py-1 text-sm"
+                @focus="selectOther(qIndex)"
+                @input="selectOther(qIndex)"
+              >
+            </div>
           </div>
 
           <!-- Preview pane (only when options carry preview content) -->
@@ -359,14 +415,6 @@ onUnmounted(() => {
             </p>
           </div>
         </div>
-
-        <!-- Other (free-text) -->
-        <input
-          v-model="states[qIndex].otherText"
-          type="text"
-          :placeholder="question.multiSelect ? 'Other (added to selection)…' : 'Other…'"
-          class="w-full rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-900 p-2 text-sm"
-        >
 
         <!-- Optional notes -->
         <input
