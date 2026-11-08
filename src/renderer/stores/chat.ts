@@ -441,8 +441,6 @@ export const useChatStore = defineStore('chat', () => {
     return state?.pendingActions ?? [];
   });
 
-  const hasPendingActions = computed(() => pendingActions.value.length > 0);
-
   // Current conversation's queued prompts, for the strip above the input.
   const queuedPrompts = computed((): QueuedPrompt[] => {
     const state = getCurrentState();
@@ -3036,7 +3034,6 @@ export const useChatStore = defineStore('chat', () => {
 
     // Computed (based on current conversation)
     hasMessages,
-    hasPendingActions,
     lastMessage,
     hasBackgroundTasks,
     backgroundTasksList,

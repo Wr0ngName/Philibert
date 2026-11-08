@@ -1,16 +1,40 @@
 /**
- * The free-text answer of a question card is a choice like the options:
- * it has the same mark, focusing its field chooses it, and in a
- * single-select question it and an option exclude each other — so the card
- * never shows an option chosen while the free text is what gets sent.
+ * A question from Claude, in its own resizable dialog.
+ *
+ * The free-text answer is a choice like the options: it has the same mark,
+ * focusing its field chooses it, and in a single-select question it and an
+ * option exclude each other — so the dialog never shows an option chosen
+ * while the free text is what gets sent.
  */
 
 import { mount } from '@vue/test-utils';
 import { describe, it, expect, afterEach } from 'vitest';
+import { defineComponent } from 'vue';
 
 import type { AskUserQuestionAction } from '@shared/types';
 
-import AskUserQuestionMessage from '../AskUserQuestionMessage.vue';
+import AskUserQuestionModal from '../AskUserQuestionModal.vue';
+
+/**
+ * The shared dialog, rendered in place (the real one teleports to the body)
+ * with its body, its footer and its close button, and the props it was
+ * given kept for the test to read.
+ */
+const ModalStub = defineComponent({
+  props: {
+    open: Boolean,
+    title: { type: String, default: '' },
+    size: { type: String, default: 'md' },
+    resizeKey: { type: String, default: undefined },
+    closeOnOverlay: { type: Boolean, default: true },
+    closeOnEscape: { type: Boolean, default: true },
+  },
+  emits: ['close'],
+  template: `<div class="modal-stub">
+    <button class="modal-close" @click="$emit('close')" />
+    <slot /><footer><slot name="footer" /></footer>
+  </div>`,
+});
 
 function action(multiSelect: boolean): AskUserQuestionAction {
   return {
@@ -37,10 +61,10 @@ function action(multiSelect: boolean): AskUserQuestionAction {
 let wrapper: ReturnType<typeof mount> | null = null;
 
 function mountCard(multiSelect: boolean) {
-  wrapper = mount(AskUserQuestionMessage, {
+  wrapper = mount(AskUserQuestionModal, {
     props: { action: action(multiSelect) },
     attachTo: document.body,
-    global: { stubs: { Icon: true } },
+    global: { stubs: { Icon: true, Modal: ModalStub } },
   });
   return wrapper;
 }
@@ -70,6 +94,41 @@ async function send(card: Card): Promise<string | undefined> {
   const answers = card.emitted('answer')?.[0]?.[1] as Array<{ answer: string }> | undefined;
   return answers?.[0]?.answer;
 }
+
+// Reported: the question, as a card above the composer, was hard to read.
+describe('the question dialog', () => {
+  it('is a resizable dialog that a click outside does not close', () => {
+    const card = mountCard(false);
+    const dialog = card.findComponent(ModalStub);
+
+    expect(dialog.props('resizeKey')).toBe('ask-user-question');
+    expect(dialog.props('closeOnOverlay')).toBe(false);
+    expect(dialog.props('title')).toBe('Claude is asking a question');
+  });
+
+  it('cancels the question when it is closed', async () => {
+    const card = mountCard(false);
+    await card.find('.modal-close').trigger('click');
+
+    expect(card.emitted('cancel')?.[0]).toEqual(['act-q']);
+  });
+
+  it('keeps Send and Cancel in its footer, out of the scrolling body', () => {
+    const card = mountCard(false);
+    const footer = card.find('.modal-stub > footer');
+
+    expect(footer.findAll('button').map((b) => b.text())).toEqual(['Cancel', 'Send answer']);
+  });
+
+  it('sends with Ctrl+Enter wherever the focus is', async () => {
+    const card = mountCard(false);
+    await option(card, 'Merge').trigger('click');
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+
+    const answers = card.emitted('answer')?.[0]?.[1] as Array<{ answer: string }> | undefined;
+    expect(answers?.[0]?.answer).toBe('Merge');
+  });
+});
 
 describe('the free-text answer of a single-select question', () => {
   // Reported: an option picked before typing an answer of one's own stayed

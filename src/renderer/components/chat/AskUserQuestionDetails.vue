@@ -19,7 +19,7 @@ interface Props {
 
 const props = defineProps<Props>();
 
-/** Multi-select answers are the chosen labels joined by ", " (see AskUserQuestionMessage). */
+/** Multi-select answers are the chosen labels joined by ", " (see AskUserQuestionModal). */
 const MULTI_SELECT_SEPARATOR = ', ';
 
 const items = computed(() =>

@@ -6,7 +6,7 @@
  * - Pending actions lifecycle (add, remove, update status)
  * - Loading and error state management
  * - Message limit enforcement (MAX_COUNT)
- * - Getters accuracy (hasMessages, hasPendingActions, lastMessage)
+ * - Getters accuracy (hasMessages, lastMessage)
  * - Edge cases (unicode, long messages, rapid appends, empty content)
  * - Integration scenarios (full conversation flow, tool approval flow)
  *
@@ -115,23 +115,6 @@ describe('useChatStore', () => {
       });
     });
 
-    describe('hasPendingActions', () => {
-      it('should be false when empty', () => {
-        expect(store.hasPendingActions).toBe(false);
-      });
-
-      it('should be true when actions exist', () => {
-        store.addPendingAction(TEST_CONV_ID, createBashAction({ id: 'action-1' }));
-        expect(store.hasPendingActions).toBe(true);
-      });
-
-      it('should become false after removing all actions', () => {
-        store.addPendingAction(TEST_CONV_ID, createBashAction({ id: 'action-1' }));
-        expect(store.hasPendingActions).toBe(true);
-        store.removePendingAction(TEST_CONV_ID, 'action-1');
-        expect(store.hasPendingActions).toBe(false);
-      });
-    });
 
     describe('lastMessage', () => {
       it('should be null when empty', () => {
@@ -378,7 +361,6 @@ describe('useChatStore', () => {
       store.addPendingAction(TEST_CONV_ID, action);
       expect(store.pendingActions).toHaveLength(1);
       expect(store.pendingActions[0]).toEqual(action);
-      expect(store.hasPendingActions).toBe(true);
     });
 
     it('should allow multiple actions', () => {
@@ -608,7 +590,7 @@ describe('useChatStore', () => {
         details: { command: 'npm test', workingDirectory: '/project' },
       });
       store.addPendingAction(TEST_CONV_ID, action);
-      expect(store.hasPendingActions).toBe(true);
+      expect(store.pendingActions).toHaveLength(1);
 
       // User approves
       store.updateActionStatus(TEST_CONV_ID, 'tool-1', 'approved');
@@ -616,7 +598,7 @@ describe('useChatStore', () => {
 
       // Action completed, remove
       store.removePendingAction(TEST_CONV_ID, 'tool-1');
-      expect(store.hasPendingActions).toBe(false);
+      expect(store.pendingActions).toHaveLength(0);
 
       store.setLoading(TEST_CONV_ID, false);
     });

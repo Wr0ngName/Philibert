@@ -1,7 +1,14 @@
 <script setup lang="ts">
 /**
- * AskUserQuestion message — surfaces a multiple-choice question from Claude
+ * AskUserQuestion dialog — surfaces a multiple-choice question from Claude
  * and captures the user's answer(s).
+ *
+ * A resizable dialog rather than a card above the composer: questions come
+ * with long options and previews, and a card squeezed into the space above
+ * the composer was hard to read. Its size is remembered like the other
+ * resizable dialogs'. Clicking outside does not close it — that would throw
+ * away the answer being written — while Escape and the close button cancel,
+ * as the Cancel button does.
  *
  * Shape mirrors the SDK's AskUserQuestion tool: 1-4 questions per call, each
  * with a header chip, 2-4 options, optional preview, optional multi-select,
@@ -17,7 +24,7 @@ import type {
 } from '@shared/types';
 
 import Button from '../shared/Button.vue';
-import Icon from '../shared/Icon.vue';
+import Modal from '../shared/Modal.vue';
 
 interface Props {
   action: AskUserQuestionAction;
@@ -30,7 +37,6 @@ const emit = defineEmits<{
   (e: 'cancel', actionId: string): void;
 }>();
 
-const cardRef = ref<HTMLElement | null>(null);
 
 const truncated = computed(() => props.action.details.truncated);
 const questions = computed<AskUserQuestionEntry[]>(() => props.action.details.questions);
@@ -221,15 +227,11 @@ function cancel(): void {
   emit('cancel', props.action.id);
 }
 
-/** Submit on Enter (when focus is inside the card and not in a textarea); Escape cancels. */
+/**
+ * Ctrl/Cmd+Enter sends. The dialog is modal, so the keystroke is its
+ * wherever the focus is; Escape is the dialog's own close, which cancels.
+ */
 function handleKeydown(event: KeyboardEvent): void {
-  if (!cardRef.value?.contains(event.target as Node)) return;
-
-  if (event.key === 'Escape') {
-    event.preventDefault();
-    cancel();
-    return;
-  }
   if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && canSubmit.value) {
     event.preventDefault();
     submit();
@@ -238,7 +240,6 @@ function handleKeydown(event: KeyboardEvent): void {
 
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown);
-  cardRef.value?.focus();
 });
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown);
@@ -246,38 +247,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div
-    ref="cardRef"
-    class="action-card animate-slide-up outline-hidden focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-surface-800"
-    role="dialog"
-    :aria-labelledby="`question-title-${action.id}`"
-    tabindex="0"
+  <Modal
+    :open="true"
+    title="Claude is asking a question"
+    size="2xl"
+    resize-key="ask-user-question"
+    :close-on-overlay="false"
+    @close="cancel"
   >
-    <!-- Header -->
-    <div class="flex items-start gap-3 mb-3">
-      <div
-        class="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-blue-100 dark:bg-blue-900/30 text-blue-500"
-        aria-hidden="true"
-      >
-        <Icon
-          name="info"
-          size="sm"
-          aria-hidden="true"
-        />
-      </div>
-      <div class="flex-1">
-        <h4
-          :id="`question-title-${action.id}`"
-          class="font-medium text-surface-900 dark:text-surface-100"
-        >
-          Claude is asking a question
-        </h4>
-        <p class="text-xs text-surface-500 dark:text-surface-400 mt-0.5">
-          Esc=cancel, Ctrl/Cmd+Enter=submit
-        </p>
-      </div>
-    </div>
-
     <!-- Truncated fallback (channel mode with clipped payload) -->
     <div
       v-if="truncated"
@@ -426,8 +403,11 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Footer actions -->
-    <div class="flex justify-end gap-2 mt-4">
+    <!-- Outside the scrolling body, so they stay in reach of a long question. -->
+    <template #footer>
+      <p class="mr-auto text-xs text-surface-500 dark:text-surface-400">
+        Esc to cancel · Ctrl/Cmd+Enter to send
+      </p>
       <Button
         variant="secondary"
         size="sm"
@@ -443,6 +423,6 @@ onUnmounted(() => {
       >
         Send answer
       </Button>
-    </div>
-  </div>
+    </template>
+  </Modal>
 </template>

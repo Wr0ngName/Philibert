@@ -14,7 +14,7 @@ import { useSettingsStore } from '../../stores/settings';
 import { useClaudeChat } from '../../composables/useClaudeChat';
 import { toolUseIdForTask } from '../../utils/message-tree';
 import ActionApproval from './ActionApproval.vue';
-import AskUserQuestionMessage from './AskUserQuestionMessage.vue';
+import AskUserQuestionModal from './AskUserQuestionModal.vue';
 import BackgroundTaskDetailModal from './BackgroundTaskDetailModal.vue';
 import BackgroundTaskPanel from './BackgroundTaskPanel.vue';
 import ContextUsageBar from './ContextUsageBar.vue';
@@ -29,7 +29,7 @@ import TransitionFade from '../shared/TransitionFade.vue';
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
 const settingsStore = useSettingsStore();
-const { pendingActions, error, hasPendingActions, hasRunningBackgroundTasks, runningBackgroundTasksList, hasTaskListItems, taskListItems, sessionUsage, hasSessionUsage, pendingScrollMessageId, usageLimitWait } = storeToRefs(chatStore);
+const { pendingActions, error, hasRunningBackgroundTasks, runningBackgroundTasksList, hasTaskListItems, taskListItems, sessionUsage, hasSessionUsage, pendingScrollMessageId, usageLimitWait } = storeToRefs(chatStore);
 const { currentModeMismatch } = storeToRefs(conversationsStore);
 
 const {
@@ -289,6 +289,11 @@ function isQuestionAction(action: PendingAction): action is AskUserQuestionActio
   return action.type === 'ask-user-question';
 }
 
+/** The question shown in its dialog: the first asked, one at a time. */
+const pendingQuestion = computed(() => pendingActions.value.find(isQuestionAction) ?? null);
+/** The asks for permission, which stay above the composer. */
+const approvalActions = computed(() => pendingActions.value.filter((action) => !isQuestionAction(action)));
+
 function handleQuestionAnswer(actionId: string, answers: AskUserQuestionAnswer[]) {
   sendQuestionAnswer(actionId, answers, false);
 }
@@ -535,7 +540,7 @@ function openAgentOfToolCall(taskId: string) {
 
     <!-- Pending actions -->
     <div
-      v-if="hasPendingActions"
+      v-if="approvalActions.length > 0"
       class="border-t border-surface-200 dark:border-surface-700 p-4 space-y-3 max-h-[40%] overflow-y-auto"
     >
       <TransitionGroup
@@ -543,25 +548,25 @@ function openAgentOfToolCall(taskId: string) {
         tag="div"
         class="space-y-3"
       >
-        <template
-          v-for="action in pendingActions"
+        <ActionApproval
+          v-for="action in approvalActions"
           :key="action.id"
-        >
-          <AskUserQuestionMessage
-            v-if="isQuestionAction(action)"
-            :action="action"
-            @answer="handleQuestionAnswer"
-            @cancel="handleQuestionCancel"
-          />
-          <ActionApproval
-            v-else
-            :action="action"
-            @approve="handleApprove"
-            @reject="handleReject"
-          />
-        </template>
+          :action="action"
+          @approve="handleApprove"
+          @reject="handleReject"
+        />
       </TransitionGroup>
     </div>
+
+    <!-- A question from Claude, in its own dialog. Keyed by the question, so
+         the next one starts with nothing chosen. -->
+    <AskUserQuestionModal
+      v-if="pendingQuestion"
+      :key="pendingQuestion.id"
+      :action="pendingQuestion"
+      @answer="handleQuestionAnswer"
+      @cancel="handleQuestionCancel"
+    />
 
     <!-- Context usage bar -->
     <TransitionFade>
