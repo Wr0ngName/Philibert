@@ -36,6 +36,45 @@ const hasGitBashArchive = fs.existsSync(gitBashArchive) && fs.existsSync(gitBash
 // Bundle type marker file path
 const bundleTypeFile = './resources/bundle-type.txt';
 
+/** The part of electron-installer-redhat's installer this config reaches into. */
+interface RedhatInstallerPrototype {
+  specPath: string;
+  createSpec(): Promise<void>;
+}
+
+/**
+ * The RPM maker, with nothing in the package stripped.
+ *
+ * rpmbuild strips every ELF binary it packages by default. The bundled Claude
+ * CLI is a Bun executable whose program is appended after the ELF sections,
+ * and stripping cuts that off: what is left is the bare Bun runtime, which
+ * answers `--version` with Bun's own version and fails every SDK call with
+ * `Script not found "stream-json"`. So on an install from the .rpm the app
+ * could not talk to Claude at all. The .deb maker does not strip.
+ *
+ * electron-installer-redhat's spec turns stripping off only when
+ * cross-building (`%global __strip /bin/true`), and takes no template of its
+ * own, so the same line is put at the top of the spec it writes, for the
+ * length of this make.
+ */
+class MakerRpmUnstripped extends MakerRpm {
+  async make(...args: Parameters<MakerRpm['make']>): ReturnType<MakerRpm['make']> {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Installer } = require('electron-installer-redhat') as { Installer: { prototype: RedhatInstallerPrototype } };
+    const createSpec = Installer.prototype.createSpec;
+    Installer.prototype.createSpec = async function (this: RedhatInstallerPrototype) {
+      await createSpec.call(this);
+      const spec = await fs.promises.readFile(this.specPath, 'utf8');
+      await fs.promises.writeFile(this.specPath, `%global __strip /bin/true\n${spec}`);
+    };
+    try {
+      return await super.make(...args);
+    } finally {
+      Installer.prototype.createSpec = createSpec;
+    }
+  }
+}
+
 // Channel server output path (built by esbuild during generateAssets)
 const channelServerOutput = './out/channel-server.cjs';
 
@@ -306,7 +345,7 @@ const config: ForgeConfig = {
     // Windows NSIS installer is built separately via electron-builder (see electron-builder.json)
     // Forge handles packaging only; electron-builder creates the installer from the packaged app
     new MakerZIP({}, ['darwin']),
-    new MakerRpm({
+    new MakerRpmUnstripped({
       options: {
         icon: './resources/icons/icon.png',
         categories: ['Development'],
