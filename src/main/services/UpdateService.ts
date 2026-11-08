@@ -202,7 +202,18 @@ export class UpdateService {
 
       const result = await autoUpdater.checkForUpdates();
 
-      if (result?.updateInfo) {
+      // electron-updater answers null, rather than failing, when it does not
+      // update this kind of install — on Linux, one it takes for an AppImage
+      // and finds is not (see resources/linux/postinst).
+      if (result === null) {
+        logger.warn('The updater is not active for this install', {
+          platform: process.platform,
+          latestVersion,
+        });
+        return null;
+      }
+
+      if (result.updateInfo) {
         return {
           version: result.updateInfo.version,
           releaseNotes:
@@ -217,7 +228,12 @@ export class UpdateService {
     } catch (error) {
       const errorMessage = (error as Error)?.message || '';
       if (errorMessage.includes('404') || errorMessage.includes('Cannot find channel')) {
-        logger.info('No releases published to package registry yet');
+        // The release exists — it was found above — so what is missing is
+        // its feed for this platform (latest.yml, or latest-linux.yml).
+        logger.warn('The release has no update feed for this platform', {
+          platform: process.platform,
+          error: errorMessage,
+        });
         return null;
       }
       logger.error('Failed to check for updates', error);

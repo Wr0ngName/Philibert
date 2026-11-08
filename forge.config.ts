@@ -312,6 +312,7 @@ const config: ForgeConfig = {
         categories: ['Development'],
         requires: ['git'],
         scripts: {
+          post: './resources/linux/postinst.rpm',
           postun: './resources/linux/postrm.rpm',
         },
       } as MakerRpmConfigOptions,
@@ -324,6 +325,7 @@ const config: ForgeConfig = {
         homepage: 'https://dev.web.wr0ng.name/wrongname/philibert',
         depends: ['git'],
         scripts: {
+          postinst: './resources/linux/postinst',
           postrm: './resources/linux/postrm',
         },
       },

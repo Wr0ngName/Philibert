@@ -6,9 +6,18 @@ set -e
 
 APP_NAME="Philibert"
 OLD_APP_NAMES=("ClineGUI" "Cline GUI" "cline-gui")
+INSTALL_DIR=/usr/lib/philibert
+
+# The updater's marker (see postinst) is not one of the package's files, so
+# dpkg leaves it, and the folders holding it, behind on removal.
+remove_package_type_marker() {
+    rm -f "$INSTALL_DIR/resources/package-type"
+    rmdir --ignore-fail-on-non-empty "$INSTALL_DIR/resources" "$INSTALL_DIR" 2>/dev/null || true
+}
 
 case "$1" in
     purge)
+        remove_package_type_marker
         # Called with 'apt purge' - remove all config without asking
         echo "Purging Philibert configuration data..."
 
@@ -37,6 +46,7 @@ case "$1" in
         ;;
 
     remove)
+        remove_package_type_marker
         # Called with 'apt remove' - ask user about keeping config
         echo ""
         echo "Philibert has been removed."

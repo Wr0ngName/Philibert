@@ -5,6 +5,12 @@ APP_NAME="Philibert"
 
 if [ "$1" = "0" ]; then
     # Package is being removed (not upgraded)
+
+    # The updater's marker (see postinst.rpm) is not one of the package's
+    # files, so rpm leaves it, and the folders holding it, behind.
+    rm -f /usr/lib/philibert/resources/package-type
+    rmdir --ignore-fail-on-non-empty /usr/lib/philibert/resources /usr/lib/philibert 2>/dev/null || true
+
     echo ""
     echo "Philibert has been removed."
     echo ""

@@ -1,0 +1,10 @@
+#!/bin/sh
+# Post-installation script for Philibert (RPM)
+#
+# Tells electron-updater which kind of package this install came from, so
+# it updates it with rpm. See resources/linux/postinst for why this is
+# written at install time.
+
+echo rpm > /usr/lib/philibert/resources/package-type
+
+exit 0

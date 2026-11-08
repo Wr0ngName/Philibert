@@ -1,0 +1,21 @@
+#!/bin/sh
+# Post-installation script for Philibert (DEB)
+#
+# Tells electron-updater which kind of package this install came from, so
+# it updates it with dpkg. Without this file it takes the app for an
+# AppImage, finds it is not one, and never updates. electron-builder writes
+# it into its own packages; Electron Forge, which builds ours, does not, and
+# the .deb and .rpm are made from the same packaged app, so it is written
+# here, at install time.
+
+set -e
+
+RESOURCES=/usr/lib/philibert/resources
+
+case "$1" in
+    configure)
+        echo deb > "$RESOURCES/package-type"
+        ;;
+esac
+
+exit 0

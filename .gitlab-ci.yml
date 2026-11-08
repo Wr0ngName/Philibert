@@ -646,6 +646,17 @@ publish:packages:
            "${PACKAGE_REGISTRY_URL}/releases/${VERSION}/latest.yml"
       cp latest.yml release-info/latest.yml
 
+      # And latest-linux.yml, the feed the updater reads on Linux.
+      echo "Creating latest-linux.yml..."
+      scripts/write-linux-update-feed.sh "${VERSION}" \
+        "$(ls out/make/deb/x64/*.deb | head -1)" \
+        "$(ls out/make/rpm/x64/*.rpm | head -1)" > latest-linux.yml
+      cat latest-linux.yml
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file latest-linux.yml \
+           "${PACKAGE_REGISTRY_URL}/releases/${VERSION}/latest-linux.yml"
+      cp latest-linux.yml release-info/latest-linux.yml
+
       echo "Packages published successfully!"
       cat release-info/urls.env
   artifacts:
