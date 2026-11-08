@@ -144,6 +144,7 @@ const REGISTERED_CHANNELS = {
     IPC_CHANNELS.WINDOW_MINIMIZE,
     IPC_CHANNELS.WINDOW_MAXIMIZE,
     IPC_CHANNELS.WINDOW_CLOSE,
+    IPC_CHANNELS.WINDOW_ATTENTION,
     // Answered per close by requestRendererFlush with ipcMain.once, which
     // removes its own listener; listed so IPC teardown clears any stray one.
     IPC_CHANNELS.WINDOW_FLUSH_COMPLETE,

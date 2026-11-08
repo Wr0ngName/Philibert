@@ -8,6 +8,7 @@ import { storeToRefs } from 'pinia';
 
 import { DEFAULT_CONFIG } from '@shared/types';
 
+import { useChatStore } from './stores/chat';
 import { useSettingsStore } from './stores/settings';
 import { useFilesStore } from './stores/files';
 import { useConversationsStore } from './stores/conversations';
@@ -55,6 +56,15 @@ watch(() => settingsStore.config.historySidebarWidth, (width) => { historyWidth.
 watch(() => settingsStore.config.filesSidebarWidth, (width) => { sidebarWidth.value = width; }, { immediate: true });
 /** Which side of the discussion each sidebar sits on, and in what order. */
 const places = computed(() => sidebarPlaces(settingsStore.config.sidebarLayout));
+
+// While a permission ask or a question waits, the window flashes in the
+// taskbar whenever the user is elsewhere (see setAttentionNeeded).
+const chatStore = useChatStore();
+watch(
+  () => chatStore.anyConversationAwaitsUser,
+  (awaits) => window.electron.window.setAttentionNeeded(awaits),
+  { immediate: true },
+);
 
 /** Stops listening for the pre-close flush request. */
 let stopFlushListener: (() => void) | null = null;

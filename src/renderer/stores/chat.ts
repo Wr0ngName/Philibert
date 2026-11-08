@@ -605,6 +605,14 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * Whether any discussion waits on the user — a permission ask or a
+   * question, on screen or not: what makes the window flash in the taskbar.
+   */
+  const anyConversationAwaitsUser = computed(() =>
+    [...conversationStates.value.keys()].some(conversationHasPendingActions),
+  );
+
+  /**
    * How many of a discussion's tasks run in the background now, as
    * runningBackgroundTasksList counts the open one's: for the discussions
    * list, where a discussion can have work going on with no turn streaming.
@@ -3074,6 +3082,7 @@ export const useChatStore = defineStore('chat', () => {
     setCurrentConversation,
     isConversationLoading,
     conversationHasPendingActions,
+    anyConversationAwaitsUser,
     getConversationState,
     getStreamingContent,
 

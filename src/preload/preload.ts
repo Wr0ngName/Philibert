@@ -576,6 +576,8 @@ const electronAPI: ElectronAPI = {
     },
 
     flushComplete: () => ipcRenderer.send(IPC_CHANNELS.WINDOW_FLUSH_COMPLETE),
+
+    setAttentionNeeded: (needed: boolean) => ipcRenderer.send(IPC_CHANNELS.WINDOW_ATTENTION, needed),
   },
 
   log: {

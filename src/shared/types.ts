@@ -2175,6 +2175,11 @@ export const IPC_CHANNELS = {
   WINDOW_FLUSH_BEFORE_CLOSE: 'window:flush-before-close',
   /** Renderer → main: finished persisting; the close may proceed. */
   WINDOW_FLUSH_COMPLETE: 'window:flush-complete',
+  /**
+   * Renderer → main: whether an ask for permission or a question waits on
+   * the user, so the window can flash in the taskbar while they are elsewhere.
+   */
+  WINDOW_ATTENTION: 'window:attention',
 
   // Logging
   /**

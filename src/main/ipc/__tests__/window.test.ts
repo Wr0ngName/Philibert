@@ -17,6 +17,7 @@ const {
   mockMinimizeWindow,
   mockMaximizeWindow,
   mockCloseWindow,
+  mockSetAttentionNeeded,
 } = vi.hoisted(() => {
   const mockIpcMainOn = vi.fn();
   return {
@@ -30,6 +31,7 @@ const {
     mockMinimizeWindow: vi.fn(),
     mockMaximizeWindow: vi.fn(),
     mockCloseWindow: vi.fn(),
+    mockSetAttentionNeeded: vi.fn(),
   };
 });
 
@@ -41,6 +43,7 @@ vi.mock('../../window', () => ({
   minimizeWindow: mockMinimizeWindow,
   maximizeWindow: mockMaximizeWindow,
   closeWindow: mockCloseWindow,
+  setAttentionNeeded: mockSetAttentionNeeded,
 }));
 
 vi.mock('../../utils/logger', () => ({
@@ -100,6 +103,28 @@ describe('Window IPC handlers', () => {
       expect(handlers.has(IPC_CHANNELS.WINDOW_MINIMIZE)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.WINDOW_MAXIMIZE)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.WINDOW_CLOSE)).toBe(true);
+    });
+  });
+
+  // ===========================================================================
+  // WINDOW_ATTENTION
+  // ===========================================================================
+  describe('WINDOW_ATTENTION handler', () => {
+    it('passes on whether something waits on the user', () => {
+      const handler = handlers.get(IPC_CHANNELS.WINDOW_ATTENTION)!;
+
+      handler({}, true);
+      handler({}, false);
+
+      expect(mockSetAttentionNeeded.mock.calls).toEqual([[true], [false]]);
+    });
+
+    it('takes anything but true for nothing waiting', () => {
+      const handler = handlers.get(IPC_CHANNELS.WINDOW_ATTENTION)!;
+
+      handler({}, 'yes');
+
+      expect(mockSetAttentionNeeded).toHaveBeenCalledWith(false);
     });
   });
 

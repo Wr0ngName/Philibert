@@ -6,7 +6,7 @@ import { clipboard, ipcMain } from 'electron';
 
 import { IPC_CHANNELS } from '../../shared/types';
 import logger from '../utils/logger';
-import { closeWindow, maximizeWindow, minimizeWindow } from '../window';
+import { closeWindow, maximizeWindow, minimizeWindow, setAttentionNeeded } from '../window';
 
 export function setupWindowIPC(): void {
   ipcMain.on(IPC_CHANNELS.WINDOW_MINIMIZE, () => {
@@ -36,6 +36,15 @@ export function setupWindowIPC(): void {
     } catch (error) {
       logger.error('Failed to close window', { error });
       // Don't throw for window operations as they use ipcMain.on (not handle)
+    }
+  });
+
+  ipcMain.on(IPC_CHANNELS.WINDOW_ATTENTION, (_event, needed: unknown) => {
+    try {
+      logger.debug('IPC: window:attention', { needed });
+      setAttentionNeeded(needed === true);
+    } catch (error) {
+      logger.error('Failed to set window attention', { error });
     }
   });
 

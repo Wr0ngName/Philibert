@@ -115,6 +115,21 @@ describe('useChatStore', () => {
       });
     });
 
+    // What makes the window flash in the taskbar.
+    describe('anyConversationAwaitsUser', () => {
+      it('is false while nothing waits', () => {
+        expect(store.anyConversationAwaitsUser).toBe(false);
+      });
+
+      it('is true while an ask waits in a discussion not on screen, until it is settled', () => {
+        store.addPendingAction('other-conv', createBashAction({ id: 'action-elsewhere' }));
+        expect(store.anyConversationAwaitsUser).toBe(true);
+
+        store.removePendingAction('other-conv', 'action-elsewhere');
+        expect(store.anyConversationAwaitsUser).toBe(false);
+      });
+    });
+
 
     describe('lastMessage', () => {
       it('should be null when empty', () => {

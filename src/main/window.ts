@@ -110,6 +110,7 @@ export async function createWindow(options: WindowOptions = {}): Promise<Browser
 
   installEditingContextMenu(mainWindow.webContents);
   installMediaPermissionHandler(mainWindow);
+  installAttentionFlash(mainWindow);
 
   // Open DevTools in debug mode
   if (isDebugMode) {
@@ -334,6 +335,34 @@ export function requestRendererFlush(
 
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow;
+}
+
+/** Whether something in the window waits on the user: a permission ask or a question. */
+let attentionNeeded = false;
+
+/** Flash the window in the taskbar while something waits and the user is elsewhere. */
+function updateAttention(window: BrowserWindow): void {
+  if (window.isDestroyed()) return;
+  // A window the user is looking at needs no flashing to be seen.
+  window.flashFrame(attentionNeeded && !window.isFocused());
+}
+
+/**
+ * Say whether something waits on the user. While it does, the window
+ * flashes in the taskbar whenever it is not focused — on Windows the button
+ * flashes, on Linux the window is marked urgent, which taskbars show, and
+ * on macOS the dock icon bounces — and stops once it is focused or nothing
+ * waits any more.
+ */
+export function setAttentionNeeded(needed: boolean, window: BrowserWindow | null = mainWindow): void {
+  attentionNeeded = needed;
+  if (window) updateAttention(window);
+}
+
+/** Keeps the flashing in step with the window's focus. */
+export function installAttentionFlash(window: BrowserWindow): void {
+  window.on('focus', () => updateAttention(window));
+  window.on('blur', () => updateAttention(window));
 }
 
 /**

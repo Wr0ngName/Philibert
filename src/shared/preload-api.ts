@@ -466,6 +466,11 @@ export interface ElectronAPI {
     onFlushBeforeClose: (callback: () => void) => () => void;
     /** Tell the main process the pre-close flush has finished. */
     flushComplete: () => void;
+    /**
+     * Whether a permission ask or a question waits on the user; while one
+     * does, the window flashes in the taskbar when it is not focused.
+     */
+    setAttentionNeeded: (needed: boolean) => void;
   };
 
   /** Writing renderer warnings and errors to main.log. Fire and forget. */
