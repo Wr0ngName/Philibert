@@ -30,6 +30,11 @@ export interface MessageListSource {
   readonly isLoading: boolean;
   /** The text streaming into the running turn, so the list can follow it. */
   readonly streamingContent: string;
+  /**
+   * How many of its own messages the list has gained since it was opened —
+   * growth at the end, never a page loaded. Only its rise is meaningful.
+   */
+  readonly arrivals: number;
   /** Messages before and after the loaded ones that are not in memory. */
   readonly olderCount: number;
   readonly newerCount: number;
@@ -60,6 +65,7 @@ export function conversationListSource(): MessageListSource {
     get messages() { return chatStore.messages; },
     get isLoading() { return chatStore.isLoading; },
     get streamingContent() { return chatStore.currentStreamingContent; },
+    get arrivals() { return chatStore.arrivalCount(currentId()); },
     get olderCount() { return chatStore.olderMessageCount; },
     get newerCount() { return chatStore.newerMessageCount; },
     get loadingEarlier() { return conversationsStore.loadingEarlier; },
@@ -104,6 +110,8 @@ export function heldListSource(read: () => HeldList): MessageListSource {
     get messages() { return read().messages; },
     get isLoading() { return read().isLoading; },
     streamingContent: '',
+    // Held in full, so it only ever grows by what arrived.
+    get arrivals() { return read().messages.length; },
     olderCount: 0,
     newerCount: 0,
     loadingEarlier: false,

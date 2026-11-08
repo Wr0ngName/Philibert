@@ -991,8 +991,10 @@ describe('MessageList scrolling with real layout', () => {
       expect(store.newerMessageCount, 'the tail was never unloaded').toBeGreaterThan(0);
 
       const jump = container.closest('.relative')
-        ?.querySelector<HTMLElement>('button.bg-primary-500');
-      expect(jump?.textContent).toContain('Jump to latest');
+        ?.querySelector<HTMLElement>('button.scroll-to-end');
+      // Nothing arrived: the way back, not news.
+      expect(jump?.textContent).toContain('Back to last message');
+      expect(jump?.classList.contains('new-activity')).toBe(false);
 
       jump!.click();
       await settle(30);
@@ -1206,15 +1208,15 @@ describe('MessageList scrolling with real layout', () => {
     /**
      * The badge offering the way back to the newest message.
      *
-     * Selected by its own colour class rather than by being "the button":
-     * back when a page of history was loaded by pressing a control, that
-     * control was a pill-shaped button too, and a looser selector matched it
-     * instead — which is how this test once reported the badge saying "Load
-     * earlier messages (999)". The control is gone, the lesson is not.
+     * Selected by its own class rather than by being "the button": back when
+     * a page of history was loaded by pressing a control, that control was a
+     * pill-shaped button too, and a looser selector matched it instead —
+     * which is how this test once reported the badge saying "Load earlier
+     * messages (999)". The control is gone, the lesson is not.
      */
     function badge(container: HTMLElement): HTMLElement | null {
       const root = container.closest('.relative') ?? container.parentElement;
-      return root?.querySelector<HTMLElement>('button.bg-primary-500') ?? null;
+      return root?.querySelector<HTMLElement>('button.scroll-to-end') ?? null;
     }
 
     function arrive(id: string, content = 'a new answer'): void {
@@ -1270,6 +1272,71 @@ describe('MessageList scrolling with real layout', () => {
       expect(badge(container)).toBeNull();
       // And the new message was followed, rather than being counted.
       expect(distanceFromBottom(container)).toBeLessThan(SETTLE_TOLERANCE_PX);
+    });
+
+    // Reported: the badge said "New activity" in orange whenever a turn was
+    // running, though nothing had arrived since the user scrolled up.
+    it('offers the way back, not news, when nothing arrived while a turn runs', async () => {
+      seedConversation();
+      const { container } = await mountList();
+      useChatStore().setLoading('conv-browser', true);
+      await wheelUp(container, 12, 120, 2);
+      await settle(10);
+
+      expect(badge(container)?.textContent).toContain('Back to last message');
+      expect(badge(container)?.classList.contains('new-activity')).toBe(false);
+    });
+
+    it('offers the way back when the user has scrolled up in a finished discussion', async () => {
+      seedConversation();
+      const { container } = await mountList();
+      await wheelUp(container, 12, 120, 2);
+      await settle(10);
+
+      expect(badge(container)?.textContent).toContain('Back to last message');
+    });
+
+    // Reported: an agent's calls were counted as the discussion's new messages.
+    it("does not count an agent's calls as new messages", async () => {
+      seedConversation();
+      const { container } = await mountList();
+      await wheelUp(container, 12, 120, 2);
+
+      const store = useChatStore();
+      for (let i = 0; i < 3; i += 1) {
+        store.addAutoToolUseMessage('conv-browser', {
+          toolUseBlockId: `toolu_agent_call_${i}`,
+          toolName: 'Bash',
+          input: { command: 'ls' },
+          description: 'ls',
+          parentToolUseId: 'toolu_the_agent',
+        });
+      }
+      await settle(10);
+      expect(badge(container)?.textContent).toContain('Back to last message');
+      expect(badge(container)?.classList.contains('new-activity')).toBe(false);
+
+      arrive('arrived-1');
+      await settle(10);
+      expect(badge(container)?.textContent).toContain('1 new message');
+      expect(badge(container)?.classList.contains('new-activity')).toBe(true);
+    });
+
+    it('says there is new activity when the reply being written grows while away', async () => {
+      seedConversation();
+      const store = useChatStore();
+      store.startAssistantMessage('conv-browser');
+      store.appendChunk('conv-browser', 'The first words. ');
+      const { container } = await mountList();
+      await wheelUp(container, 12, 120, 2);
+      await settle(10);
+      expect(badge(container)?.textContent).toContain('Back to last message');
+
+      store.appendChunk('conv-browser', `And more. ${PARAGRAPH}`);
+      await settle(10);
+
+      expect(badge(container)?.textContent).toContain('New activity');
+      expect(badge(container)?.classList.contains('new-activity')).toBe(true);
     });
 
     it('goes back to the newest message when the badge is used', async () => {
@@ -1414,8 +1481,10 @@ describe('MessageList scrolling with real layout', () => {
       // Counted, and reachable: the badge is the way to it.
       expect(store.newerMessageCount).toBe(newerBefore + 1);
       const jump = container.closest('.relative')
-        ?.querySelector<HTMLElement>('button.bg-primary-500');
-      expect(jump).not.toBeNull();
+        ?.querySelector<HTMLElement>('button.scroll-to-end');
+      // Said as news, though it never entered the window.
+      expect(jump?.textContent).toContain('1 new message');
+      expect(jump?.classList.contains('new-activity')).toBe(true);
 
       jump!.click();
       await settle(30);

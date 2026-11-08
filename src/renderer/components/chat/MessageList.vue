@@ -133,35 +133,14 @@ async function pageIfNearAnEdge(): Promise<void> {
 let armedForOlder = true;
 let armedForNewer = true;
 
-/**
- * True while a page is being loaded, so the list does not report it as
- * messages arriving.
- *
- * A page lands in the same list new messages do — at the front when reading
- * back, at the end when reading forward — so counting growth as arrivals
- * announced "500 new messages" for history the reader had scrolled to
- * themselves.
- */
-let pagingInProgress = false;
-
 async function loadEarlier(): Promise<void> {
-  pagingInProgress = true;
-  try {
-    const loaded = await source.loadEarlier();
-    if (loaded > 0) await slideAround();
-  } finally {
-    pagingInProgress = false;
-  }
+  const loaded = await source.loadEarlier();
+  if (loaded > 0) await slideAround();
 }
 
 async function loadNewer(): Promise<void> {
-  pagingInProgress = true;
-  try {
-    const loaded = await source.loadNewer();
-    if (loaded > 0) await slideAround();
-  } finally {
-    pagingInProgress = false;
-  }
+  const loaded = await source.loadNewer();
+  if (loaded > 0) await slideAround();
 }
 
 /**
@@ -491,6 +470,16 @@ const showThinkingPlaceholder = computed(() => {
 const SCROLL_THRESHOLD = 80; // pixels from bottom to consider "at bottom"
 const isUserAtBottom = ref(true);
 const unreadCount = ref(0);
+/** Claude's reply streamed while the view was away from the end. */
+const streamedWhileAway = ref(false);
+/** Something new in the discussion since the view left its end. */
+const hasNewActivity = computed(() => unreadCount.value > 0 || streamedWhileAway.value);
+
+/** Back at the end: nothing there is unseen any more. */
+function markCaughtUp(): void {
+  unreadCount.value = 0;
+  streamedWhileAway.value = false;
+}
 
 /**
  * Check if scroll position is at/near bottom
@@ -635,9 +624,7 @@ function handleScroll(): void {
   void pageIfNearAnEdge();
   isUserAtBottom.value = checkIfAtBottom();
   wasPinnedToBottom.value = checkIfPinnedToBottom();
-  if (isUserAtBottom.value) {
-    unreadCount.value = 0;
-  }
+  if (isUserAtBottom.value) markCaughtUp();
   recordPosition();
 }
 
@@ -680,52 +667,29 @@ async function handleScrollToBottom(): Promise<void> {
     await nextTick();
   }
   scrollToBottom();
-  unreadCount.value = 0;
+  markCaughtUp();
 }
 
-/**
- * The message the list ended with, last time it changed.
- *
- * "How many arrived" cannot be a length delta any more. The list is a window
- * of a long conversation, so it grows at the FRONT too — loading earlier
- * history added 500 to its length, and counted as 500 new messages — and it
- * shrinks at the front when the window is trimmed. Only growth past the
- * previous last message is new.
- */
-let lastTailId: string | null = messages.value.at(-1)?.id ?? null;
-
-/**
- * How many messages appeared after the one the list previously ended with.
- *
- * Zero when there was no previous last message: with nothing to compare
- * against there is no basis for calling anything an arrival, and the
- * alternative — treating the length change as the count — announced a whole
- * page of loaded history as new. (That is not hypothetical: it is what the
- * browser test caught, "500 new messages", on the first length change after
- * mounting.)
- */
-function appendedSince(previousTailId: string | null): number {
-  const list = messages.value;
-  const tail = list.at(-1)?.id ?? null;
-  if (tail === previousTailId) return 0;
-  if (previousTailId === null) return 0;
-
-  const previousIndex = list.findIndex((m) => m.id === previousTailId);
-  // Gone entirely — a replaced list, or a rewind — so a count of arrivals is
-  // meaningless and 0 is the honest answer.
-  if (previousIndex === -1) return 0;
-  return list.length - 1 - previousIndex;
-}
+// What arrived while the view was away from the end: the source's own count
+// of the discussion's messages added at its end. Not the list's length — the
+// list is a window, which grows at the front when a page of history loads
+// (that once announced "500 new messages") and loses its end when the reader
+// goes far enough back, while what arrives then is held apart from it.
+watch(
+  () => [source.key, source.arrivals] as const,
+  ([key, arrivals], [previousKey, previousArrivals]) => {
+    // A different list's count is not something that arrived here.
+    if (key !== previousKey) return;
+    if (arrivals > previousArrivals && !isUserAtBottom.value) {
+      unreadCount.value += arrivals - previousArrivals;
+    }
+  },
+);
 
 // Auto-scroll to bottom when new messages arrive (if user is at bottom)
 watch(
   () => messages.value.length,
   () => {
-    const added = pagingInProgress ? 0 : appendedSince(lastTailId);
-    lastTailId = messages.value.at(-1)?.id ?? null;
-    if (added > 0 && !isUserAtBottom.value) {
-      unreadCount.value += added;
-    }
     nextTick(() => {
       if (isUserAtBottom.value) {
         scrollToBottom();
@@ -766,7 +730,9 @@ watch(
 // Auto-scroll during streaming (if user is at bottom)
 watch(
   currentStreamingContent,
-  () => {
+  (content) => {
+    // Only the discussion's own reply streams here; an agent's does not.
+    if (content && !isUserAtBottom.value) streamedWhileAway.value = true;
     nextTick(() => {
       if (isUserAtBottom.value) {
         scrollToBottom();
@@ -838,10 +804,7 @@ watch(
     // previous conversation's value in place lets them fight the restore.
     isUserAtBottom.value = target.kind === 'bottom';
     wasPinnedToBottom.value = target.kind === 'bottom';
-    unreadCount.value = 0;
-    // A different conversation's last message is not something anything
-    // arrived after.
-    lastTailId = messages.value.at(-1)?.id ?? null;
+    markCaughtUp();
 
     nextTick(() => {
       const el = listRef.value;
@@ -1091,23 +1054,28 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Scroll to new messages button -->
+    <!-- Back to the end of the discussion, whenever the view is away from
+         it. Orange when something was said there since the view left it —
+         the discussion's own messages, not its agents' work — and neutral
+         otherwise. Reading far enough back unloads the tail, and then there
+         is nothing below the window to scroll to: the chip fetches the end
+         rather than scrolling to it. -->
     <Transition name="scroll-badge">
       <button
-        v-if="!isUserAtBottom && (unreadCount > 0 || isLoading || newerMessageCount > 0)"
-        class="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary-500 hover:bg-primary-600 text-white text-xs font-medium shadow-lg transition-colors z-10"
+        v-if="hasMessages && !isUserAtBottom"
+        class="scroll-to-end absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium shadow-lg transition-colors z-10"
+        :class="hasNewActivity
+          ? 'new-activity bg-primary-500 hover:bg-primary-600 text-white'
+          : 'bg-surface-700 hover:bg-surface-800 dark:bg-surface-600 dark:hover:bg-surface-500 text-white'"
         @click="handleScrollToBottom"
       >
         <Icon
           name="chevron-down"
           size="xs"
         />
-        <!-- Reading far enough back unloads the tail, and then there is
-             nothing below the window to scroll to: the badge fetches the end
-             rather than scrolling to it. -->
         <span v-if="unreadCount > 0">{{ unreadCount }} new message{{ unreadCount > 1 ? 's' : '' }}</span>
-        <span v-else-if="newerMessageCount > 0">Jump to latest</span>
-        <span v-else>New activity</span>
+        <span v-else-if="streamedWhileAway">New activity</span>
+        <span v-else>Back to last message</span>
       </button>
     </Transition>
   </div>

@@ -145,6 +145,13 @@ export interface ConversationState {
    */
   newerCount: number;
   /**
+   * How many of the discussion's own messages have been added to it since it
+   * was opened — not its agents' calls, which are listed under their row.
+   * Messages are only ever added at the end, wherever the end is held, so
+   * its growth is what arrived: loading or unloading a page never moves it.
+   */
+  arrivals: number;
+  /**
    * Messages produced while the window did not reach the end of the
    * conversation, and not yet stored.
    *
@@ -309,6 +316,7 @@ function createConversationState(): ConversationState {
     modifiedFilesInLastQuery: new Set(),
     olderCount: 0,
     newerCount: 0,
+    arrivals: 0,
     detachedTurn: [],
     pendingTruncation: null,
     tailPinned: true,
@@ -628,7 +636,7 @@ export const useChatStore = defineStore('chat', () => {
         });
         return;
       }
-      addMessageTo(sink, message);
+      addMessageTo(conversationId, sink, message);
       return;
     }
 
@@ -636,7 +644,7 @@ export const useChatStore = defineStore('chat', () => {
     // window, and appending to it is only meaningful when it ends where the
     // conversation does. See `messageSink`.
     const sink = conversationId ? messageSink(conversationId) : messages.value;
-    addMessageTo(sink ?? messages.value, message);
+    addMessageTo(conversationId, sink ?? messages.value, message);
   }
 
   /**
@@ -655,8 +663,15 @@ export const useChatStore = defineStore('chat', () => {
    * useVirtualList / MessageList). Trimming history is not a legitimate way to
    * make a list render faster.
    */
-  function addMessageTo(sink: ChatMessage[], message: ChatMessage): void {
+  function addMessageTo(conversationId: string | null, sink: ChatMessage[], message: ChatMessage): void {
     sink.push(message);
+    const id = conversationId ?? currentConversationId.value;
+    if (id && !message.toolUse?.parentToolUseId) getConversationState(id).arrivals += 1;
+  }
+
+  /** See {@link ConversationState.arrivals}. */
+  function arrivalCount(conversationId: string): number {
+    return conversationStates.value.get(conversationId)?.arrivals ?? 0;
   }
 
   /**
@@ -1095,7 +1110,7 @@ export const useChatStore = defineStore('chat', () => {
     // still builds a complete history.
     const sink = messageSink(conversationId);
     if (sink) {
-      addMessageTo(sink, message);
+      addMessageTo(conversationId, sink, message);
     }
 
     // Track streaming state for this conversation
@@ -1707,7 +1722,7 @@ export const useChatStore = defineStore('chat', () => {
         input: action.input,
       },
     };
-    addMessageTo(sink, message);
+    addMessageTo(conversationId, sink, message);
   }
 
   /**
@@ -1955,7 +1970,7 @@ export const useChatStore = defineStore('chat', () => {
         ...(capture.parentToolUseId && { parentToolUseId: capture.parentToolUseId }),
       },
     };
-    addMessageTo(sink, message);
+    addMessageTo(conversationId, sink, message);
 
     // Dedupe: if a backgroundTask inline message already exists for this
     // tool_use (e.g. task_started arrived before the assistant message
@@ -2317,7 +2332,7 @@ export const useChatStore = defineStore('chat', () => {
       timestamp: Date.now(),
       backgroundTask: taskRecord(task.id, task),
     };
-    addMessageTo(sink, message);
+    addMessageTo(conversationId, sink, message);
   }
 
   /**
@@ -3032,6 +3047,7 @@ export const useChatStore = defineStore('chat', () => {
     hasTaskListItems,
     olderMessageCount,
     newerMessageCount,
+    arrivalCount,
     detachedTurnFor,
     detachedTurnStored,
     absorbDetachedTurn,
