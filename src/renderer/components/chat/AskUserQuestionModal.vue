@@ -6,9 +6,11 @@
  * A resizable dialog rather than a card above the composer: questions come
  * with long options and previews, and a card squeezed into the space above
  * the composer was hard to read. Its size is remembered like the other
- * resizable dialogs'. Clicking outside does not close it — that would throw
- * away the answer being written — while Escape and the close button cancel,
- * as the Cancel button does.
+ * resizable dialogs'. It is modeless and can be moved by its title bar, so
+ * the discussion behind it can be scrolled for the question's context.
+ * Clicking outside does not close it — that would throw away the answer
+ * being written — while Escape and the close button cancel, as the Cancel
+ * button does.
  *
  * Shape mirrors the SDK's AskUserQuestion tool: 1-4 questions per call, each
  * with a header chip, 2-4 options, optional preview, optional multi-select,
@@ -227,11 +229,15 @@ function cancel(): void {
   emit('cancel', props.action.id);
 }
 
+const dialogRef = ref<InstanceType<typeof Modal> | null>(null);
+
 /**
- * Ctrl/Cmd+Enter sends. The dialog is modal, so the keystroke is its
- * wherever the focus is; Escape is the dialog's own close, which cancels.
+ * Ctrl/Cmd+Enter sends, from inside the dialog only: the discussion and the
+ * composer stay usable while it is up, and the same keys send there.
+ * Escape is the dialog's own close, which cancels.
  */
 function handleKeydown(event: KeyboardEvent): void {
+  if (!dialogRef.value?.containsNode(event.target as Node)) return;
   if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && canSubmit.value) {
     event.preventDefault();
     submit();
@@ -247,12 +253,16 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <!-- Modeless and movable: the discussion behind it can be scrolled for the
+       question's context, and the dialog moved off what is being read. -->
   <Modal
+    ref="dialogRef"
     :open="true"
     title="Claude is asking a question"
     size="2xl"
     resize-key="ask-user-question"
-    :close-on-overlay="false"
+    modeless
+    movable
     @close="cancel"
   >
     <!-- Truncated fallback (channel mode with clipped payload) -->

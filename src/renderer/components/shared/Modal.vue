@@ -38,6 +38,15 @@ interface Props {
    * Without it, the dialog fits its content.
    */
   defaultSize?: ModalSize;
+  /**
+   * Leaves the window behind it usable: no dimmed overlay taking the
+   * pointer, so what is behind can be read and scrolled while the dialog is
+   * up, and no lock on the page's scrolling. Escape then closes it only
+   * from inside it, since typing elsewhere is now possible.
+   */
+  modeless?: boolean;
+  /** Can be moved by dragging its title bar; it stays within the window. */
+  movable?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -48,6 +57,8 @@ const props = withDefaults(defineProps<Props>(), {
   ariaDescription: '',
   resizeKey: undefined,
   defaultSize: undefined,
+  modeless: false,
+  movable: false,
 });
 
 // Only a resizable dialog reaches for the settings, so the others stay
@@ -73,11 +84,48 @@ const customSize = computed<ModalSize | null>(() => {
   return size ? fitted(size) : null;
 });
 
-const contentStyle = computed(() =>
-  customSize.value
+/** How far the dialog has been moved from the centre, while it is open. */
+const offset = ref({ x: 0, y: 0 });
+
+const contentStyle = computed(() => ({
+  ...(customSize.value
     ? { width: `${customSize.value.width}px`, height: `${customSize.value.height}px`, maxWidth: 'none' }
-    : undefined,
-);
+    : {}),
+  ...(offset.value.x || offset.value.y
+    ? { transform: `translate(${offset.value.x}px, ${offset.value.y}px)` }
+    : {}),
+}));
+
+/**
+ * An offset that keeps the whole dialog within the window, given where it
+ * sits without one: the centre, which is where the flex container puts it.
+ */
+function keptInWindow(wanted: { x: number; y: number }): { x: number; y: number } {
+  const box = modalContentRef.value;
+  if (!box) return wanted;
+  const margin = MODAL_SIZE.VIEWPORT_MARGIN;
+  const roomX = Math.max(0, (window.innerWidth - box.offsetWidth) / 2 - margin);
+  const roomY = Math.max(0, (window.innerHeight - box.offsetHeight) / 2 - margin);
+  return { x: clamp(wanted.x, -roomX, roomX), y: clamp(wanted.y, -roomY, roomY) };
+}
+
+function onTitlePointerDown(event: PointerEvent) {
+  if (!props.movable) return;
+  // The close button is in the title bar, and is pressed, not dragged.
+  if ((event.target as HTMLElement).closest('button')) return;
+  const start = { ...offset.value };
+  startPointerDrag(event, 'move', {
+    move: (dx, dy) => {
+      offset.value = keptInWindow({ x: start.x + dx, y: start.y + dy });
+    },
+    end: () => undefined,
+  });
+}
+
+/** A smaller window, or a larger dialog, can leave it partly outside. */
+function keepOffsetInWindow() {
+  offset.value = keptInWindow(offset.value);
+}
 
 function onGripPointerDown(event: PointerEvent) {
   const box = modalContentRef.value;
@@ -101,6 +149,7 @@ function onGripPointerDown(event: PointerEvent) {
       } else {
         draggedSize.value = null;
       }
+      keepOffsetInWindow();
     },
   });
 }
@@ -153,6 +202,16 @@ const emit = defineEmits<{
   (e: 'close'): void;
 }>();
 
+/**
+ * Whether something is inside the dialog: for a modeless dialog's own
+ * keystrokes, which belong to it only while the focus is in it.
+ */
+function containsNode(node: Node | null): boolean {
+  return !!node && !!modalContentRef.value?.contains(node);
+}
+
+defineExpose({ containsNode });
+
 function handleOverlayClick() {
   if (props.closeOnOverlay) {
     emit('close');
@@ -160,19 +219,21 @@ function handleOverlayClick() {
 }
 
 function handleKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && props.closeOnEscape) {
-    emit('close');
-  }
+  if (event.key !== 'Escape' || !props.closeOnEscape) return;
+  if (props.modeless && !containsNode(event.target as Node)) return;
+  emit('close');
 }
 
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown);
+  window.addEventListener('resize', keepOffsetInWindow);
 });
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown);
+  window.removeEventListener('resize', keepOffsetInWindow);
   // Restore body scroll if component unmounts while open
-  if (props.open) {
+  if (props.open && !props.modeless) {
     document.body.style.overflow = '';
   }
 });
@@ -184,7 +245,9 @@ watch(
     if (isOpen) {
       // Save the currently focused element to restore later
       previousActiveElement.value = document.activeElement;
-      document.body.style.overflow = 'hidden';
+      // Each time it opens, it opens in the middle.
+      offset.value = { x: 0, y: 0 };
+      if (!props.modeless) document.body.style.overflow = 'hidden';
 
       // Focus the modal content after it renders
       nextTick(() => {
@@ -193,7 +256,7 @@ watch(
         }
       });
     } else {
-      document.body.style.overflow = '';
+      if (!props.modeless) document.body.style.overflow = '';
 
       // Restore focus to the previously focused element
       if (previousActiveElement.value instanceof HTMLElement) {
@@ -217,16 +280,20 @@ const sizeClasses = {
 <template>
   <Teleport to="body">
     <TransitionFade type="fade">
+      <!-- Modeless, the space around the dialog lets the pointer through to
+           the window behind it. -->
       <div
         v-if="open"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"
+        :class="{ 'pointer-events-none': modeless }"
         role="dialog"
-        aria-modal="true"
+        :aria-modal="modeless ? 'false' : 'true'"
         :aria-labelledby="title ? titleId : undefined"
         :aria-describedby="ariaDescription ? descId : undefined"
       >
         <!-- Overlay -->
         <div
+          v-if="!modeless"
           class="absolute inset-0 bg-black/50"
           @click="handleOverlayClick"
         />
@@ -238,15 +305,19 @@ const sizeClasses = {
             ref="modalContentRef"
             tabindex="-1"
             :class="[
-              'relative w-full flex flex-col bg-white dark:bg-surface-800 rounded-xl shadow-xl outline-hidden',
+              'relative w-full flex flex-col bg-white dark:bg-surface-800 rounded-xl shadow-xl outline-hidden pointer-events-auto',
+              modeless ? 'ring-1 ring-surface-300 dark:ring-surface-600 shadow-2xl' : '',
               sizeClasses[size],
             ]"
             :style="contentStyle"
           >
-            <!-- Header -->
+            <!-- Header: the handle the dialog is moved by, when it moves. -->
             <div
               v-if="title || $slots.header"
-              class="flex items-center justify-between px-6 py-4 border-b border-surface-200 dark:border-surface-700"
+              class="modal-title-bar flex items-center justify-between px-6 py-4 border-b border-surface-200 dark:border-surface-700"
+              :class="{ 'cursor-move select-none touch-none': movable }"
+              :title="movable ? 'Drag to move' : undefined"
+              @pointerdown="onTitlePointerDown"
             >
               <slot name="header">
                 <h2

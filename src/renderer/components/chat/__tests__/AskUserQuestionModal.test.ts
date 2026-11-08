@@ -28,8 +28,16 @@ const ModalStub = defineComponent({
     resizeKey: { type: String, default: undefined },
     closeOnOverlay: { type: Boolean, default: true },
     closeOnEscape: { type: Boolean, default: true },
+    modeless: Boolean,
+    movable: Boolean,
   },
   emits: ['close'],
+  expose: ['containsNode'],
+  methods: {
+    containsNode(node: Node | null): boolean {
+      return !!node && (this.$el as HTMLElement).contains(node);
+    },
+  },
   template: `<div class="modal-stub">
     <button class="modal-close" @click="$emit('close')" />
     <slot /><footer><slot name="footer" /></footer>
@@ -97,12 +105,15 @@ async function send(card: Card): Promise<string | undefined> {
 
 // Reported: the question, as a card above the composer, was hard to read.
 describe('the question dialog', () => {
-  it('is a resizable dialog that a click outside does not close', () => {
+  // And then: the discussion behind it could not be scrolled for the
+  // question's context, nor the dialog moved off what was being read.
+  it('is a resizable, movable dialog that leaves the discussion usable behind it', () => {
     const card = mountCard(false);
     const dialog = card.findComponent(ModalStub);
 
     expect(dialog.props('resizeKey')).toBe('ask-user-question');
-    expect(dialog.props('closeOnOverlay')).toBe(false);
+    expect(dialog.props('modeless')).toBe(true);
+    expect(dialog.props('movable')).toBe(true);
     expect(dialog.props('title')).toBe('Claude is asking a question');
   });
 
@@ -120,13 +131,29 @@ describe('the question dialog', () => {
     expect(footer.findAll('button').map((b) => b.text())).toEqual(['Cancel', 'Send answer']);
   });
 
-  it('sends with Ctrl+Enter wherever the focus is', async () => {
+  function ctrlEnter(target: EventTarget): void {
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+  }
+
+  it('sends with Ctrl+Enter from inside the dialog', async () => {
     const card = mountCard(false);
     await option(card, 'Merge').trigger('click');
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+    ctrlEnter(card.find('.question-other input').element);
 
     const answers = card.emitted('answer')?.[0]?.[1] as Array<{ answer: string }> | undefined;
     expect(answers?.[0]?.answer).toBe('Merge');
+  });
+
+  // The composer sends with the same keys, and stays usable behind it.
+  it('leaves Ctrl+Enter typed elsewhere alone', async () => {
+    const card = mountCard(false);
+    await option(card, 'Merge').trigger('click');
+    const composer = document.createElement('textarea');
+    document.body.appendChild(composer);
+    ctrlEnter(composer);
+
+    expect(card.emitted('answer')).toBeUndefined();
+    composer.remove();
   });
 });
 
