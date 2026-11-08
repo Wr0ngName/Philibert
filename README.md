@@ -116,6 +116,30 @@ npm run lint
 npm run typecheck
 ```
 
+### Tests
+There are two suites, and a change is only tested when both pass.
+
+```bash
+# Unit and component tests, in happy-dom (no layout engine)
+npm test
+
+# Tests that need real layout and real input — scrolling, the message
+# list's virtualisation, pasting images — in headless Chromium
+npm run test:browser
+```
+
+- `npm test` leaves out every `*.browser.test.ts`: happy-dom has no layout, so
+  anything about heights, offsets or scrolling lives in the browser suite
+  (`vitest.browser.config.ts`). A green `npm test` says nothing about those.
+- `npm run test:browser` first installs the Chromium build that the project's
+  Playwright version expects (`pretest:browser`). It downloads nothing when
+  that build is already in Playwright's cache (`~/.cache/ms-playwright` on
+  Linux), and puts it back when the cache was cleared — another project's
+  `playwright uninstall --all` removes it, for one.
+- The browser suite does not run in CI: the runner has too little memory for a
+  browser alongside the build. Run it locally before pushing a change to
+  anything it covers.
+
 ## Architecture
 
 ```

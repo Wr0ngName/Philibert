@@ -18,6 +18,7 @@
     "lint:fix": "eslint src/ forge.config.ts --fix",
     "typecheck": "vue-tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.preload.json --noEmit",
     "test": "vitest run",
+    "pretest:browser": "playwright install --only-shell chromium",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
