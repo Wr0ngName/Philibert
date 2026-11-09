@@ -376,11 +376,9 @@ export interface ElectronAPI {
     setArchived: (id: string, archived: boolean) => Promise<ConversationSummary>;
     get: (id: string) => Promise<Conversation | null>;
     /**
-     * Full write. Kept for the main process's own writes; the renderer uses
-     * `update`, which cannot shorten a stored conversation.
+     * Apply a change — add or replace messages by id, and metadata. The only
+     * write: it cannot shorten a stored conversation except where it says so.
      */
-    save: (conversation: Conversation) => Promise<void>;
-    /** Apply a change — add or replace messages by id, and metadata. */
     update: (update: ConversationUpdate) => Promise<void>;
     /** A conversation's last `limit` messages, plus how many are older. */
     getWindow: (id: string, limit: number) => Promise<ConversationWindow | null>;

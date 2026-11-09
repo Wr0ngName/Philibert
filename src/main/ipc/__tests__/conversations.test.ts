@@ -4,7 +4,7 @@
  * Tests cover:
  * - CONVERSATION_LIST_PAGE and the archiving handlers
  * - CONVERSATION_GET handler for retrieving a single conversation
- * - CONVERSATION_SAVE handler for saving conversations
+ * - CONVERSATION_UPDATE handler, the only write
  * - CONVERSATION_DELETE handler for deleting conversations
  * - Service validation for all handlers
  * - Input validation
@@ -49,12 +49,12 @@ const mockConversationService = {
   summary: vi.fn(),
   setArchived: vi.fn(),
   get: vi.fn(),
-  save: vi.fn(),
+  update: vi.fn(),
   delete: vi.fn(),
 };
 
 // Import after mocks
-import { IPC_CHANNELS, Conversation } from '../../../shared/types';
+import { IPC_CHANNELS, Conversation, type ConversationUpdate } from '../../../shared/types';
 import { ConfigurationError } from '../../errors';
 import { setupConversationIPC } from '../conversations';
 
@@ -98,7 +98,7 @@ describe('Conversations IPC handlers', () => {
     mockConversationService.summary.mockResolvedValue({ id: 'conv_123' });
     mockConversationService.setArchived.mockResolvedValue({ id: 'conv_123' });
     mockConversationService.get.mockResolvedValue(sampleConversation);
-    mockConversationService.save.mockResolvedValue(undefined);
+    mockConversationService.update.mockResolvedValue(undefined);
     mockConversationService.delete.mockResolvedValue(undefined);
 
     // Register handlers
@@ -119,7 +119,7 @@ describe('Conversations IPC handlers', () => {
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_SUMMARY)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_SET_ARCHIVED)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_GET)).toBe(true);
-      expect(handlers.has(IPC_CHANNELS.CONVERSATION_SAVE)).toBe(true);
+      expect(handlers.has(IPC_CHANNELS.CONVERSATION_UPDATE)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_DELETE)).toBe(true);
     });
   });
@@ -251,118 +251,68 @@ describe('Conversations IPC handlers', () => {
   });
 
   // ===========================================================================
-  // CONVERSATION_SAVE
+  // CONVERSATION_UPDATE — the only write
   // ===========================================================================
-  describe('CONVERSATION_SAVE handler', () => {
+  describe('CONVERSATION_UPDATE handler', () => {
     let handler: (...args: unknown[]) => unknown;
+    const sampleUpdate: ConversationUpdate = {
+      id: 'conv_123',
+      workingDirectory: '/home/user/project',
+      updatedAt: Date.now(),
+      upsert: sampleConversation.messages,
+    };
 
     beforeEach(() => {
-      handler = handlers.get(IPC_CHANNELS.CONVERSATION_SAVE)!;
+      handler = handlers.get(IPC_CHANNELS.CONVERSATION_UPDATE)!;
     });
 
-    it('should save conversation', async () => {
-      await handler({}, sampleConversation);
+    it('applies the update', async () => {
+      await handler({}, sampleUpdate);
 
-      expect(mockConversationService.save).toHaveBeenCalledWith(sampleConversation);
+      expect(mockConversationService.update).toHaveBeenCalledWith(sampleUpdate);
     });
 
-    it('should save conversation with many messages', async () => {
-      const manyMessages = Array.from({ length: 100 }, (_, i) => ({
-        id: `msg_${i}`,
-        role: i % 2 === 0 ? 'user' : 'assistant',
-        content: `Message ${i}`,
-        timestamp: Date.now() - i * 1000,
-      })) as any[];
+    it('applies an update that only changes details, with no message', async () => {
+      // A session id or the task list changing is a write of its own.
+      const detailsOnly = { ...sampleUpdate, upsert: [], sdkSessionId: 'session-1' };
 
-      const largeConversation = {
-        ...sampleConversation,
-        messages: manyMessages,
-      };
+      await handler({}, detailsOnly);
 
-      await handler({}, largeConversation);
-
-      expect(mockConversationService.save).toHaveBeenCalledWith(largeConversation);
+      expect(mockConversationService.update).toHaveBeenCalledWith(detailsOnly);
     });
 
-    it('should throw when conversation is not an object', async () => {
-      await expect(handler({}, 'not-an-object')).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when conversation is null', async () => {
-      await expect(handler({}, null)).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when conversation is undefined', async () => {
-      await expect(handler({}, undefined)).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when conversation ID is missing', async () => {
-      const invalidConversation = { ...sampleConversation };
-      delete (invalidConversation as any).id;
-
+    it.each([
+      ['not an object', 'not-an-object'],
+      ['null', null],
+      ['undefined', undefined],
+      ['without an id', { ...sampleUpdate, id: undefined }],
+      ['with an empty id', { ...sampleUpdate, id: '' }],
+      ['with an id of spaces', { ...sampleUpdate, id: '   ' }],
+      ['with an id that is not a string', { ...sampleUpdate, id: 123 }],
+      ['with upsert not an array', { ...sampleUpdate, upsert: 'not-an-array' }],
+      ['with upsert null', { ...sampleUpdate, upsert: null }],
+      ['with a working directory that is not a string', { ...sampleUpdate, workingDirectory: 42 }],
+      ['with updatedAt zero', { ...sampleUpdate, updatedAt: 0 }],
+      ['with updatedAt negative', { ...sampleUpdate, updatedAt: -1 }],
+      ['with updatedAt not a number', { ...sampleUpdate, updatedAt: 'invalid' }],
+    ])('refuses an update %s, writing nothing', async (_name, invalid) => {
       // ValidationError is caught and wrapped in ConfigurationError by the handler
-      await expect(handler({}, invalidConversation)).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when conversation ID is empty', async () => {
-      // ValidationError is caught and wrapped in ConfigurationError by the handler
-      await expect(handler({}, { ...sampleConversation, id: '' })).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when conversation ID is only whitespace', async () => {
-      // ValidationError is caught and wrapped in ConfigurationError by the handler
-      await expect(handler({}, { ...sampleConversation, id: '   ' })).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when conversation ID is not a string', async () => {
-      // ValidationError is caught and wrapped in ConfigurationError by the handler
-      await expect(handler({}, { ...sampleConversation, id: 123 })).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when messages is not an array', async () => {
-      // ValidationError is caught and wrapped in ConfigurationError by the handler
-      await expect(handler({}, { ...sampleConversation, messages: 'not-an-array' })).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when messages is null', async () => {
-      // ValidationError is caught and wrapped in ConfigurationError by the handler
-      await expect(handler({}, { ...sampleConversation, messages: null })).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when createdAt is invalid', async () => {
-      // ValidationError is caught and wrapped in ConfigurationError by the handler
-      await expect(handler({}, { ...sampleConversation, createdAt: 0 })).rejects.toThrow(ConfigurationError);
-      await expect(handler({}, { ...sampleConversation, createdAt: -1 })).rejects.toThrow(ConfigurationError);
-      await expect(handler({}, { ...sampleConversation, createdAt: 'invalid' })).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when updatedAt is invalid', async () => {
-      // ValidationError is caught and wrapped in ConfigurationError by the handler
-      await expect(handler({}, { ...sampleConversation, updatedAt: 0 })).rejects.toThrow(ConfigurationError);
-      await expect(handler({}, { ...sampleConversation, updatedAt: -1 })).rejects.toThrow(ConfigurationError);
-      await expect(handler({}, { ...sampleConversation, updatedAt: 'invalid' })).rejects.toThrow(ConfigurationError);
+      await expect(handler({}, invalid)).rejects.toThrow(ConfigurationError);
+      expect(mockConversationService.update).not.toHaveBeenCalled();
     });
 
     it('should throw when conversation service is not initialized', async () => {
       handlers.clear();
       setupConversationIPC(null as any);
-      const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_SAVE)!;
+      const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_UPDATE)!;
 
-      await expect(nullHandler({}, sampleConversation)).rejects.toThrow(ConfigurationError);
+      await expect(nullHandler({}, sampleUpdate)).rejects.toThrow(ConfigurationError);
     });
 
     it('should propagate service errors', async () => {
-      mockConversationService.save.mockRejectedValue(new Error('Disk full'));
+      mockConversationService.update.mockRejectedValue(new Error('Disk full'));
 
-      await expect(handler({}, sampleConversation)).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should save conversation with empty messages array', async () => {
-      const emptyMessagesConv = { ...sampleConversation, messages: [] };
-
-      await handler({}, emptyMessagesConv);
-
-      expect(mockConversationService.save).toHaveBeenCalledWith(emptyMessagesConv);
+      await expect(handler({}, sampleUpdate)).rejects.toThrow(ConfigurationError);
     });
   });
 

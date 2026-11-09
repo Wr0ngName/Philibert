@@ -41,6 +41,12 @@ function conversation(id: string, updatedAt: number, overrides: Partial<Conversa
   };
 }
 
+/** Store a discussion the way the app does: one update creating it with its messages. */
+async function store(c: Conversation): Promise<void> {
+  const { messages, ...details } = c;
+  await service.update({ ...details, upsert: messages });
+}
+
 async function page(archived: boolean, autoArchiveDays: AutoArchiveDays = 0, after?: ConversationSummary, limit = 50) {
   return service.listPage({
     archived,
@@ -67,22 +73,23 @@ afterEach(() => {
 describe('listPage', () => {
   it('serves the list a page at a time, newest first, each entry once', async () => {
     const now = Date.now();
-    for (let i = 0; i < 120; i++) await service.save(conversation(`c${String(i).padStart(3, '0')}`, now - i * 1000));
+    // Each save waits on its disk flush: a few discussions, small pages.
+    await Promise.all(Array.from({ length: 12 }, (_, i) => store(conversation(`c${String(i).padStart(2, '0')}`, now - i * 1000))));
 
-    const first = await page(false);
-    const second = await page(false, 0, first.conversations.at(-1));
-    const third = await page(false, 0, second.conversations.at(-1));
+    const first = await page(false, 0, undefined, 5);
+    const second = await page(false, 0, first.conversations.at(-1), 5);
+    const third = await page(false, 0, second.conversations.at(-1), 5);
 
-    expect([first, second, third].map((p) => p.conversations.length)).toEqual([50, 50, 20]);
+    expect([first, second, third].map((p) => p.conversations.length)).toEqual([5, 5, 2]);
     expect([first, second, third].map((p) => p.hasMore)).toEqual([true, true, false]);
     const all = [first, second, third].flatMap((p) => p.conversations.map((c) => c.id));
-    expect(new Set(all).size).toBe(120);
-    expect(all[0]).toBe('c000');
-    expect(all.at(-1)).toBe('c119');
+    expect(new Set(all).size).toBe(12);
+    expect(all[0]).toBe('c00');
+    expect(all.at(-1)).toBe('c11');
   });
 
   it('sees a file changed outside the app on its first page', async () => {
-    await service.save(conversation('a', Date.now()));
+    await store(conversation('a', Date.now()));
     expect(await ids(false)).toEqual(['a']);
 
     const file = path.join(conversationsDir.path, 'b.json');
@@ -93,8 +100,8 @@ describe('listPage', () => {
 
   it('keeps the list in step with renames, updates and deletes', async () => {
     const now = Date.now();
-    await service.save(conversation('a', now));
-    await service.save(conversation('b', now - 1));
+    await store(conversation('a', now));
+    await store(conversation('b', now - 1));
     await ids(false);
 
     await service.rename('b', 'Renamed');
@@ -109,8 +116,8 @@ describe('listPage', () => {
 describe('archiving', () => {
   it('moves a discussion archived by hand to the archived list, and back', async () => {
     const now = Date.now();
-    await service.save(conversation('a', now));
-    await service.save(conversation('b', now - 1));
+    await store(conversation('a', now));
+    await store(conversation('b', now - 1));
 
     await service.setArchived('b', true);
     expect(await ids(false)).toEqual(['a']);
@@ -123,7 +130,7 @@ describe('archiving', () => {
   });
 
   it('brings a discussion back by itself when a message comes after it was archived', async () => {
-    await service.save(conversation('a', Date.now() - 1000));
+    await store(conversation('a', Date.now() - 1000));
     await service.setArchived('a', true);
     expect(await ids(true)).toEqual(['a']);
 
@@ -141,8 +148,8 @@ describe('archiving', () => {
 
   it('lists a discussion inactive for longer than the setting as archived, until it is brought back', async () => {
     const now = Date.now();
-    await service.save(conversation('recent', now - DAY_MS));
-    await service.save(conversation('old', now - 40 * DAY_MS));
+    await store(conversation('recent', now - DAY_MS));
+    await store(conversation('old', now - 40 * DAY_MS));
 
     expect(await ids(false, 30)).toEqual(['recent']);
     expect(await ids(true, 30)).toEqual(['old']);
@@ -155,23 +162,23 @@ describe('archiving', () => {
 
   it('keeps the archive flag when a save of the conversation was under way at the same time', async () => {
     const now = Date.now();
-    await service.save(conversation('a', now - 1000));
+    await store(conversation('a', now - 1000));
 
     // Both at once: the update reads the file, and the archive must not be
     // lost to it writing back what it read before the archive landed.
     await Promise.all([
-      service.update({ id: 'a', workingDirectory: '/project', updatedAt: now - 1000, title: 'Retitled', upsert: [] }),
+      service.update({ id: 'a', workingDirectory: '/project', updatedAt: now - 1000, sdkSessionId: 'after', upsert: [] }),
       service.setArchived('a', true),
     ]);
 
     const stored = JSON.parse(fs.readFileSync(path.join(conversationsDir.path, 'a.json'), 'utf-8')) as Conversation;
-    expect(stored.title).toBe('Retitled');
+    expect(stored.sdkSessionId).toBe('after');
     expect(stored.archivedAt).toBeGreaterThanOrEqual(now - 1000);
     expect(await ids(true)).toEqual(['a']);
   });
 
   it('answers a summary for one discussion, wherever it is in the list', async () => {
-    await service.save(conversation('a', Date.now() - 100 * DAY_MS));
+    await store(conversation('a', Date.now() - 100 * DAY_MS));
     expect(await service.summary('a')).toMatchObject({ id: 'a', title: 'Title a' });
     expect(await service.summary('missing')).toBeNull();
   });

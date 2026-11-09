@@ -90,7 +90,7 @@ import { useSettingsStore } from '../settings';
 
 // settle drains a whole turn of the event loop, not a count of ticks: how
 // many ticks a write takes is the persistence code's business.
-import { disk, files, settle } from './support/real-stack';
+import { disk, diskContents, files, onDisk, settle } from './support/real-stack';
 
 // Importing the real preload populates `exposed.api`.
 import '../../../preload/preload';
@@ -112,8 +112,6 @@ async function route(channel: string, args: unknown[]): Promise<unknown> {
     case IPC_CHANNELS.CLAUDE_SEND:
       // The uuid main sent the turn under: its rewind target.
       return sentTurnUuids.shift() ?? null;
-    case IPC_CHANNELS.CONVERSATION_SAVE:
-      return conversationService.save(args[0] as Conversation);
     case IPC_CHANNELS.CONVERSATION_UPDATE:
       return conversationService.update(args[0] as ConversationUpdate);
     case IPC_CHANNELS.CONVERSATION_GET_WINDOW:
@@ -161,15 +159,6 @@ function emitIpc(channel: string, ...args: unknown[]) {
 
 
 /** What is actually on disk for a conversation, parsed from its JSON. */
-function onDisk(id: string): Conversation | null {
-  const raw = files.get(`/conversations/${id}.json`);
-  return raw ? (JSON.parse(raw) as Conversation) : null;
-}
-
-function diskContents(id: string): string[] {
-  return (onDisk(id)?.messages ?? []).map((m) => m.content);
-}
-
 let mounted: ReturnType<typeof mount> | null = null;
 
 function mountApp() {
@@ -642,47 +631,6 @@ describe('a conversation through the real persistence stack', () => {
       'asked again after the rewind',
       'a different answer',
     ]);
-  });
-
-  it('writes a transcript that diverges mid-list, such as after a rewind', async () => {
-    // This used to be refused. A guard compared the incoming transcript with
-    // the stored one and rejected anything that was not an extension or a
-    // truncation, to stop a fragment overwriting a full history.
-    //
-    // It caused the loss it was meant to prevent. From the reported log, on a
-    // real conversation:
-    //
-    //   storedCount: 11745, incomingCount: 12180
-    //   storedFirstId === incomingFirstId
-    //
-    // An extension of 435 messages, same opening — diverging in the middle,
-    // which is what a rewind followed by new turns produces. Every save was
-    // refused, retried three times and abandoned, so the file kept the old
-    // content and everything since vanished.
-    const wrapper = mountApp();
-    const id = conversations.createNewConversation();
-    await settle();
-
-    await send(wrapper, 'first question');
-    streamAssistant(id, 'first answer');
-    emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
-    await settle();
-
-    const stored = onDisk(id)!;
-    // A history that keeps the opening, drops what followed, and adds more —
-    // the shape a rewind-and-continue leaves behind.
-    const diverged = {
-      ...stored,
-      messages: [
-        stored.messages[0],
-        { id: 'msg-after-rewind-1', role: 'assistant', content: 'a different answer', timestamp: 2 },
-        { id: 'msg-after-rewind-2', role: 'user', content: 'and more', timestamp: 3 },
-      ],
-    } as Conversation;
-
-    await conversationService.save(diverged);
-
-    expect(diskContents(id)).toEqual(['first question', 'a different answer', 'and more']);
   });
 
   it('keeps two conversations apart on disk', async () => {

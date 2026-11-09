@@ -337,7 +337,9 @@ describe('useConversationsStore', () => {
       seed({ id: 'conv_1', title: 'Old Title' });
       await store.loadConversationList();
 
-      seed({ id: 'conv_1', title: 'New Title', messages: [message('msg', 'Test')] });
+      // An answer, not a user message: a user message would title the
+      // discussion itself, as the list does (summaryOf).
+      seed({ id: 'conv_1', title: 'New Title', messages: [message('msg', 'Test', 'assistant')] });
 
       await store.loadConversation('conv_1');
 

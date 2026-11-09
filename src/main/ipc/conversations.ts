@@ -10,7 +10,6 @@ import { app, ipcMain } from 'electron';
 import {
   AUTO_ARCHIVE_DAYS,
   AutoArchiveDays,
-  Conversation,
   ConversationListRequest,
   ConversationUpdate,
   IPC_CHANNELS,
@@ -184,74 +183,10 @@ export function setupConversationIPC(conversationService: ConversationService): 
     }
   });
 
-  // Save a conversation
-  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SAVE, async (_event, conversation: Conversation) => {
-    try {
-      // Validate service first
-      ensureService(conversationService, 'ConversationService');
-
-      // Validate input BEFORE logging to prevent errors during logging
-      validateObject(conversation, 'Conversation');
-
-      if (typeof conversation.id !== 'string' || !conversation.id.trim()) {
-        throw new ValidationError('Conversation ID is required and must be a non-empty string', 'id', ERROR_CODES.VALIDATION_REQUIRED);
-      }
-
-      if (typeof conversation.title !== 'string') {
-        throw new ValidationError('Conversation title must be a string', 'title', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
-      }
-
-      if (typeof conversation.workingDirectory !== 'string') {
-        throw new ValidationError('Conversation workingDirectory must be a string', 'workingDirectory', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
-      }
-
-      if (!Array.isArray(conversation.messages)) {
-        throw new ValidationError('Conversation messages must be an array', 'messages', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
-      }
-
-      if (typeof conversation.createdAt !== 'number' || conversation.createdAt <= 0) {
-        throw new ValidationError('Conversation createdAt must be a positive timestamp', 'createdAt', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
-      }
-
-      if (typeof conversation.updatedAt !== 'number' || conversation.updatedAt <= 0) {
-        throw new ValidationError('Conversation updatedAt must be a positive timestamp', 'updatedAt', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
-      }
-
-      // Now safe to log after validation
-      logger.info('IPC: conversation:save called', {
-        id: conversation.id,
-        messageCount: conversation.messages.length,
-        title: conversation.title.slice(0, 30),
-        workingDirectory: conversation.workingDirectory,
-      });
-
-      await conversationService.save(conversation);
-
-      logger.debug('IPC: conversation:save completed', { id: conversation.id });
-    } catch (error) {
-      const errorMessage = error instanceof ValidationError
-        ? `Validation error: ${error.message} (field: ${error.field})`
-        : error instanceof Error
-          ? error.message
-          : String(error);
-
-      logger.error('Failed to save conversation', {
-        error: errorMessage,
-        id: conversation?.id,
-      });
-
-      throw new ConfigurationError(
-        `Failed to save conversation: ${errorMessage}`,
-        ERROR_CODES.CONVERSATION_SAVE_FAILED,
-        error
-      );
-    }
-  });
-
-  // Apply a change to a conversation — the renderer's only write path.
+  // Apply a change to a conversation — the only write path.
   //
-  // Validated on the same fields as the full save it replaced, minus the ones
-  // an update does not carry. `upsert` must be an array even when empty: a
+  // Validated on the fields a conversation must have, minus the ones an
+  // update does not carry. `upsert` must be an array even when empty: a
   // write that only changes metadata (a session id, the task list) is
   // legitimate.
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE, async (_event, update: ConversationUpdate) => {

@@ -1,1337 +1,869 @@
 /**
- * Comprehensive tests for ConversationService.
+ * ConversationService against a real folder: what a discussion's files hold,
+ * what a save writes, what survives a write stopped part-way, and reading a
+ * long discussion in pieces.
  *
- * Tests cover:
- * - Conversation listing with metadata stripping
- * - Conversation retrieval by ID
- * - Conversation saving with auto-title generation
- * - Conversation deletion
- * - Conversation creation with unique IDs
- * - Error handling and edge cases
+ * Real files rather than a mocked fs: what is under test is exactly what a
+ * mock would have to imitate — appends, renames, a file cut short.
+ *
+ * Reported 2026-11-09: a discussion of 68,144 messages was rewritten whole on
+ * every save; the app quit one second into a rewrite and the file was cut at
+ * 3.5 MiB, losing all but its first 2,881 messages.
  */
+
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 
-// Use vi.hoisted to ensure mocks are available before vi.mock is called
-const { mockFs, mockFileSystem } = vi.hoisted(() => {
-  const fileSystem = new Map<string, string>();
-  return {
-    mockFileSystem: fileSystem,
-    mockFs: {
-      existsSync: vi.fn(),
-      readdirSync: vi.fn().mockReturnValue([]),
-      mkdirSync: vi.fn(),
-      constants: {
-        W_OK: 2,
-      },
-      promises: {
-        access: vi.fn().mockResolvedValue(undefined), // Directory is accessible by default
-        mkdir: vi.fn().mockResolvedValue(undefined),
-        readdir: vi.fn().mockImplementation(async (dir: string) => {
-          const files: string[] = [];
-          for (const key of fileSystem.keys()) {
-            if (key.startsWith(dir + '/')) {
-              const filename = key.slice(dir.length + 1);
-              if (!filename.includes('/')) {
-                files.push(filename);
-              }
-            }
-          }
-          return files;
-        }),
-        readFile: vi.fn().mockImplementation(async (path: string, _encoding?: string) => {
-          const content = fileSystem.get(path);
-          if (content === undefined) {
-            const error = new Error(`ENOENT: no such file or directory, open '${path}'`) as NodeJS.ErrnoException;
-            error.code = 'ENOENT';
-            throw error;
-          }
-          return content;
-        }),
-        writeFile: vi.fn().mockImplementation(async (path: string, content: string, _encoding?: string) => {
-          fileSystem.set(path, content);
-        }),
-        unlink: vi.fn().mockImplementation(async (path: string) => {
-          if (!fileSystem.has(path)) {
-            const error = new Error(`ENOENT: no such file or directory, unlink '${path}'`) as NodeJS.ErrnoException;
-            error.code = 'ENOENT';
-            throw error;
-          }
-          fileSystem.delete(path);
-        }),
-        // For the list's index: a file's content stands in for its
-        // modification time, so any change to it is seen as one.
-        stat: vi.fn().mockImplementation(async (path: string) => {
-          const content = fileSystem.get(path);
-          if (content === undefined) {
-            const error = new Error(`ENOENT: no such file or directory, stat '${path}'`) as NodeJS.ErrnoException;
-            error.code = 'ENOENT';
-            throw error;
-          }
-          let hash = 0;
-          for (let i = 0; i < content.length; i++) hash = (hash * 31 + content.charCodeAt(i)) | 0;
-          return { mtimeMs: hash, size: content.length };
-        }),
-        rename: vi.fn().mockImplementation(async (from: string, to: string) => {
-          const content = fileSystem.get(from);
-          if (content === undefined) throw new Error(`ENOENT: rename '${from}'`);
-          fileSystem.set(to, content);
-          fileSystem.delete(from);
-        }),
-      },
-    },
-  };
-});
-
-vi.mock('node:fs', () => ({
-  default: mockFs,
-  existsSync: mockFs.existsSync,
-  readdirSync: mockFs.readdirSync,
-  mkdirSync: mockFs.mkdirSync,
-  constants: mockFs.constants,
-  promises: mockFs.promises,
-}));
-
-vi.mock('node:path', () => {
-  const join = (...parts: string[]) => parts.join('/');
-  const basename = (p: string) => p.slice(p.lastIndexOf('/') + 1);
-  const dirname = (p: string) => p.slice(0, p.lastIndexOf('/'));
-  return { default: { join, basename, dirname }, join, basename, dirname };
-});
+const { conversationsDir } = vi.hoisted(() => ({ conversationsDir: { path: '' } }));
 
 vi.mock('../../utils/logger', () => ({
-  default: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
+  default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock('../../utils/paths', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../utils/paths')>();
+  return { ...actual, getConversationsPath: () => conversationsDir.path };
+});
+
+// Compaction at a size a test can reach.
+vi.mock('../../constants/app', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../constants/app')>();
   return {
     ...actual,
-    getConversationsPath: () => '/app/conversations',
-    isPathWithin: () => true,
+    MAIN_CONSTANTS: {
+      ...actual.MAIN_CONSTANTS,
+      CONVERSATION: { ...actual.MAIN_CONSTANTS.CONVERSATION, COMPACT_MIN_REPLACED: 20, RETRY_BASE_DELAY_MS: 1 },
+    },
   };
 });
 
-// Import after mocks
-import { Conversation } from '../../../shared/types';
+import type { ChatMessage, Conversation, ConversationUpdate } from '../../../shared/types';
 import realLogger from '../../utils/logger';
 import { ConversationService } from '../ConversationService';
 
 const logger = realLogger as unknown as Record<'debug' | 'info' | 'warn' | 'error', Mock>;
 
+let root: string;
+let service: ConversationService;
 
-describe('ConversationService', () => {
-  let service: ConversationService;
+const detailsFile = (id: string) => path.join(conversationsDir.path, `${id}.json`);
+const messagesFile = (id: string) => path.join(conversationsDir.path, `${id}.messages.jsonl`);
+const readJson = (file: string) => JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
+const logLines = (id: string) => fs.readFileSync(messagesFile(id), 'utf-8').split('\n').filter(Boolean);
 
-  const createConversation = (overrides: Partial<Conversation> = {}): Conversation => ({
-    id: 'conv_test_123',
-    title: 'Test Conversation',
-    workingDirectory: '/home/user/project',
-    messages: [
-      {
-        id: 'msg_1',
-        role: 'user',
-        content: 'Hello Claude',
-        timestamp: Date.now() - 60000,
-      },
-      {
-        id: 'msg_2',
-        role: 'assistant',
-        content: 'Hello! How can I help you?',
-        timestamp: Date.now() - 30000,
-      },
-    ],
-    createdAt: Date.now() - 3600000,
-    updatedAt: Date.now() - 30000,
-    ...overrides,
+const msg = (id: string, content = `content ${id}`, role: ChatMessage['role'] = 'user'): ChatMessage => ({
+  id, role, content, timestamp: 1_700_000_000_000,
+});
+
+const base = (id: string): ConversationUpdate => ({
+  id, upsert: [], workingDirectory: '/home/user/project', updatedAt: 1_700_000_000_000,
+});
+
+/** Create a discussion the way the app does: an update with its first messages. */
+async function seed(id: string, messageIds: string[], extra: Partial<ConversationUpdate> = {}): Promise<void> {
+  await service.update({ ...base(id), upsert: messageIds.map((m) => msg(m)), createdAt: 1_600_000_000_000, ...extra });
+}
+
+async function ids(id: string): Promise<string[]> {
+  return ((await service.get(id))?.messages ?? []).map((m) => m.id);
+}
+
+/** A discussion in the one-file layout versions up to 0.25.13 wrote. */
+function oneFile(id: string, messages: ChatMessage[], overrides: Partial<Conversation> = {}): Conversation {
+  return {
+    id, title: 'Stored', workingDirectory: '/home/user/project', messages,
+    createdAt: 1_600_000_000_000, updatedAt: 1_700_000_000_000, ...overrides,
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'philibert-conversations-'));
+  conversationsDir.path = path.join(root, 'conversations');
+  service = new ConversationService();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe('the folder', () => {
+  it('is created when missing', () => {
+    expect(fs.statSync(conversationsDir.path).isDirectory()).toBe(true);
+  });
+});
+
+describe('what a discussion is stored as', () => {
+  it('is its details in one file, and its messages, one per line, in another', async () => {
+    await seed('c', ['m1', 'm2'], { sdkSessionId: 'session-1' });
+
+    const details = readJson(detailsFile('c'));
+    expect(details).not.toHaveProperty('messages');
+    expect(details).toMatchObject({ id: 'c', sdkSessionId: 'session-1', title: 'content m1' });
+    expect(logLines('c').map((line) => (JSON.parse(line) as { put: ChatMessage }).put.id)).toEqual(['m1', 'm2']);
   });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockFileSystem.clear();
-    mockFs.existsSync.mockReturnValue(true);
+  it('reads back as the conversation it was given', async () => {
+    await seed('c', ['m1', 'm2'], { sdkSessionId: 'session-1', executionMode: 'sdk' });
 
-    // Re-establish mock implementations after clearAllMocks
-    // (clearAllMocks can affect mockImplementation in some cases)
-    // `access` included: a test that makes the directory unwritable otherwise
-    // leaves it unwritable for every test declared after it.
-    mockFs.promises.access.mockResolvedValue(undefined);
+    expect(await service.get('c')).toEqual({
+      id: 'c',
+      title: 'content m1',
+      workingDirectory: '/home/user/project',
+      createdAt: 1_600_000_000_000,
+      updatedAt: 1_700_000_000_000,
+      sdkSessionId: 'session-1',
+      executionMode: 'sdk',
+      messages: [msg('m1'), msg('m2')],
+    });
+  });
 
-    mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-      const files: string[] = [];
-      for (const key of mockFileSystem.keys()) {
-        if (key.startsWith(dir + '/')) {
-          const filename = key.slice(dir.length + 1);
-          if (!filename.includes('/')) {
-            files.push(filename);
-          }
-        }
+  it('is null for a discussion that does not exist', async () => {
+    expect(await service.get('nope')).toBeNull();
+  });
+
+  it('fails on an unreadable details file rather than reporting it missing', async () => {
+    // `update` builds on what is read: "no such conversation" would make the
+    // next save start the discussion over.
+    fs.writeFileSync(detailsFile('broken'), '{ not json');
+
+    await expect(service.get('broken')).rejects.toThrow();
+  });
+
+  it('leaves an unreadable file out of the list without breaking it', async () => {
+    await seed('good', ['m1']);
+    fs.writeFileSync(detailsFile('broken'), '{ not json');
+
+    const listed = await service.listPage({ archived: false, autoArchiveDays: 0, limit: 50 });
+
+    expect(listed.conversations.map((c) => c.id)).toEqual(['good']);
+    expect(fs.readFileSync(detailsFile('broken'), 'utf-8')).toBe('{ not json');
+  });
+});
+
+describe('a save', () => {
+  it('appends only the messages that changed, not the window it was sent', async () => {
+    // The renderer sends the whole window it holds, 1,200 messages in the
+    // reported discussion, on every save.
+    await seed('c', ['m1', 'm2', 'm3']);
+
+    await service.update({ ...base('c'), upsert: [msg('m1'), msg('m2', 'edited'), msg('m3'), msg('m4')] });
+
+    const added = logLines('c').slice(3).map((line) => (JSON.parse(line) as { put: ChatMessage }).put);
+    expect(added).toEqual([msg('m2', 'edited'), msg('m4')]);
+    expect(await ids('c')).toEqual(['m1', 'm2', 'm3', 'm4']);
+  });
+
+  it('writes no message line when nothing changed, and still its details', async () => {
+    await seed('c', ['m1']);
+    const before = fs.readFileSync(messagesFile('c'), 'utf-8');
+
+    await service.update({ ...base('c'), upsert: [msg('m1')], sdkSessionId: 'later' });
+
+    expect(fs.readFileSync(messagesFile('c'), 'utf-8')).toBe(before);
+    expect(readJson(detailsFile('c')).sdkSessionId).toBe('later');
+  });
+
+  it('never rewrites what is already in the messages file', async () => {
+    await seed('c', ['m1', 'm2']);
+    const before = fs.readFileSync(messagesFile('c'), 'utf-8');
+
+    await service.update({ ...base('c'), upsert: [msg('m3')] });
+    await service.update({ ...base('c'), truncateFromId: 'm2' });
+
+    expect(fs.readFileSync(messagesFile('c'), 'utf-8').startsWith(before)).toBe(true);
+  });
+
+  it('appends messages it has not seen', async () => {
+    await seed('c1', ['m1', 'm2']);
+
+    await service.update({ ...base('c1'), upsert: [msg('m3')] });
+
+    expect(await ids('c1')).toEqual(['m1', 'm2', 'm3']);
+  });
+
+  it('replaces a message it already has, where it already is', async () => {
+    // Edits legitimately reach stored messages: a streaming flag cleared
+    // when a turn ends, a tool result arriving late. Appending a second
+    // copy, or moving it to the end, would both corrupt the transcript.
+    await seed('c2', ['m1', 'm2', 'm3']);
+
+    await service.update({ ...base('c2'), upsert: [msg('m2', 'edited')] });
+
+    expect(await ids('c2')).toEqual(['m1', 'm2', 'm3']);
+    expect((await service.get('c2'))?.messages[1].content).toBe('edited');
+  });
+
+  it('creates the conversation when there is none', async () => {
+    await service.update({ ...base('c3'), upsert: [msg('m1', 'hello', 'assistant')], title: 'Fresh' });
+
+    expect(await ids('c3')).toEqual(['m1']);
+    expect((await service.get('c3'))?.title).toBe('Fresh');
+  });
+
+  it('cannot shorten a conversation on its own', async () => {
+    // The property everything else rests on.
+    await seed('c4', ['m1', 'm2', 'm3', 'm4']);
+
+    await service.update({ ...base('c4'), upsert: [msg('m4')] });
+
+    expect(await ids('c4')).toEqual(['m1', 'm2', 'm3', 'm4']);
+  });
+
+  it('truncates from a message when asked to', async () => {
+    // What a rewind does: that turn and the ones after it really are gone.
+    await seed('c5', ['m1', 'm2', 'm3', 'm4']);
+
+    await service.update({ ...base('c5'), truncateFromId: 'm3' });
+
+    expect(await ids('c5')).toEqual(['m1', 'm2']);
+  });
+
+  it('truncates and then appends in one write', async () => {
+    // The rewind writes the turns that follow it in the same save.
+    await seed('c6', ['m1', 'm2', 'm3']);
+
+    await service.update({ ...base('c6'), truncateFromId: 'm2', upsert: [msg('m9')] });
+
+    expect(await ids('c6')).toEqual(['m1', 'm9']);
+  });
+
+  it('keeps the history when the truncation anchor is gone', async () => {
+    // "From" cannot be known without the anchor. Dropping nothing is the
+    // recoverable mistake; dropping everything is not.
+    await seed('c7', ['m1', 'm2', 'm3']);
+
+    await service.update({ ...base('c7'), truncateFromId: 'does-not-exist' });
+
+    expect(await ids('c7')).toEqual(['m1', 'm2', 'm3']);
+  });
+
+  it('clears every message when the first one is the anchor', async () => {
+    await seed('c8', ['m1', 'm2']);
+
+    await service.update({ ...base('c8'), truncateFromId: 'm1' });
+
+    expect(await ids('c8')).toEqual([]);
+  });
+
+  it('keeps details it was not given', async () => {
+    await seed('c9', ['m1'], { sdkSessionId: 'session-1', title: 'Kept', customTitle: true });
+
+    await service.update({ ...base('c9'), upsert: [msg('m2')] });
+
+    const stored = await service.get('c9');
+    expect(stored?.sdkSessionId).toBe('session-1');
+    expect(stored?.title).toBe('Kept');
+  });
+
+  it('applies the details it was given', async () => {
+    await seed('c10', ['m1']);
+
+    await service.update({ ...base('c10'), title: 'Renamed', customTitle: true, sdkSessionId: 'session-2' });
+
+    const stored = await service.get('c10');
+    expect(stored?.title).toBe('Renamed');
+    expect(stored?.customTitle).toBe(true);
+    expect(stored?.sdkSessionId).toBe('session-2');
+  });
+
+  it('keeps the original createdAt', async () => {
+    await seed('c11', ['m1']);
+
+    await service.update({ ...base('c11'), upsert: [msg('m2')], createdAt: 999 });
+
+    expect((await service.get('c11'))?.createdAt).toBe(1_600_000_000_000);
+  });
+
+  it('is idempotent, so a retried write cannot duplicate anything', async () => {
+    await seed('c12', ['m1']);
+
+    await service.update({ ...base('c12'), upsert: [msg('m2')] });
+    await service.update({ ...base('c12'), upsert: [msg('m2')] });
+
+    expect(await ids('c12')).toEqual(['m1', 'm2']);
+  });
+
+  it('starts a discussion afresh over the messages a stopped deletion left behind', async () => {
+    await seed('c', ['old1', 'old2']);
+    const leftover = fs.readFileSync(messagesFile('c'), 'utf-8');
+    await service.delete('c');
+    fs.writeFileSync(messagesFile('c'), leftover);
+
+    await service.update({ ...base('c'), upsert: [msg('new1')] });
+
+    expect(await ids('c')).toEqual(['new1']);
+  });
+
+  it('retries a write the disk refused for a moment, and lands it once', async () => {
+    await seed('c', ['m1']);
+    const open = fs.promises.open.bind(fs.promises);
+    let refused = 0;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags) => {
+      if (refused < 2 && String(file).endsWith('.messages.jsonl')) {
+        refused += 1;
+        throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
       }
-      return files;
+      return open(file, flags);
     });
 
-    mockFs.promises.readFile.mockImplementation(async (path: string, _encoding?: string) => {
-      const content = mockFileSystem.get(path);
-      if (content === undefined) {
-        const error = new Error(`ENOENT: no such file or directory, open '${path}'`) as NodeJS.ErrnoException;
-        error.code = 'ENOENT';
-        throw error;
-      }
+    await service.update({ ...base('c'), upsert: [msg('m2')] });
+
+    expect(refused).toBe(2);
+    expect(await ids('c')).toEqual(['m1', 'm2']);
+  });
+
+  it('fails when the disk keeps refusing, and the next save still lands everything', async () => {
+    await seed('c', ['m1']);
+    const spy = vi.spyOn(fs.promises, 'open').mockRejectedValue(
+      Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' }),
+    );
+
+    await expect(service.update({ ...base('c'), upsert: [msg('m2')] })).rejects.toThrow('EBUSY');
+    spy.mockRestore();
+    await service.update({ ...base('c'), upsert: [msg('m2'), msg('m3')] });
+
+    expect(await ids('c')).toEqual(['m1', 'm2', 'm3']);
+  });
+});
+
+describe('titles', () => {
+  it('are the first user message', async () => {
+    await service.update({ ...base('t'), upsert: [msg('a', 'answer first', 'assistant'), msg('q', 'How do I fix this bug?')] });
+
+    expect(readJson(detailsFile('t')).title).toBe('How do I fix this bug?');
+  });
+
+  it('keep a long first message whole: the list cuts it at its own width', async () => {
+    const long = 'This is a very long message that the list used to cut at fifty characters, whatever its width';
+    await service.update({ ...base('t'), upsert: [msg('q', long)] });
+
+    expect(readJson(detailsFile('t')).title).toBe(long);
+  });
+
+  it('are the one given while no user message gives one', async () => {
+    await service.update({ ...base('t'), upsert: [msg('a', 'hello', 'assistant')], title: 'New Conversation' });
+
+    expect(readJson(detailsFile('t')).title).toBe('New Conversation');
+  });
+
+  it('stay the one chosen once renamed', async () => {
+    await seed('t', ['m1']);
+    await service.rename('t', '  Chosen  ');
+
+    await service.update({ ...base('t'), upsert: [msg('m2')] });
+
+    expect(readJson(detailsFile('t'))).toMatchObject({ title: 'Chosen', customTitle: true });
+  });
+
+  it('follow an edit of the first message', async () => {
+    await service.update({ ...base('t'), upsert: [msg('q', 'first wording')] });
+
+    await service.update({ ...base('t'), upsert: [msg('q', 'second wording')] });
+
+    expect(readJson(detailsFile('t')).title).toBe('second wording');
+  });
+});
+
+describe('a write stopped part-way', () => {
+  it('leaves every message before it readable', async () => {
+    await seed('c', ['m1', 'm2']);
+    // What a process ended mid-append leaves: the start of a line.
+    fs.appendFileSync(messagesFile('c'), '\n{"put":{"id":"m3","role":"user","cont');
+
+    const service2 = new ConversationService();
+
+    expect((await service2.get('c'))?.messages.map((m) => m.id)).toEqual(['m1', 'm2']);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Skipped lines of a messages file that a stopped write left unfinished', { id: 'c', damaged: 1 },
+    );
+  });
+
+  it('does not take the next save down with it', async () => {
+    await seed('c', ['m1']);
+    fs.appendFileSync(messagesFile('c'), '\n{"put":{"id":"m2","role":"us');
+    const service2 = new ConversationService();
+
+    await service2.update({ ...base('c'), upsert: [msg('m2'), msg('m3')] });
+
+    expect((await new ConversationService().get('c'))?.messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
+  });
+
+  it('leaves the details as they were when it stopped before its rename', async () => {
+    await seed('c', ['m1'], { sdkSessionId: 'before' });
+    // A replace stopped part-way: its temporary file, never renamed.
+    fs.writeFileSync(`${detailsFile('c')}.tmp`, '{"id":"c","sdkSess');
+
+    expect((await service.get('c'))?.sdkSessionId).toBe('before');
+  });
+
+  it('leaves temporary files that the next start removes', async () => {
+    await seed('c', ['m1']);
+    fs.writeFileSync(`${detailsFile('c')}.tmp`, 'partial');
+    fs.writeFileSync(`${messagesFile('c')}.tmp`, 'partial');
+
+    await new ConversationService().upgradeStorage();
+
+    expect(fs.readdirSync(conversationsDir.path).sort()).toEqual(['c.json', 'c.messages.jsonl']);
+  });
+});
+
+describe('compaction', () => {
+  it('rewrites the messages file to its live messages once replaced lines outnumber them', async () => {
+    await seed('c', ['m1', 'm2']);
+    // A streaming answer: the same message saved again and again.
+    for (let i = 0; i < 25; i++) await service.update({ ...base('c'), upsert: [msg('m2', `streamed ${i}`)] });
+
+    expect(logLines('c').length).toBeLessThan(25);
+    expect((await new ConversationService().get('c'))?.messages).toEqual([msg('m1'), msg('m2', 'streamed 24')]);
+  });
+
+  it('keeps saving after compacting, without writing what did not change', async () => {
+    await seed('c', ['m1', 'm2']);
+    for (let i = 0; i < 25; i++) await service.update({ ...base('c'), upsert: [msg('m2', `streamed ${i}`)] });
+    const lines = logLines('c').length;
+
+    await service.update({ ...base('c'), upsert: [msg('m1'), msg('m2', 'streamed 24'), msg('m3')] });
+
+    expect(logLines('c').length).toBe(lines + 1);
+    expect(await ids('c')).toEqual(['m1', 'm2', 'm3']);
+  });
+});
+
+describe('discussions stored in one file, as up to 0.25.13', () => {
+  it('are converted at startup, messages and details intact', async () => {
+    const stored = oneFile('old', [msg('m1', 'the first question'), msg('m2', 'an answer', 'assistant')], {
+      sdkSessionId: 'session-old', title: 'the first question',
+    });
+    fs.writeFileSync(detailsFile('old'), JSON.stringify(stored));
+
+    await service.upgradeStorage();
+
+    expect(readJson(detailsFile('old'))).not.toHaveProperty('messages');
+    expect(await service.get('old')).toEqual(stored);
+  });
+
+  it('are titled as the list showed them, not as an older version cut them', async () => {
+    const first = 'A first message longer than the fifty characters titles were cut at';
+    fs.writeFileSync(detailsFile('old'), JSON.stringify(oneFile('old', [msg('m1', first)], { title: first.slice(0, 50) })));
+
+    await service.upgradeStorage();
+
+    expect(readJson(detailsFile('old')).title).toBe(first);
+  });
+
+  it('lose a repeated message id, keeping the first', async () => {
+    fs.writeFileSync(detailsFile('old'), JSON.stringify(oneFile('old', [msg('m1', 'first'), msg('m2'), msg('m1', 'repeat')])));
+
+    await service.upgradeStorage();
+
+    expect((await service.get('old'))?.messages.map((m) => [m.id, m.content])).toEqual([['m1', 'first'], ['m2', 'content m2']]);
+  });
+
+  it('are converted again from the one file when a conversion stopped between its two writes', async () => {
+    // The messages file is written first; stopped there, the one file is
+    // still whole, and is what the next start converts from.
+    const stored = oneFile('old', [msg('m1'), msg('m2')]);
+    fs.writeFileSync(detailsFile('old'), JSON.stringify(stored));
+    fs.writeFileSync(messagesFile('old'), '{"put":{"id":"m1","role":"user","content":"content m1","timestamp":1}}\n{"put":{"id":"m2"');
+
+    await service.upgradeStorage();
+
+    expect((await service.get('old'))?.messages).toEqual(stored.messages);
+  });
+
+  it('are left exactly as they are when they cannot be read', async () => {
+    // The 2026-11-09 file: cut mid-string. Kept for what can be recovered.
+    const cut = '{"id":"cut","title":"x","messages":[{"id":"m1","role":"user","content":"unfini';
+    fs.writeFileSync(detailsFile('cut'), cut);
+
+    await service.upgradeStorage();
+
+    expect(fs.readFileSync(detailsFile('cut'), 'utf-8')).toBe(cut);
+    expect(fs.existsSync(messagesFile('cut'))).toBe(false);
+  });
+
+  it('are converted when opened, if copied into the folder while the app runs', async () => {
+    await service.upgradeStorage();
+    const stored = oneFile('copied', [msg('m1'), msg('m2')]);
+    fs.writeFileSync(detailsFile('copied'), JSON.stringify(stored));
+
+    expect((await service.get('copied'))?.messages).toEqual(stored.messages);
+    expect(readJson(detailsFile('copied'))).not.toHaveProperty('messages');
+  });
+
+  it('keep their messages when the first thing to reach them is a save', async () => {
+    // A save builds on what is stored; one that read only the details file
+    // would have started this history over.
+    const stored = oneFile('copied', [msg('m1'), msg('m2')]);
+    fs.writeFileSync(detailsFile('copied'), JSON.stringify(stored));
+
+    await service.update({ ...base('copied'), upsert: [msg('m3')] });
+
+    expect(await ids('copied')).toEqual(['m1', 'm2', 'm3']);
+  });
+});
+
+describe('deleting', () => {
+  it('removes both files', async () => {
+    await seed('c', ['m1']);
+
+    await service.delete('c');
+
+    expect(fs.readdirSync(conversationsDir.path)).toEqual([]);
+    expect(await service.get('c')).toBeNull();
+  });
+
+  it('does not fail for a discussion that is not there', async () => {
+    await expect(service.delete('nope')).resolves.toBeUndefined();
+  });
+
+  it('leaves messages it could not remove to the next start', async () => {
+    await seed('c', ['m1']);
+    fs.unlinkSync(detailsFile('c'));
+
+    await new ConversationService().upgradeStorage();
+
+    expect(fs.readdirSync(conversationsDir.path)).toEqual([]);
+  });
+});
+
+describe('details changed on their own', () => {
+  it('rename without touching the messages', async () => {
+    await seed('c', ['m1', 'm2']);
+    const messages = fs.readFileSync(messagesFile('c'), 'utf-8');
+
+    await service.rename('c', 'Renamed');
+
+    expect(fs.readFileSync(messagesFile('c'), 'utf-8')).toBe(messages);
+    expect((await service.summary('c'))?.title).toBe('Renamed');
+  });
+
+  it('archive without touching the messages', async () => {
+    await seed('c', ['m1']);
+    const messages = fs.readFileSync(messagesFile('c'), 'utf-8');
+
+    const summary = await service.setArchived('c', true);
+
+    expect(fs.readFileSync(messagesFile('c'), 'utf-8')).toBe(messages);
+    expect(summary.archivedAt).toBeGreaterThan(0);
+  });
+
+  it('fail for a discussion that is not there', async () => {
+    await expect(service.rename('nope', 'x')).rejects.toThrow('Conversation not found: nope');
+  });
+});
+
+describe('reading a conversation as a window', () => {
+  const many = (n: number) => Array.from({ length: n }, (_, i) => ({
+    id: `m${i}`, role: 'user' as const, content: `message ${i}`, timestamp: 1000 + i,
+  }));
+
+  beforeEach(async () => {
+    await service.update({ ...base('long'), title: 'Long', upsert: many(1000) });
+  });
+
+  it('returns the most recent messages and counts the rest', async () => {
+    const window = await service.getWindow('long', 100);
+
+    expect(window?.conversation.messages).toHaveLength(100);
+    expect(window?.conversation.messages[0].id).toBe('m900');
+    expect(window?.olderCount).toBe(900);
+  });
+
+  it('returns everything when the limit exceeds the conversation', async () => {
+    const window = await service.getWindow('long', 5000);
+
+    expect(window?.conversation.messages).toHaveLength(1000);
+    expect(window?.olderCount).toBe(0);
+  });
+
+  it('is null for a conversation that does not exist', async () => {
+    expect(await service.getWindow('nope', 10)).toBeNull();
+  });
+
+  it('returns the page before a given message', async () => {
+    const page = await service.getOlder('long', 'm900', 100);
+
+    expect(page?.messages).toHaveLength(100);
+    expect(page?.messages[0].id).toBe('m800');
+    expect(page?.messages.at(-1)?.id).toBe('m899');
+    expect(page?.olderCount).toBe(800);
+  });
+
+  it('stops at the beginning rather than wrapping', async () => {
+    const page = await service.getOlder('long', 'm10', 100);
+
+    expect(page?.messages.map((m) => m.id)).toEqual(Array.from({ length: 10 }, (_, i) => `m${i}`));
+    expect(page?.olderCount).toBe(0);
+  });
+
+  it('answers emptily for an id it does not hold', async () => {
+    // Keyed by id rather than by index precisely so a conversation that
+    // grew in between cannot shift a page; an unknown id is then the
+    // honest "nothing to give you".
+    const page = await service.getOlder('long', 'not-a-message', 100);
+
+    expect(page?.messages).toEqual([]);
+    expect(page?.olderCount).toBe(0);
+  });
+
+  it('returns the page after a given message', async () => {
+    const page = await service.getNewer('long', 'm899', 50);
+
+    expect(page?.messages[0].id).toBe('m900');
+    expect(page?.messages).toHaveLength(50);
+    expect(page?.newerCount).toBe(50);
+  });
+
+  // A turn the renderer holds in memory apart from its window may be
+  // stored in part, and its copy in memory is ahead of the stored one. A
+  // read running into it would hand back a stale copy and count it twice.
+  it('stops a page at the start of a turn held in memory', async () => {
+    const page = await service.getNewer('long', 'm899', 500, 'm950');
+
+    expect(page?.messages.map((m) => m.id)).toEqual(Array.from({ length: 50 }, (_, i) => `m${900 + i}`));
+    expect(page?.newerCount).toBe(0);
+  });
+
+  it('counts only what lies before a held turn', async () => {
+    const page = await service.getNewer('long', 'm899', 10, 'm950');
+
+    expect(page?.messages).toHaveLength(10);
+    expect(page?.newerCount).toBe(40);
+  });
+
+  it('ignores a held turn that is not stored yet', async () => {
+    const page = await service.getNewer('long', 'm989', 500, 'not-stored-yet');
+
+    expect(page?.messages).toHaveLength(10);
+    expect(page?.newerCount).toBe(0);
+  });
+
+  it('returns nothing past a held turn, even asked from inside it', async () => {
+    const page = await service.getNewer('long', 'm960', 10, 'm950');
+
+    expect(page?.messages).toEqual([]);
+    expect(page?.newerCount).toBe(0);
+  });
+
+  it('returns the stretch around a message, counted either side', async () => {
+    const around = await service.getAround('long', 'm500', 250, 250);
+
+    expect(around?.messages[0].id).toBe('m250');
+    expect(around?.messages.at(-1)?.id).toBe('m750');
+    expect(around?.messages).toHaveLength(501);
+    expect(around?.olderCount).toBe(250);
+    expect(around?.newerCount).toBe(249);
+  });
+
+  it('clamps the stretch at both ends of the conversation', async () => {
+    const first = await service.getAround('long', 'm3', 250, 250);
+    expect(first?.olderCount).toBe(0);
+    expect(first?.messages[0].id).toBe('m0');
+
+    const last = await service.getAround('long', 'm998', 250, 250);
+    expect(last?.newerCount).toBe(0);
+    expect(last?.messages.at(-1)?.id).toBe('m999');
+  });
+
+  it('stops the stretch at the start of a held turn', async () => {
+    const around = await service.getAround('long', 'm900', 250, 250, 'm950');
+
+    expect(around?.messages.at(-1)?.id).toBe('m949');
+    expect(around?.newerCount).toBe(0);
+  });
+
+  it('has no stretch for a message inside a held turn, or one not stored', async () => {
+    expect(await service.getAround('long', 'm960', 250, 250, 'm950')).toBeNull();
+    expect(await service.getAround('long', 'nope', 250, 250)).toBeNull();
+    expect(await service.getAround('nope', 'm1', 250, 250)).toBeNull();
+  });
+});
+
+describe('reads and writes at once', () => {
+  it('never shows a new discussion without the messages it was saved with', async () => {
+    // The details file is what makes a discussion exist: written last, so a
+    // read during the first save finds no discussion rather than an empty one.
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const open = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags) => {
+      if (String(file).endsWith('.messages.jsonl')) await held;
+      return open(file, flags);
+    });
+    const saving = service.update({ ...base('new'), upsert: [msg('m1')] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const during = await service.get('new');
+    release();
+    await saving;
+
+    expect(during).toBeNull();
+    expect(await ids('new')).toEqual(['m1']);
+  });
+
+  it('a rewind after a read that overlapped a save still finds its turn', async () => {
+    // A read does not wait for writes. One that read the file before a save
+    // appended to it, and finished after, holds the file as it was: that
+    // must not become what the next write builds on, or a rewind would not
+    // find the turn it cuts from, and keep it.
+    await seed('c', ['m1']);
+    let finishRead: () => void = () => {};
+    const readHeld = new Promise<void>((resolve) => { finishRead = resolve; });
+    const readFile = fs.promises.readFile.bind(fs.promises);
+    vi.spyOn(fs.promises, 'readFile').mockImplementation(async (file, options) => {
+      const content = await readFile(file, options);
+      if (String(file).endsWith('.messages.jsonl')) await readHeld;
       return content;
     });
 
-    mockFs.promises.writeFile.mockImplementation(async (path: string, content: string, _encoding?: string) => {
-      mockFileSystem.set(path, content);
-    });
+    const reading = service.get('c');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await service.update({ ...base('c'), upsert: [msg('m2'), msg('m3')] });
+    finishRead();
+    expect((await reading)?.messages.map((m) => m.id)).toEqual(['m1']);
+    vi.restoreAllMocks();
 
-    mockFs.promises.unlink.mockImplementation(async (path: string) => {
-      if (!mockFileSystem.has(path)) {
-        const error = new Error(`ENOENT: no such file or directory, unlink '${path}'`) as NodeJS.ErrnoException;
-        error.code = 'ENOENT';
-        throw error;
-      }
-      mockFileSystem.delete(path);
-    });
+    await service.update({ ...base('c'), truncateFromId: 'm2' });
 
-    service = new ConversationService();
+    expect(await ids('c')).toEqual(['m1']);
+  });
+});
+
+describe('settleWrites', () => {
+  it('waits for the writes under way', async () => {
+    await seed('c', ['m1']);
+    let landed = false;
+    void service.update({ ...base('c'), upsert: [msg('m2')] }).then(() => { landed = true; });
+
+    expect(await service.settleWrites(10_000)).toBe(true);
+    expect(landed).toBe(true);
+  });
+
+  it('stops waiting at its bound, and says so', async () => {
+    await seed('c', ['m1']);
+    // The disk stops answering at the save's first open, until released.
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const open = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags) => {
+      await held;
+      return open(file, flags);
+    });
+    const write = service.update({ ...base('c'), upsert: [msg('m2')] });
+
+    expect(await service.settleWrites(20)).toBe(false);
+    release();
+    await write;
+  });
+});
+
+describe('search', () => {
+  it('finds a word in the messages of every discussion, newest first', async () => {
+    await service.update({ ...base('a'), upsert: [{ ...msg('a1', 'the needle here'), timestamp: 1 }] });
+    await service.update({ ...base('b'), upsert: [{ ...msg('b1', 'another Needle'), timestamp: 2 }, msg('b2', 'nothing')] });
+
+    const found = await service.search('needle', 'all', null);
+
+    expect(found.map((r) => [r.conversationId, r.messageId])).toEqual([['b', 'b1'], ['a', 'a1']]);
+  });
+
+  it('searches only the open discussion when asked to', async () => {
+    await service.update({ ...base('a'), upsert: [msg('a1', 'needle')] });
+    await service.update({ ...base('b'), upsert: [msg('b1', 'needle')] });
+
+    const found = await service.search('needle', 'current', 'b');
+
+    expect(found.map((r) => r.conversationId)).toEqual(['b']);
+  });
+});
+
+describe('recoverSessionData()', () => {
+  const SESSION_ID = 'abc123-session';
+  const REAL_CWD = 'C:\\Claude\\Claude Femmexpat\\actual-subdir';
+  const STALE_CWD = 'C:\\Claude\\Claude Femmexpat';
+  let home: string;
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+    home = path.join(root, 'home');
+    process.env.HOME = home;
+    fs.mkdirSync(path.join(home, '.claude', 'projects'), { recursive: true });
   });
 
   afterEach(() => {
-    vi.clearAllMocks();
+    process.env.HOME = savedHome;
   });
 
-  // ===========================================================================
-  // Initialization
-  // ===========================================================================
-  describe('initialization', () => {
-    it('should create conversations directory if it does not exist', () => {
-      mockFs.existsSync.mockReturnValue(false);
-      new ConversationService();
-
-      expect(mockFs.mkdirSync).toHaveBeenCalledWith('/app/conversations', { recursive: true });
-    });
-
-    it('should not create directory if it already exists', () => {
-      mockFs.existsSync.mockReturnValue(true);
-      mockFs.mkdirSync.mockClear();
-      new ConversationService();
-
-      expect(mockFs.mkdirSync).not.toHaveBeenCalled();
-    });
-
-    it('should handle directory creation errors gracefully', () => {
-      mockFs.existsSync.mockReturnValue(false);
-      mockFs.mkdirSync.mockImplementation(() => {
-        throw new Error('Permission denied');
-      });
-
-      // Should not throw
-      expect(() => new ConversationService()).not.toThrow();
-    });
-  });
-
-  /** Every discussion not archived, in one page; archiving by inactivity off. */
-  async function listed() {
-    const page = await service.listPage({ archived: false, autoArchiveDays: 0, limit: 1000 });
-    return page.conversations;
+  function sessionFile(dirName: string, cwd: string): void {
+    const dir = path.join(home, '.claude', 'projects', dirName);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${SESSION_ID}.jsonl`), `${JSON.stringify({ type: 'system', cwd })}\n`);
   }
 
-  // ===========================================================================
-  // listPage()
-  // ===========================================================================
-  describe('listPage()', () => {
-    it('should return empty array when no conversations exist', async () => {
-      const conversations = await listed();
+  it('finds the session file by its id, whatever its folder, and takes its folder', async () => {
+    await seed('rec', ['m1'], { workingDirectory: STALE_CWD, sdkSessionId: SESSION_ID });
+    sessionFile('whatever-dir-name-doesnt-matter', REAL_CWD);
+    const messages = fs.readFileSync(messagesFile('rec'), 'utf-8');
 
-      expect(conversations).toEqual([]);
-    });
+    await service.recoverSessionData();
 
-    it('should return conversations sorted by updatedAt (newest first)', async () => {
-      const conv1 = createConversation({ id: 'conv_1', updatedAt: 1000 });
-      const conv2 = createConversation({ id: 'conv_2', updatedAt: 3000 });
-      const conv3 = createConversation({ id: 'conv_3', updatedAt: 2000 });
-
-      mockFileSystem.set('/app/conversations/conv_1.json', JSON.stringify(conv1));
-      mockFileSystem.set('/app/conversations/conv_2.json', JSON.stringify(conv2));
-      mockFileSystem.set('/app/conversations/conv_3.json', JSON.stringify(conv3));
-
-      const conversations = await listed();
-
-      expect(conversations.map((c) => c.id)).toEqual(['conv_2', 'conv_3', 'conv_1']);
-    });
-
-    it('should return conversations without messages (metadata only)', async () => {
-      const conv = createConversation({
-        messages: [
-          { id: 'msg_1', role: 'user', content: 'Secret message', timestamp: Date.now() },
-        ],
-      });
-
-      mockFileSystem.set('/app/conversations/conv_test_123.json', JSON.stringify(conv));
-
-      const conversations = await listed();
-
-      expect(conversations[0]).not.toHaveProperty('messages');
-    });
-
-    it('should skip non-json files', async () => {
-      const conv = createConversation();
-      mockFileSystem.set('/app/conversations/conv_test_123.json', JSON.stringify(conv));
-      mockFileSystem.set('/app/conversations/notes.txt', 'some text');
-      mockFileSystem.set('/app/conversations/.DS_Store', 'binary');
-
-      const conversations = await listed();
-
-      expect(conversations).toHaveLength(1);
-    });
-
-    it('should skip files with invalid JSON', async () => {
-      const conv = createConversation({ id: 'valid' });
-      mockFileSystem.set('/app/conversations/valid.json', JSON.stringify(conv));
-      mockFileSystem.set('/app/conversations/invalid.json', 'not json {{{');
-
-      const conversations = await listed();
-
-      expect(conversations).toHaveLength(1);
-      expect(conversations[0].id).toBe('valid');
-    });
-
-    it('should return empty array on read error', async () => {
-      mockFs.promises.readdir.mockRejectedValueOnce(new Error('Permission denied'));
-
-      const conversations = await listed();
-
-      expect(conversations).toEqual([]);
-    });
+    expect(readJson(detailsFile('rec')).workingDirectory).toBe(REAL_CWD);
+    expect(fs.readFileSync(messagesFile('rec'), 'utf-8')).toBe(messages);
   });
 
-  // ===========================================================================
-  // get()
-  // ===========================================================================
-  describe('get()', () => {
-    it('should return conversation by ID', async () => {
-      const conv = createConversation();
-      mockFileSystem.set('/app/conversations/conv_test_123.json', JSON.stringify(conv));
+  it('leaves a discussion whose folder already matches', async () => {
+    await seed('ok', ['m1'], { workingDirectory: REAL_CWD, sdkSessionId: SESSION_ID });
+    sessionFile('dir', REAL_CWD);
+    const before = fs.readFileSync(detailsFile('ok'), 'utf-8');
 
-      const result = await service.get('conv_test_123');
+    await service.recoverSessionData();
 
-      expect(result).toMatchObject({
-        id: 'conv_test_123',
-        title: 'Test Conversation',
-      });
-    });
-
-    it('should return full messages', async () => {
-      const conv = createConversation({
-        messages: [
-          { id: 'msg_1', role: 'user', content: 'Full message content', timestamp: Date.now() },
-        ],
-      });
-      mockFileSystem.set('/app/conversations/conv_test_123.json', JSON.stringify(conv));
-
-      const result = await service.get('conv_test_123');
-
-      expect(result?.messages).toHaveLength(1);
-      expect(result?.messages[0].content).toBe('Full message content');
-    });
-
-    it('should return null for non-existent conversation', async () => {
-      const result = await service.get('nonexistent');
-
-      expect(result).toBeNull();
-    });
-
-    it('fails on a corrupt file rather than reporting it as missing', async () => {
-      // It used to return null, which is the same answer as "there is no such
-      // conversation" — and `update` builds on what this returns, so a
-      // corrupt file was treated as a new conversation and the next write
-      // replaced whatever was still in it. Failing leaves the file alone for
-      // recovery and tells the user the truth.
-      mockFileSystem.set('/app/conversations/invalid.json', 'invalid json {{{');
-
-      await expect(service.get('invalid')).rejects.toThrow();
-
-      // And the file is untouched.
-      expect(mockFileSystem.get('/app/conversations/invalid.json')).toBe('invalid json {{{');
-    });
-
-    it('still reports a conversation that is simply absent as null', async () => {
-      // The distinction the change rests on: absent is an answer, unreadable
-      // is a failure.
-      await expect(service.get('never-existed')).resolves.toBeNull();
-    });
-
-    it('does not let one corrupt file break the list', async () => {
-      // The sidebar has to keep working: the list skips what it cannot parse.
-      mockFileSystem.set('/app/conversations/invalid.json', 'invalid json {{{');
-      mockFileSystem.set(
-        '/app/conversations/good.json',
-        JSON.stringify(createConversation({ id: 'good', title: 'Readable' })),
-      );
-
-      const list = await listed();
-
-      expect(list.map((c) => c.id)).toEqual(['good']);
-    });
+    expect(fs.readFileSync(detailsFile('ok'), 'utf-8')).toBe(before);
   });
 
-  // ===========================================================================
-  // save()
-  // ===========================================================================
-  describe('save()', () => {
-    it('should save conversation to file', async () => {
-      const conv = createConversation();
+  it('leaves a discussion whose session file is gone', async () => {
+    await seed('gone', ['m1'], { workingDirectory: STALE_CWD, sdkSessionId: SESSION_ID });
+    const before = fs.readFileSync(detailsFile('gone'), 'utf-8');
 
-      await service.save(conv);
+    await service.recoverSessionData();
 
-      expect(mockFs.promises.writeFile).toHaveBeenCalledWith(
-        '/app/conversations/conv_test_123.json',
-        expect.any(String),
-        'utf-8'
-      );
-    });
-
-    it('should preserve the updatedAt timestamp from payload', async () => {
-      const conv = createConversation({ updatedAt: 1000 });
-
-      await service.save(conv);
-
-      const savedContent = mockFileSystem.get('/app/conversations/conv_test_123.json');
-      const saved = JSON.parse(savedContent!);
-
-      expect(saved.updatedAt).toBe(1000);
-    });
-
-    it('should generate title from first user message if not set', async () => {
-      const conv = createConversation({
-        title: '',
-        messages: [
-          { id: 'msg_1', role: 'user', content: 'Help me write a function', timestamp: Date.now() },
-        ],
-      });
-
-      await service.save(conv);
-
-      const savedContent = mockFileSystem.get('/app/conversations/conv_test_123.json');
-      const saved = JSON.parse(savedContent!);
-
-      expect(saved.title).toBe('Help me write a function');
-    });
-
-    it('titles a discussion with its whole first message, which the list cuts to its width', async () => {
-      const longMessage = 'A'.repeat(100);
-      const conv = createConversation({
-        title: '',
-        messages: [
-          { id: 'msg_1', role: 'user', content: longMessage, timestamp: Date.now() },
-        ],
-      });
-
-      await service.save(conv);
-
-      const savedContent = mockFileSystem.get('/app/conversations/conv_test_123.json');
-      const saved = JSON.parse(savedContent!);
-
-      expect(saved.title).toBe(longMessage);
-    });
-
-    it('should not overwrite existing title', async () => {
-      const conv = createConversation({
-        title: 'My Custom Title',
-        messages: [
-          { id: 'msg_1', role: 'user', content: 'Some message', timestamp: Date.now() },
-        ],
-      });
-
-      await service.save(conv);
-
-      const savedContent = mockFileSystem.get('/app/conversations/conv_test_123.json');
-      const saved = JSON.parse(savedContent!);
-
-      expect(saved.title).toBe('My Custom Title');
-    });
-
-    it('should save pretty-printed JSON', async () => {
-      const conv = createConversation();
-
-      await service.save(conv);
-
-      expect(mockFs.promises.writeFile).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.stringContaining('\n'),
-        'utf-8'
-      );
-    });
-
-    it('should propagate write errors after retries', async () => {
-      const conv = createConversation();
-      // Mock all 3 retry attempts to fail
-      mockFs.promises.writeFile
-        .mockRejectedValueOnce(new Error('Disk full'))
-        .mockRejectedValueOnce(new Error('Disk full'))
-        .mockRejectedValueOnce(new Error('Disk full'));
-
-      await expect(service.save(conv)).rejects.toThrow('Disk full');
-    });
-
-    it('should handle empty messages array', async () => {
-      const conv = createConversation({ title: '', messages: [] });
-
-      await service.save(conv);
-
-      const savedContent = mockFileSystem.get('/app/conversations/conv_test_123.json');
-      const saved = JSON.parse(savedContent!);
-
-      expect(saved.title).toBe('');
-    });
+    expect(fs.readFileSync(detailsFile('gone'), 'utf-8')).toBe(before);
   });
 
-  // ===========================================================================
-  // delete()
-  // ===========================================================================
-  describe('delete()', () => {
-    it('should delete conversation file', async () => {
-      mockFileSystem.set('/app/conversations/conv_123.json', '{}');
+  it('skips a discussion with no session', async () => {
+    await seed('none', ['m1'], { workingDirectory: STALE_CWD });
+    sessionFile('dir', REAL_CWD);
+    const before = fs.readFileSync(detailsFile('none'), 'utf-8');
 
-      await service.delete('conv_123');
+    await service.recoverSessionData();
 
-      expect(mockFs.promises.unlink).toHaveBeenCalledWith('/app/conversations/conv_123.json');
-    });
-
-    it('should not throw for non-existent conversation', async () => {
-      await expect(service.delete('nonexistent')).resolves.toBeUndefined();
-    });
-
-    it('should propagate non-ENOENT errors', async () => {
-      const error = new Error('Permission denied') as NodeJS.ErrnoException;
-      error.code = 'EACCES';
-      mockFs.promises.unlink.mockRejectedValueOnce(error);
-
-      await expect(service.delete('conv_123')).rejects.toThrow('Permission denied');
-    });
+    expect(fs.readFileSync(detailsFile('none'), 'utf-8')).toBe(before);
   });
 
-  // ===========================================================================
-  // create()
-  // ===========================================================================
-  describe('create()', () => {
-    it('should create new conversation with unique ID', () => {
-      const conv = service.create('/home/user/project');
+  it('does nothing when there is no ~/.claude/projects', async () => {
+    fs.rmSync(path.join(home, '.claude'), { recursive: true });
+    await seed('c', ['m1'], { workingDirectory: STALE_CWD, sdkSessionId: SESSION_ID });
 
-      expect(conv.id).toMatch(/^conv_[a-z0-9]+_[a-z0-9]+$/);
-    });
+    await service.recoverSessionData();
 
-    it('should set the working directory', () => {
-      const conv = service.create('/home/user/project');
-
-      expect(conv.workingDirectory).toBe('/home/user/project');
-    });
-
-    it('should initialize with empty messages', () => {
-      const conv = service.create('/home/user/project');
-
-      expect(conv.messages).toEqual([]);
-    });
-
-    it('should initialize with empty title', () => {
-      const conv = service.create('/home/user/project');
-
-      expect(conv.title).toBe('');
-    });
-
-    it('should set createdAt timestamp', () => {
-      const before = Date.now();
-      const conv = service.create('/home/user/project');
-      const after = Date.now();
-
-      expect(conv.createdAt).toBeGreaterThanOrEqual(before);
-      expect(conv.createdAt).toBeLessThanOrEqual(after);
-    });
-
-    it('should set updatedAt timestamp', () => {
-      const before = Date.now();
-      const conv = service.create('/home/user/project');
-      const after = Date.now();
-
-      expect(conv.updatedAt).toBeGreaterThanOrEqual(before);
-      expect(conv.updatedAt).toBeLessThanOrEqual(after);
-    });
-
-    it('should generate unique IDs for multiple conversations', () => {
-      const conv1 = service.create('/home/user/project');
-      const conv2 = service.create('/home/user/project');
-      const conv3 = service.create('/home/user/project');
-
-      expect(new Set([conv1.id, conv2.id, conv3.id]).size).toBe(3);
-    });
+    expect(readJson(detailsFile('c')).workingDirectory).toBe(STALE_CWD);
   });
-
-  // ===========================================================================
-  // Integration scenarios
-  // ===========================================================================
-  describe('integration scenarios', () => {
-    it('should create, save, retrieve, and delete a conversation', async () => {
-      // Create
-      const conv = service.create('/home/user/project');
-      conv.messages.push({
-        id: 'msg_1',
-        role: 'user',
-        content: 'Hello',
-        timestamp: Date.now(),
-      });
-
-      // Save
-      await service.save(conv);
-
-      // Verify file was written
-      const expectedPath = `/app/conversations/${conv.id}.json`;
-      expect(mockFileSystem.has(expectedPath)).toBe(true);
-
-      // Retrieve
-      const retrieved = await service.get(conv.id);
-      expect(retrieved).not.toBeNull();
-      expect(retrieved?.messages).toHaveLength(1);
-      expect(retrieved?.messages[0].content).toBe('Hello');
-
-      // List
-      const list = await listed();
-      expect(list).toHaveLength(1);
-      expect(list[0]).not.toHaveProperty('messages'); // List doesn't include messages
-
-      // Delete
-      await service.delete(conv.id);
-
-      // Verify deleted
-      const deleted = await service.get(conv.id);
-      expect(deleted).toBeNull();
-    });
-
-    it('should handle concurrent saves', async () => {
-      const conv1 = service.create('/project1');
-      const conv2 = service.create('/project2');
-      const conv3 = service.create('/project3');
-
-      await Promise.all([service.save(conv1), service.save(conv2), service.save(conv3)]);
-
-      const list = await listed();
-      expect(list).toHaveLength(3);
-    });
-  });
-
-  // ===========================================================================
-  // SDK Session ID persistence
-  // ===========================================================================
-  describe('sdkSessionId persistence', () => {
-    it('should preserve sdkSessionId through save and get', async () => {
-      const conv = createConversation({ sdkSessionId: 'sdk-session-abc-123' });
-
-      await service.save(conv);
-      const retrieved = await service.get(conv.id);
-
-      expect(retrieved).not.toBeNull();
-      expect(retrieved?.sdkSessionId).toBe('sdk-session-abc-123');
-    });
-
-    it('should preserve sdkSessionId as undefined when not set', async () => {
-      const conv = createConversation();
-      // Ensure no sdkSessionId property
-      delete (conv as any).sdkSessionId;
-
-      await service.save(conv);
-      const retrieved = await service.get(conv.id);
-
-      expect(retrieved).not.toBeNull();
-      expect(retrieved?.sdkSessionId).toBeUndefined();
-    });
-
-    it('leaves the session out of the list: it is read when the conversation is opened', async () => {
-      const conv = createConversation({ sdkSessionId: 'list-session-id' });
-      mockFileSystem.set(`/app/conversations/${conv.id}.json`, JSON.stringify(conv));
-
-      const list = await listed();
-
-      expect(list).toHaveLength(1);
-      expect(list[0]).not.toHaveProperty('sdkSessionId');
-      expect((await service.get(conv.id))?.sdkSessionId).toBe('list-session-id');
-    });
-
-    it('should handle updating sdkSessionId on re-save', async () => {
-      const conv = createConversation({ sdkSessionId: 'old-session' });
-      await service.save(conv);
-
-      // Update session ID
-      conv.sdkSessionId = 'new-session';
-      await service.save(conv);
-
-      const retrieved = await service.get(conv.id);
-      expect(retrieved?.sdkSessionId).toBe('new-session');
-    });
-  });
-
-  // ===========================================================================
-  // clearAllSessionIds() — Bug 1 fix
-  // Strips sdkSessionId from all persisted conversation files.
-  // ===========================================================================
-  describe('clearAllSessionIds()', () => {
-    it('should remove sdkSessionId from every conversation file that has one', async () => {
-      const conv1 = createConversation({ id: 'conv_clear_1', sdkSessionId: 'session-aaa' });
-      const conv2 = createConversation({ id: 'conv_clear_2', sdkSessionId: 'session-bbb' });
-      mockFileSystem.set('/app/conversations/conv_clear_1.json', JSON.stringify(conv1));
-      mockFileSystem.set('/app/conversations/conv_clear_2.json', JSON.stringify(conv2));
-
-      await service.clearAllSessionIds();
-
-      const loaded1 = JSON.parse(mockFileSystem.get('/app/conversations/conv_clear_1.json')!);
-      const loaded2 = JSON.parse(mockFileSystem.get('/app/conversations/conv_clear_2.json')!);
-      expect(loaded1.sdkSessionId).toBeUndefined();
-      expect(loaded2.sdkSessionId).toBeUndefined();
-    });
-
-    it('should leave conversations without sdkSessionId unchanged', async () => {
-      const conv = createConversation({ id: 'conv_no_session' });
-      delete (conv as any).sdkSessionId;
-      const original = JSON.stringify(conv);
-      mockFileSystem.set('/app/conversations/conv_no_session.json', original);
-
-      await service.clearAllSessionIds();
-
-      expect(mockFileSystem.get('/app/conversations/conv_no_session.json')).toBe(original);
-    });
-
-    it('should keep other conversation fields intact after clearing session ID', async () => {
-      const conv = createConversation({
-        id: 'conv_intact',
-        title: 'Keep Me',
-        workingDirectory: '/home/user/project',
-        sdkSessionId: 'remove-me',
-      });
-      mockFileSystem.set('/app/conversations/conv_intact.json', JSON.stringify(conv));
-
-      await service.clearAllSessionIds();
-
-      const loaded = JSON.parse(mockFileSystem.get('/app/conversations/conv_intact.json')!);
-      expect(loaded.title).toBe('Keep Me');
-      expect(loaded.workingDirectory).toBe('/home/user/project');
-      expect(loaded.sdkSessionId).toBeUndefined();
-    });
-
-    it('should skip non-json files without throwing', async () => {
-      const conv = createConversation({ id: 'conv_skip', sdkSessionId: 'session-x' });
-      mockFileSystem.set('/app/conversations/conv_skip.json', JSON.stringify(conv));
-      mockFileSystem.set('/app/conversations/notes.txt', 'ignore me');
-
-      await expect(service.clearAllSessionIds()).resolves.toBeUndefined();
-
-      // The JSON file was cleaned; the text file was untouched
-      const loaded = JSON.parse(mockFileSystem.get('/app/conversations/conv_skip.json')!);
-      expect(loaded.sdkSessionId).toBeUndefined();
-    });
-
-    it('should handle an empty conversations directory', async () => {
-      await expect(service.clearAllSessionIds()).resolves.toBeUndefined();
-    });
-
-    it('should be idempotent — running twice does not corrupt data', async () => {
-      const conv = createConversation({ id: 'conv_idem', sdkSessionId: 'session-y' });
-      mockFileSystem.set('/app/conversations/conv_idem.json', JSON.stringify(conv));
-
-      await service.clearAllSessionIds();
-      await service.clearAllSessionIds();
-
-      const loaded = JSON.parse(mockFileSystem.get('/app/conversations/conv_idem.json')!);
-      expect(loaded.sdkSessionId).toBeUndefined();
-      expect(loaded.id).toBe('conv_idem');
-    });
-  });
-
-  // ===========================================================================
-  // recoverSessionData()
-  // Searches ALL project dirs by session ID (no escaping dependency).
-  // Reads the actual CWD from the session JSONL and updates the conversation.
-  // ===========================================================================
-  describe('recoverSessionData()', () => {
-    const SESSION_ID = 'abc123-session';
-    const REAL_CWD = 'C:\\Claude\\Claude Femmexpat\\actual-subdir';
-    const SESSION_FILE_CONTENT = JSON.stringify({ type: 'system', cwd: REAL_CWD });
-    const STALE_CWD = 'C:\\Claude\\Claude Femmexpat';
-
-    beforeEach(() => {
-      process.env.HOME = '/mock-home';
-      mockFs.promises.access.mockResolvedValue(undefined);
-      mockFs.existsSync.mockImplementation((p: string) => mockFileSystem.has(p));
-      // A folder lists what the fake file system holds under it.
-      mockFs.readdirSync.mockImplementation((dir: string) => [...new Set(
-        [...mockFileSystem.keys()]
-          .filter((p) => p.startsWith(`${dir}/`))
-          .map((p) => p.slice(dir.length + 1).split('/')[0]),
-      )]);
-    });
-
-    afterEach(() => {
-      delete process.env.HOME;
-    });
-
-    it('finds session file by ID regardless of directory name and recovers CWD', async () => {
-      const conv = createConversation({
-        id: 'conv_recover',
-        workingDirectory: STALE_CWD,
-        sdkSessionId: SESSION_ID,
-      });
-      mockFileSystem.set('/app/conversations/conv_recover.json', JSON.stringify(conv));
-
-      // Session file under an arbitrarily-named directory
-      const someDir = 'whatever-dir-name-doesnt-matter';
-      const sessionFilePath = `/mock-home/.claude/projects/${someDir}/${SESSION_ID}.jsonl`;
-      mockFileSystem.set(sessionFilePath, SESSION_FILE_CONTENT);
-
-      mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-        if (dir === '/app/conversations') return ['conv_recover.json'];
-        return [];
-      });
-
-      await service.recoverSessionData();
-
-      const updated = JSON.parse(mockFileSystem.get('/app/conversations/conv_recover.json')!);
-      expect(updated.workingDirectory).toBe(REAL_CWD);
-    });
-
-    it('does not update conversation when CWD already matches session file', async () => {
-      const conv = createConversation({
-        id: 'conv_already_ok',
-        workingDirectory: REAL_CWD,
-        sdkSessionId: SESSION_ID,
-      });
-      const original = JSON.stringify(conv);
-      mockFileSystem.set('/app/conversations/conv_already_ok.json', original);
-
-      const someDir = 'some-project-dir';
-      mockFileSystem.set(
-        `/mock-home/.claude/projects/${someDir}/${SESSION_ID}.jsonl`,
-        SESSION_FILE_CONTENT
-      );
-
-      mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-        if (dir === '/app/conversations') return ['conv_already_ok.json'];
-        return [];
-      });
-
-      await service.recoverSessionData();
-
-      expect(mockFileSystem.get('/app/conversations/conv_already_ok.json')).toBe(original);
-    });
-
-    it('leaves conversation alone when session file is gone', async () => {
-      const conv = createConversation({
-        id: 'conv_gone',
-        workingDirectory: STALE_CWD,
-        sdkSessionId: SESSION_ID,
-      });
-      const original = JSON.stringify(conv);
-      mockFileSystem.set('/app/conversations/conv_gone.json', original);
-
-      mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-        if (dir === '/app/conversations') return ['conv_gone.json'];
-        return [];
-      });
-
-      await service.recoverSessionData();
-
-      expect(mockFileSystem.get('/app/conversations/conv_gone.json')).toBe(original);
-    });
-
-    it('skips conversations without sdkSessionId', async () => {
-      const conv = createConversation({ id: 'conv_no_sid' });
-      delete (conv as any).sdkSessionId;
-      const original = JSON.stringify(conv);
-      mockFileSystem.set('/app/conversations/conv_no_sid.json', original);
-
-      mockFs.promises.readdir.mockImplementation(async (dir: string) => {
-        if (dir === '/app/conversations') return ['conv_no_sid.json'];
-        return [];
-      });
-
-      await service.recoverSessionData();
-
-      expect(mockFileSystem.get('/app/conversations/conv_no_sid.json')).toBe(original);
-    });
-
-    it('does nothing when HOME is not set', async () => {
-      delete process.env.HOME;
-      delete process.env.USERPROFILE;
-
-      const conv = createConversation({ id: 'conv_nohome', sdkSessionId: SESSION_ID });
-      mockFileSystem.set('/app/conversations/conv_nohome.json', JSON.stringify(conv));
-
-      await expect(service.recoverSessionData()).resolves.toBeUndefined();
-
-      const convWriteCalls = mockFs.promises.writeFile.mock.calls.filter(
-        (args: unknown[]) => String(args[0]).includes('conv_nohome')
-      );
-      expect(convWriteCalls).toHaveLength(0);
-    });
-
-    it('does nothing when ~/.claude/projects does not exist', async () => {
-      mockFs.promises.access.mockRejectedValue(
-        Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
-      );
-
-      const conv = createConversation({ id: 'conv_noprojects', sdkSessionId: SESSION_ID });
-      mockFileSystem.set('/app/conversations/conv_noprojects.json', JSON.stringify(conv));
-
-      await expect(service.recoverSessionData()).resolves.toBeUndefined();
-
-      const convWriteCalls = mockFs.promises.writeFile.mock.calls.filter(
-        (args: unknown[]) => String(args[0]).includes('conv_noprojects')
-      );
-      expect(convWriteCalls).toHaveLength(0);
-    });
-  });
-
-  // ===========================================================================
-  // update() — the renderer's only write path
-  // ===========================================================================
-  describe('update()', () => {
-    /**
-     * A write is a change, not a whole conversation. The renderer holds a
-     * window of a long conversation, so a write that carried "the messages"
-     * would store only the window — which is how trimming memory would have
-     * erased history. See ConversationUpdate.
-     */
-    const stored = (id: string) => {
-      const raw = mockFileSystem.get(`/app/conversations/${id}.json`);
-      return raw ? (JSON.parse(raw) as Conversation) : null;
-    };
-    const ids = (id: string) => (stored(id)?.messages ?? []).map((m) => m.id);
-
-    const msg = (id: string, content = `content ${id}`): Conversation['messages'][number] => ({
-      id, role: 'user', content, timestamp: 1_700_000_000_000,
-    });
-
-    async function seed(id: string, messageIds: string[]): Promise<void> {
-      await service.save(createConversation({
-        id,
-        title: 'Seeded',
-        messages: messageIds.map((m) => msg(m)),
-      }));
-    }
-
-    const base = (id: string) => ({
-      id, upsert: [], workingDirectory: '/home/user/project', updatedAt: Date.now(),
-    });
-
-    it('appends messages it has not seen', async () => {
-      await seed('c1', ['m1', 'm2']);
-
-      await service.update({ ...base('c1'), upsert: [msg('m3')] });
-
-      expect(ids('c1')).toEqual(['m1', 'm2', 'm3']);
-    });
-
-    it('replaces a message it already has, where it already is', async () => {
-      // Edits legitimately reach stored messages: a streaming flag cleared
-      // when a turn ends, a tool result arriving late. Appending a second
-      // copy, or moving it to the end, would both corrupt the transcript.
-      await seed('c2', ['m1', 'm2', 'm3']);
-
-      await service.update({ ...base('c2'), upsert: [msg('m2', 'edited')] });
-
-      expect(ids('c2')).toEqual(['m1', 'm2', 'm3']);
-      expect(stored('c2')?.messages[1].content).toBe('edited');
-    });
-
-    it('creates the conversation when there is none', async () => {
-      await service.update({ ...base('c3'), upsert: [msg('m1')], title: 'Fresh' });
-
-      expect(ids('c3')).toEqual(['m1']);
-      expect(stored('c3')?.title).toBe('Fresh');
-    });
-
-    it('cannot shorten a conversation on its own', async () => {
-      // The property everything else rests on.
-      await seed('c4', ['m1', 'm2', 'm3', 'm4']);
-
-      await service.update({ ...base('c4'), upsert: [msg('m4')] });
-
-      expect(ids('c4')).toEqual(['m1', 'm2', 'm3', 'm4']);
-    });
-
-    it('truncates from a message when asked to', async () => {
-      // What a rewind does: that turn and the ones after it really are gone.
-      await seed('c5', ['m1', 'm2', 'm3', 'm4']);
-
-      await service.update({ ...base('c5'), truncateFromId: 'm3' });
-
-      expect(ids('c5')).toEqual(['m1', 'm2']);
-    });
-
-    it('truncates and then appends in one write', async () => {
-      // The rewind writes the turns that follow it in the same save.
-      await seed('c6', ['m1', 'm2', 'm3']);
-
-      await service.update({
-        ...base('c6'), truncateFromId: 'm2', upsert: [msg('m9')],
-      });
-
-      expect(ids('c6')).toEqual(['m1', 'm9']);
-    });
-
-    it('keeps the history when the truncation anchor is gone', async () => {
-      // "From" cannot be known without the anchor. Dropping nothing is the
-      // recoverable mistake; dropping everything is not.
-      await seed('c7', ['m1', 'm2', 'm3']);
-
-      await service.update({ ...base('c7'), truncateFromId: 'does-not-exist' });
-
-      expect(ids('c7')).toEqual(['m1', 'm2', 'm3']);
-    });
-
-    it('clears every message when the first one is the anchor', async () => {
-      // Which is how a conversation is emptied now: there is no separate
-      // "remove everything", because naming the oldest message to discard
-      // says it already — and that spelling cannot be reached by accident
-      // from a window with no predecessor to name.
-      await seed('c8', ['m1', 'm2']);
-
-      await service.update({ ...base('c8'), truncateFromId: 'm1' });
-
-      expect(ids('c8')).toEqual([]);
-    });
-
-    it('keeps metadata it was not given', async () => {
-      await service.save(createConversation({
-        id: 'c9', title: 'Kept', sdkSessionId: 'session-1', messages: [msg('m1')],
-      }));
-
-      await service.update({ ...base('c9'), upsert: [msg('m2')] });
-
-      expect(stored('c9')?.sdkSessionId).toBe('session-1');
-      expect(stored('c9')?.title).toBe('Kept');
-    });
-
-    it('applies the metadata it was given', async () => {
-      await seed('c10', ['m1']);
-
-      await service.update({
-        ...base('c10'), title: 'Renamed', customTitle: true, sdkSessionId: 'session-2',
-      });
-
-      expect(stored('c10')?.title).toBe('Renamed');
-      expect(stored('c10')?.customTitle).toBe(true);
-      expect(stored('c10')?.sdkSessionId).toBe('session-2');
-    });
-
-    it('keeps the original createdAt', async () => {
-      await service.save(createConversation({ id: 'c11', createdAt: 111, messages: [msg('m1')] }));
-
-      await service.update({ ...base('c11'), upsert: [msg('m2')], createdAt: 999 });
-
-      expect(stored('c11')?.createdAt).toBe(111);
-    });
-
-    it('is idempotent, so a retried write cannot duplicate anything', async () => {
-      await seed('c12', ['m1']);
-
-      await service.update({ ...base('c12'), upsert: [msg('m2')] });
-      await service.update({ ...base('c12'), upsert: [msg('m2')] });
-
-      expect(ids('c12')).toEqual(['m1', 'm2']);
-    });
-  });
-
-  // ===========================================================================
-  // getWindow() / getOlder() — reading a long conversation in pieces
-  // ===========================================================================
-  describe('reading a conversation as a window', () => {
-    const many = (n: number) => Array.from({ length: n }, (_, i) => ({
-      id: `m${i}`, role: 'user' as const, content: `message ${i}`, timestamp: 1000 + i,
-    }));
-
-    beforeEach(async () => {
-      await service.save(createConversation({ id: 'long', title: 'Long', messages: many(1000) }));
-    });
-
-    it('returns the most recent messages and counts the rest', async () => {
-      const window = await service.getWindow('long', 100);
-
-      expect(window?.conversation.messages).toHaveLength(100);
-      expect(window?.conversation.messages[0].id).toBe('m900');
-      expect(window?.olderCount).toBe(900);
-    });
-
-    it('returns everything when the limit exceeds the conversation', async () => {
-      const window = await service.getWindow('long', 5000);
-
-      expect(window?.conversation.messages).toHaveLength(1000);
-      expect(window?.olderCount).toBe(0);
-    });
-
-    it('is null for a conversation that does not exist', async () => {
-      expect(await service.getWindow('nope', 10)).toBeNull();
-    });
-
-    it('returns the page before a given message', async () => {
-      const page = await service.getOlder('long', 'm900', 100);
-
-      expect(page?.messages).toHaveLength(100);
-      expect(page?.messages[0].id).toBe('m800');
-      expect(page?.messages.at(-1)?.id).toBe('m899');
-      expect(page?.olderCount).toBe(800);
-    });
-
-    it('stops at the beginning rather than wrapping', async () => {
-      const page = await service.getOlder('long', 'm10', 100);
-
-      expect(page?.messages.map((m) => m.id)).toEqual(
-        Array.from({ length: 10 }, (_, i) => `m${i}`),
-      );
-      expect(page?.olderCount).toBe(0);
-    });
-
-    it('answers emptily for an id it does not hold', async () => {
-      // Keyed by id rather than by index precisely so a conversation that
-      // grew in between cannot shift a page; an unknown id is then the
-      // honest "nothing to give you".
-      const page = await service.getOlder('long', 'not-a-message', 100);
-
-      expect(page?.messages).toEqual([]);
-      expect(page?.olderCount).toBe(0);
-    });
-
-    it('returns the page after a given message', async () => {
-      const page = await service.getNewer('long', 'm899', 50);
-
-      expect(page?.messages[0].id).toBe('m900');
-      expect(page?.messages).toHaveLength(50);
-      expect(page?.newerCount).toBe(50);
-    });
-
-    // A turn the renderer holds in memory apart from its window may be
-    // stored in part, and its copy in memory is ahead of the stored one. A
-    // read running into it would hand back a stale copy and count it twice.
-    it('stops a page at the start of a turn held in memory', async () => {
-      const page = await service.getNewer('long', 'm899', 500, 'm950');
-
-      expect(page?.messages.map((m) => m.id)).toEqual(
-        Array.from({ length: 50 }, (_, i) => `m${900 + i}`),
-      );
-      expect(page?.newerCount).toBe(0);
-    });
-
-    it('counts only what lies before a held turn', async () => {
-      const page = await service.getNewer('long', 'm899', 10, 'm950');
-
-      expect(page?.messages).toHaveLength(10);
-      expect(page?.newerCount).toBe(40);
-    });
-
-    it('ignores a held turn that is not stored yet', async () => {
-      const page = await service.getNewer('long', 'm989', 500, 'not-stored-yet');
-
-      expect(page?.messages).toHaveLength(10);
-      expect(page?.newerCount).toBe(0);
-    });
-
-    it('returns nothing past a held turn, even asked from inside it', async () => {
-      const page = await service.getNewer('long', 'm960', 10, 'm950');
-
-      expect(page?.messages).toEqual([]);
-      expect(page?.newerCount).toBe(0);
-    });
-
-    it('returns the stretch around a message, counted either side', async () => {
-      const around = await service.getAround('long', 'm500', 250, 250);
-
-      expect(around?.messages[0].id).toBe('m250');
-      expect(around?.messages.at(-1)?.id).toBe('m750');
-      expect(around?.messages).toHaveLength(501);
-      expect(around?.olderCount).toBe(250);
-      expect(around?.newerCount).toBe(249);
-    });
-
-    it('clamps the stretch at both ends of the conversation', async () => {
-      const first = await service.getAround('long', 'm3', 250, 250);
-      expect(first?.olderCount).toBe(0);
-      expect(first?.messages[0].id).toBe('m0');
-
-      const last = await service.getAround('long', 'm998', 250, 250);
-      expect(last?.newerCount).toBe(0);
-      expect(last?.messages.at(-1)?.id).toBe('m999');
-    });
-
-    it('stops the stretch at the start of a held turn', async () => {
-      const around = await service.getAround('long', 'm900', 250, 250, 'm950');
-
-      expect(around?.messages.at(-1)?.id).toBe('m949');
-      expect(around?.newerCount).toBe(0);
-    });
-
-    it('has no stretch for a message inside a held turn, or one not stored', async () => {
-      expect(await service.getAround('long', 'm960', 250, 250, 'm950')).toBeNull();
-      expect(await service.getAround('long', 'nope', 250, 250)).toBeNull();
-      expect(await service.getAround('nope', 'm1', 250, 250)).toBeNull();
-    });
-  });
-
-  // ===========================================================================
-  // Writes that look like they lose history
-  // ===========================================================================
-  describe('a write that looks like it loses history', () => {
-    /**
-     * This replaced a guard that REFUSED such a write, and the refusal is what
-     * lost the messages: the save threw, the retries gave up, the file kept
-     * its previous content, and everything since the last successful save
-     * existed only in the renderer's memory until the conversation was
-     * switched away from.
-     *
-     * So the contract is: say so, write it anyway. Every test here asserts the
-     * write landed as well as whether anything was said about it.
-     */
-
-    const withMessages = (id: string, ids: string[]): Conversation =>
-      createConversation({
-        id,
-        title: 'Kept',
-        messages: ids.map((messageId, index) => ({
-          id: messageId,
-          role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
-          content: `content ${messageId}`,
-          timestamp: 1_700_000_000_000 + index,
-        })),
-      });
-
-    const storedIds = (id: string): string[] => {
-      const raw = mockFileSystem.get(`/app/conversations/${id}.json`);
-      if (!raw) return [];
-      return (JSON.parse(raw) as Conversation).messages.map((m) => m.id);
-    };
-
-    const warnings = (): unknown[][] =>
-      logger.warn.mock.calls.filter((args: unknown[]) =>
-        String(args[0]).includes('loses history'),
-      );
-
-    it('says nothing about a conversation simply growing', async () => {
-      // The shape the previous guard flagged: same first message, more of
-      // them. That is what every conversation in the app looks like, which is
-      // why the guard fired on healthy saves.
-      await service.save(withMessages('conv_growing', ['m1', 'm2']));
-      await service.save(withMessages('conv_growing', ['m1', 'm2', 'm3']));
-      await service.save(withMessages('conv_growing', ['m1', 'm2', 'm3', 'm4']));
-
-      expect(warnings()).toHaveLength(0);
-      expect(storedIds('conv_growing')).toEqual(['m1', 'm2', 'm3', 'm4']);
-    });
-
-    it('says nothing about the first write of a conversation', async () => {
-      // Nothing to compare against — including after a restart, since what
-      // was last written is only remembered in memory.
-      await service.save(withMessages('conv_first', ['m1', 'm2', 'm3']));
-
-      expect(warnings()).toHaveLength(0);
-      expect(storedIds('conv_first')).toEqual(['m1', 'm2', 'm3']);
-    });
-
-    it('reports a history that now starts with a different message', async () => {
-      await service.save(withMessages('conv_head', ['m1', 'm2', 'm3']));
-      await service.save(withMessages('conv_head', ['m9', 'm10']));
-
-      expect(warnings()).toHaveLength(1);
-      expect(warnings()[0][1]).toMatchObject({
-        id: 'conv_head',
-        reason: 'the history diverges at message 0 (was m1, now m9)',
-        divergedAt: 0,
-        previousCount: 3,
-        incomingCount: 2,
-      });
-    });
-
-    it('reports where a longer history stops agreeing, and says how long', async () => {
-      // The reported case: 12,180 messages written over 11,745 with the same
-      // opening. Longer, so nothing about the length says anything is wrong —
-      // the index is the only thing that locates it, and the refusing version
-      // never logged one.
-      await service.save(withMessages('conv_middle', ['m1', 'm2', 'm3', 'm4']));
-      await service.save(withMessages('conv_middle', ['m1', 'm2', 'm9', 'm4', 'm5', 'm6']));
-
-      expect(warnings()).toHaveLength(1);
-      expect(warnings()[0][1]).toMatchObject({
-        id: 'conv_middle',
-        divergedAt: 2,
-        previousCount: 4,
-        incomingCount: 6,
-      });
-    });
-
-    it('reports a history that shrank', async () => {
-      await service.save(withMessages('conv_shrank', ['m1', 'm2', 'm3']));
-      await service.save(withMessages('conv_shrank', ['m1', 'm2']));
-
-      expect(warnings()).toHaveLength(1);
-      expect(warnings()[0][1]).toMatchObject({
-        id: 'conv_shrank',
-        reason: 'the history shrank from 3 to 2 messages',
-      });
-    });
-
-    it('writes the suspicious history rather than refusing it', async () => {
-      // The whole point. A refusal here is the data loss.
-      await service.save(withMessages('conv_written', ['m1', 'm2', 'm3']));
-      await expect(
-        service.save(withMessages('conv_written', ['m9', 'm10'])),
-      ).resolves.toBeUndefined();
-
-      expect(storedIds('conv_written')).toEqual(['m9', 'm10']);
-    });
-
-    it('does not report one conversation because of another', async () => {
-      await service.save(withMessages('conv_a', ['a1', 'a2', 'a3']));
-      await service.save(withMessages('conv_b', ['b1']));
-      await service.save(withMessages('conv_b', ['b1', 'b2']));
-
-      expect(warnings()).toHaveLength(0);
-      expect(storedIds('conv_a')).toEqual(['a1', 'a2', 'a3']);
-      expect(storedIds('conv_b')).toEqual(['b1', 'b2']);
-    });
-
-    it('compares against the last write that actually landed', async () => {
-      await service.save(withMessages('conv_failed', ['m1', 'm2']));
-
-      mockFs.promises.writeFile.mockRejectedValue(new Error('disk full'));
-      await expect(
-        service.save(withMessages('conv_failed', ['m1', 'm2', 'm3', 'm4'])),
-      ).rejects.toThrow('disk full');
-
-      mockFs.promises.writeFile.mockImplementation(
-        async (path: string, content: string) => {
-          mockFileSystem.set(path, content);
-        },
-      );
-      // Three messages is growth on what is on disk, and would look like a
-      // loss only if the failed four-message attempt had been recorded.
-      await service.save(withMessages('conv_failed', ['m1', 'm2', 'm3']));
-
-      expect(warnings()).toHaveLength(0);
-      expect(storedIds('conv_failed')).toEqual(['m1', 'm2', 'm3']);
-    });
-
-    it('says nothing when a conversation is emptied and refilled', async () => {
-      // `/clear` writes an empty transcript; the next turn writes a fresh
-      // head. Neither is a loss worth reporting — the empty write is the
-      // instruction, and it leaves nothing to be the previous head.
-      await service.save(withMessages('conv_cleared', ['m1', 'm2', 'm3']));
-      await service.save(withMessages('conv_cleared', []));
-      await service.save(withMessages('conv_cleared', ['n1']));
-
-      expect(warnings()).toHaveLength(1);
-      expect(warnings()[0][1]).toMatchObject({
-        reason: 'the history shrank from 3 to 0 messages',
-      });
-      expect(storedIds('conv_cleared')).toEqual(['n1']);
-    });
+});
+
+describe('create()', () => {
+  it('makes an empty discussion in a folder, with a unique id, not yet stored', () => {
+    const a = service.create('/home/user/project');
+    const b = service.create('/home/user/project');
+
+    expect(a).toMatchObject({ title: '', workingDirectory: '/home/user/project', messages: [] });
+    expect(a.id).not.toBe(b.id);
+    expect(fs.readdirSync(conversationsDir.path)).toEqual([]);
   });
 });

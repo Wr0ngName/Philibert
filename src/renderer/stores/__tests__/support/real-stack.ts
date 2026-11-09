@@ -28,6 +28,8 @@ import { nextTick } from 'vue';
 
 import type { AutoArchiveDays, Conversation, ConversationListRequest, ConversationUpdate } from '@shared/types';
 
+import { replay } from '../../../../main/services/conversation-log';
+
 /** The "disk": path → file contents. */
 export const files = new Map<string, string>();
 
@@ -196,6 +198,38 @@ export function fakeFsModule(): Record<string, unknown> {
         }
         files.set(to, content);
         files.delete(from);
+        // Every save of a conversation ends by replacing its details file
+        // (ConversationService.applyUpdate): one of these is one save landed.
+        if (/^\/conversations\/[^/]+\.json$/.test(to)) disk.writes += 1;
+      },
+      /**
+       * A file handle, as durable-file writes through: replaced files are
+       * written to a handle opened 'w', appends to one opened 'a'. A hold or
+       * a failure applies where a real one shows: at opening the file.
+       */
+      open: async (p: string, flags: string) => {
+        if (flags === 'w' || flags === 'a') {
+          if (disk.holdWrites) {
+            await new Promise<void>((resolve) => disk.waiting.push(resolve));
+          }
+          if (disk.failWrites || disk.failNext > 0) {
+            if (disk.failNext > 0) disk.failNext -= 1;
+            const err = new Error(`EBUSY: resource busy or locked, open '${p}'`) as NodeJS.ErrnoException;
+            err.code = 'EBUSY';
+            throw err;
+          }
+          if (flags === 'w' || !files.has(p)) files.set(p, '');
+        }
+        return {
+          writeFile: async (data: string) => {
+            files.set(p, data);
+          },
+          appendFile: async (data: string) => {
+            files.set(p, (files.get(p) ?? '') + data);
+          },
+          sync: async () => {},
+          close: async () => {},
+        };
       },
     },
   };
@@ -275,7 +309,6 @@ export const mainListeners = new Map<string, ((event: unknown, ...args: unknown[
 
 /** The real main-process service, constructed by `startRealStack`. */
 let conversationService: {
-  save: (c: Conversation) => Promise<void>;
   update: (u: ConversationUpdate) => Promise<void>;
   get: (id: string) => Promise<Conversation | null>;
   getWindow: (id: string, limit: number) => Promise<unknown>;
@@ -307,8 +340,6 @@ export async function route(channel: string, args: unknown[]): Promise<unknown> 
   const service = conversationService;
   if (service) {
     switch (channel) {
-      case 'conversation:save':
-        return service.save(args[0] as Conversation);
       case 'conversation:update':
         return service.update(args[0] as ConversationUpdate);
       case 'conversation:get':
@@ -389,10 +420,17 @@ export function emitIpc(channel: string, ...args: unknown[]): void {
   }
 }
 
-/** What is actually on disk for a conversation, parsed from its JSON. */
+/**
+ * What is actually on disk for a conversation: its details file, and the
+ * messages its messages file plays to (conversation-log). A conversation
+ * seeded in the one-file layout and not converted yet is read as it is.
+ */
 export function onDisk(id: string): Conversation | null {
   const raw = files.get(`/conversations/${id}.json`);
-  return raw ? (JSON.parse(raw) as Conversation) : null;
+  if (!raw) return null;
+  const stored = JSON.parse(raw) as Conversation;
+  if (Array.isArray(stored.messages)) return stored;
+  return { ...stored, messages: replay(files.get(`/conversations/${id}.messages.jsonl`) ?? '').messages };
 }
 
 /** The contents of each stored message, in order. */

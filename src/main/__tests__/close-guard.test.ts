@@ -79,6 +79,9 @@ function fakeWindow() {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** No conversation write under way: waiting for them ends at once. */
+const noWrites = async () => {};
+
 beforeEach(() => {
   ipc.removeAllListeners();
   showMessageBox.mockReset();
@@ -170,7 +173,7 @@ describe('installCloseGuard', () => {
       releaseFlush = () => { flushed = true; resolve(); };
     });
 
-    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), flush);
+    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), flush, noWrites);
 
     fireClose();
     await settle();
@@ -191,7 +194,7 @@ describe('installCloseGuard', () => {
     const flush = vi.fn(async () => {});
     showMessageBox.mockResolvedValue({ response: 1 }); // Quit anyway
 
-    installCloseGuard(win as never, () => ({ turns: 1, tasks: 2 }), flush);
+    installCloseGuard(win as never, () => ({ turns: 1, tasks: 2 }), flush, noWrites);
 
     fireClose();
     await settle();
@@ -210,7 +213,7 @@ describe('installCloseGuard', () => {
     const flush = vi.fn(async () => {});
     showMessageBox.mockResolvedValue({ response: 0 }); // Keep working
 
-    installCloseGuard(win as never, () => ({ turns: 1, tasks: 0 }), flush);
+    installCloseGuard(win as never, () => ({ turns: 1, tasks: 0 }), flush, noWrites);
 
     fireClose();
     await settle();
@@ -227,7 +230,7 @@ describe('installCloseGuard', () => {
       throw new Error('disk full');
     });
 
-    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), flush);
+    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), flush, noWrites);
 
     fireClose();
     await settle();
@@ -243,7 +246,7 @@ describe('installCloseGuard', () => {
     const flush = vi.fn(async () => {});
     showMessageBox.mockResolvedValue({ response: 1 });
 
-    installCloseGuard(win as never, () => ({ turns: 1, tasks: 0 }), flush);
+    installCloseGuard(win as never, () => ({ turns: 1, tasks: 0 }), flush, noWrites);
 
     fireClose();
     await settle();
@@ -264,6 +267,7 @@ describe('installCloseGuard', () => {
         throw new Error('cannot tell');
       },
       flush,
+      noWrites,
     );
 
     fireClose();
@@ -273,6 +277,63 @@ describe('installCloseGuard', () => {
     expect(showMessageBox).not.toHaveBeenCalled();
     // And it still saves on the way out.
     expect(flush).toHaveBeenCalledTimes(1);
+    expect(state.closes).toBe(1);
+  });
+
+  // Reported 2026-11-09: the close stopped waiting for the renderer after 5
+  // seconds while the main process was one second into rewriting a 68,144-
+  // message discussion; the process ended and the file was cut at 3.5 MiB.
+  it('holds the close until the saves the renderer handed over are written', async () => {
+    const { win, state, fireClose } = fakeWindow();
+    const order: string[] = [];
+    let finishWrites: (() => void) | undefined;
+    const settleWrites = () => new Promise<void>((resolve) => {
+      order.push('waiting for writes');
+      finishWrites = () => { order.push('writes done'); resolve(); };
+    });
+
+    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), async () => { order.push('renderer flushed'); }, settleWrites);
+
+    fireClose();
+    await settle();
+    expect(order).toEqual(['renderer flushed', 'waiting for writes']);
+    expect(state.closes).toBe(0);
+
+    finishWrites!();
+    await settle();
+    expect(order.at(-1)).toBe('writes done');
+    expect(state.closes).toBe(1);
+  });
+
+  it('still waits for the writes when the renderer did not answer', async () => {
+    // The renderer's save may already be in the main process, still being
+    // written: giving up on the renderer must not give up on that.
+    const { win, state, fireClose } = fakeWindow();
+    const settleWrites = vi.fn(async () => {});
+
+    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), async () => {
+      throw new Error('renderer gone');
+    }, settleWrites);
+
+    fireClose();
+    await settle();
+    await settle();
+
+    expect(settleWrites).toHaveBeenCalledTimes(1);
+    expect(state.closes).toBe(1);
+  });
+
+  it('closes anyway when waiting for the writes fails', async () => {
+    const { win, state, fireClose } = fakeWindow();
+
+    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), async () => {}, async () => {
+      throw new Error('cannot tell');
+    });
+
+    fireClose();
+    await settle();
+    await settle();
+
     expect(state.closes).toBe(1);
   });
 });

@@ -2,8 +2,8 @@
  * The discussions list's entries, kept so that listing does not read every
  * conversation file.
  *
- * A conversation is one JSON document holding its whole history, so the list
- * used to parse every file in full on each load — a cost that only grew. Here
+ * A discussion's details file is small (conversation-files), but there is one
+ * per discussion, and the list used to parse every one on each load. Here
  * each file's entry is kept with the file's modification time and size: a
  * refresh lists the folder and looks at each file's stat, and parses only a
  * file that is new or has changed since. The entries are saved beside the
@@ -17,9 +17,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { summaryOf } from '../../shared/conversation-list';
-import type { Conversation, ConversationSummary } from '../../shared/types';
+import type { ConversationSummary } from '../../shared/types';
+import { replaceFile } from '../utils/durable-file';
 import logger from '../utils/logger';
+
+import { type ConversationDetails, isDetailsFileName, summaryOfStored } from './conversation-files';
 
 interface IndexEntry {
   mtimeMs: number;
@@ -80,10 +82,10 @@ export class ConversationIndex {
   }
 
   /** Record what was just written to a file, as its stat now stands. */
-  async noteWritten(fileName: string, conversation: Conversation): Promise<void> {
+  async noteWritten(fileName: string, details: ConversationDetails): Promise<void> {
     try {
       const stat = await fs.promises.stat(path.join(this.dir, fileName));
-      this.entries.set(fileName, { mtimeMs: stat.mtimeMs, size: stat.size, summary: summaryOf(conversation) });
+      this.entries.set(fileName, { mtimeMs: stat.mtimeMs, size: stat.size, summary: summaryOfStored(details) });
       this.scheduleSave();
     } catch (error) {
       // The next refresh reads the file again.
@@ -109,7 +111,7 @@ export class ConversationIndex {
 
     let names: string[];
     try {
-      names = (await fs.promises.readdir(this.dir)).filter((name) => name.endsWith('.json'));
+      names = (await fs.promises.readdir(this.dir)).filter(isDetailsFileName);
     } catch (error) {
       logger.error('Failed to list the conversations folder', { dir: this.dir, error });
       this.loaded = true;
@@ -148,8 +150,8 @@ export class ConversationIndex {
       const stat = await fs.promises.stat(file);
       const known = this.entries.get(name);
       if (known && known.mtimeMs === stat.mtimeMs && known.size === stat.size) return 'unchanged';
-      const conversation = JSON.parse(await fs.promises.readFile(file, 'utf-8')) as Conversation;
-      this.entries.set(name, { mtimeMs: stat.mtimeMs, size: stat.size, summary: summaryOf(conversation) });
+      const details = JSON.parse(await fs.promises.readFile(file, 'utf-8')) as ConversationDetails;
+      this.entries.set(name, { mtimeMs: stat.mtimeMs, size: stat.size, summary: summaryOfStored(details) });
       return 'parsed';
     } catch (error) {
       // Left out, as the list always left out a file it could not parse.
@@ -192,11 +194,8 @@ export class ConversationIndex {
 
   private async save(): Promise<void> {
     const saved: SavedIndex = { version: INDEX_VERSION, entries: Object.fromEntries(this.entries) };
-    // Written beside and renamed over, so a crash mid-write leaves the old one.
-    const temporary = `${this.indexFile}.tmp`;
     try {
-      await fs.promises.writeFile(temporary, JSON.stringify(saved), 'utf-8');
-      await fs.promises.rename(temporary, this.indexFile);
+      await replaceFile(this.indexFile, JSON.stringify(saved));
     } catch (error) {
       logger.warn('Failed to save the conversation index', { error });
     }

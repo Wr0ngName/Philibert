@@ -19,7 +19,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { nextTick } from 'vue';
 
-import type { AutoArchiveDays, Conversation, ConversationListRequest, ConversationUpdate } from '@shared/types';
+import type { AutoArchiveDays, ConversationListRequest, ConversationUpdate } from '@shared/types';
 
 type IpcHandler = (event: unknown, ...args: unknown[]) => void;
 
@@ -82,8 +82,6 @@ let storedConfig: Record<string, unknown> = {};
 
 async function route(channel: string, args: unknown[]): Promise<unknown> {
   switch (channel) {
-    case IPC_CHANNELS.CONVERSATION_SAVE:
-      return conversationService.save(args[0] as Conversation);
     case IPC_CHANNELS.CONVERSATION_UPDATE:
       return conversationService.update(args[0] as ConversationUpdate);
     case IPC_CHANNELS.CONVERSATION_GET_WINDOW:
@@ -388,6 +386,11 @@ describe('background tasks across a conversation switch', () => {
     emitIpc(IPC_CHANNELS.CLAUDE_DONE, withTask);
     await settle();
 
+    // Closing the app, as installCloseGuard does it: the renderer saves what
+    // it has (App.vue answers the flush with this cleanup), then the main
+    // process finishes writing it, before the next start reads anything.
+    await conversations.cleanup();
+    await conversationService.settleWrites();
     mounted?.unmount();
     mounted = null;
     setActivePinia(createPinia());

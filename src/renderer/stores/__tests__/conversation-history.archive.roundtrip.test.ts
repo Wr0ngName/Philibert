@@ -303,7 +303,10 @@ describe('the discussions list', () => {
       await wrapper.find('button[title="New conversation"]').trigger('click');
       await settle();
     };
-    const savedIds = () => [...files.keys()].filter((f) => f.startsWith('/conversations/')).sort();
+    // The discussions on disk: one details file each (conversation-files).
+    // Their messages files are left out — opening a seeded discussion writes
+    // one when converting it from the one-file layout.
+    const savedIds = () => [...files.keys()].filter((f) => /^\/conversations\/[^/]+\.json$/.test(f)).sort();
 
     it('is listed, open, before anything is typed, and the one it left is not', async () => {
       seedMany(3);

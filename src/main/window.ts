@@ -232,11 +232,19 @@ export function describeRunningWork(work: { turns: number; tasks: number }): str
  *
  * `close` is emitted again after the user confirms, which is why the decision
  * is latched: without that the dialog would reappear forever.
+ *
+ * Closing then waits for two things in turn: the renderer handing over what
+ * it has (`flushRenderer`), and the main process writing it (`settleWrites`).
+ * The second is waited for even when the first gave up or failed — a save
+ * the renderer sent is still being written. On 2026-11-09 the close stopped
+ * waiting for the renderer after 5 seconds, while the main process was one
+ * second into rewriting a discussion: the process ended and the file was cut.
  */
 export function installCloseGuard(
   window: BrowserWindow,
   getRunningWork: () => { turns: number; tasks: number },
   flushRenderer: () => Promise<void>,
+  settleWrites: () => Promise<unknown>,
 ): void {
   let closing = false;
 
@@ -264,6 +272,11 @@ export function installCloseGuard(
         // A renderer that cannot save must not become a window that cannot
         // close. The reason is logged; the close goes ahead.
         logger.error('Pre-close flush failed; closing anyway', { error });
+      }
+      try {
+        await settleWrites();
+      } catch (error) {
+        logger.error('Waiting for saves before close failed; closing anyway', { error });
       }
       window.close();
     };

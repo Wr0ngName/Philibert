@@ -1,16 +1,20 @@
 /**
- * Service for managing conversation persistence
+ * Service for managing conversation persistence.
+ *
+ * A discussion is stored in two files (conversation-files): its details,
+ * replaced whole and in one step, and its messages, appended to
+ * (conversation-log). A save writes the messages that changed and the
+ * details; nothing written is ever written over, so a save stopped at any
+ * point loses at most what it was writing.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { isAfter, isArchived, newestFirst, summaryOf } from '../../shared/conversation-list';
-import { titleFromMessages } from '../../shared/conversation-title';
 import { generateId, ID_PREFIXES } from '../../shared/id';
 import {
   AutoArchiveDays,
-  BackgroundTaskInfo,
   ChatMessage,
   Conversation,
   ConversationListPage,
@@ -18,172 +22,29 @@ import {
   ConversationSummary,
   ConversationUpdate,
   ConversationWindow,
-  ToolUseInfo,
 } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
+import { appendToFile, replaceFile } from '../utils/durable-file';
 import logger from '../utils/logger';
 import { getConversationsPath, isPathWithin } from '../utils/paths';
 
 import { findSessionTranscript } from './claude/transcript-files';
+import {
+  type ConversationDetails,
+  DETAILS_SUFFIX,
+  isDetailsFileName,
+  isOneFileFormat,
+  messagesFileOf,
+} from './conversation-files';
 import { ConversationIndex } from './conversation-index';
+import { appendBatch, compactedLog, recordLine, replay, TranscriptState } from './conversation-log';
+import { convertConversationFolder, convertOneFileDiscussion } from './conversation-migration';
 
-/** How an incoming write differs from the one before it, when it does. */
-export interface WriteAnomaly {
-  reason: string;
-  /** Where the two transcripts stop agreeing, when that is what happened. */
-  divergedAt?: number;
-  previousCount: number;
-  incomingCount: number;
-}
-
-/**
- * How a write differs from the last one, when the difference looks like lost
- * history. Null when it looks like a conversation growing, which is almost
- * always.
- *
- * It only ever reports. Its predecessor refused the write instead, and the
- * refusal is what lost the messages: the save threw, the retry loop gave up,
- * the file kept its previous content, and everything since the last
- * successful save existed only in the renderer until the conversation was
- * switched away from. The in-memory list is what the user is looking at —
- * declining to write it cannot preserve anything, it can only lose it.
- *
- * It also stops short of calling a divergence corruption, because the app has
- * two paths that legitimately remove a message from the middle of a history:
- * `splitStreamingForTool` drops an empty streaming placeholder, and
- * `removeBackgroundTaskMessageByToolUseId` drops a task message the tool_use
- * indicator has taken over. The refusing version treated "agrees on the
- * common prefix" as the definition of a safe write and so had no room for
- * either of them.
- *
- * Compared against the ids this process last wrote rather than against the
- * file: no per-save read, which on a twelve-thousand-message conversation was
- * itself not free. The cost is that a fresh process has nothing to compare
- * against until it has written once — right for something that only warns.
- */
-export function describeSuspiciousWrite(
-  previous: string[] | undefined,
-  next: string[],
-): WriteAnomaly | null {
-  if (!previous || previous.length === 0) return null;
-
-  const common = Math.min(previous.length, next.length);
-  for (let i = 0; i < common; i += 1) {
-    if (previous[i] !== next[i]) {
-      return {
-        reason: `the history diverges at message ${i} (was ${previous[i]}, now ${next[i]})`,
-        divergedAt: i,
-        previousCount: previous.length,
-        incomingCount: next.length,
-      };
-    }
-  }
-
-  if (next.length < previous.length) {
-    return {
-      reason: `the history shrank from ${previous.length} to ${next.length} messages`,
-      previousCount: previous.length,
-      incomingCount: next.length,
-    };
-  }
-
-  return null;
-}
-
-/**
- * A stored transcript with any repeated message id dropped, keeping the first.
- *
- * Done where the file enters the app, so nothing downstream has to cope. A
- * message id is the identity of a row everywhere above here: it keys the
- * upsert that writes it, the height the virtual list measures it at, and the
- * anchor a page of history is fetched against. Two messages sharing one makes
- * all three ambiguous — the same message shown twice, measured as two rows,
- * and written twice on the next save.
- *
- * Nothing this app does produces a duplicate: an upsert is keyed by id, so a
- * repeat replaces rather than appends. A file can still arrive with one — a
- * hand edit, a restore from a partial copy, a version of this app that had a
- * bug — and "the conversation file is slightly wrong" should cost the user a
- * dropped duplicate, not a transcript that cannot be paged through. The next
- * write stores the cleaned list, so the file repairs itself.
- *
- * The window code deliberately does NOT dedupe. With pages anchored by id,
- * what comes back is always strictly outside the window, so an overlap can
- * only mean a duplicate in the file — which is this function's business, and
- * which a filter inside the window could not fix anyway: the duplicate can
- * sit inside a single page, where "already held" is not yet true of it.
- */
-function withoutRepeatedIds(id: string, messages: ChatMessage[] | undefined): ChatMessage[] {
-  if (!messages || messages.length === 0) return messages ?? [];
-
-  const seen = new Set<string>();
-  const kept: ChatMessage[] = [];
-  for (const message of messages) {
-    if (seen.has(message.id)) continue;
-    seen.add(message.id);
-    kept.push(message);
-  }
-
-  if (kept.length !== messages.length) {
-    logger.warn('Dropped repeated message ids from a stored conversation', {
-      id, stored: messages.length, kept: kept.length,
-    });
-  }
-  return kept;
-}
-
-/** A call as 0.25.1-rc.2 and rc.3 stored it: an Agent call's record was `agentTask`. */
-type StoredToolUse = ToolUseInfo & { agentTask?: BackgroundTaskInfo };
-
-/**
- * A stored transcript with each task row folded into the call that started
- * the task, so the task has one row: its call (see ToolUseInfo.task).
- *
- * Done where the file enters the app, like withoutRepeatedIds, so nothing
- * downstream has to know older files differ; the next write stores the
- * repaired list. Two things older versions wrote:
- *
- * - A background command drawn twice — its call, and a task row of its own,
- *   because the first notice of the task did not name the call. The row's
- *   record moves onto the call and the row goes. Matched by id only: the
- *   row's task id (the call's block id, which that first notice used as the
- *   task's id) or its tool_use id. A row matching no call here is a task with
- *   no call in the transcript, and stays.
- * - An Agent call's record under `agentTask` (rc.2, rc.3), read as `task`.
- */
-function withTaskRowsOnCalls(id: string, messages: ChatMessage[]): ChatMessage[] {
-  let renamed = 0;
-  const named = messages.map((message) => {
-    const toolUse = message.toolUse as StoredToolUse | undefined;
-    if (!toolUse?.agentTask) return message;
-    renamed++;
-    const { agentTask, ...rest } = toolUse;
-    return { ...message, toolUse: { ...rest, task: rest.task ?? agentTask } };
-  });
-
-  const callIds = new Set(
-    named.flatMap((message) => (message.toolUse?.toolUseBlockId ? [message.toolUse.toolUseBlockId] : [])),
-  );
-  const rowsByCall = new Map<string, BackgroundTaskInfo>();
-  const kept = named.filter((message) => {
-    const row = message.backgroundTask;
-    if (!row) return true;
-    const callId = [row.taskId, row.toolUseId].find((candidate) => candidate !== undefined && callIds.has(candidate));
-    if (callId === undefined) return true;
-    rowsByCall.set(callId, row);
-    return false;
-  });
-
-  if (renamed === 0 && rowsByCall.size === 0) return messages;
-  logger.info('Folded task rows of a stored conversation into their calls', {
-    id, folded: rowsByCall.size, renamed,
-  });
-  return kept.map((message) => {
-    const toolUse = message.toolUse;
-    const row = toolUse?.toolUseBlockId ? rowsByCall.get(toolUse.toolUseBlockId) : undefined;
-    // A call that already has a record keeps it: the row was a second copy.
-    return toolUse && row && !toolUse.task ? { ...message, toolUse: { ...toolUse, task: row } } : message;
-  });
+/** A discussion as read from its two files. */
+interface Loaded {
+  details: ConversationDetails;
+  messages: ChatMessage[];
+  state: TranscriptState;
 }
 
 /**
@@ -202,22 +63,36 @@ function storedUntil(all: readonly ChatMessage[], untilId: string | null): numbe
   return at === -1 ? all.length : at;
 }
 
+function isMissing(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
 export class ConversationService {
   private conversationsDir: string;
-  /**
-   * Message ids of the last successful write per conversation, for the check
-   * above. A long conversation costs a few hundred kilobytes here, against
-   * reading and parsing megabytes of JSON on every single save.
-   */
-  private lastWrittenIds: Map<string, string[]> = new Map();
   /** The discussions list's entries; see ConversationIndex. */
   private index: ConversationIndex;
   /**
-   * Each conversation's writes, one after another. A write reads the file,
-   * changes it and writes it back, so two at once would each write what the
-   * other had not seen — an archive landing during a save would be lost.
+   * Each conversation's writes, one after another. A write builds on what
+   * the files hold, so two at once would each write what the other had not
+   * seen — an archive landing during a save would be lost.
+   *
+   * Reads do not wait here: a page of history must not wait behind a save,
+   * nor a jump to the end behind a page. See `writesQueued` for what a read
+   * taken during a write may and may not be used for.
    */
   private writeChains = new Map<string, Promise<unknown>>();
+  /**
+   * Writes ever queued per conversation file. A read that saw no write
+   * queued or running from its start to its end read files no write was
+   * changing — only then is its write state kept (writeStates).
+   */
+  private writesQueued = new Map<string, number>();
+  /**
+   * What writing to each recently used discussion needs to know of its
+   * messages file, so a save does not read it (TranscriptState). Kept for
+   * a few, the most recently used last; one not kept is read again.
+   */
+  private writeStates = new Map<string, TranscriptState>();
 
   constructor() {
     this.conversationsDir = getConversationsPath();
@@ -231,6 +106,20 @@ export class ConversationService {
   }
 
   /**
+   * Bring the folder to the current layout: discussions in one file
+   * converted, what stopped writes left behind removed. Called once at
+   * startup, before anything reads the folder; see conversation-migration.
+   */
+  async upgradeStorage(): Promise<void> {
+    try {
+      await convertConversationFolder(this.conversationsDir);
+    } catch (error) {
+      // Each discussion is converted when it is next opened instead.
+      logger.error('Failed to check the conversations folder for the appended format', { error });
+    }
+  }
+
+  /**
    * Ensure the conversations directory exists (sync version for constructor)
    */
   private ensureDirSync(): void {
@@ -241,13 +130,13 @@ export class ConversationService {
       }
     } catch (error) {
       logger.error('Failed to create conversations directory', { dir: this.conversationsDir, error });
-      // Don't throw in constructor - let save() handle creation
+      // Don't throw in constructor - let writes handle creation
     }
   }
 
   /**
-   * Ensure the conversations directory exists and is writable (async version for save operations)
-   * Throws on error so save operations can fail properly
+   * Ensure the conversations directory exists and is writable (async version for writes)
+   * Throws on error so writes can fail properly
    */
   private async ensureDirAsync(): Promise<void> {
     try {
@@ -274,7 +163,7 @@ export class ConversationService {
   }
 
   /**
-   * Get the file path for a conversation
+   * Get the details file path for a conversation
    * Validates the ID to prevent path traversal attacks
    *
    * Security: We check the ORIGINAL path first to detect attacks,
@@ -282,7 +171,7 @@ export class ConversationService {
    */
   private getFilePath(id: string): string {
     // SECURITY: Check original input FIRST to detect path traversal attempts
-    const originalPath = path.join(this.conversationsDir, `${id}.json`);
+    const originalPath = path.join(this.conversationsDir, `${id}${DETAILS_SUFFIX}`);
     if (!isPathWithin(originalPath, this.conversationsDir)) {
       logger.error('Path traversal attempt detected', { id });
       throw new Error('Invalid conversation ID: path traversal detected');
@@ -294,7 +183,7 @@ export class ConversationService {
       logger.warn('Conversation ID was sanitized', { original: id, sanitized: sanitizedId });
     }
 
-    return path.join(this.conversationsDir, `${sanitizedId}.json`);
+    return path.join(this.conversationsDir, `${sanitizedId}${DETAILS_SUFFIX}`);
   }
 
   /** The file a conversation is stored in, by name within the folder. */
@@ -303,18 +192,222 @@ export class ConversationService {
   }
 
   /** Run a write of one conversation after its writes already under way; see writeChains. */
-  private serialized<T>(id: string, write: () => Promise<T>): Promise<T> {
+  private serialized<T>(id: string, work: () => Promise<T>): Promise<T> {
     // Keyed by file, which is what two writes would collide on.
     const key = this.fileNameOf(id);
+    this.writesQueued.set(key, (this.writesQueued.get(key) ?? 0) + 1);
     const previous = this.writeChains.get(key) ?? Promise.resolve();
     // A write that failed was reported to its own caller; the next one runs.
-    const run = previous.catch(() => undefined).then(write);
+    const run = previous.catch(() => undefined).then(work);
     const settled = run.catch(() => undefined);
     this.writeChains.set(key, settled);
     void settled.then(() => {
       if (this.writeChains.get(key) === settled) this.writeChains.delete(key);
     });
     return run;
+  }
+
+  /**
+   * Wait for every write under way, or until `timeoutMs` has passed. For closing: the window is held open until what it handed over
+   * is on disk.
+   *
+   * @returns false when it stopped waiting with work still under way.
+   */
+  async settleWrites(timeoutMs: number = MAIN_CONSTANTS.CONVERSATION.CLOSE_WRITE_WAIT_MS): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<'timed out'>((resolve) => {
+      timer = setTimeout(() => resolve('timed out'), timeoutMs);
+    });
+    try {
+      // A write can queue another behind it, so wait until none is left.
+      while (this.writeChains.size > 0) {
+        const outcome = await Promise.race([Promise.all([...this.writeChains.values()]), timedOut]);
+        if (outcome === 'timed out') {
+          logger.warn('Stopped waiting for conversation writes', {
+            conversations: [...this.writeChains.keys()], timeoutMs,
+          });
+          return false;
+        }
+      }
+      return true;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Keep a discussion's write state, as the most recently used. */
+  private rememberState(id: string, state: TranscriptState): void {
+    this.writeStates.delete(id);
+    this.writeStates.set(id, state);
+    while (this.writeStates.size > MAIN_CONSTANTS.CONVERSATION.WRITE_STATES_KEPT) {
+      const oldest = this.writeStates.keys().next().value as string;
+      this.writeStates.delete(oldest);
+    }
+  }
+
+  /**
+   * A discussion's details file as stored — possibly a whole discussion in
+   * the one-file layout — or null when there is none.
+   */
+  private async readDetailsFile(id: string): Promise<ConversationDetails | Conversation | null> {
+    let text: string;
+    try {
+      text = await fs.promises.readFile(this.getFilePath(id), 'utf-8');
+    } catch (error) {
+      // A conversation that is not there is an answer: null.
+      if (isMissing(error)) return null;
+      // Anything else is a failure, and must not be answered with "there is
+      // no such conversation": `update` builds on what this returns, and a
+      // swallowed read error would treat a history it failed to read as a
+      // new conversation. Reported here, handled by the caller.
+      logger.error('Failed to read conversation', { id, error });
+      throw error;
+    }
+
+    try {
+      return JSON.parse(text) as ConversationDetails | Conversation;
+    } catch (error) {
+      logger.error('Failed to read conversation', { id, error });
+      throw error;
+    }
+  }
+
+  /** A discussion's messages file's content; empty when it has none yet. */
+  private async readMessagesFile(id: string): Promise<string> {
+    try {
+      return await fs.promises.readFile(messagesFileOf(this.getFilePath(id)), 'utf-8');
+    } catch (error) {
+      // A discussion saved before it had any message has no messages file.
+      if (isMissing(error)) return '';
+      logger.error('Failed to read conversation messages', { id, error });
+      throw error;
+    }
+  }
+
+  /**
+   * A discussion's details for a write to build on, or null when there is
+   * none. One still in one file — copied into the folder while the app was
+   * running — is converted first, so writes only ever meet the current
+   * layout. Called only from within `serialized`.
+   */
+  private async detailsForWriting(id: string): Promise<ConversationDetails | null> {
+    const stored = await this.readDetailsFile(id);
+    if (!stored || !isOneFileFormat(stored)) return stored;
+    this.writeStates.delete(id);
+    return convertOneFileDiscussion(this.getFilePath(id), stored);
+  }
+
+  /** A discussion's write state, read from its file when not kept. Called only from within `serialized`. */
+  private async stateForWriting(id: string): Promise<TranscriptState> {
+    const kept = this.writeStates.get(id);
+    if (kept) return kept;
+    const { state, damaged } = replay(await this.readMessagesFile(id));
+    if (damaged > 0) {
+      logger.warn('Skipped lines of a messages file that a stopped write left unfinished', { id, damaged });
+    }
+    return state;
+  }
+
+  /**
+   * A discussion's details and messages, or null. Not in the write queue;
+   * see writeChains and writesQueued.
+   */
+  private async read(id: string): Promise<Loaded | null> {
+    const key = this.fileNameOf(id);
+    const queuedBefore = this.writesQueued.get(key) ?? 0;
+    const quietBefore = !this.writeChains.has(key);
+
+    const stored = await this.readDetailsFile(id);
+    // Converted in the write queue: a conversion is a write.
+    const details = stored && isOneFileFormat(stored)
+      ? await this.serialized(id, () => this.detailsForWriting(id))
+      : stored;
+    if (!details) return null;
+
+    const { messages, state, damaged } = replay(await this.readMessagesFile(id));
+    // Read while no write ran: the files were whole and still, so what was
+    // read is what a write may build on. Otherwise an unfinished line is a
+    // write still appending, not damage, and the state may already be old.
+    const quiet = quietBefore && !this.writeChains.has(key) && (this.writesQueued.get(key) ?? 0) === queuedBefore;
+    if (quiet) {
+      if (damaged > 0) {
+        logger.warn('Skipped lines of a messages file that a stopped write left unfinished', { id, damaged });
+      }
+      this.rememberState(id, state);
+    }
+    return { details, messages, state };
+  }
+
+  /**
+   * Run a write, retrying transient failures — up to 3 attempts with
+   * exponential backoff. Each attempt must be safe to repeat: the records it
+   * appends replay the same twice (conversation-log), and a file it replaces
+   * is replaced in one step.
+   */
+  private async withRetries(id: string, write: () => Promise<void>): Promise<void> {
+    const maxRetries = MAIN_CONSTANTS.CONVERSATION.MAX_SAVE_RETRIES;
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.ensureDirAsync();
+        await write();
+        return;
+      } catch (error) {
+        lastError = error as Error;
+        logger.warn(`Conversation save attempt ${attempt} failed`, {
+          id,
+          error: lastError.message,
+          attempt,
+          maxRetries,
+        });
+
+        // Don't retry for certain error types
+        const errCode = (error as NodeJS.ErrnoException).code;
+        if (errCode === 'EACCES' || errCode === 'EROFS') {
+          // Permission denied or read-only filesystem - no point retrying
+          break;
+        }
+
+        if (attempt < maxRetries) {
+          // Exponential backoff: 100ms, 200ms, 400ms
+          const delay = MAIN_CONSTANTS.CONVERSATION.RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    logger.error('Failed to save conversation after retries', {
+      id,
+      attempts: maxRetries,
+      error: lastError?.message,
+    });
+    throw lastError || new Error('Failed to save conversation');
+  }
+
+  /** Replace a discussion's details file, and record it in the index. */
+  private async writeDetails(id: string, details: ConversationDetails): Promise<void> {
+    await replaceFile(this.getFilePath(id), JSON.stringify(details, null, 2));
+  }
+
+  /**
+   * Change a discussion's details, after its reads and writes under way,
+   * and keep the index in step. Its messages are not read.
+   *
+   * @returns the details as now stored, or null when `change` changed nothing.
+   */
+  private changeDetails(
+    id: string,
+    change: (details: ConversationDetails) => Promise<boolean> | boolean,
+  ): Promise<ConversationDetails | null> {
+    return this.serialized(id, async () => {
+      const details = await this.detailsForWriting(id);
+      if (!details) throw new Error(`Conversation not found: ${id}`);
+      if (!(await change(details))) return null;
+      await this.withRetries(id, () => this.writeDetails(id, details));
+      await this.index.noteWritten(this.fileNameOf(id), details);
+      return details;
+    });
   }
 
   /**
@@ -360,21 +453,19 @@ export class ConversationService {
    * @returns its list entry as it now stands.
    */
   async setArchived(id: string, archived: boolean): Promise<ConversationSummary> {
-    return this.serialized(id, async () => {
-      const conversation = await this.get(id);
-      if (!conversation) throw new Error(`Conversation not found: ${id}`);
+    const details = await this.changeDetails(id, (stored) => {
       const now = Date.now();
       if (archived) {
-        conversation.archivedAt = now;
-        delete conversation.restoredAt;
+        stored.archivedAt = now;
+        delete stored.restoredAt;
       } else {
-        delete conversation.archivedAt;
-        conversation.restoredAt = now;
+        delete stored.archivedAt;
+        stored.restoredAt = now;
       }
-      await this.persist(conversation);
-      logger.info(archived ? 'Conversation archived' : 'Conversation brought back from the archive', { id });
-      return summaryOf(conversation);
+      return true;
     });
+    logger.info(archived ? 'Conversation archived' : 'Conversation brought back from the archive', { id });
+    return summaryOf({ ...(details as ConversationDetails), messages: [] });
   }
 
   /** Save the index now; for quitting. */
@@ -386,7 +477,7 @@ export class ConversationService {
    * Search for a substring across conversation messages.
    *
    * When `scope` is `'current'`, only the named conversation is searched.
-   * When `'all'`, every conversation file is read once. The match is
+   * When `'all'`, every conversation is read once. The match is
    * case-insensitive, returns at most `limit` results, and each result
    * carries a short snippet trimmed around the first hit so the UI can
    * render a meaningful preview without sending whole messages over IPC.
@@ -419,12 +510,12 @@ export class ConversationService {
     const targets: string[] = [];
     if (scope === 'current') {
       if (!currentConversationId) return [];
-      targets.push(`${currentConversationId}.json`);
+      targets.push(currentConversationId);
     } else {
       try {
         const files = await fs.promises.readdir(this.conversationsDir);
         for (const file of files) {
-          if (file.endsWith('.json')) targets.push(file);
+          if (isDetailsFileName(file)) targets.push(file.slice(0, -DETAILS_SUFFIX.length));
         }
       } catch (error) {
         logger.error('Failed to list conversations for search', error);
@@ -432,16 +523,13 @@ export class ConversationService {
       }
     }
 
-    for (const file of targets) {
+    for (const id of targets) {
       if (results.length >= limit) break;
       try {
-        const content = await fs.promises.readFile(
-          path.join(this.conversationsDir, file),
-          'utf-8',
-        );
-        const conv = JSON.parse(content) as Conversation;
-        const title = conv.title || conv.id;
-        for (const msg of conv.messages || []) {
+        const loaded = await this.read(id);
+        if (!loaded) continue;
+        const title = loaded.details.title || loaded.details.id;
+        for (const msg of loaded.messages) {
           if (results.length >= limit) break;
           const text = msg.content || '';
           const lower = text.toLowerCase();
@@ -456,7 +544,7 @@ export class ConversationService {
           const snippet = `${prefix}${text.slice(start, end)}${suffix}`;
 
           results.push({
-            conversationId: conv.id,
+            conversationId: loaded.details.id,
             conversationTitle: title,
             messageId: msg.id,
             role: msg.role,
@@ -465,7 +553,7 @@ export class ConversationService {
           });
         }
       } catch (error) {
-        logger.debug('Skipped unreadable conversation file during search', { file, error });
+        logger.debug('Skipped unreadable conversation during search', { id, error });
       }
     }
 
@@ -475,111 +563,14 @@ export class ConversationService {
   }
 
   /**
-   * Get a single conversation by ID
+   * Get a single conversation by ID, with all its messages.
+   *
+   * Null when there is no such conversation; a conversation that cannot be
+   * read is an error, never null — see readDetailsFile.
    */
   async get(id: string): Promise<Conversation | null> {
-    const filePath = this.getFilePath(id);
-
-    try {
-      const content = await fs.promises.readFile(filePath, 'utf-8');
-      const conversation = JSON.parse(content) as Conversation;
-      const messages = withTaskRowsOnCalls(id, withoutRepeatedIds(id, conversation.messages));
-      return { ...conversation, messages };
-    } catch (error) {
-      // A conversation that is not there is an answer: null.
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-
-      // Anything else is a failure, and must not be answered with "there is
-      // no such conversation". `update` builds on what this returns, so a
-      // swallowed read error meant an unreadable file was treated as a new
-      // conversation — and the next write would replace a history it had
-      // simply failed to read. Reported here, handled by the caller.
-      logger.error('Failed to read conversation', { id, error });
-      throw error;
-    }
-  }
-
-  /** Save a whole conversation, after its writes already under way; see persist. */
-  save(conversation: Conversation): Promise<void> {
-    return this.serialized(conversation.id, () => this.persist(conversation));
-  }
-
-  /**
-   * Write a conversation, with retry logic for transient failures — retries
-   * up to 3 times with exponential backoff — and record it in the index.
-   * Called only from within `serialized`.
-   */
-  private async persist(conversation: Conversation): Promise<void> {
-    const filePath = this.getFilePath(conversation.id);
-    const maxRetries = MAIN_CONSTANTS.CONVERSATION.MAX_SAVE_RETRIES;
-    let lastError: Error | null = null;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        // Ensure directory exists before writing (async, throws on error)
-        await this.ensureDirAsync();
-
-        // Preserve updatedAt from the renderer (set to last message timestamp)
-        const updated = {
-          ...conversation,
-        };
-
-        // Generate title from first user message if not set
-        if (!updated.title) {
-          updated.title = titleFromMessages(updated.messages) ?? updated.title;
-        }
-
-        // Say something when a write looks like it loses history, and write it
-        // anyway. See describeSuspiciousWrite for why it cannot be a refusal:
-        // refusing is what lost messages.
-        const ids = updated.messages.map((m) => m.id);
-        const anomaly = describeSuspiciousWrite(this.lastWrittenIds.get(conversation.id), ids);
-        if (anomaly) {
-          logger.warn('Conversation write looks like it loses history — writing it anyway', {
-            id: conversation.id,
-            ...anomaly,
-          });
-        }
-
-        // Serialize and write atomically
-        const content = JSON.stringify(updated, null, 2);
-        await fs.promises.writeFile(filePath, content, 'utf-8');
-        this.lastWrittenIds.set(conversation.id, ids);
-        await this.index.noteWritten(path.basename(filePath), updated);
-
-        logger.debug('Conversation saved', { id: conversation.id, attempt });
-        return; // Success, exit retry loop
-      } catch (error) {
-        lastError = error as Error;
-        logger.warn(`Conversation save attempt ${attempt} failed`, {
-          id: conversation.id,
-          error: lastError.message,
-          attempt,
-          maxRetries,
-        });
-
-        // Don't retry for certain error types
-        const errCode = (error as NodeJS.ErrnoException).code;
-        if (errCode === 'EACCES' || errCode === 'EROFS') {
-          // Permission denied or read-only filesystem - no point retrying
-          break;
-        }
-
-        if (attempt < maxRetries) {
-          // Exponential backoff: 100ms, 200ms, 400ms
-          const delay = MAIN_CONSTANTS.CONVERSATION.RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-      }
-    }
-
-    // All retries exhausted
-    logger.error('Failed to save conversation after retries', {
-      id: conversation.id,
-      attempts: maxRetries,
-      error: lastError?.message,
-    });
-    throw lastError || new Error('Failed to save conversation');
+    const loaded = await this.read(id);
+    return loaded ? { ...loaded.details, messages: loaded.messages } : null;
   }
 
   /**
@@ -595,67 +586,79 @@ export class ConversationService {
    *
    * Upsert is positional-stable: a message already stored is replaced where it
    * is, so an edit cannot reorder history, and one that is new is appended in
-   * the order given.
-   *
-   * Everything else — the retry loop, the title fallback, the suspicious-write
-   * report — is shared with `save`, which does the writing.
+   * the order given. Only messages that differ from their stored version are
+   * written: the renderer sends its whole window, and most of it is unchanged.
    */
   update(update: ConversationUpdate): Promise<void> {
     return this.serialized(update.id, () => this.applyUpdate(update));
   }
 
   private async applyUpdate(update: ConversationUpdate): Promise<void> {
-    const stored = await this.get(update.id);
+    const { id } = update;
+    const file = this.getFilePath(id);
+    const stored = await this.detailsForWriting(id);
 
-    const base: Conversation = stored ?? {
-      id: update.id,
-      title: update.title ?? '',
-      workingDirectory: update.workingDirectory,
-      messages: [],
-      createdAt: update.createdAt ?? Date.now(),
-      updatedAt: update.updatedAt,
-    };
+    let state: TranscriptState;
+    if (stored) {
+      state = await this.stateForWriting(id);
+    } else {
+      state = new TranscriptState();
+      // What is left of a discussion deleted with this id is not this one's.
+      await fs.promises.unlink(messagesFileOf(file)).catch((error: unknown) => {
+        if (!isMissing(error)) throw error;
+      });
+    }
+    // Changed below as the records are made; dropped again if writing them fails.
+    this.writeStates.delete(id);
+    const storedCount = state.size;
 
-    let messages = [...base.messages];
-
+    const lines: string[] = [];
+    let truncated = false;
     if (update.truncateFromId) {
-      const cut = messages.findIndex((m) => m.id === update.truncateFromId);
-      if (cut === -1) {
+      if (state.cut(update.truncateFromId)) {
+        lines.push(recordLine({ cut: update.truncateFromId }));
+        truncated = true;
+      } else {
         // The anchor is gone, so what "from" means cannot be known. Dropping
         // nothing is the recoverable mistake; dropping everything is not.
         logger.warn('Truncation anchor not found — keeping the stored history', {
-          id: update.id,
+          id,
           truncateFromId: update.truncateFromId,
-          storedCount: messages.length,
+          storedCount,
         });
-      } else {
-        messages = messages.slice(0, cut);
       }
     }
-
-    const indexById = new Map<string, number>();
-    messages.forEach((message, index) => indexById.set(message.id, index));
 
     let added = 0;
-    let replaced = 0;
+    let changed = 0;
+    let unchanged = 0;
     for (const message of update.upsert) {
-      const at = indexById.get(message.id);
-      if (at === undefined) {
-        indexById.set(message.id, messages.length);
-        messages.push(message);
-        added += 1;
-      } else {
-        messages[at] = message;
-        replaced += 1;
+      const line = recordLine({ put: message });
+      const outcome = state.put(message, line);
+      if (outcome === 'unchanged') {
+        unchanged += 1;
+        continue;
       }
+      lines.push(line);
+      if (outcome === 'added') added += 1;
+      else changed += 1;
     }
 
-    const merged: Conversation = {
+    const customTitle = update.customTitle ?? stored?.customTitle;
+    const base: ConversationDetails = stored ?? {
+      id,
+      title: '',
+      workingDirectory: update.workingDirectory,
+      createdAt: update.createdAt ?? Date.now(),
+      updatedAt: update.updatedAt,
+    };
+    const details: ConversationDetails = {
       ...base,
-      messages,
       workingDirectory: update.workingDirectory || base.workingDirectory,
       updatedAt: update.updatedAt,
-      ...(update.title !== undefined ? { title: update.title } : {}),
+      // Listed under the title its first message gives until renamed, as
+      // summaryOf decides — kept here so the list need not read messages.
+      title: (!customTitle && state.firstUserTitle) || (update.title ?? base.title),
       ...(update.customTitle !== undefined ? { customTitle: update.customTitle } : {}),
       ...(update.createdAt !== undefined ? { createdAt: base.createdAt || update.createdAt } : {}),
       ...(update.sdkSessionId !== undefined ? { sdkSessionId: update.sdkSessionId } : {}),
@@ -666,31 +669,65 @@ export class ConversationService {
     };
 
     logger.info('Applying conversation update', {
-      id: update.id,
-      storedCount: base.messages.length,
+      id,
+      storedCount,
       added,
-      replaced,
-      truncated: update.truncateFromId ?? 'none',
-      resultCount: messages.length,
+      changed,
+      unchanged,
+      truncated: truncated ? update.truncateFromId : 'none',
+      resultCount: state.size,
     });
 
-    await this.persist(merged);
+    await this.withRetries(id, async () => {
+      // Messages first, details last: the details file is what makes a
+      // discussion exist, so a reader never finds one without the messages
+      // it was saved with.
+      if (lines.length > 0) await appendToFile(messagesFileOf(file), appendBatch(lines));
+      await this.writeDetails(id, details);
+    });
+    state.records += lines.length;
+    this.rememberState(id, state);
+    await this.index.noteWritten(path.basename(file), details);
+
+    await this.compactIfWorthIt(id, state);
+  }
+
+  /**
+   * Rewrite a messages file to its live messages once replaced records
+   * outnumber them — each save of a streaming answer replaces it. Done in
+   * one step (durable-file); failing leaves the file as it was, still whole.
+   * Called only from within `serialized`.
+   */
+  private async compactIfWorthIt(id: string, state: TranscriptState): Promise<void> {
+    const replaced = state.records - state.size;
+    if (replaced <= Math.max(MAIN_CONSTANTS.CONVERSATION.COMPACT_MIN_REPLACED, state.size)) return;
+
+    const file = messagesFileOf(this.getFilePath(id));
+    try {
+      const { messages } = replay(await fs.promises.readFile(file, 'utf-8'));
+      const compacted = compactedLog(messages);
+      await replaceFile(file, compacted.text);
+      this.rememberState(id, compacted.state);
+      logger.info('Compacted a conversation messages file', { id, messages: messages.length, replaced });
+    } catch (error) {
+      logger.warn('Failed to compact a conversation messages file', { id, error });
+    }
   }
 
   /**
    * A conversation's most recent `limit` messages, and how many are older.
    *
-   * Opening a conversation reads this rather than the whole file, so the
-   * renderer holds a window instead of a history that grows without bound.
-   * The file is still parsed in full here — it is one JSON document — but
-   * that is a transient cost in this process rather than a permanent one in
-   * the renderer.
+   * Opening a conversation reads this rather than the whole conversation, so
+   * the renderer holds a window instead of a history that grows without
+   * bound. The messages file is still read in full here, but that is a
+   * transient cost in this process rather than a permanent one in the
+   * renderer.
    */
   async getWindow(id: string, limit: number): Promise<ConversationWindow | null> {
     const conversation = await this.get(id);
     if (!conversation) return null;
 
-    const all = conversation.messages ?? [];
+    const all = conversation.messages;
     const take = Math.max(0, limit);
     const start = Math.max(0, all.length - take);
 
@@ -716,7 +753,7 @@ export class ConversationService {
     const conversation = await this.get(id);
     if (!conversation) return null;
 
-    const all = conversation.messages ?? [];
+    const all = conversation.messages;
     const at = all.findIndex((m) => m.id === beforeId);
     if (at === -1) {
       logger.warn('Asked for messages before an id that is not stored', { id, beforeId });
@@ -745,7 +782,7 @@ export class ConversationService {
     const conversation = await this.get(id);
     if (!conversation) return null;
 
-    const all = conversation.messages ?? [];
+    const all = conversation.messages;
     const at = all.findIndex((m) => m.id === afterId);
     if (at === -1) {
       logger.warn('Asked for messages after an id that is not stored', { id, afterId });
@@ -780,7 +817,7 @@ export class ConversationService {
     const conversation = await this.get(id);
     if (!conversation) return null;
 
-    const all = conversation.messages ?? [];
+    const all = conversation.messages;
     const at = all.findIndex((m) => m.id === messageId);
     if (at === -1) {
       logger.warn('Asked for messages around an id that is not stored', { id, messageId });
@@ -797,24 +834,20 @@ export class ConversationService {
   /**
    * Rename a conversation (updates the title)
    */
-  rename(id: string, newTitle: string): Promise<void> {
-    return this.serialized(id, async () => {
-      const conversation = await this.get(id);
-      if (!conversation) {
-        throw new Error(`Conversation not found: ${id}`);
-      }
-
+  async rename(id: string, newTitle: string): Promise<void> {
+    await this.changeDetails(id, (details) => {
       // Update title and mark as custom (manually set)
-      conversation.title = newTitle.trim();
-      conversation.customTitle = true;  // Mark as manually renamed
-      await this.persist(conversation);
-
-      logger.info('Conversation renamed', { id, newTitle: newTitle.slice(0, 30) });
+      details.title = newTitle.trim();
+      details.customTitle = true;
+      return true;
     });
+    logger.info('Conversation renamed', { id, newTitle: newTitle.slice(0, 30) });
   }
 
   /**
-   * Delete a conversation
+   * Delete a conversation: its details file first, which is what makes it a
+   * discussion, then its messages. Should removing the messages fail, the
+   * next start removes them (conversation-migration).
    */
   delete(id: string): Promise<void> {
     return this.serialized(id, async () => {
@@ -824,44 +857,22 @@ export class ConversationService {
         await fs.promises.unlink(filePath);
         logger.info('Conversation deleted', { id });
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        if (!isMissing(error)) {
           logger.error('Failed to delete conversation', { id, error });
           throw error;
         }
       }
+      this.writeStates.delete(id);
       this.index.noteDeleted(path.basename(filePath));
-    });
-  }
 
-  /**
-   * Strip sdkSessionId from all persisted conversations.
-   * Called when auth is invalidated so stale session IDs don't survive restart.
-   */
-  async clearAllSessionIds(): Promise<void> {
-    try {
-      const files = await fs.promises.readdir(this.conversationsDir);
-      let cleared = 0;
-
-      for (const file of files) {
-        if (!file.endsWith('.json')) continue;
-        try {
-          const changed = await this.rewriteFile(file, async (conversation) => {
-            if (!conversation.sdkSessionId) return false;
-            delete conversation.sdkSessionId;
-            return true;
-          });
-          if (changed) cleared++;
-        } catch (err) {
-          logger.warn('Failed to clear session ID from conversation file', { file, error: err });
+      try {
+        await fs.promises.unlink(messagesFileOf(filePath));
+      } catch (error) {
+        if (!isMissing(error)) {
+          logger.warn('Failed to delete conversation messages; removed at the next start', { id, error });
         }
       }
-
-      if (cleared > 0) {
-        logger.info('Cleared persisted SDK session IDs', { cleared });
-      }
-    } catch (err) {
-      logger.error('Failed to clear all session IDs', { error: err });
-    }
+    });
   }
 
   /**
@@ -874,7 +885,8 @@ export class ConversationService {
    * if the session file is already found under the stored CWD, nothing changes.
    *
    * Reads the actual CWD directly from the session .jsonl file (the `cwd`
-   * field in message records) — no lossy path reconstruction.
+   * field in message records) — no lossy path reconstruction. Reads and
+   * writes only each discussion's details, never its messages.
    *
    * Called once at startup.
    */
@@ -895,12 +907,13 @@ export class ConversationService {
       let fixed = 0;
 
       for (const file of conversationFiles) {
-        if (!file.endsWith('.json')) continue;
+        if (!isDetailsFileName(file)) continue;
         try {
-          const changed = await this.rewriteFile(file, async (conversation) => {
-            if (!conversation.sdkSessionId || !conversation.workingDirectory) return false;
+          // The file is named by its conversation's id; see getFilePath.
+          const changed = await this.changeDetails(file.slice(0, -DETAILS_SUFFIX.length), async (details) => {
+            if (!details.sdkSessionId || !details.workingDirectory) return false;
 
-            const sessionFilePath = findSessionTranscript(conversation.sdkSessionId, claudeDir);
+            const sessionFilePath = findSessionTranscript(details.sdkSessionId, claudeDir);
             if (!sessionFilePath) return false; // session gone entirely — leave as-is
 
             // Read the actual CWD from the session .jsonl file
@@ -908,14 +921,14 @@ export class ConversationService {
             if (!actualCwd) return false;
 
             // Only update if the stored CWD doesn't match the actual CWD
-            if (conversation.workingDirectory === actualCwd) return false;
+            if (details.workingDirectory === actualCwd) return false;
 
             logger.info('Recovering conversation CWD from session file', {
-              conversationId: conversation.id,
-              oldCwd: conversation.workingDirectory,
+              conversationId: details.id,
+              oldCwd: details.workingDirectory,
               newCwd: actualCwd,
             });
-            conversation.workingDirectory = actualCwd;
+            details.workingDirectory = actualCwd;
             return true;
           });
           if (changed) fixed++;
@@ -930,28 +943,6 @@ export class ConversationService {
     } catch (err) {
       logger.error('Failed to recover session data', { error: err });
     }
-  }
-
-  /**
-   * Change one stored file as it is, after its conversation's writes under
-   * way, and keep the index in step. The file is rewritten as read, apart
-   * from what `change` did, and only when it says it changed something.
-   *
-   * @returns whether it was rewritten.
-   */
-  private rewriteFile(
-    fileName: string,
-    change: (conversation: Conversation) => Promise<boolean>,
-  ): Promise<boolean> {
-    const filePath = path.join(this.conversationsDir, fileName);
-    // The file is named by its conversation's id; see getFilePath.
-    return this.serialized(fileName.slice(0, -'.json'.length), async () => {
-      const conversation = JSON.parse(await fs.promises.readFile(filePath, 'utf-8')) as Conversation;
-      if (!(await change(conversation))) return false;
-      await fs.promises.writeFile(filePath, JSON.stringify(conversation, null, 2), 'utf-8');
-      await this.index.noteWritten(fileName, conversation);
-      return true;
-    });
   }
 
   /**

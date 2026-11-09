@@ -105,6 +105,8 @@ async function main(): Promise<void> {
     authService = new AuthService();
     notificationService = new NotificationService(configService, getMainWindow);
     conversationService = new ConversationService();
+    // Before anything reads the folder: see conversation-migration.
+    await conversationService.upgradeStorage();
     await conversationService.recoverSessionData();
     claudeService = new ClaudeCodeService(configService, getMainWindow, notificationService);
     fileWatcher = new FileWatcherService();
@@ -195,6 +197,7 @@ async function main(): Promise<void> {
         mainWindow,
         () => claudeService.getRunningWork(),
         () => requestRendererFlush(mainWindow),
+        () => conversationService.settleWrites(),
       );
 
       // Close splash once main window is visible

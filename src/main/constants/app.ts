@@ -91,6 +91,26 @@ export const MAIN_CONSTANTS = {
     RETRY_BASE_DELAY_MS: 100,
     /** Maximum number of save retries */
     MAX_SAVE_RETRIES: 3,
+    /**
+     * Discussions whose write state (conversation-log TranscriptState) is
+     * kept between saves. A few: the open one and those with work running.
+     * One of 68,000 messages costs a few megabytes; one not kept is read
+     * again from its file.
+     */
+    WRITE_STATES_KEPT: 4,
+    /**
+     * Replaced records a messages file may hold before it is rewritten to
+     * its live messages, at least: below it, a rewrite costs more than the
+     * lines it saves.
+     */
+    COMPACT_MIN_REPLACED: 2000,
+    /**
+     * How long closing the window waits for saves under way in the main
+     * process, after the renderer has handed over what it had. Appending a
+     * save takes milliseconds; this only bounds a disk that has stopped
+     * answering, so the window can still close.
+     */
+    CLOSE_WRITE_WAIT_MS: 30_000,
   },
   LOGGING: {
     /** Maximum log file size before rotation - 5MB */

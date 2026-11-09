@@ -103,22 +103,24 @@ describe('an image through the whole stack', () => {
   });
 
   it('keeps the bytes out of the conversation file', async () => {
-    // The property the whole design exists for. A conversation file is read
-    // and parsed before every single write; bytes in it would be paid for on
-    // every save, by every save.
+    // The property the whole design exists for. A conversation's messages
+    // file is read and parsed whole whenever the conversation is opened;
+    // bytes in it would be paid for on every open, and written again with
+    // every change to their message.
+    const messagesFile = `/conversations/${CONV}.messages.jsonl`;
     const ref = await attach();
     chatStore.addUserMessage('what is this?', [ref]);
     await store.saveCurrentConversation();
     await settle();
 
-    const raw = files.get(`/conversations/${CONV}.json`) ?? '';
+    const raw = files.get(messagesFile) ?? '';
     expect(raw).not.toContain(PNG_BASE64);
     expect(raw).toContain(ref.id);
 
     // And the size of the image makes no difference to the size of the
     // transcript, which is the property that matters: a file read and parsed
-    // before every write must not grow with what the user attaches. A fixed
-    // byte bound would only have been a guess about JSON overhead.
+    // whole must not grow with what the user attaches. A fixed byte bound
+    // would only have been a guess about JSON overhead.
     const big = 'A'.repeat(200_000);
     const bigRef = await window.electron.conversation.saveImage(CONV, {
       base64: big, mediaType: 'image/png', label: 'big.png',
@@ -127,7 +129,7 @@ describe('an image through the whole stack', () => {
     await store.saveCurrentConversation();
     await settle();
 
-    const withBig = files.get(`/conversations/${CONV}.json`) ?? '';
+    const withBig = files.get(messagesFile) ?? '';
     expect(withBig).not.toContain(big);
     // Grew by another message and another reference — nothing like 200 KB.
     expect(withBig.length - raw.length).toBeLessThan(1_000);

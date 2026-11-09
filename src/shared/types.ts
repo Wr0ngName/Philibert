@@ -2184,8 +2184,6 @@ export const IPC_CHANNELS = {
   CONVERSATION_SET_ARCHIVED: 'conversation:set-archived',
   /** Get a specific conversation */
   CONVERSATION_GET: 'conversation:get',
-  /** Save a conversation */
-  CONVERSATION_SAVE: 'conversation:save',
   /** Apply a ConversationUpdate — the renderer's only way to write. */
   CONVERSATION_UPDATE: 'conversation:update',
   /** Read a conversation's tail plus how much is older. */

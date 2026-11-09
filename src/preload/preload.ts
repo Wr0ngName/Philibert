@@ -469,9 +469,6 @@ const electronAPI: ElectronAPI = {
 
     get: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET, id),
 
-    save: (conversation) =>
-      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SAVE, conversation),
-
     update: (update) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE, update),
 
