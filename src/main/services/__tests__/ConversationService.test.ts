@@ -477,6 +477,29 @@ describe('discussions stored in one file, as up to 0.25.13', () => {
     expect((await service.get('old'))?.messages).toEqual(stored.messages);
   });
 
+  it('say which one is being converted, so startup can show why it waits', async () => {
+    // Asked for: a long conversion must not look like an app that hangs.
+    await seed('new', ['m1']);
+    fs.writeFileSync(detailsFile('old'), JSON.stringify(oneFile('old', [msg('m1')])));
+    const progress: unknown[] = [];
+
+    await service.upgradeStorage((p) => progress.push(p));
+
+    // One of the two needed converting; the other is in the current layout.
+    // Counted in the folder's own order, as the conversion goes through it.
+    const order = fs.readdirSync(conversationsDir.path).filter((n) => n.endsWith('.json'));
+    expect(progress).toEqual([{ at: order.indexOf('old.json') + 1, of: 2 }]);
+  });
+
+  it('say nothing at a start with nothing to convert', async () => {
+    await seed('new', ['m1']);
+    const progress: unknown[] = [];
+
+    await service.upgradeStorage((p) => progress.push(p));
+
+    expect(progress).toEqual([]);
+  });
+
   it('are left exactly as they are when they cannot be read', async () => {
     // The 2026-11-09 file: cut mid-string. Kept for what can be recovered.
     const cut = '{"id":"cut","title":"x","messages":[{"id":"m1","role":"user","content":"unfini';

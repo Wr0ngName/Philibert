@@ -41,7 +41,7 @@ import { ConversationIndex } from './conversation-index';
 import {
   appendBatch, batchLocations, compactedLog, type LineLocation, recordLine, replay, TranscriptState,
 } from './conversation-log';
-import { convertConversationFolder, convertOneFileDiscussion } from './conversation-migration';
+import { type ConversionProgress, convertConversationFolder, convertOneFileDiscussion } from './conversation-migration';
 
 /** A discussion as read from its two files. */
 interface Loaded {
@@ -119,9 +119,9 @@ export class ConversationService {
    * converted, what stopped writes left behind removed. Called once at
    * startup, before anything reads the folder; see conversation-migration.
    */
-  async upgradeStorage(): Promise<void> {
+  async upgradeStorage(onConverting?: (progress: ConversionProgress) => void): Promise<void> {
     try {
-      await convertConversationFolder(this.conversationsDir);
+      await convertConversationFolder(this.conversationsDir, onConverting);
     } catch (error) {
       // Each discussion is converted when it is next opened instead.
       logger.error('Failed to check the conversations folder for the appended format', { error });

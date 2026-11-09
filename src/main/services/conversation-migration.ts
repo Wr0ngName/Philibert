@@ -143,8 +143,22 @@ export interface FolderConversion {
   leftoversRemoved: number;
 }
 
-/** Convert every one-file discussion in the folder; see the top of this file. */
-export async function convertConversationFolder(dir: string): Promise<FolderConversion> {
+/** Where a conversion of the folder has got to: about to convert the discussion `at` of `of` checked. */
+export interface ConversionProgress {
+  at: number;
+  of: number;
+}
+
+/**
+ * Convert every one-file discussion in the folder; see the top of this file.
+ *
+ * `onConverting` is told before each conversion, which can take seconds for
+ * a long discussion, so startup can say why it is waiting.
+ */
+export async function convertConversationFolder(
+  dir: string,
+  onConverting: (progress: ConversionProgress) => void = () => {},
+): Promise<FolderConversion> {
   const result: FolderConversion = { converted: 0, unreadable: [], temporaryRemoved: 0, leftoversRemoved: 0 };
   let names: string[];
   try {
@@ -154,6 +168,7 @@ export async function convertConversationFolder(dir: string): Promise<FolderConv
     throw error;
   }
 
+  const detailsFiles = names.filter(isDetailsFileName);
   for (const name of names) {
     const file = path.join(dir, name);
     if (isTemporaryFile(name)) {
@@ -174,6 +189,7 @@ export async function convertConversationFolder(dir: string): Promise<FolderConv
       continue;
     }
     if (!isOneFileFormat(parsed)) continue;
+    onConverting({ at: detailsFiles.indexOf(name) + 1, of: detailsFiles.length });
     try {
       await convertOneFileDiscussion(file, parsed);
       result.converted += 1;

@@ -105,8 +105,11 @@ async function main(): Promise<void> {
     authService = new AuthService();
     notificationService = new NotificationService(configService, getMainWindow);
     conversationService = new ConversationService();
-    // Before anything reads the folder: see conversation-migration.
-    await conversationService.upgradeStorage();
+    // Before anything reads the folder: see conversation-migration. A long
+    // discussion takes seconds, so the splash says what startup is doing.
+    await conversationService.upgradeStorage(({ at, of }) => {
+      updateSplashStatus(`Converting discussions to the new format (${at} of ${of})…`);
+    });
     await conversationService.recoverSessionData();
     claudeService = new ClaudeCodeService(configService, getMainWindow, notificationService);
     fileWatcher = new FileWatcherService();

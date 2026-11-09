@@ -15,6 +15,8 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 
 import type { ChatMessage } from '@shared/types';
 
+import { CONSTANTS } from '../../constants/app';
+
 import { useVirtualList } from '../../composables/useVirtualList';
 import { formatTime } from '../../utils/date';
 import {
@@ -871,17 +873,49 @@ onMounted(() => {
   }
 });
 
+/**
+ * Said over the list while what it lists is being opened, once that takes a
+ * moment: the first opening of a long discussion in a session reads its whole
+ * file, and meanwhile the list showed nothing, or the discussion left behind.
+ */
+const showOpening = ref(false);
+let openingTimer: ReturnType<typeof setTimeout> | null = null;
+watch(
+  () => source.opening,
+  (opening) => {
+    if (openingTimer) clearTimeout(openingTimer);
+    openingTimer = null;
+    if (!opening) {
+      showOpening.value = false;
+      return;
+    }
+    openingTimer = setTimeout(() => {
+      showOpening.value = true;
+    }, CONSTANTS.CONVERSATION.OPENING_PLACEHOLDER_DELAY_MS);
+  },
+  { immediate: true },
+);
+
 onUnmounted(() => {
   if (listRef.value) {
     listRef.value.removeEventListener('scroll', handleScroll);
   }
   viewportObserver?.disconnect();
   viewportObserver = null;
+  if (openingTimer) clearTimeout(openingTimer);
 });
 </script>
 
 <template>
   <div class="relative flex-1 min-w-0">
+    <div
+      v-if="showOpening"
+      class="message-list-opening absolute inset-0 z-10 flex items-center justify-center gap-2 bg-white/80 dark:bg-surface-900/80 text-sm text-surface-500 dark:text-surface-400"
+      role="status"
+    >
+      <Spinner size="sm" />
+      Opening the discussion…
+    </div>
     <div
       ref="listRef"
       class="absolute inset-0 overflow-y-auto overflow-x-hidden p-4 message-list-spacing"

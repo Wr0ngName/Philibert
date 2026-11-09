@@ -49,6 +49,12 @@ export const CONSTANTS = {
      * trimmed while it is still arriving.
      */
     WINDOW_MAX: 1500,
+    /**
+     * How long opening a discussion may take before the list says it is
+     * opening: most open in milliseconds and must not flash a placeholder;
+     * the first opening of a long one in a session takes seconds.
+     */
+    OPENING_PLACEHOLDER_DELAY_MS: 150,
   },
   /** File system constants (from shared constants) */
   FILES: {

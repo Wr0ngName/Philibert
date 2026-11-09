@@ -31,6 +31,12 @@ export const useConversationsStore = defineStore('conversations', () => {
   const conversations = ref<Conversation[]>([]);
   const currentConversationId = ref<string | null>(null);
   const isLoading = ref(false);
+  /**
+   * The discussion being opened, until its messages are read: the first
+   * opening of a long one in a session reads its whole file, which takes
+   * seconds, and the list says so meanwhile (MessageListSource.opening).
+   */
+  const openingConversationId = ref<string | null>(null);
   const isSaving = ref(false);
   const error = ref<string | null>(null);
   const isInitialized = ref(false);
@@ -328,6 +334,7 @@ export const useConversationsStore = defineStore('conversations', () => {
    */
   async function loadConversation(id: string): Promise<boolean> {
     isLoading.value = true;
+    openingConversationId.value = id;
     error.value = null;
 
     try {
@@ -478,6 +485,8 @@ export const useConversationsStore = defineStore('conversations', () => {
       return false;
     } finally {
       isLoading.value = false;
+      // Only this opening's own: one started since is still under way.
+      if (openingConversationId.value === id) openingConversationId.value = null;
     }
   }
 
@@ -1664,6 +1673,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     conversations,
     currentConversationId,
     isLoading,
+    openingConversationId,
     isSaving,
     error,
 

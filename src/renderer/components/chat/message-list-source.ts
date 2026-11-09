@@ -28,6 +28,12 @@ export interface MessageListSource {
   readonly messages: ChatMessage[];
   /** Whether a turn is running, which is what shows the spinner. */
   readonly isLoading: boolean;
+  /**
+   * Whether what is listed is still being read to be shown — a discussion
+   * being opened, an agent's transcript before its first reading. The list
+   * says so rather than showing an empty or a previous list meanwhile.
+   */
+  readonly opening: boolean;
   /** The text streaming into the running turn, so the list can follow it. */
   readonly streamingContent: string;
   /**
@@ -64,6 +70,7 @@ export function conversationListSource(): MessageListSource {
     get conversationId() { return currentId(); },
     get messages() { return chatStore.messages; },
     get isLoading() { return chatStore.isLoading; },
+    get opening() { return conversationsStore.openingConversationId !== null; },
     get streamingContent() { return chatStore.currentStreamingContent; },
     get arrivals() { return chatStore.arrivalCount(currentId()); },
     get olderCount() { return chatStore.olderMessageCount; },
@@ -109,6 +116,8 @@ export function heldListSource(read: () => HeldList): MessageListSource {
     get conversationId() { return read().conversationId; },
     get messages() { return read().messages; },
     get isLoading() { return read().isLoading; },
+    // Shown once read: its view says it is loading until then.
+    opening: false,
     streamingContent: '',
     // Held in full, so it only ever grows by what arrived.
     get arrivals() { return read().messages.length; },
