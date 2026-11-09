@@ -36,12 +36,14 @@ import {
   isDetailsFileName,
   isOneFileFormat,
   messagesFileOf,
+  messagesIndexFileOf,
 } from './conversation-files';
 import { ConversationIndex } from './conversation-index';
 import {
   appendBatch, batchLocations, type LineLocation, putCompacted, recordLine, replay, TranscriptState,
 } from './conversation-log';
 import { type ConversionProgress, convertConversationFolder, convertOneFileDiscussion } from './conversation-migration';
+import { readTranscriptIndex, writeTranscriptIndex } from './transcript-index';
 
 /** A discussion as read from its two files. */
 interface Loaded {
@@ -64,6 +66,21 @@ function storedUntil(ids: readonly string[], untilId: string | null): number {
   if (!untilId) return ids.length;
   const at = ids.indexOf(untilId);
   return at === -1 ? ids.length : at;
+}
+
+/**
+ * The lines of a page are not where the write state says — the file changed
+ * behind the app, or its saved index is wrong. Nothing that state says can
+ * be trusted, the order of the messages included: the whole request is
+ * answered again from the file (ConversationService.withView).
+ */
+class StaleLines extends Error {}
+
+/** What a page is read from: see ConversationService.view. */
+interface MessagesView {
+  details: ConversationDetails;
+  ids: readonly string[];
+  load: (from: number, to: number) => Promise<ChatMessage[]>;
 }
 
 function isMissing(error: unknown): boolean {
@@ -102,6 +119,17 @@ export class ConversationService {
    * location (`view`) that saw this change reads the file again instead.
    */
   private fileGenerations = new Map<string, number>();
+  /**
+   * Discussions whose kept write state is not what their saved index holds
+   * (transcript-index): saved when the state leaves memory, and on close.
+   */
+  private indexOutdated = new Set<string>();
+  /**
+   * Writes finished per conversation file. An index is saved from a state
+   * only if none finished since the state was taken: one that did changed
+   * the file the state describes.
+   */
+  private writesDone = new Map<string, number>();
 
   constructor() {
     this.conversationsDir = getConversationsPath();
@@ -211,9 +239,33 @@ export class ConversationService {
     const settled = run.catch(() => undefined);
     this.writeChains.set(key, settled);
     void settled.then(() => {
+      this.writesDone.set(key, (this.writesDone.get(key) ?? 0) + 1);
       if (this.writeChains.get(key) === settled) this.writeChains.delete(key);
     });
     return run;
+  }
+
+  /**
+   * Save a discussion's write state as its index, once the writes queued
+   * before have run — and only if none finished since `doneAt`: such a
+   * write changed the file, and the state no longer describes it.
+   */
+  private queueIndexSave(id: string, state: TranscriptState): Promise<void> {
+    const key = this.fileNameOf(id);
+    const doneAt = this.writesDone.get(key) ?? 0;
+    const pending = this.writeChains.has(key);
+    return this.serialized(id, async () => {
+      // Writes that were queued are done by now: the state predates them.
+      if (pending || (this.writesDone.get(key) ?? 0) !== doneAt) return;
+      const file = this.getFilePath(id);
+      try {
+        await writeTranscriptIndex(messagesFileOf(file), messagesIndexFileOf(file), state);
+        if (this.writeStates.get(id) === state || !this.writeStates.has(id)) this.indexOutdated.delete(id);
+      } catch (error) {
+        // Read whole at the next opening, as without one.
+        if (!isMissing(error)) logger.warn('Failed to save a conversation messages index', { id, error });
+      }
+    });
   }
 
   /**
@@ -228,8 +280,19 @@ export class ConversationService {
       timer = setTimeout(() => resolve('timed out'), timeoutMs);
     });
     try {
-      // A write can queue another behind it, so wait until none is left.
-      while (this.writeChains.size > 0) {
+      // A write can queue another behind it, so wait until none is left;
+      // then save the indexes the writes left behind theirs, so the next
+      // session opens those discussions without reading them whole.
+      let indexesQueued = false;
+      while (this.writeChains.size > 0 || !indexesQueued) {
+        if (this.writeChains.size === 0) {
+          indexesQueued = true;
+          for (const id of this.indexOutdated) {
+            const state = this.writeStates.get(id);
+            if (state) void this.queueIndexSave(id, state);
+          }
+          continue;
+        }
         const outcome = await Promise.race([Promise.all([...this.writeChains.values()]), timedOut]);
         if (outcome === 'timed out') {
           logger.warn('Stopped waiting for conversation writes', {
@@ -250,14 +313,41 @@ export class ConversationService {
     this.fileGenerations.set(id, (this.fileGenerations.get(id) ?? 0) + 1);
   }
 
-  /** Keep a discussion's write state, as the most recently used. */
-  private rememberState(id: string, state: TranscriptState): void {
+  /**
+   * Keep a discussion's write state, as the most recently used. `ahead`
+   * says it is not what the saved index holds: read from the whole file, or
+   * changed by a write. One leaving memory saves its index first, if ahead.
+   */
+  private rememberState(id: string, state: TranscriptState, ahead: boolean): void {
+    if (ahead) this.indexOutdated.add(id);
     this.writeStates.delete(id);
     this.writeStates.set(id, state);
     while (this.writeStates.size > MAIN_CONSTANTS.CONVERSATION.WRITE_STATES_KEPT) {
-      const oldest = this.writeStates.keys().next().value as string;
+      const [oldest, oldState] = this.writeStates.entries().next().value as [string, TranscriptState];
       this.writeStates.delete(oldest);
+      if (this.indexOutdated.has(oldest)) void this.queueIndexSave(oldest, oldState);
     }
+  }
+
+  /** A discussion's write state from its saved index, when that matches its messages file. */
+  private stateFromIndex(id: string): Promise<TranscriptState | null> {
+    const file = this.getFilePath(id);
+    return readTranscriptIndex(messagesFileOf(file), messagesIndexFileOf(file));
+  }
+
+  /**
+   * The same, for a read: not in the write queue, so kept only when no write
+   * ran meanwhile (writesQueued) — otherwise used for this read alone, whose
+   * lines are checked as they are read (view).
+   */
+  private async stateFromIndexForReading(id: string): Promise<TranscriptState | null> {
+    const key = this.fileNameOf(id);
+    const queuedBefore = this.writesQueued.get(key) ?? 0;
+    const quietBefore = !this.writeChains.has(key);
+    const state = await this.stateFromIndex(id);
+    const quiet = quietBefore && !this.writeChains.has(key) && (this.writesQueued.get(key) ?? 0) === queuedBefore;
+    if (state && quiet && !this.writeStates.has(id)) this.rememberState(id, state, false);
+    return state;
   }
 
   /**
@@ -313,14 +403,16 @@ export class ConversationService {
   }
 
   /** A discussion's write state, read from its file when not kept. Called only from within `serialized`. */
-  private async stateForWriting(id: string): Promise<TranscriptState> {
+  private async stateForWriting(id: string): Promise<{ state: TranscriptState; ahead: boolean }> {
     const kept = this.writeStates.get(id);
-    if (kept) return kept;
+    if (kept) return { state: kept, ahead: this.indexOutdated.has(id) };
+    const indexed = await this.stateFromIndex(id);
+    if (indexed) return { state: indexed, ahead: false };
     const { state, damaged } = replay(await this.readMessagesFile(id));
     if (damaged > 0) {
       logger.warn('Skipped lines of a messages file that a stopped write left unfinished', { id, damaged });
     }
-    return state;
+    return { state, ahead: true };
   }
 
   /** A discussion's details, or null; one still in one file converted first, in the write queue: a conversion is a write. */
@@ -346,31 +438,23 @@ export class ConversationService {
    * read from the whole file again; so it is when a line read does not hold
    * the message expected.
    */
-  private async view(id: string): Promise<{
-    details: ConversationDetails;
-    ids: readonly string[];
-    load: (from: number, to: number) => Promise<ChatMessage[]>;
-  } | null> {
+  private async view(id: string): Promise<MessagesView | null> {
     // First: reading the details may convert the discussion, replacing its
     // messages file, and the snapshot must describe the file as it is after.
     const details = await this.detailsForReading(id);
     if (!details) return null;
 
-    const kept = this.writeStates.get(id);
-    if (!kept) {
-      const loaded = await this.read(id);
-      if (!loaded) return null;
-      return {
-        details: loaded.details,
-        ids: loaded.messages.map((m) => m.id),
-        load: async (from, to) => loaded.messages.slice(from, to),
-      };
-    }
-
     const generation = this.fileGenerations.get(id) ?? 0;
+    const kept = this.writeStates.get(id) ?? await this.stateFromIndexForReading(id);
+    if (!kept) return this.wholeView(id);
+
     const { ids, locations } = kept.snapshot();
 
-    /** The stretch from the whole file, by id: what a location could not give. */
+    /**
+     * The stretch from the whole file, by id: the file was replaced by the
+     * app itself — compacted, which keeps every message and their order, or
+     * removed with its discussion.
+     */
     const fromWholeFile = async (from: number, to: number, reason: string): Promise<ChatMessage[]> => {
       logger.info('Reading a page of a conversation from its whole messages file', { id, reason });
       const loaded = await this.read(id);
@@ -380,7 +464,7 @@ export class ConversationService {
 
     const load = async (from: number, to: number): Promise<ChatMessage[]> => {
       const wanted = locations.slice(from, to);
-      if (wanted.some((location) => !location)) return fromWholeFile(from, to, 'a line not located');
+      if (wanted.some((location) => !location)) throw new StaleLines('a line not located');
       const replaced = () => (this.fileGenerations.get(id) ?? 0) !== generation;
       let lines: Buffer[];
       try {
@@ -400,13 +484,43 @@ export class ConversationService {
         } catch {
           record = undefined;
         }
-        if (record?.put?.id !== ids[from + i]) return fromWholeFile(from, to, 'a line did not hold its message');
+        if (record?.put?.id !== ids[from + i]) throw new StaleLines('a line did not hold its message');
         messages.push(record.put);
       }
       return messages;
     };
 
     return { details, ids, load };
+  }
+
+  /** A view of a discussion read whole, as it is in its file. */
+  private async wholeView(id: string): Promise<MessagesView | null> {
+    const loaded = await this.read(id);
+    if (!loaded) return null;
+    return {
+      details: loaded.details,
+      ids: loaded.messages.map((m) => m.id),
+      load: async (from, to) => loaded.messages.slice(from, to),
+    };
+  }
+
+  /**
+   * Answer a read from a view of the discussion — or, when its lines are
+   * not where its state says (StaleLines), from the whole file, the state
+   * dropped: its saved index is written again from what the file holds.
+   */
+  private async withView<T>(id: string, answer: (view: MessagesView) => Promise<T>): Promise<T | null> {
+    const view = await this.view(id);
+    if (!view) return null;
+    try {
+      return await answer(view);
+    } catch (error) {
+      if (!(error instanceof StaleLines)) throw error;
+      logger.warn('A conversation\'s lines were not where its index said: reading its file whole', { id, reason: error.message });
+      this.messagesFileReplaced(id);
+      const whole = await this.wholeView(id);
+      return whole ? answer(whole) : null;
+    }
   }
 
   /**
@@ -430,7 +544,8 @@ export class ConversationService {
       if (damaged > 0) {
         logger.warn('Skipped lines of a messages file that a stopped write left unfinished', { id, damaged });
       }
-      this.rememberState(id, state);
+      // Read whole: there was no index for this file as it is.
+      this.rememberState(id, state, true);
     }
     return { details, messages, state };
   }
@@ -685,15 +800,19 @@ export class ConversationService {
     const stored = await this.detailsForWriting(id);
 
     let state: TranscriptState;
+    let ahead: boolean;
     if (stored) {
-      state = await this.stateForWriting(id);
+      ({ state, ahead } = await this.stateForWriting(id));
     } else {
       state = new TranscriptState();
+      ahead = true;
       // What is left of a discussion deleted with this id is not this one's.
       this.messagesFileReplaced(id);
-      await fs.promises.unlink(messagesFileOf(file)).catch((error: unknown) => {
-        if (!isMissing(error)) throw error;
-      });
+      for (const leftover of [messagesFileOf(file), messagesIndexFileOf(file)]) {
+        await fs.promises.unlink(leftover).catch((error: unknown) => {
+          if (!isMissing(error)) throw error;
+        });
+      }
     }
     // Changed below as the records are made; dropped again if writing them fails.
     this.writeStates.delete(id);
@@ -786,7 +905,8 @@ export class ConversationService {
       if (entry.putId) state.locate(entry.putId, locations[i]);
     });
     state.records += lines.length;
-    this.rememberState(id, state);
+    // An appended line makes the file differ from what its index describes.
+    this.rememberState(id, state, ahead || lines.length > 0);
     await this.index.noteWritten(path.basename(file), details);
 
     await this.compactIfWorthIt(id, state);
@@ -838,7 +958,7 @@ export class ConversationService {
         }
       });
       this.messagesFileReplaced(id);
-      this.rememberState(id, compacted);
+      this.rememberState(id, compacted, true);
       logger.info('Compacted a conversation messages file', { id, messages: ids.length, replaced });
     } catch (error) {
       logger.warn('Failed to compact a conversation messages file', { id, error });
@@ -853,15 +973,14 @@ export class ConversationService {
    * bound; and only those messages' lines are read (`view`), once the
    * discussion was read whole in this process.
    */
-  async getWindow(id: string, limit: number): Promise<ConversationWindow | null> {
-    const view = await this.view(id);
-    if (!view) return null;
-
-    const start = Math.max(0, view.ids.length - Math.max(0, limit));
-    return {
-      conversation: { ...view.details, messages: await view.load(start, view.ids.length) },
-      olderCount: start,
-    };
+  getWindow(id: string, limit: number): Promise<ConversationWindow | null> {
+    return this.withView(id, async (view) => {
+      const start = Math.max(0, view.ids.length - Math.max(0, limit));
+      return {
+        conversation: { ...view.details, messages: await view.load(start, view.ids.length) },
+        olderCount: start,
+      };
+    });
   }
 
   /**
@@ -877,17 +996,16 @@ export class ConversationService {
     beforeId: string,
     limit: number,
   ): Promise<{ messages: ChatMessage[]; olderCount: number } | null> {
-    const view = await this.view(id);
-    if (!view) return null;
+    return this.withView(id, async (view) => {
+      const at = view.ids.indexOf(beforeId);
+      if (at === -1) {
+        logger.warn('Asked for messages before an id that is not stored', { id, beforeId });
+        return { messages: [], olderCount: 0 };
+      }
 
-    const at = view.ids.indexOf(beforeId);
-    if (at === -1) {
-      logger.warn('Asked for messages before an id that is not stored', { id, beforeId });
-      return { messages: [], olderCount: 0 };
-    }
-
-    const start = Math.max(0, at - Math.max(0, limit));
-    return { messages: await view.load(start, at), olderCount: start };
+      const start = Math.max(0, at - Math.max(0, limit));
+      return { messages: await view.load(start, at), olderCount: start };
+    });
   }
 
   /**
@@ -905,19 +1023,18 @@ export class ConversationService {
     limit: number,
     untilId: string | null = null,
   ): Promise<{ messages: ChatMessage[]; newerCount: number } | null> {
-    const view = await this.view(id);
-    if (!view) return null;
+    return this.withView(id, async (view) => {
+      const at = view.ids.indexOf(afterId);
+      if (at === -1) {
+        logger.warn('Asked for messages after an id that is not stored', { id, afterId });
+        return { messages: [], newerCount: 0 };
+      }
 
-    const at = view.ids.indexOf(afterId);
-    if (at === -1) {
-      logger.warn('Asked for messages after an id that is not stored', { id, afterId });
-      return { messages: [], newerCount: 0 };
-    }
-
-    const stop = storedUntil(view.ids, untilId);
-    const start = Math.min(at + 1, stop);
-    const end = Math.min(stop, start + Math.max(0, limit));
-    return { messages: await view.load(start, end), newerCount: stop - end };
+      const stop = storedUntil(view.ids, untilId);
+      const start = Math.min(at + 1, stop);
+      const end = Math.min(stop, start + Math.max(0, limit));
+      return { messages: await view.load(start, end), newerCount: stop - end };
+    });
   }
 
   /**
@@ -939,20 +1056,19 @@ export class ConversationService {
     after: number,
     untilId: string | null = null,
   ): Promise<{ messages: ChatMessage[]; olderCount: number; newerCount: number } | null> {
-    const view = await this.view(id);
-    if (!view) return null;
+    return this.withView(id, async (view) => {
+      const at = view.ids.indexOf(messageId);
+      if (at === -1) {
+        logger.warn('Asked for messages around an id that is not stored', { id, messageId });
+        return null;
+      }
 
-    const at = view.ids.indexOf(messageId);
-    if (at === -1) {
-      logger.warn('Asked for messages around an id that is not stored', { id, messageId });
-      return null;
-    }
-
-    const stop = storedUntil(view.ids, untilId);
-    if (at >= stop) return null;
-    const start = Math.max(0, at - Math.max(0, before));
-    const end = Math.min(stop, at + 1 + Math.max(0, after));
-    return { messages: await view.load(start, end), olderCount: start, newerCount: stop - end };
+      const stop = storedUntil(view.ids, untilId);
+      if (at >= stop) return null;
+      const start = Math.max(0, at - Math.max(0, before));
+      const end = Math.min(stop, at + 1 + Math.max(0, after));
+      return { messages: await view.load(start, end), olderCount: start, newerCount: stop - end };
+    });
   }
 
   /**
@@ -1007,13 +1123,16 @@ export class ConversationService {
         }
       }
       this.messagesFileReplaced(id);
+      this.indexOutdated.delete(id);
       this.index.noteDeleted(path.basename(filePath));
 
-      try {
-        await fs.promises.unlink(messagesFileOf(filePath));
-      } catch (error) {
-        if (!isMissing(error)) {
-          logger.warn('Failed to delete conversation messages; removed at the next start', { id, error });
+      for (const file of [messagesFileOf(filePath), messagesIndexFileOf(filePath)]) {
+        try {
+          await fs.promises.unlink(file);
+        } catch (error) {
+          if (!isMissing(error)) {
+            logger.warn('Failed to delete a conversation file; removed at the next start', { id, file, error });
+          }
         }
       }
     });

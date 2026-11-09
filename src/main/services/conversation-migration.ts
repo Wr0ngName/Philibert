@@ -23,10 +23,11 @@ import { isTemporaryFile, replaceFile } from '../utils/durable-file';
 import logger from '../utils/logger';
 
 import {
-  type ConversationDetails, detailsFileNameOf, detailsOf, isDetailsFileName, isMessagesFileName, isOneFileFormat,
-  messagesFileOf,
+  type ConversationDetails, detailsFileNameOf, detailsOf, isDetailsFileName, isOneFileFormat,
+  messagesFileOf, messagesIndexFileOf,
 } from './conversation-files';
 import { compactedLog } from './conversation-log';
+import { writeTranscriptIndex } from './transcript-index';
 
 /**
  * A stored transcript with any repeated message id dropped, keeping the first.
@@ -120,8 +121,11 @@ export function withTaskRowsOnCalls(id: string, messages: ChatMessage[]): ChatMe
 export async function convertOneFileDiscussion(detailsFile: string, stored: Conversation): Promise<ConversationDetails> {
   const messages = withTaskRowsOnCalls(stored.id, withoutRepeatedIds(stored.id, stored.messages));
   const details = detailsOf({ ...stored, messages });
-  await replaceFile(messagesFileOf(detailsFile), compactedLog(messages).text);
+  const log = compactedLog(messages);
+  await replaceFile(messagesFileOf(detailsFile), log.text);
   await replaceFile(detailsFile, JSON.stringify(details, null, 2));
+  // Its index, so the first opening does not read the file whole again.
+  await writeTranscriptIndex(messagesFileOf(detailsFile), messagesIndexFileOf(detailsFile), log.state);
   logger.info('Converted a discussion to the appended format', {
     id: stored.id, messages: messages.length,
   });
@@ -135,10 +139,11 @@ export interface FolderConversion {
   /** Temporary files of writes stopped before their rename, removed. */
   temporaryRemoved: number;
   /**
-   * Messages files with no details file, removed. A discussion's details
-   * file is written after its messages and removed before them, so one
-   * without is the start of a first save, or the rest of a deletion, that
-   * was stopped: not a discussion the user ever saw listed.
+   * Messages files and their indexes with no details file, removed. A
+   * discussion's details file is written after its messages and removed
+   * before them, so one without is the start of a first save, or the rest
+   * of a deletion, that was stopped: not a discussion the user ever saw
+   * listed.
    */
   leftoversRemoved: number;
 }
@@ -201,7 +206,8 @@ export async function convertConversationFolder(
 
   const present = new Set(names);
   for (const name of names) {
-    if (!isMessagesFileName(name) || present.has(detailsFileNameOf(name))) continue;
+    const details = detailsFileNameOf(name);
+    if (details === null || present.has(details)) continue;
     await fs.promises.unlink(path.join(dir, name));
     result.leftoversRemoved += 1;
   }

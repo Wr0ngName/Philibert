@@ -177,6 +177,64 @@ export class TranscriptState {
     const ids = [...this.ids];
     return { ids, locations: ids.map((id) => this.locations.get(id)) };
   }
+
+  /** Everything this state knows, for saving beside the file (see SavedTranscriptState). */
+  save(): SavedTranscriptState {
+    return {
+      ids: [...this.ids],
+      user: this.isUser.map((user) => (user ? 1 : 0)),
+      fingerprints: this.ids.map((id) => this.fingerprints.get(id) ?? ''),
+      locations: this.ids.map((id) => {
+        const location = this.locations.get(id);
+        return location ? [location.start, location.length] : null;
+      }),
+      records: this.records,
+      firstUser: this.firstUser,
+    };
+  }
+
+  /** A state as saved, or null when what was read is not one. */
+  static restore(saved: unknown): TranscriptState | null {
+    const s = saved as Partial<SavedTranscriptState> | null;
+    const n = Array.isArray(s?.ids) ? s.ids.length : -1;
+    if (
+      !s || n < 0 || !s.ids!.every((id) => typeof id === 'string')
+      || !Array.isArray(s.user) || s.user.length !== n
+      || !Array.isArray(s.fingerprints) || s.fingerprints.length !== n
+      || !Array.isArray(s.locations) || s.locations.length !== n
+      || typeof s.records !== 'number'
+    ) {
+      return null;
+    }
+    const state = new TranscriptState();
+    s.ids!.forEach((id, i) => {
+      state.positions.set(id, i);
+      state.ids.push(id);
+      state.isUser.push(s.user![i] === 1);
+      if (s.fingerprints![i]) state.fingerprints.set(id, s.fingerprints![i]);
+      const location = s.locations![i];
+      if (location) state.locations.set(id, { start: location[0], length: location[1] });
+    });
+    if (state.positions.size !== n) return null;
+    state.records = s.records;
+    state.firstUser = s.firstUser ?? null;
+    return state;
+  }
+}
+
+/**
+ * A TranscriptState as saved beside its messages file, so a discussion
+ * opened in a later session is not read whole first (conversation-files).
+ */
+export interface SavedTranscriptState {
+  ids: string[];
+  /** 1 for a user message. */
+  user: number[];
+  fingerprints: string[];
+  /** [start, length] of each message's line, or null when not known. */
+  locations: Array<[number, number] | null>;
+  records: number;
+  firstUser: { id: string; title: string | undefined } | null;
 }
 
 export interface Replayed {

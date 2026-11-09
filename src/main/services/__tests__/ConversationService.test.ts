@@ -902,10 +902,153 @@ describe('a page of a long discussion', () => {
 
     const page = await service.getOlder('long', 'm20', 3);
 
-    expect(page?.messages.map((m) => [m.id, m.content])).toEqual([['m17', 'message 17'], ['m18', 'message 18'], ['m19', 'message 19']]);
-    expect(logger.info).toHaveBeenCalledWith(
-      'Reading a page of a conversation from its whole messages file', { id: 'long', reason: 'a line did not hold its message' },
+    // What the file holds now — its order included: nothing the state said is kept.
+    expect(page?.messages.map((m) => [m.id, m.content])).toEqual([['m18', 'message 18'], ['m17', 'message 17'], ['m19', 'message 19']]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'A conversation\'s lines were not where its index said: reading its file whole', { id: 'long', reason: 'a line did not hold its message' },
     );
+  });
+});
+
+describe("a messages file's saved index", () => {
+  const indexFile = (id: string) => path.join(conversationsDir.path, `${id}.messages.index`);
+  const many = (n: number) => Array.from({ length: n }, (_, i) => msg(`m${i}`, `message ${i}`));
+
+  /** Whether the messages file was read whole while `run` ran. */
+  async function readWhole(id: string, run: () => Promise<unknown>): Promise<boolean> {
+    const spy = vi.spyOn(fs.promises, 'readFile');
+    try {
+      await run();
+      return spy.mock.calls.some(([file]) => String(file) === messagesFile(id));
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  // Asked for: the first opening in each session read the whole file, 1.4 s
+  // on a discussion of 69,144 messages, before its first page showed.
+  it('is saved on close, and the next session opens a page without reading the file whole', async () => {
+    await service.update({ ...base('c'), upsert: many(300) });
+    await service.settleWrites(10_000);
+    expect(fs.existsSync(indexFile('c'))).toBe(true);
+
+    const next = new ConversationService();
+    let page: Awaited<ReturnType<ConversationService['getWindow']>> = null;
+    expect(await readWhole('c', async () => { page = await next.getWindow('c', 5); })).toBe(false);
+    expect(page!.conversation.messages.map((m) => m.id)).toEqual(['m295', 'm296', 'm297', 'm298', 'm299']);
+    expect(page!.olderCount).toBe(295);
+  });
+
+  it('serves the writes of the next session too, without reading the file whole', async () => {
+    await service.update({ ...base('c'), upsert: many(10) });
+    await service.settleWrites(10_000);
+    const next = new ConversationService();
+
+    expect(await readWhole('c', () => next.update({ ...base('c'), upsert: [msg('m3', 'edited'), msg('m10', 'new')] }))).toBe(false);
+
+    // Only what changed was appended: the index told which messages were stored as they are.
+    expect(logLines('c').slice(10).map((l) => (JSON.parse(l) as { put: ChatMessage }).put.id)).toEqual(['m3', 'm10']);
+    expect((await whole('c', new ConversationService()))?.messages.map((m) => m.content).slice(2, 5)).toEqual(['message 2', 'edited', 'message 4']);
+  });
+
+  it('is ignored once the file has been saved to since, as after a crash before the next close', async () => {
+    await service.update({ ...base('c'), upsert: many(10) });
+    await service.settleWrites(10_000);
+    // Saved to, and the app killed before it could save the index again.
+    await service.update({ ...base('c'), upsert: [msg('m10', 'after the index')] });
+
+    const next = new ConversationService();
+    expect(await readWhole('c', () => next.getWindow('c', 3))).toBe(true);
+    expect((await next.getWindow('c', 3))?.conversation.messages.map((m) => m.id)).toEqual(['m8', 'm9', 'm10']);
+  });
+
+  it('is ignored when it cannot be read', async () => {
+    await service.update({ ...base('c'), upsert: many(10) });
+    await service.settleWrites(10_000);
+    fs.writeFileSync(indexFile('c'), '{"version":1,"bytes":12,"sta');
+
+    expect((await new ConversationService().getWindow('c', 3))?.conversation.messages.map((m) => m.id)).toEqual(['m7', 'm8', 'm9']);
+  });
+
+  it('cannot put one message in place of another, or in another order, even stamped like the file', async () => {
+    // A file changed to the same size behind the app, and an index stamped
+    // as if made from it: it points at lines now holding other messages.
+    await service.update({ ...base('c'), upsert: many(30) });
+    await service.settleWrites(10_000);
+    const text = fs.readFileSync(messagesFile('c'), 'utf-8');
+    const line = (i: number) => recordLine({ put: msg(`m${i}`, `message ${i}`) });
+    fs.writeFileSync(messagesFile('c'), text.replace(line(17), '@@').replace(line(18), line(17)).replace('@@', line(18)));
+    const stat = fs.statSync(messagesFile('c'));
+    const index = JSON.parse(fs.readFileSync(indexFile('c'), 'utf-8')) as { bytes: number; mtimeMs: number };
+    fs.writeFileSync(indexFile('c'), JSON.stringify({ ...index, bytes: stat.size, mtimeMs: stat.mtimeMs }));
+
+    const page = await new ConversationService().getOlder('c', 'm20', 3);
+
+    // What the file holds, in its order.
+    expect(page?.messages.map((m) => [m.id, m.content])).toEqual([['m18', 'message 18'], ['m17', 'message 17'], ['m19', 'message 19']]);
+    expect(page?.olderCount).toBe(17);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'A conversation\'s lines were not where its index said: reading its file whole', { id: 'c', reason: 'a line did not hold its message' },
+    );
+  });
+
+  it('is written by the conversion of a discussion stored in one file', async () => {
+    fs.writeFileSync(detailsFile('old'), JSON.stringify(oneFile('old', many(20))));
+    await service.upgradeStorage();
+
+    expect(await readWhole('old', () => new ConversationService().getWindow('old', 3))).toBe(false);
+  });
+
+  it('is saved for a discussion leaving memory, so it need not be read whole when it returns', async () => {
+    for (const id of ['a', 'b', 'c', 'd', 'e']) await service.update({ ...base(id), upsert: many(3) });
+    await service.settleWrites(10_000); // the index saves queued as states left memory
+
+    // Four are kept (WRITE_STATES_KEPT): the first left when the fifth came.
+    expect(fs.existsSync(indexFile('a'))).toBe(true);
+  });
+
+  it('is never saved from a state a write made outdated', async () => {
+    // A discussion's state leaves memory with a save to it queued behind a
+    // rename. The index save queued then runs after that save: the state
+    // no longer describes the file, and saved it would be stamped with the
+    // file the save produced — an index of a file without the saved message.
+    await service.update({ ...base('x'), upsert: many(3) });
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const open = fs.promises.open.bind(fs.promises);
+    let holding = true;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags) => {
+      if (holding && flags === 'w' && String(file) === `${detailsFile('x')}.tmp`) {
+        holding = false;
+        await held;
+      }
+      return open(file, flags);
+    });
+    const renaming = service.rename('x', 'Renamed');
+    const saving = service.update({ ...base('x'), upsert: [msg('m3')] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Four others are saved to: x's state leaves memory, its index save queued.
+    for (const id of ['a', 'b', 'c', 'd']) await service.update({ ...base(id), upsert: many(1) });
+    release();
+    await Promise.all([renaming, saving]);
+    // The queued index save has run; then the app is killed — no close to
+    // save a fresh index over a wrong one.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    vi.restoreAllMocks();
+
+    expect((await new ConversationService().getWindow('x', 10))?.conversation.messages.map((m) => m.id)).toEqual(['m0', 'm1', 'm2', 'm3']);
+  });
+
+  it('goes with its discussion when deleted, and is removed at start when left without one', async () => {
+    await service.update({ ...base('c'), upsert: many(3) });
+    await service.update({ ...base('d'), upsert: many(3) });
+    await service.settleWrites(10_000);
+
+    await service.delete('c');
+    fs.unlinkSync(detailsFile('d'));
+    await new ConversationService().upgradeStorage();
+
+    expect(fs.readdirSync(conversationsDir.path)).toEqual([]);
   });
 });
 
