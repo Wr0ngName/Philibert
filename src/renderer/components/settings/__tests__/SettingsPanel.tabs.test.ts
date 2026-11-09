@@ -110,6 +110,33 @@ afterEach(() => {
 });
 
 describe('settings tabs', () => {
+  // Asked for: the SDK / channel selector belongs with the advanced settings.
+  it('has the execution mode, for a Pro/Max sign-in, in Advanced rather than Account', async () => {
+    wrapper = mount(SettingsPanel, {
+      props: { open: true },
+      attachTo: document.body,
+      global: {
+        stubs: {
+          Modal: ModalStub,
+          McpServersPanel: true,
+          Icon: true,
+          // Signed in with a subscription: what the selector is offered for.
+          AuthForm: { ...AuthFormStub, data: () => ({ authStatus: { method: 'oauth', isAuthenticated: true } }) },
+        },
+      },
+    });
+    await flushPromises();
+
+    const selector = () => wrapper!.find('.settings-execution-mode');
+    expect(selector().exists()).toBe(true);
+    expect(selector().isVisible(), 'shown on the Account page').toBe(false);
+
+    await showTab(wrapper, 'Advanced');
+    expect(selector().isVisible()).toBe(true);
+    expect(selector().text()).toContain('Execution Mode');
+    expect(wrapper.find(`#${'settings-page-advanced'}`).find('.settings-execution-mode').exists()).toBe(true);
+  });
+
   it('lists its tabs and shows one page at a time, the account first', async () => {
     wrapper = mountPanel();
     await flushPromises();
