@@ -42,25 +42,65 @@ export function compareNodes(a: Pick<FileNode, 'name' | 'type'>, b: Pick<FileNod
   return a.name.localeCompare(b.name);
 }
 
+/** Folder watches added in one go before the walk hands the thread back. */
+const WATCHES_PER_TURN = 100;
+
+export interface FileWatcherOptions {
+  /**
+   * Watch each folder on its own, walking the tree asynchronously, rather
+   * than with one recursive fs.watch. The default on Linux, where Node
+   * builds a recursive watch itself: synchronously, inside the call, one
+   * inotify watch per file and folder, ignored folders included. A folder
+   * of 100,000 entries froze the whole window for two seconds a call, and
+   * Electron runs the main process's JavaScript on the thread that takes
+   * the window's input. Windows and macOS watch a tree natively, with one
+   * handle, so they keep it.
+   */
+  perFolder?: boolean;
+}
+
 export class FileWatcherService {
+  /** The one recursive watcher (Windows, macOS). */
   private watcher: fs.FSWatcher | null = null;
+  /** One watcher per folder (Linux), by folder. */
+  private folderWatchers: Map<string, fs.FSWatcher> = new Map();
+  /** Bumped by every watch and stop: a walk of an earlier folder stops. */
+  private walkGeneration = 0;
+  /** The walk setting up the per-folder watches, while it runs. */
+  private walk: Promise<void> = Promise.resolve();
+  private readonly perFolder: boolean;
   private watchedDirectory: string | null = null;
   private changeCallbacks: Set<(changes: FileChange[]) => void> = new Set();
   private pendingChanges: Map<string, FileChange> = new Map();
   private debounceTimer: NodeJS.Timeout | null = null;
 
-  constructor() {
-    logger.info('FileWatcherService initialized');
+  constructor(options: FileWatcherOptions = {}) {
+    this.perFolder = options.perFolder ?? process.platform === 'linux';
+    logger.info('FileWatcherService initialized', { perFolder: this.perFolder });
   }
 
   /**
-   * Start watching a directory
+   * Start watching a directory. Returns at once: per folder, the folders are
+   * watched as the walk reaches them.
    */
   watch(directory: string): void {
     // Stop existing watcher
     this.stop();
 
     const normalizedDir = normalizePath(directory);
+    this.watchedDirectory = normalizedDir;
+
+    if (this.perFolder) {
+      const generation = this.walkGeneration;
+      const started = Date.now();
+      this.walk = this.watchTree(normalizedDir, normalizedDir, generation, { sinceYield: 0 }).then(() => {
+        if (generation !== this.walkGeneration) return;
+        logger.info('Started watching directory', {
+          directory: normalizedDir, folders: this.folderWatchers.size, ms: Date.now() - started,
+        });
+      });
+      return;
+    }
 
     try {
       this.watcher = fs.watch(normalizedDir, { recursive: true }, (eventType, filename) => {
@@ -69,7 +109,6 @@ export class FileWatcherService {
         }
       });
 
-      this.watchedDirectory = normalizedDir;
       logger.info('Started watching directory', { directory: normalizedDir, recursive: true });
 
       this.watcher.on('error', (error) => {
@@ -80,7 +119,65 @@ export class FileWatcherService {
         logger.info('File watcher closed');
       });
     } catch (error) {
+      this.watchedDirectory = null;
       logger.error('Failed to start file watcher', error);
+    }
+  }
+
+  /**
+   * Watch `dir` and every folder under it that is not ignored, handing the
+   * thread back every few watches so the window never waits on the walk.
+   */
+  private async watchTree(
+    dir: string,
+    root: string,
+    generation: number,
+    turn: { sinceYield: number },
+  ): Promise<void> {
+    if (generation !== this.walkGeneration || this.folderWatchers.has(dir)) return;
+    try {
+      const watcher = fs.watch(dir, (eventType, filename) => {
+        if (filename) this.handleChange(eventType, path.relative(root, path.join(dir, filename.toString())), root);
+      });
+      watcher.on('error', (error) => {
+        // A folder removed while watched ends its watcher this way.
+        logger.debug('Folder watcher ended', { dir, error });
+        this.unwatchFolder(dir);
+      });
+      this.folderWatchers.set(dir, watcher);
+    } catch (error) {
+      // ENOSPC: the system's inotify limit. What is watched so far stays.
+      logger.warn('Could not watch folder', { dir, error });
+      return;
+    }
+
+    turn.sinceYield += 1;
+    if (turn.sinceYield >= WATCHES_PER_TURN) {
+      turn.sinceYield = 0;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    let entries: fs.Dir;
+    try {
+      entries = await fs.promises.opendir(dir);
+    } catch {
+      return;
+    }
+    for await (const entry of entries) {
+      if (generation !== this.walkGeneration) return;
+      if (entry.isDirectory() && !IGNORED_DIRS.has(entry.name)) {
+        await this.watchTree(path.join(dir, entry.name), root, generation, turn);
+      }
+    }
+  }
+
+  /** Stop watching a folder and every folder under it. */
+  private unwatchFolder(dir: string): void {
+    for (const [watched, watcher] of this.folderWatchers) {
+      if (watched === dir || watched.startsWith(`${dir}${path.sep}`)) {
+        watcher.close();
+        this.folderWatchers.delete(watched);
+      }
     }
   }
 
@@ -88,9 +185,16 @@ export class FileWatcherService {
    * Stop watching
    */
   stop(): void {
+    this.walkGeneration += 1;
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
+    }
+    if (this.folderWatchers.size > 0) {
+      for (const watcher of this.folderWatchers.values()) watcher.close();
+      this.folderWatchers.clear();
+    }
+    if (this.watchedDirectory) {
       this.watchedDirectory = null;
       logger.info('Stopped file watcher');
     }
@@ -133,8 +237,21 @@ export class FileWatcherService {
 
     logger.debug('File change detected', { changeType: change.type, fullPath });
 
-    // Add to pending changes (debounce)
-    this.pendingChanges.set(fullPath, change);
+    // Per folder, a folder that appears is watched too, and one that goes is let go.
+    if (this.perFolder && this.watchedDirectory) {
+      if (change.kind === 'directory' && change.type === 'add') {
+        void this.watchTree(fullPath, baseDir, this.walkGeneration, { sinceYield: 0 });
+      } else if (change.type === 'unlink') {
+        this.unwatchFolder(fullPath);
+      }
+    }
+
+    // Add to pending changes (debounce). A new file is reported as it is
+    // created ('rename') and again as it is written ('change'): it stays an
+    // addition, or the tree, which adds rows only for additions, never
+    // showed a file created while it was open.
+    const pending = this.pendingChanges.get(fullPath);
+    this.pendingChanges.set(fullPath, pending?.type === 'add' && change.type === 'change' ? pending : change);
 
     // Debounce the notification
     if (this.debounceTimer) {
@@ -258,6 +375,16 @@ export class FileWatcherService {
    */
   getWatchedDirectory(): string | null {
     return this.watchedDirectory;
+  }
+
+  /** Settles once every folder of the watched directory is watched. */
+  whenWatching(): Promise<void> {
+    return this.walk;
+  }
+
+  /** How many folders are watched on their own (per folder only). */
+  watchedFolderCount(): number {
+    return this.folderWatchers.size;
   }
 }
 

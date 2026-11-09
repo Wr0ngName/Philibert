@@ -59,9 +59,11 @@ export function setupFilesIPC(
 
       validateString(selectedDir, 'Selected directory path');
 
-      // Save to config and start watching
+      // Save to config. A new working directory retargets the watchers
+      // through configService.onWorkingDirectoryChange (see index.ts); a
+      // second watch here walked the whole folder again, and froze the
+      // window twice as long.
       await configService.setWorkingDirectory(selectedDir);
-      fileWatcher.watch(selectedDir);
 
       logger.info('Working directory selected', { directory: selectedDir });
       return selectedDir;

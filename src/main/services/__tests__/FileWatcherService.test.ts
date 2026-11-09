@@ -96,7 +96,10 @@ describe('FileWatcherService', () => {
       return mockFSWatcher;
     });
 
-    service = new FileWatcherService();
+    // The one recursive watcher, as on Windows and macOS. The per-folder
+    // watcher Linux uses runs against a real folder in
+    // FileWatcherService.per-folder.test.ts.
+    service = new FileWatcherService({ perFolder: false });
   });
 
   afterEach(() => {
@@ -244,6 +247,21 @@ describe('FileWatcherService', () => {
 
       expect(changeHandler).toHaveBeenCalledWith([
         { type: 'add', path: expect.stringContaining('new-file'), kind: 'file' },
+      ]);
+    });
+
+    // Linux reports a new file as it is created ('rename') and again as it is
+    // written ('change'); the second replaced the first, and the tree, which
+    // adds rows only for additions, never showed the file.
+    it('keeps a new file an addition when it is written right after', () => {
+      mockFs.statSync.mockReturnValue(FILE_STAT);
+
+      watchCallback?.('rename', 'new.ts');
+      watchCallback?.('change', 'new.ts');
+      vi.advanceTimersByTime(350);
+
+      expect(changeHandler).toHaveBeenCalledWith([
+        { type: 'add', path: expect.stringContaining('new.ts'), kind: 'file' },
       ]);
     });
 

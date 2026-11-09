@@ -169,10 +169,14 @@ describe('Files IPC handlers', () => {
       expect(mockConfigService.setWorkingDirectory).toHaveBeenCalledWith('/home/user/project');
     });
 
-    it('should start watching the directory', async () => {
+    // The working directory's change retargets the watcher (index.ts). This
+    // handler watched it a second time: the whole folder walked twice, the
+    // window frozen twice as long (4.3 s on a 100,000-entry folder).
+    it('leaves watching the new directory to the working directory change', async () => {
       await handler({});
 
-      expect(mockFileWatcher.watch).toHaveBeenCalledWith('/home/user/project');
+      expect(mockConfigService.setWorkingDirectory).toHaveBeenCalledWith('/home/user/project');
+      expect(mockFileWatcher.watch).not.toHaveBeenCalled();
     });
 
     it('should return null when dialog is cancelled', async () => {
