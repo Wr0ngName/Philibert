@@ -49,6 +49,7 @@ import type {
   ToolCaptureData,
   ToolResultData,
   UpdateInfo,
+  UpdateInstallResult,
   UpdateProgress,
   TaskOutputChunk,
   UsageLimitStop,
@@ -432,7 +433,7 @@ export interface ElectronAPI {
   update: {
     check: () => Promise<UpdateInfo | null>;
     download: () => Promise<void>;
-    install: () => void;
+    install: () => Promise<UpdateInstallResult>;
     onAvailable: (callback: (info: UpdateInfo) => void) => () => void;
     onProgress: (callback: (progress: UpdateProgress) => void) => () => void;
     onDownloaded: (callback: () => void) => () => void;

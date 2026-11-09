@@ -1632,6 +1632,25 @@ export interface UpdateInfo {
 /**
  * Progress information for downloading an update
  */
+/**
+ * What came of asking for the downloaded update to be installed. Installed,
+ * the app quits to finish, so the answer is only ever seen when it was not:
+ * on Linux, for one, when the password prompt could not be shown.
+ */
+export type UpdateInstallResult =
+  | { installed: true }
+  | {
+    installed: false;
+    /** Why, as the installer said it. */
+    error: string;
+    /** The downloaded package, already on disk. */
+    downloadedFile: string | null;
+    /** A command that installs it by hand, for a .deb or an .rpm. */
+    installCommand: string | null;
+    /** The release's page, to download it from by hand. */
+    releaseUrl: string | null;
+  };
+
 export interface UpdateProgress {
   /** Download progress as a percentage (0-100) */
   percent: number;

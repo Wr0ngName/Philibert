@@ -52,7 +52,7 @@ export function setupUpdateIPC(updateService: UpdateService): void {
       // Validate service
       ensureService(updateService, 'UpdateService');
 
-      updateService.installUpdate();
+      return updateService.installUpdate();
     } catch (error) {
       logger.error('Failed to install update', { error });
       throw new AppError(formatErrorMessage('Failed to install update', error), 'UPDATE_INSTALL_FAILED', error);

@@ -6,6 +6,8 @@
 
 import { ref, onMounted, onUnmounted } from 'vue';
 
+import type { UpdateInstallResult } from '@shared/types';
+
 interface UpdateInfo {
   version: string;
   releaseNotes?: string;
@@ -58,8 +60,25 @@ async function downloadUpdate() {
   await window.electron?.update.download();
 }
 
-function installUpdate() {
-  window.electron?.update.install();
+/**
+ * Why the install did not happen, when it did not. Installed, the app quits,
+ * so this is only ever set by a failure — which used to be invisible: the
+ * button just did nothing.
+ */
+const installFailure = ref<Exclude<UpdateInstallResult, { installed: true }> | null>(null);
+const commandCopied = ref(false);
+
+async function installUpdate() {
+  installFailure.value = null;
+  const result = await window.electron?.update.install();
+  if (result && !result.installed) installFailure.value = result;
+}
+
+async function copyInstallCommand() {
+  const command = installFailure.value?.installCommand;
+  if (!command) return;
+  await window.electron.clipboard.writeText(command);
+  commandCopied.value = true;
 }
 
 function dismiss() {
@@ -163,6 +182,43 @@ function formatBytes(bytes: number): string {
               ({{ formatBytes(downloadProgress.bytesPerSecond) }}/s)
             </div>
           </div>
+        </div>
+      </template>
+
+      <!-- Downloaded, but the install could not run -->
+      <template v-else-if="isDownloaded && installFailure">
+        <div class="update-install-failure flex-1 min-w-0 space-y-1">
+          <div class="font-medium text-red-700 dark:text-red-300">
+            Update v{{ updateAvailable.version }} could not be installed: {{ installFailure.error }}
+          </div>
+          <div
+            v-if="installFailure.installCommand"
+            class="flex items-center gap-2"
+          >
+            <span class="shrink-0">Install it from a terminal:</span>
+            <code class="update-install-command min-w-0 truncate font-mono text-xs px-1.5 py-0.5 rounded bg-surface-200 dark:bg-surface-700 select-all">{{ installFailure.installCommand }}</code>
+            <button
+              class="btn-sm btn-ghost shrink-0"
+              @click="copyInstallCommand"
+            >
+              {{ commandCopied ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <a
+            v-if="installFailure.releaseUrl"
+            :href="installFailure.releaseUrl"
+            target="_blank"
+            rel="noopener"
+            class="btn-sm btn-ghost"
+          >Release page</a>
+          <button
+            class="btn-sm btn-ghost"
+            @click="dismiss"
+          >
+            Later
+          </button>
         </div>
       </template>
 

@@ -7,9 +7,9 @@
  */
 
 import { BrowserWindow, app, net } from 'electron';
-import { autoUpdater, UpdateInfo as ElectronUpdateInfo } from 'electron-updater';
+import { autoUpdater, UpdateInfo as ElectronUpdateInfo, UpdateDownloadedEvent } from 'electron-updater';
 
-import { IPC_CHANNELS, UpdateChannel, UpdateInfo, UpdateProgress } from '../../shared/types';
+import { IPC_CHANNELS, UpdateChannel, UpdateInfo, UpdateInstallResult, UpdateProgress } from '../../shared/types';
 import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 import { compareVersions, isPrerelease, parseVersion } from '../utils/version';
@@ -20,10 +20,29 @@ const GITLAB_HOST = 'https://dev.web.wr0ng.name';
 const GITLAB_PROJECT_ID = 'wrongname%2Fphilibert';
 
 const RELEASES_API = `${GITLAB_HOST}/api/v4/projects/${GITLAB_PROJECT_ID}/releases`;
+/** A release's page, where its packages can be downloaded by hand. */
+const RELEASE_PAGE = (tag: string): string => `${GITLAB_HOST}/wrongname/philibert/-/releases/${tag}`;
+
+/**
+ * The command that installs a downloaded Linux package by hand, in a
+ * terminal, where sudo asks for the password itself — for when the updater
+ * could not get the password asked for (pkexec finds no polkit agent for the
+ * app's process). Null for anything else, such as the Windows installer.
+ */
+export function manualInstallCommand(file: string): string | null {
+  const quoted = `'${file.replace(/'/g, `'\\''`)}'`;
+  if (file.endsWith('.deb')) return `sudo apt install ${quoted}`;
+  if (file.endsWith('.rpm')) return `sudo dnf install ${quoted}`;
+  return null;
+}
 const PACKAGES_API = `${GITLAB_HOST}/api/v4/projects/${GITLAB_PROJECT_ID}/packages/generic/releases`;
 
 export class UpdateService {
   private isCheckingForUpdates = false;
+  /** The release the last check offered, for its page when installing fails. */
+  private offeredTag: string | null = null;
+  /** Where the update was downloaded to, to install it by hand when the installer fails. */
+  private downloadedFile: string | null = null;
   private send: (channel: string, ...args: unknown[]) => boolean;
   private configService: ConfigService;
 
@@ -49,6 +68,10 @@ export class UpdateService {
 
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
+    // Into main.log. Left to its default, electron-updater logs to the
+    // console, which no installed app has: the command an install ran, and
+    // what it printed when it failed, were lost.
+    autoUpdater.logger = logger;
 
     autoUpdater.on('checking-for-update', () => {
       logger.info('Checking for updates...');
@@ -77,8 +100,9 @@ export class UpdateService {
       });
     });
 
-    autoUpdater.on('update-downloaded', () => {
-      logger.info('Update downloaded');
+    autoUpdater.on('update-downloaded', (event: UpdateDownloadedEvent) => {
+      this.downloadedFile = event.downloadedFile;
+      logger.info('Update downloaded', { downloadedFile: event.downloadedFile });
       this.emitDownloaded();
     });
 
@@ -195,6 +219,7 @@ export class UpdateService {
         return null;
       }
 
+      this.offeredTag = latestTag;
       const feedUrl = `${PACKAGES_API}/${latestVersion}`;
       logger.info('Setting feed URL for update check', { feedUrl, latestTag, channel });
 
@@ -252,9 +277,36 @@ export class UpdateService {
     }
   }
 
-  installUpdate(): void {
+  /**
+   * Install the downloaded update; the app quits to let it finish.
+   *
+   * electron-updater does not throw when the install fails: it reports an
+   * `error` event during the call and the app stays open, so the button
+   * that asked for it looked like it did nothing. The error is caught here
+   * and handed back, with the release's page to download it from by hand.
+   */
+  installUpdate(): UpdateInstallResult {
     logger.info('Installing update and restarting');
-    autoUpdater.quitAndInstall();
+    let failure: Error | null = null;
+    const onError = (error: Error) => { failure = error; };
+    autoUpdater.on('error', onError);
+    try {
+      autoUpdater.quitAndInstall();
+    } finally {
+      autoUpdater.removeListener('error', onError);
+    }
+    if (failure === null) return { installed: true };
+    const error = (failure as Error).message;
+    logger.error('The update could not be installed', {
+      error, tag: this.offeredTag, downloadedFile: this.downloadedFile,
+    });
+    return {
+      installed: false,
+      error,
+      downloadedFile: this.downloadedFile,
+      installCommand: this.downloadedFile ? manualInstallCommand(this.downloadedFile) : null,
+      releaseUrl: this.offeredTag ? RELEASE_PAGE(this.offeredTag) : null,
+    };
   }
 
   private emitUpdateAvailable(info: UpdateInfo): void {
