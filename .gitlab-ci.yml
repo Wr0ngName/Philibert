@@ -602,18 +602,6 @@ publish:packages:
                "${WIN_URL}"
           echo "WIN_NAME=${WIN_NAME}" >> release-info/urls.env
           echo "WIN_URL=${WIN_URL}" >> release-info/urls.env
-
-          # Also upload with -offline suffix for clarity in release notes
-          WIN_OFFLINE_NAME="${WIN_NAME%.exe}-offline.exe"
-          if [ "${WIN_OFFLINE_NAME}" != "${WIN_NAME}" ]; then
-            WIN_OFFLINE_URL="${PACKAGE_REGISTRY_URL}/releases/${VERSION}/${WIN_OFFLINE_NAME}"
-            echo "Uploading as ${WIN_OFFLINE_NAME}..."
-            curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-                 --upload-file "$file" \
-                 "${WIN_OFFLINE_URL}"
-            echo "WIN_OFFLINE_NAME=${WIN_OFFLINE_NAME}" >> release-info/urls.env
-            echo "WIN_OFFLINE_URL=${WIN_OFFLINE_URL}" >> release-info/urls.env
-          fi
         fi
       done
 
