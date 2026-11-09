@@ -37,4 +37,14 @@ describe('taskTreeRows', () => {
     const rows = shape([task('x', 'y'), task('y', 'x'), task('self', 'self')]);
     expect(rows.map(([id]) => id).sort()).toEqual(['self', 'x', 'y']);
   });
+
+  it('nests by the parent it is told of, over a task\'s own parentTaskId', () => {
+    // A task the main process could not link (no parentTaskId) whose agent
+    // is known another way, and one whose stated parent is overridden.
+    const parents: Record<string, string> = { unlinked: 'a', moved: 'b' };
+    const rows = taskTreeRows([task('a'), task('b'), task('unlinked'), task('moved', 'a')], (t) => parents[t.id])
+      .map((r) => [r.task.id, r.depth]);
+
+    expect(rows).toEqual([['a', 0], ['unlinked', 1], ['b', 0], ['moved', 1]]);
+  });
 });

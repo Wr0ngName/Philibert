@@ -12,6 +12,7 @@ import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTa
 
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
+import { toolUseIdForTask } from '../utils/message-tree';
 import type { DeliveringPrompt, QueuedPrompt } from '../utils/prompt-queue';
 import { dueWaits, type UsageLimitWait } from '../utils/usage-limit';
 
@@ -2543,6 +2544,44 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * The call that started a task, as the discussion holds it: in the window
+   * or in a turn held apart from it. Null when neither has it.
+   */
+  function spawningCallOf(task: BackgroundTask): ToolUseInfo | null {
+    const conversationId = currentConversationId.value;
+    if (!conversationId) return null;
+    // toolUseIdForTask, not task.toolUseId: a backgrounded tool's first
+    // notification carries its tool_use block id as the task id and leaves
+    // toolUseId unset.
+    const toolUseId = toolUseIdForTask(task);
+    const state = conversationStates.value.get(conversationId);
+    for (const list of [messages.value, state?.detachedTurn ?? []]) {
+      const call = list.find((m) => m.toolUse?.toolUseBlockId === toolUseId || m.toolUse?.actionId === toolUseId);
+      if (call?.toolUse) return call.toolUse;
+    }
+    return null;
+  }
+
+  /**
+   * The agent that started a task: through the Agent call its call names as
+   * its parent — kept with the discussion, so found still after the app has
+   * restarted — else the agent the main process linked it to.
+   *
+   * The second alone is not enough. The main process links a task to its
+   * agent by the call that started the agent, and only for calls made since
+   * its session's CLI process started: an agent resumed after a restart is
+   * known there by the SendMessage call that resumed it, while the CLI still
+   * names its original Agent call as the parent of what it does. A task that
+   * agent started then had no parent, and sat at the top of the tasks list
+   * while its detail said an agent had started it.
+   */
+  function parentAgentOf(task: BackgroundTask): BackgroundTask | null {
+    const parentToolUseId = spawningCallOf(task)?.parentToolUseId;
+    return (parentToolUseId ? agentOfCall(parentToolUseId) : null)
+      ?? (task.parentTaskId ? findBackgroundTask(task.parentTaskId) : null);
+  }
+
+  /**
    * The agent a SendMessage call addresses: by its id — the id its task has —
    * or by the name its Agent call gave it. Null when no agent here has it.
    */
@@ -3137,6 +3176,8 @@ export const useChatStore = defineStore('chat', () => {
     taskForToolCall,
     runningTaskOfCall,
     agentOfCall,
+    spawningCallOf,
+    parentAgentOf,
     agentAddressedAs,
     withTasksAsTracked,
     beginMessageBuffer,

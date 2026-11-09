@@ -12,7 +12,6 @@ import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
 import { useClaudeChat } from '../../composables/useClaudeChat';
-import { toolUseIdForTask } from '../../utils/message-tree';
 import ActionApproval from './ActionApproval.vue';
 import AskUserQuestionModal from './AskUserQuestionModal.vue';
 import BackgroundTaskDetailModal from './BackgroundTaskDetailModal.vue';
@@ -87,33 +86,16 @@ const stopTaskError = ref<string | null>(null);
  * description, status and duration to show — summary, output file, model and
  * tokens all arrive at the end.
  */
-const taskDetailSpawningTool = computed<ToolUseInfo | null>(() => {
-  const task = taskDetailTask.value;
-  if (!task) return null;
-  // toolUseIdForTask, not task.toolUseId: a backgrounded tool's first
-  // notification carries its tool_use block id as the task id and leaves
-  // toolUseId unset, so keying on that field alone found nothing and the
-  // modal showed no command at all for every background command.
-  const toolUseId = toolUseIdForTask(task);
-  const message = chatStore.messages.find(
-    m => m.toolUse && (m.toolUse.toolUseBlockId === toolUseId || m.toolUse.actionId === toolUseId),
-  );
-  return message?.toolUse ?? null;
-});
+const taskDetailSpawningTool = computed<ToolUseInfo | null>(() =>
+  taskDetailTask.value ? chatStore.spawningCallOf(taskDetailTask.value) : null,
+);
 
 /**
- * The agent behind a call or task: through the Agent call that ran it,
- * which the call names as its parent and which is kept with the
- * conversation, else through the agent task the main process linked it to.
+ * The agent that started the open task, when an agent did and it is known —
+ * found as the tasks list finds it, so the two never disagree.
  */
-function agentBehind(parentToolUseId: string | undefined, parentTaskId: string | undefined): BackgroundTask | null {
-  return (parentToolUseId ? chatStore.agentOfCall(parentToolUseId) : null)
-    ?? (parentTaskId ? chatStore.findBackgroundTask(parentTaskId) : null);
-}
-
-/** The agent that started the open task, when an agent did and it is known. */
 const taskDetailParent = computed<BackgroundTask | null>(() =>
-  agentBehind(taskDetailSpawningTool.value?.parentToolUseId, taskDetailTask.value?.parentTaskId),
+  taskDetailTask.value ? chatStore.parentAgentOf(taskDetailTask.value) : null,
 );
 
 /**
@@ -143,7 +125,8 @@ const toolDetailTranscriptAgentId = ref<string | null>(null);
 /** The agent that made the open call, when an agent did and it is known. */
 const toolDetailAgent = computed<BackgroundTask | null>(() => {
   if (toolDetailTranscriptAgentId.value) return chatStore.findBackgroundTask(toolDetailTranscriptAgentId.value);
-  return agentBehind(toolDetailMessage.value?.toolUse?.parentToolUseId, undefined);
+  const parentToolUseId = toolDetailMessage.value?.toolUse?.parentToolUseId;
+  return parentToolUseId ? chatStore.agentOfCall(parentToolUseId) : null;
 });
 
 /** The command the open call is waiting on, while it runs: what its Stop stops. */
@@ -483,6 +466,7 @@ function openAgentOfToolCall(taskId: string) {
       >
         <BackgroundTaskPanel
           :tasks="runningBackgroundTasksList"
+          :parent-of="(task) => chatStore.parentAgentOf(task)?.id"
           @open-detail="openTaskDetail"
         />
       </div>

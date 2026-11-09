@@ -239,6 +239,51 @@ describe('who started it, in the details', () => {
     expect(startedBy('Task Details')).toBe('Started by builder — Agent reads notes.txt (running)');
   });
 
+  // Reported, from main.log: an agent resumed after the app restarted started
+  // an agent of its own, listed at the top of the tasks list while its
+  // details said an agent had started it. Main knew the resumed agent only by
+  // the SendMessage call that resumed it, while the CLI named its original
+  // Agent call as the new agent's parent: main sent startedByAgent and no
+  // parentTaskId, and the list nested by parentTaskId alone.
+  it("lists an agent started by an agent resumed after a restart under that agent, as its details say", async () => {
+    await launchAgent();
+    await endTurn();
+    await restart();
+
+    // Resumed by a message, as main reports it: under the SendMessage call.
+    call({
+      toolUseBlockId: 'toolu_resume', toolName: 'SendMessage',
+      input: { to: 'agent-1', message: 'Resume from your handoff' }, description: 'SendMessage: agent-1',
+    });
+    notify({
+      taskId: 'agent-1', status: 'running', description: 'Agent reads notes.txt', toolUseId: 'toolu_resume',
+      taskType: 'agent', backgrounded: true,
+    });
+    // The agent starts one of its own: its call names the ORIGINAL Agent call.
+    call({
+      toolUseBlockId: 'toolu_nested', toolName: 'Agent', parentToolUseId: 'toolu_agent',
+      input: { description: 'Client ghost research', subagent_type: 'Explore', prompt: 'Research', run_in_background: true },
+      description: 'Agent: Client ghost research',
+    });
+    notify({
+      taskId: 'agent-2', status: 'running', description: 'Client ghost research', toolUseId: 'toolu_nested',
+      taskType: 'agent', agentType: 'Explore', backgrounded: true, startedByAgent: true,
+    });
+    await settle(20);
+
+    const rows = app.findAll('.background-task-panel .task-item').map((row) => ({
+      text: row.text(), depth: Number(row.attributes('data-depth')),
+    }));
+    expect(rows.map((row) => [row.text.includes('Client ghost research') ? 'nested' : 'agent', row.depth])).toEqual([
+      ['agent', 0],
+      ['nested', 1],
+    ]);
+
+    // The details name the same agent the list puts it under.
+    await openPanelRow('Client ghost research');
+    expect(startedBy('Task Details')).toContain('— Agent reads notes.txt (running)');
+  });
+
   it('says an agent started it when the CLI says so but the agent is not known here', async () => {
     notify({
       taskId: 'b-orphan', status: 'running', description: 'Wait for the snapshot', toolUseId: 'toolu_gone',

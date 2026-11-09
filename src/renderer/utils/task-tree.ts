@@ -19,14 +19,21 @@ export interface TaskTreeRow {
  * The tasks in tree order, each under the agent that started it. A task whose
  * agent is not among them — that agent has finished — is shown at the top
  * rather than hidden. Order among siblings is kept.
+ *
+ * `parentOf` says which agent started a task (the chat store's
+ * parentAgentOf, which also knows it across a restart); by default, the
+ * task's own `parentTaskId`.
  */
-export function taskTreeRows(tasks: readonly BackgroundTask[]): TaskTreeRow[] {
+export function taskTreeRows(
+  tasks: readonly BackgroundTask[],
+  parentOf: (task: BackgroundTask) => string | undefined = (task) => task.parentTaskId,
+): TaskTreeRow[] {
   const ids = new Set(tasks.map((t) => t.id));
   const children = new Map<string, BackgroundTask[]>();
   const roots: BackgroundTask[] = [];
 
   for (const task of tasks) {
-    const parent = task.parentTaskId;
+    const parent = parentOf(task);
     if (parent && parent !== task.id && ids.has(parent)) {
       const list = children.get(parent) ?? [];
       list.push(task);

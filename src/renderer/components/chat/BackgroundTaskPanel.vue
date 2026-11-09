@@ -24,6 +24,8 @@ import Spinner from '../shared/Spinner.vue';
 interface Props {
   /** List of currently running background tasks */
   tasks: BackgroundTask[];
+  /** The id of the agent that started a task, when one did; its `parentTaskId` when not given. */
+  parentOf?: (task: BackgroundTask) => string | undefined;
 }
 
 const props = defineProps<Props>();
@@ -37,7 +39,7 @@ const now = useNowTicker(() => props.tasks.length > 0);
 
 const collapsed = ref(false);
 
-const rows = computed(() => taskTreeRows(props.tasks));
+const rows = computed(() => taskTreeRows(props.tasks, props.parentOf));
 
 function toggleCollapsed(): void {
   collapsed.value = !collapsed.value;
