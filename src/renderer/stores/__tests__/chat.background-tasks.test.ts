@@ -240,7 +240,7 @@ describe('restoreTaskList', () => {
     const store = useChatStore();
     store.setCurrentConversation(CONV);
 
-    expect(store.restoreTaskList(CONV, items)).toBe(true);
+    store.restoreTaskList(CONV, items);
 
     expect(store.taskListItems).toEqual(items);
   });
@@ -267,16 +267,19 @@ describe('restoreTaskList', () => {
     store.setCurrentConversation(CONV);
     store.restoreTaskList(CONV, [items[0]]);
 
-    expect(store.restoreTaskList(CONV, items)).toBe(true);
+    store.restoreTaskList(CONV, items);
 
     expect(store.getTaskListItems(CONV)).toEqual([items[0]]);
   });
 
-  it('reports that there was nothing saved to restore', () => {
-    // What makes the caller fall back to replaying the transcript.
+  it('leaves the list empty when nothing was saved — no reconstruction', () => {
     const store = useChatStore();
-    expect(store.restoreTaskList(CONV, undefined)).toBe(false);
-    expect(store.restoreTaskList(CONV, [])).toBe(false);
+    store.setCurrentConversation(CONV);
+
+    store.restoreTaskList(CONV, undefined);
+    store.restoreTaskList(CONV, []);
+
+    expect(store.getTaskListItems(CONV)).toEqual([]);
   });
 
   it('ignores an entry with no id rather than keying it on undefined', () => {
@@ -302,96 +305,80 @@ describe('restoreTaskList', () => {
   });
 });
 
-describe('rebuildTaskList', () => {
-  /** A persisted tool-use message for a Task* call. */
-  function taskMessage(
-    blockId: string,
-    toolName: string,
-    input: Record<string, unknown>,
-    taskListId?: string,
-  ) {
-    return {
-      id: `msg-${blockId}`,
-      role: 'assistant' as const,
-      content: '',
-      timestamp: 1_700_000_000_000,
-      toolUse: {
-        actionId: blockId,
-        toolName,
-        description: toolName,
-        status: 'executed' as const,
-        toolUseBlockId: blockId,
-        input,
-        ...(taskListId ? { taskListId } : {}),
-      },
-    };
-  }
+// Reported: after a restart, tasks without their #number, and Claude's
+// updates to them lost. The list had been rebuilt from the Task* calls in
+// the history, which cannot know the ids Claude Code gave. Now Claude Code's
+// own TaskList answer is what puts a list back.
+describe("Claude's TaskList answer", () => {
+  const answer = (taskList: { id: string; subject: string; status: 'pending' | 'in_progress' | 'completed' }[]) => ({
+    toolUseBlockId: 'toolu_list', outputFile: '/results/toolu_list.txt', taskList,
+  });
 
-  it('replays creates and the updates that match them', () => {
+  it('replaces the list: its tasks, ids, subjects, statuses and order', () => {
     const store = useChatStore();
     store.setCurrentConversation(CONV);
 
-    store.rebuildTaskList(CONV, [
-      taskMessage('toolu_1', 'TaskCreate', { subject: 'one' }, 'task_1'),
-      taskMessage('toolu_2', 'TaskCreate', { subject: 'two' }, 'task_2'),
-      taskMessage('toolu_3', 'TaskUpdate', { taskId: 'task_1', status: 'completed' }),
-    ]);
+    store.updateToolUseResult(CONV, answer([
+      { id: '262', subject: 'Ghosts', status: 'in_progress' },
+      { id: '277', subject: 'Chains next', status: 'pending' },
+      { id: '16', subject: 'Done long ago', status: 'completed' },
+    ]));
 
     expect(store.getTaskListItems(CONV).map((t) => [t.id, t.subject, t.status])).toEqual([
-      ['task_1', 'one', 'completed'],
-      ['task_2', 'two', 'pending'],
+      ['262', 'Ghosts', 'in_progress'],
+      ['277', 'Chains next', 'pending'],
+      ['16', 'Done long ago', 'completed'],
     ]);
+    expect(store.getTaskListItems(CONV).some((t) => t.awaitingId)).toBe(false);
   });
 
-  it('skips an update whose task was never recorded with its id', () => {
-    // Older history: the create carries no taskListId, so nothing links the
-    // two. The task keeps the status its create gave it.
-    const store = useChatStore();
-    store.setCurrentConversation(CONV);
-
-    store.rebuildTaskList(CONV, [
-      taskMessage('toolu_1', 'TaskCreate', { subject: 'one' }),
-      taskMessage('toolu_2', 'TaskUpdate', { taskId: 'task_1', status: 'completed' }),
-    ]);
-
-    expect(store.getTaskListItems(CONV).map((t) => [t.subject, t.status])).toEqual([
-      ['one', 'pending'],
-    ]);
-    // Its id is the call's block id, which Claude never names it by.
-    expect(store.getTaskListItems(CONV)[0].awaitingId).toBe(true);
-  });
-
-  it('takes the recorded id for the one Claude names the task by', () => {
-    const store = useChatStore();
-    store.setCurrentConversation(CONV);
-
-    store.rebuildTaskList(CONV, [taskMessage('toolu_1', 'TaskCreate', { subject: 'one' }, 'task_1')]);
-
-    expect(store.getTaskListItems(CONV)[0]).not.toHaveProperty('awaitingId');
-  });
-
-  it('ignores every other tool', () => {
-    const store = useChatStore();
-    store.setCurrentConversation(CONV);
-
-    store.rebuildTaskList(CONV, [
-      taskMessage('toolu_1', 'Bash', { command: 'ls' }),
-      taskMessage('toolu_2', 'Read', { file_path: '/tmp/x' }),
-    ]);
-
-    expect(store.getTaskListItems(CONV)).toEqual([]);
-  });
-
-  it('does not overwrite a list that is already live', () => {
+  it('drops what the panel held that Claude Code does not have, unnumbered rows included', () => {
     const store = useChatStore();
     store.setCurrentConversation(CONV);
     store.restoreTaskList(CONV, [
-      { id: 'task_live', subject: 'live', status: 'in_progress', updatedAt: 1 },
+      { id: 'toolu_stale', subject: 'Unnumbered', status: 'pending', updatedAt: 1, awaitingId: true },
+      { id: '277', subject: 'Chains next', status: 'pending', updatedAt: 1 },
     ]);
 
-    store.rebuildTaskList(CONV, [taskMessage('toolu_1', 'TaskCreate', { subject: 'one' }, 'task_1')]);
+    store.updateToolUseResult(CONV, answer([{ id: '277', subject: 'Chains next', status: 'completed' }]));
 
-    expect(store.getTaskListItems(CONV).map((t) => t.id)).toEqual(['task_live']);
+    expect(store.getTaskListItems(CONV).map((t) => [t.id, t.status])).toEqual([['277', 'completed']]);
+  });
+
+  it('keeps what TaskList does not state about a task still there: its description and activeForm', () => {
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+    store.restoreTaskList(CONV, [
+      { id: '277', subject: 'Chains next', description: 'Bonta Q291', activeForm: 'Chaining', status: 'pending', updatedAt: 5 },
+    ]);
+
+    store.updateToolUseResult(CONV, answer([{ id: '277', subject: 'Chains next', status: 'pending' }]));
+
+    expect(store.getTaskListItems(CONV)).toEqual([
+      { id: '277', subject: 'Chains next', description: 'Bonta Q291', activeForm: 'Chaining', status: 'pending', updatedAt: 5 },
+    ]);
+  });
+
+  it('lets later updates find their tasks again', () => {
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+    store.updateToolUseResult(CONV, answer([{ id: '262', subject: 'Ghosts', status: 'pending' }]));
+
+    store.addAutoToolUseMessage(CONV, {
+      toolUseBlockId: 'toolu_update', toolName: 'TaskUpdate', input: { taskId: '262', status: 'completed' }, description: '',
+    });
+
+    expect(store.getTaskListItems(CONV).map((t) => [t.id, t.status])).toEqual([['262', 'completed']]);
+  });
+
+  it('leaves the list alone for any other result', () => {
+    const store = useChatStore();
+    store.setCurrentConversation(CONV);
+    store.restoreTaskList(CONV, [{ id: '277', subject: 'Chains next', status: 'pending', updatedAt: 1 }]);
+
+    store.updateToolUseResult(CONV, { toolUseBlockId: 'toolu_bash', outputFile: '/results/toolu_bash.txt' });
+
+    expect(store.getTaskListItems(CONV).map((t) => t.id)).toEqual(['277']);
   });
 });
 

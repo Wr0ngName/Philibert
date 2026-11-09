@@ -841,34 +841,45 @@ describe('a conversation through the real persistence stack', () => {
       expect(onDisk(id)?.taskList).toEqual(saved);
     });
 
-    it('replays the Task* calls for a conversation saved before the list was', async () => {
-      // Migration. An older file has neither the list nor the task ids on its
-      // tool uses, so the transcript is the only evidence and a create cannot
-      // be matched to the updates that followed it. The items and their
-      // wording come back; their progress does not, which is the honest
-      // reading of what survived — and better than an empty panel.
+    // Reported: a discussion saved without its list reopened with tasks
+    // without their #number, deaf to Claude's updates — the list had been
+    // rebuilt from the Task* calls in the history, which cannot know the ids
+    // Claude Code gave. Nothing is rebuilt now: Claude's TaskList answer,
+    // which states them, brings the list back.
+    it('opens a discussion saved without its list on an empty list, until Claude lists its tasks', async () => {
       const wrapper = mountApp();
       const id = await conversationWithTasks(wrapper);
-
       const stored = onDisk(id) as Conversation;
       delete stored.taskList;
-      for (const message of stored.messages) {
-        if (message.toolUse) delete message.toolUse.taskListId;
-      }
       files.set(`/conversations/${id}.json`, JSON.stringify(stored));
 
-      await restart(id);
+      const reloaded = await restart(id);
+      expect(chat.taskListItems).toEqual([]);
 
-      expect(chat.taskListItems.map((t) => t.subject)).toEqual([
-        'Write the parser',
-        'Cover it with tests',
-        'Wire up the CLI',
+      taskCall(id, 'toolu_list', 'TaskList', {});
+      emitIpc(IPC_CHANNELS.CLAUDE_TOOL_RESULT, id, {
+        toolUseBlockId: 'toolu_list',
+        outputFile: '/tmp/toolu_list.txt',
+        taskList: [
+          { id: 'task_aaa', subject: 'Write the parser', status: 'completed' },
+          { id: 'task_bbb', subject: 'Cover it with tests', status: 'in_progress' },
+          { id: 'task_ccc', subject: 'Wire up the CLI', status: 'pending' },
+        ],
+      });
+      await settle();
+
+      expect(chat.taskListItems.map((t) => [t.id, t.subject, t.status])).toEqual([
+        ['task_aaa', 'Write the parser', 'completed'],
+        ['task_bbb', 'Cover it with tests', 'in_progress'],
+        ['task_ccc', 'Wire up the CLI', 'pending'],
       ]);
-      expect(chat.taskListItems.map((t) => t.status)).toEqual([
-        'pending',
-        'pending',
-        'pending',
-      ]);
+      expect(reloaded.findAll('.task-list-panel .task-list-id').map((s) => s.text()))
+        .toEqual(['#task_aaa', '#task_bbb', '#task_ccc']);
+
+      // And Claude's next update finds its task.
+      taskCall(id, 'toolu_upd', 'TaskUpdate', { taskId: 'task_ccc', status: 'in_progress' });
+      await settle();
+      expect(chat.taskListItems.find((t) => t.id === 'task_ccc')?.status).toBe('in_progress');
     });
   });
 

@@ -88,7 +88,6 @@ describe('tool use while another conversation is viewed', () => {
     store.addAutoToolUseMessage(RUNNING, capture());
     store.updateToolUseResult(RUNNING, {
       toolUseBlockId: 'toolu_1',
-      content: 'total 0',
       outputFile: '/tmp/out.txt',
     });
 

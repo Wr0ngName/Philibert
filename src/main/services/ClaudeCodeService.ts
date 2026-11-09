@@ -53,7 +53,6 @@ import {
 } from '../../shared/model-id';
 import {
   AgentInfo,
-  AgentRun,
   ClaudeAiConnector,
   IPC_CHANNELS,
   PendingAction,
@@ -95,7 +94,7 @@ import {
   SessionPermissionCache,
 } from './claude';
 import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
-import type { ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
+import type { HandledToolResult, ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
 import { observeCanUseToolRequests, type CanUseToolRequest } from './claude/can-use-tool-requests';
 import { claudeAiConnectorAuthPage, readClaudeAiConnectors } from './claude/connectors';
 import {
@@ -103,7 +102,6 @@ import {
   transcriptToMessages, type FoundImages,
 } from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
-import type { ExtractedImage } from './claude/tool-result-images';
 import { findAgentTranscript } from './claude/transcript-files';
 
 /**
@@ -960,26 +958,13 @@ export class ClaudeCodeService {
       onToolUseCapture: (capture: ToolCaptureData) => {
         this.send(IPC_CHANNELS.CLAUDE_TOOL_CAPTURE, conversationId, capture);
       },
-      onToolResult: (result: {
-        toolUseBlockId: string;
-        content: string;
-        taskListId?: string;
-        agent?: AgentRun;
-        images?: ExtractedImage[];
-      }) => {
+      onToolResult: (result: HandledToolResult) => {
         const outputFile = writeToolResultFile(conversationId, result.toolUseBlockId, result.content);
-        // Forward small results inline so renderer features (task list panel)
-        // don't need to read the file. Large results stay on disk only.
-        const INLINE_CONTENT_MAX_BYTES = 4096;
-        const contentBytes = Buffer.byteLength(result.content, 'utf-8');
-        const inlineContent = contentBytes <= INLINE_CONTENT_MAX_BYTES
-          ? result.content
-          : undefined;
         logger.info('Tool result delivered', {
           toolUseBlockId: result.toolUseBlockId,
-          contentBytes,
-          inline: inlineContent !== undefined,
+          contentBytes: Buffer.byteLength(result.content, 'utf-8'),
           taskListId: result.taskListId,
+          ...(result.taskList && { taskListItems: result.taskList.length }),
           contentPreview: result.content.slice(0, 200),
         });
         // Images are stored before the result is announced, so the renderer
@@ -990,8 +975,8 @@ export class ClaudeCodeService {
           this.send(IPC_CHANNELS.CLAUDE_TOOL_RESULT, conversationId, {
             toolUseBlockId: result.toolUseBlockId,
             outputFile,
-            ...(inlineContent !== undefined && { content: inlineContent }),
             ...(result.taskListId && { taskListId: result.taskListId }),
+            ...(result.taskList && { taskList: result.taskList }),
             ...(result.agent && { agent: result.agent }),
             ...(images && images.length > 0 && { images }),
           });

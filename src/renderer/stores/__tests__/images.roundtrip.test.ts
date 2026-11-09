@@ -178,7 +178,6 @@ describe('an image through the whole stack', () => {
     chatStore.updateToolUseResult(CONV, {
       toolUseBlockId: 'toolu_1',
       outputFile: '/tmp/out.txt',
-      content: '[image]',
       images: [produced],
     });
 

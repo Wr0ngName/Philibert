@@ -8,7 +8,7 @@ import { ref, computed } from 'vue';
 
 import { modifiedPathsForTool } from '@shared/file-modifications';
 import { primaryModelUsage } from '@shared/model-usage';
-import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, ToolUseInfo, ToolResultData, MessageImage, UsageWarning } from '@shared/types';
+import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, TaskListSnapshotItem, ToolUseInfo, ToolResultData, MessageImage, UsageWarning } from '@shared/types';
 
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
@@ -1792,33 +1792,6 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
-   * Rebuild a conversation's task list from the Task* calls in its history.
-   *
-   * The list used to live only in this store, so restarting the app emptied
-   * the panel while the work it described was still half done — and the model
-   * kept its own copy, so the next `TaskUpdate` referred to tasks the panel no
-   * longer knew and was dropped as unknown. Nothing wrote the list to disk,
-   * and nothing read it back.
-   *
-   * MIGRATION ONLY — `restoreTaskList` is the real path. This runs for a
-   * conversation saved before the list was persisted, where the Task* calls in
-   * the transcript are the only evidence left. It is deliberately not the
-   * primary mechanism, because it cannot promise the list back exactly: a
-   * `TaskList` snapshot is unreplayable (only a path to its result is kept on
-   * the message, not the content), and a create saved before `taskListId` was
-   * stamped onto it cannot be matched to the updates that followed, so those
-   * updates are skipped and the task keeps the status its create gave it.
-   * Better than an empty panel on old history; not good enough to rely on,
-   * which is why the list itself is now saved.
-   *
-   * Replayed rather than parsed: `handleTaskListCapture` is still the only
-   * code that interprets a Task* input, called here with the saved input.
-   *
-   * Only ever applied to an EMPTY list, so a turn collecting in the background
-   * — whose live items are ahead of anything saved — is never overwritten by
-   * its own history.
-   */
-  /**
    * Put a saved task list back exactly as it was.
    *
    * The authoritative path, and the reason the list is saved at all: every
@@ -1833,10 +1806,10 @@ export const useChatStore = defineStore('chat', () => {
    * Only applied to an empty list, so a turn already collecting in the
    * background — ahead of anything on disk — is never overwritten.
    */
-  function restoreTaskList(conversationId: string, items: TaskListItem[] | undefined): boolean {
-    if (!items || items.length === 0) return false;
+  function restoreTaskList(conversationId: string, items: TaskListItem[] | undefined): void {
+    if (!items || items.length === 0) return;
     const state = getConversationState(conversationId);
-    if (state.taskListItems.size > 0) return true;
+    if (state.taskListItems.size > 0) return;
 
     const restored = new Map<string, TaskListItem>();
     for (const item of items) {
@@ -1848,7 +1821,6 @@ export const useChatStore = defineStore('chat', () => {
       conversationId,
       items: restored.size,
     });
-    return true;
   }
 
   /** A conversation's task list as it stands, for saving. */
@@ -1856,40 +1828,6 @@ export const useChatStore = defineStore('chat', () => {
     const state = conversationStates.value.get(conversationId);
     if (!state) return [];
     return Array.from(state.taskListItems.values()).map((item) => ({ ...item }));
-  }
-
-  function rebuildTaskList(conversationId: string, history: ChatMessage[]): void {
-    const state = getConversationState(conversationId);
-    if (state.taskListItems.size > 0) return;
-
-    let replayed = 0;
-    for (const message of history) {
-      const toolUse = message.toolUse;
-      if (!toolUse?.input) continue;
-      if (toolUse.toolName !== 'TaskCreate' && toolUse.toolName !== 'TaskUpdate') continue;
-
-      handleTaskListCapture(conversationId, {
-        // A create is keyed by its SDK task id where that was recorded, so the
-        // updates that follow find it. Without one it keeps the block id, as
-        // it does in the live path before the result arrives.
-        toolUseBlockId: toolUse.taskListId ?? toolUse.toolUseBlockId ?? toolUse.actionId,
-        toolName: toolUse.toolName,
-        input: toolUse.input,
-        description: toolUse.description,
-      });
-      // Its SDK id recorded: the id Claude uses, so it is shown.
-      const created = toolUse.taskListId ? state.taskListItems.get(toolUse.taskListId) : undefined;
-      if (created?.awaitingId) delete created.awaitingId;
-      replayed += 1;
-    }
-
-    if (replayed > 0) {
-      logger.info('TaskList: rebuilt from history', {
-        conversationId,
-        replayed,
-        items: state.taskListItems.size,
-      });
-    }
   }
 
   /**
@@ -1912,50 +1850,36 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
-   * Consume TaskList results — authoritative snapshot that overwrites local
-   * state. TaskCreate remapping is handled deterministically via rekeyPendingTask.
+   * Make the panel's list Claude Code's, as a TaskList call answered it: the
+   * one source of the list itself. Every task, with its id, subject and
+   * status, in its order; what the panel knew beyond that — a task's
+   * description and activeForm, which TaskList does not state — kept for
+   * the tasks still there. A task not in the answer is gone from the list,
+   * however the panel came to hold it.
+   *
+   * This is what brings a list back that the panel lost or never had — a
+   * conversation saved before lists were, or one whose saved list was not
+   * kept — rather than a reconstruction from the Task* calls in the history,
+   * which cannot know the ids Claude Code gave and so left tasks unnumbered
+   * and deaf to every update. Its text, prose ("#16 [completed] …"), was read
+   * as JSON here before, never matched, and the list was never replaced.
    */
-  function handleTaskListResult(conversationId: string, toolUseBlockId: string, content: string): void {
+  function handleTaskListSnapshot(conversationId: string, snapshot: TaskListSnapshotItem[]): void {
     const state = getConversationState(conversationId);
-    logger.debug('TaskList: result seen', {
-      toolUseBlockId,
-      contentPreview: content.slice(0, 200),
-    });
-    let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      const match = content.match(/\{[\s\S]*\}/);
-      if (match) {
-        try { parsed = JSON.parse(match[0]); } catch { /* ignore */ }
-      }
+    const next = new Map<string, TaskListItem>();
+    for (const task of snapshot) {
+      const prev = state.taskListItems.get(task.id);
+      next.set(task.id, {
+        id: task.id,
+        subject: task.subject,
+        ...(prev?.description !== undefined && { description: prev.description }),
+        ...(prev?.activeForm !== undefined && { activeForm: prev.activeForm }),
+        status: task.status,
+        updatedAt: prev && prev.subject === task.subject && prev.status === task.status ? prev.updatedAt : Date.now(),
+      });
     }
-    if (!parsed || typeof parsed !== 'object') return;
-
-    const asRecord = parsed as Record<string, unknown>;
-    const tasksField = asRecord.tasks as Array<{ id?: string; subject?: string; status?: string }> | undefined;
-    if (Array.isArray(tasksField)) {
-      // TaskList result — authoritative snapshot. Preserve local subject/desc
-      // enrichment where possible; overwrite status from the snapshot.
-      const next = new Map<string, TaskListItem>();
-      for (const t of tasksField) {
-        if (typeof t.id !== 'string') continue;
-        const prev = state.taskListItems.get(t.id);
-        const status = (t.status === 'pending' || t.status === 'in_progress' ||
-                        t.status === 'completed' || t.status === 'deleted')
-          ? t.status
-          : 'pending';
-        next.set(t.id, {
-          id: t.id,
-          subject: typeof t.subject === 'string' ? t.subject : (prev?.subject ?? ''),
-          description: prev?.description,
-          activeForm: prev?.activeForm,
-          status,
-          updatedAt: Date.now(),
-        });
-      }
-      state.taskListItems = next;
-    }
+    state.taskListItems = next;
+    logger.info('TaskList: replaced by Claude Code\'s list', { conversationId, items: next.size });
   }
 
   function addAutoToolUseMessage(conversationId: string, capture: ToolCaptureData): void {
@@ -2066,8 +1990,8 @@ export const useChatStore = defineStore('chat', () => {
 
   /**
    * Set the outputFile on a ToolUseMessage matched by toolUseBlockId.
-   * Also marks auto-approved tools as executed, and forwards small inline
-   * content to the task-list handler when relevant.
+   * Also marks auto-approved tools as executed, and hands the task list's
+   * ids to the task-list state when the result carries them.
    */
   function updateToolUseResult(conversationId: string, result: ToolResultData): void {
     const sink = messageSink(conversationId);
@@ -2076,8 +2000,8 @@ export const useChatStore = defineStore('chat', () => {
     if (result.taskListId) {
       rekeyPendingTask(conversationId, result.toolUseBlockId, result.taskListId);
     }
-    if (result.content !== undefined) {
-      handleTaskListResult(conversationId, result.toolUseBlockId, result.content);
+    if (result.taskList) {
+      handleTaskListSnapshot(conversationId, result.taskList);
     }
 
     for (let i = sink.length - 1; i >= 0; i--) {
@@ -2091,11 +2015,8 @@ export const useChatStore = defineStore('chat', () => {
           status: newStatus,
           completedAt: msg.toolUse.completedAt ?? Date.now(),
           // Kept on the message because the message is what gets saved: the
-          // task list is rebuilt from these calls on load, and an update
-          // refers to its task by this id. See rebuildTaskList.
-          ...(result.taskListId ? { taskListId: result.taskListId } : {}),
-          // Saved for the same reason: the call opens its agent's view by
-          // this record, after a restart as much as now.
+          // call opens its agent's view by this record, after a restart as
+          // much as now.
           ...(result.agent ? { task: agentTaskRecord(msg, result.agent) } : {}),
         };
         // Images the tool produced go on the MESSAGE, not inside toolUse:
@@ -3196,7 +3117,6 @@ export const useChatStore = defineStore('chat', () => {
 
     // Task list actions
     restoreTaskList,
-    rebuildTaskList,
     getTaskListItems,
 
     // Session usage actions

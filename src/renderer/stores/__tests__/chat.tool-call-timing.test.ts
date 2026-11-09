@@ -39,7 +39,7 @@ describe('tool call timing', () => {
     const store = useChatStore();
     store.addAutoToolUseMessage(CONV, capture());
     vi.setSystemTime(T0 + 12_000);
-    store.updateToolUseResult(CONV, { toolUseBlockId: 'toolu_1', outputFile: '', content: 'ok' });
+    store.updateToolUseResult(CONV, { toolUseBlockId: 'toolu_1', outputFile: '' });
 
     const { message, toolUse } = call(store);
     expect(message.timestamp).toBe(T0);
@@ -53,7 +53,7 @@ describe('tool call timing', () => {
     vi.setSystemTime(T0 + 5_000);
     store.updateToolUseStatus(CONV, 'toolu_1', 'executed');
     vi.setSystemTime(T0 + 9_000);
-    store.updateToolUseResult(CONV, { toolUseBlockId: 'toolu_1', outputFile: '', content: 'ok' });
+    store.updateToolUseResult(CONV, { toolUseBlockId: 'toolu_1', outputFile: '' });
 
     expect(call(store).toolUse.completedAt).toBe(T0 + 5_000);
   });

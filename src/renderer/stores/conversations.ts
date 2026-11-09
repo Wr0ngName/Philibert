@@ -460,14 +460,13 @@ export const useConversationsStore = defineStore('conversations', () => {
         }
       }
 
-      // Put the model's task list back. The saved list is exact; replaying the
-      // Task* calls out of the transcript is the fallback for conversations
-      // saved before it was persisted, and is close rather than exact (see
-      // `rebuildTaskList`). Either way this is a no-op for a conversation
-      // whose list is already live in memory.
-      if (!chatStore.restoreTaskList(id, conversation.taskList)) {
-        chatStore.rebuildTaskList(id, chatStore.messages);
-      }
+      // Put the model's task list back, as saved — a no-op for a conversation
+      // whose list is already live in memory. Without a saved list the panel
+      // starts empty: it is not rebuilt from the Task* calls in the history,
+      // which cannot give the ids Claude Code assigned and so left tasks
+      // without their number, deaf to every update. Claude's own TaskList
+      // brings it back (handleTaskListSnapshot).
+      chatStore.restoreTaskList(id, conversation.taskList);
 
       // Update working directory if different
       const settingsStore = useSettingsStore();

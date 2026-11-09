@@ -14,7 +14,7 @@ vi.mock('../../../utils/logger', () => ({
     debug: vi.fn(),
   },
 }));
-import { SDKMessageHandler, MessageHandlerCallbacks, resolveResultError, extractTaskCreateId, usageLimitStopFrom, usageWarningFrom } from '../SDKMessageHandler';
+import { SDKMessageHandler, MessageHandlerCallbacks, resolveResultError, extractTaskCreateId, extractTaskListSnapshot, usageLimitStopFrom, usageWarningFrom } from '../SDKMessageHandler';
 
 describe('SDKMessageHandler', () => {
   let callbacks: MessageHandlerCallbacks;
@@ -1547,38 +1547,87 @@ describe('SDKMessageHandler', () => {
   });
 
   describe('extractTaskCreateId', () => {
-    it('extracts task.id from a structured object', () => {
-      expect(extractTaskCreateId({ task: { id: 'task-abc', subject: 'x' } })).toBe('task-abc');
+    it("takes task.id from TaskCreate's structured result", () => {
+      // TaskCreateOutput, as main.log records it ("fromToolUseResult: true").
+      expect(extractTaskCreateId({ task: { id: '277', subject: 'Chains next' } })).toBe('277');
     });
 
-    it('extracts task.id from a JSON string', () => {
-      expect(extractTaskCreateId('{"task":{"id":"7","subject":"x"}}')).toBe('7');
+    it('reads no text: neither the prose the tool answers nor JSON in it', () => {
+      expect(extractTaskCreateId('Task #3 created successfully: Audit Entra script')).toBeUndefined();
+      expect(extractTaskCreateId([{ type: 'text', text: 'Task #42 created successfully: something' }])).toBeUndefined();
+      expect(extractTaskCreateId('{"task":{"id":"7"}}')).toBeUndefined();
     });
 
-    it('extracts task.id from an array of text blocks whose joined text is JSON', () => {
-      expect(extractTaskCreateId([{ type: 'text', text: '{"task":{"id":"9"}}' }])).toBe('9');
-    });
-
-    it('extracts the ID from the CLI human-readable text form', () => {
-      // This is the shape the CLI actually delivers today — the JSON extraction
-      // above never matches, so this fallback is what keeps TaskUpdate wiring intact.
-      expect(extractTaskCreateId('Task #3 created successfully: Audit Entra script'))
-        .toBe('3');
-    });
-
-    it('extracts the ID from human-readable text wrapped in a text block', () => {
-      expect(extractTaskCreateId([{ type: 'text', text: 'Task #42 created successfully: something' }]))
-        .toBe('42');
-    });
-
-    it('returns undefined when neither JSON nor the text pattern is present', () => {
-      expect(extractTaskCreateId('Some unrelated tool output')).toBeUndefined();
-    });
-
-    it('returns undefined for empty content', () => {
-      expect(extractTaskCreateId('')).toBeUndefined();
+    it('returns undefined without a string id', () => {
+      expect(extractTaskCreateId({ task: { id: 7 } })).toBeUndefined();
+      expect(extractTaskCreateId({})).toBeUndefined();
       expect(extractTaskCreateId(null)).toBeUndefined();
       expect(extractTaskCreateId(undefined)).toBeUndefined();
+    });
+  });
+
+  describe('extractTaskListSnapshot', () => {
+    // TaskListOutput, as a Claude Code session file records a TaskList's result.
+    const recorded = {
+      tasks: [
+        { id: '16', subject: "Fix bots recognising other workers' bots", status: 'completed', blockedBy: [] },
+        { id: '17', subject: "Make the bots' Route region-aware", status: 'in_progress', owner: 'a1', blockedBy: ['16'] },
+        { id: '18', subject: 'Bots pick the best party offer', status: 'pending', blockedBy: [] },
+      ],
+    };
+
+    it('takes every task, with its id, subject and status, in order', () => {
+      expect(extractTaskListSnapshot(recorded)).toEqual([
+        { id: '16', subject: "Fix bots recognising other workers' bots", status: 'completed' },
+        { id: '17', subject: "Make the bots' Route region-aware", status: 'in_progress' },
+        { id: '18', subject: 'Bots pick the best party offer', status: 'pending' },
+      ]);
+    });
+
+    it('takes an empty list as the list being empty', () => {
+      expect(extractTaskListSnapshot({ tasks: [] })).toEqual([]);
+    });
+
+    it('refuses the whole answer for one task it cannot read, rather than give a partial list', () => {
+      expect(extractTaskListSnapshot({ tasks: [...recorded.tasks, { id: 19, subject: 'x', status: 'pending' }] })).toBeUndefined();
+      expect(extractTaskListSnapshot({ tasks: [{ id: '1', subject: 'x', status: 'deleted' }] })).toBeUndefined();
+      expect(extractTaskListSnapshot({ tasks: [{ id: '1', status: 'pending' }] })).toBeUndefined();
+    });
+
+    it('reads no text', () => {
+      expect(extractTaskListSnapshot('#16 [completed] Fix bots')).toBeUndefined();
+      expect(extractTaskListSnapshot(undefined)).toBeUndefined();
+    });
+  });
+
+  describe('a TaskList call', () => {
+    async function taskListCallWith(toolUseResult: unknown) {
+      const onToolResult = vi.fn();
+      const h = new SDKMessageHandler({ ...callbacks, onToolResult });
+      await h.handleMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'toolu_list', name: 'TaskList', input: {} }] },
+        parent_tool_use_id: null,
+      } as never);
+      await h.handleMessage({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_list', content: '#16 [completed] Fix bots' }] },
+        parent_tool_use_id: null,
+        tool_use_result: toolUseResult,
+      } as never);
+      return onToolResult.mock.calls[0][0];
+    }
+
+    it('hands on the list from its structured result', async () => {
+      const result = await taskListCallWith({ tasks: [{ id: '16', subject: 'Fix bots', status: 'completed', blockedBy: [] }] });
+
+      expect(result.taskList).toEqual([{ id: '16', subject: 'Fix bots', status: 'completed' }]);
+    });
+
+    it('hands on no list when its result has none', async () => {
+      const result = await taskListCallWith(undefined);
+
+      expect(result).not.toHaveProperty('taskList');
     });
   });
 });

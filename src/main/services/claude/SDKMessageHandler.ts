@@ -13,7 +13,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 
 import { describeToolUse } from '../../../shared/tool-description';
-import type { AgentRun, SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, ToolCaptureData, UsageLimitStop, UsageWarning } from '../../../shared/types';
+import type { AgentRun, SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, TaskListSnapshotItem, ToolCaptureData, UsageLimitStop, UsageWarning } from '../../../shared/types';
 import logger from '../../utils/logger';
 
 import { toolResultParts, type ExtractedImage } from './tool-result-images';
@@ -182,6 +182,23 @@ export function resultEndsOurTurn(
   return isHumanOriginatedResult(message);
 }
 
+/** A tool call's result, as the handler hands it on (onToolResult). */
+export interface HandledToolResult {
+  toolUseBlockId: string;
+  content: string;
+  /** A TaskCreate's task id, from its structured result. */
+  taskListId?: string;
+  /** A TaskList's whole list, from its structured result. */
+  taskList?: TaskListSnapshotItem[];
+  agent?: AgentRun;
+  /**
+   * Images the tool produced, as bytes. The handler does not store them —
+   * it has no conversation to store them against — so the caller writes
+   * them to the image store and keeps only the references.
+   */
+  images?: ExtractedImage[];
+}
+
 /**
  * Callbacks for emitting events to the renderer
  */
@@ -197,18 +214,7 @@ export interface MessageHandlerCallbacks {
   onUsageUpdate: (usage: SessionUsage) => void;
   onSystemNote: (note: string) => void;
   onToolUseCapture?: (capture: ToolCaptureData) => void;
-  onToolResult?: (result: {
-    toolUseBlockId: string;
-    content: string;
-    taskListId?: string;
-    agent?: AgentRun;
-    /**
-     * Images the tool produced, as bytes. The handler does not store them —
-     * it has no conversation to store them against — so the caller writes
-     * them to the image store and keeps only the references.
-     */
-    images?: ExtractedImage[];
-  }) => void;
+  onToolResult?: (result: HandledToolResult) => void;
   onSessionId?: (sessionId: string) => void;
   onAuthError?: () => void;
   /**
@@ -722,30 +728,27 @@ export class SDKMessageHandler {
             resultBlock.content,
             userMsg.tool_use_result,
           );
-          // For TaskCreate we need the SDK-assigned task ID so the renderer can
-          // re-key its pending taskListItem entry (kept transiently under the
-          // tool_use block ID) to the real ID before any TaskUpdate arrives.
-          // Preferred source is SDKUserMessage.tool_use_result — the SDK's
-          // structured companion to the Anthropic-API tool_result.content
-          // (the latter is human-facing prose). Fall back to structured shapes
-          // inside content, then to the CLI's prose form as a last resort.
+          // The task list's ids, from SDKUserMessage.tool_use_result — the
+          // SDK's structured companion to tool_result.content, which is prose
+          // for these tools and never read. TaskCreate's gives the id the
+          // renderer re-keys its pending entry to; TaskList's, the whole list.
           const toolName = this.toolUseIdToName.get(block.tool_use_id);
           let taskListId: string | undefined;
           if (toolName === 'TaskCreate') {
-            taskListId = extractTaskCreateId(userMsg.tool_use_result)
-              ?? extractTaskCreateId(resultBlock.content);
-            logger.info('TaskCreate result extraction', {
-              toolUseBlockId: block.tool_use_id,
-              taskListId,
-              fromToolUseResult: extractTaskCreateId(userMsg.tool_use_result) !== undefined,
-              toolUseResultPreview: JSON.stringify(userMsg.tool_use_result ?? null).slice(0, 300),
-              contentPreview: content.slice(0, 200),
-            });
+            taskListId = extractTaskCreateId(userMsg.tool_use_result);
             if (!taskListId) {
-              logger.warn('TaskCreate result: could not extract task.id from either tool_use_result or content', {
+              logger.warn('TaskCreate result: no task id in its structured result', {
                 toolUseBlockId: block.tool_use_id,
+                toolUseResultPreview: JSON.stringify(userMsg.tool_use_result ?? null).slice(0, 300),
               });
             }
+          }
+          const taskList = toolName === 'TaskList' ? extractTaskListSnapshot(userMsg.tool_use_result) : undefined;
+          if (toolName === 'TaskList' && !taskList) {
+            logger.warn('TaskList result: no task list in its structured result', {
+              toolUseBlockId: block.tool_use_id,
+              toolUseResultPreview: JSON.stringify(userMsg.tool_use_result ?? null).slice(0, 300),
+            });
           }
           const agent = toolName === 'Agent' || toolName === 'Task'
             ? agentRunOf(userMsg.tool_use_result)
@@ -754,6 +757,7 @@ export class SDKMessageHandler {
             toolUseBlockId: block.tool_use_id,
             content,
             ...(taskListId && { taskListId }),
+            ...(taskList && { taskList }),
             ...(agent && { agent }),
             ...(images.length > 0 && { images }),
           });
@@ -1414,36 +1418,34 @@ export function agentRunOf(toolUseResult: unknown): AgentRun | undefined {
  * practice — without it every TaskUpdate misses its target (item stays keyed
  * by tool_use_id, TaskUpdate looks up by "3", panel is stuck at 0/N done).
  */
-export function extractTaskCreateId(raw: unknown): string | undefined {
-  const candidates: unknown[] = [];
-  const texts: string[] = [];
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    candidates.push(raw);
-  }
-  if (Array.isArray(raw)) {
-    const joined = (raw as Array<{ text?: string }>).map(b => b.text || '').join('');
-    if (joined) {
-      texts.push(joined);
-      try { candidates.push(JSON.parse(joined)); } catch { /* ignore */ }
+export function extractTaskCreateId(toolUseResult: unknown): string | undefined {
+  if (!toolUseResult || typeof toolUseResult !== 'object') return undefined;
+  const task = (toolUseResult as { task?: { id?: unknown } }).task;
+  return task && typeof task.id === 'string' ? task.id : undefined;
+}
+
+const TASK_LIST_STATUSES: ReadonlySet<string> = new Set(['pending', 'in_progress', 'completed']);
+
+/**
+ * Claude Code's task list, from a TaskList call's structured result
+ * (TaskListOutput: `{ tasks: [{ id, subject, status, … }] }`). Undefined
+ * unless that is what it is: a task without a string id and subject, or
+ * with a status the tool does not state, makes the whole answer unusable
+ * rather than a partial list the panel would take for the whole.
+ */
+export function extractTaskListSnapshot(toolUseResult: unknown): TaskListSnapshotItem[] | undefined {
+  if (!toolUseResult || typeof toolUseResult !== 'object') return undefined;
+  const tasks = (toolUseResult as { tasks?: unknown }).tasks;
+  if (!Array.isArray(tasks)) return undefined;
+  const items: TaskListSnapshotItem[] = [];
+  for (const task of tasks as Array<{ id?: unknown; subject?: unknown; status?: unknown }>) {
+    if (typeof task?.id !== 'string' || typeof task.subject !== 'string'
+      || typeof task.status !== 'string' || !TASK_LIST_STATUSES.has(task.status)) {
+      return undefined;
     }
-    for (const block of raw as Array<Record<string, unknown>>) {
-      if (block && typeof block === 'object') candidates.push(block);
-    }
+    items.push({ id: task.id, subject: task.subject, status: task.status as TaskListSnapshotItem['status'] });
   }
-  if (typeof raw === 'string' && raw.trim()) {
-    texts.push(raw);
-    try { candidates.push(JSON.parse(raw)); } catch { /* ignore */ }
-  }
-  for (const c of candidates) {
-    if (!c || typeof c !== 'object') continue;
-    const task = (c as { task?: { id?: string } }).task;
-    if (task && typeof task.id === 'string') return task.id;
-  }
-  for (const t of texts) {
-    const m = t.match(/Task #(\S+) created/i);
-    if (m) return m[1];
-  }
-  return undefined;
+  return items;
 }
 
 export default SDKMessageHandler;

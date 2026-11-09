@@ -109,17 +109,6 @@ export interface ToolUseInfo {
    *  can group them under the parent agent invocation. */
   parentToolUseId?: string;
   /**
-   * SDK-assigned task id, on a TaskCreate call whose result has arrived.
-   *
-   * The task list the panel shows is reconstructed from these calls when a
-   * conversation is opened, and `TaskUpdate` refers to tasks by this id — it
-   * appears only in the TaskCreate *result*, so without stamping it onto the
-   * call the link between a create and its later updates does not survive a
-   * restart. Absent on tool uses saved before this field existed, and on a
-   * create whose result never came.
-   */
-  taskListId?: string;
-  /**
    * The task this call ran, as a task record: an Agent/Task call's agent (its
    * id is `agentId` on the call's structured result), or a command running
    * in the background — launched there, or moved there once it had started.
@@ -167,14 +156,17 @@ export interface AgentRun {
 export interface ToolResultData {
   toolUseBlockId: string;
   outputFile: string;
-  /** Raw tool result content, forwarded inline only when small enough (≤ INLINE_CONTENT_MAX_BYTES).
-   *  Kept mostly for diagnostics; typed extractions below are preferred. */
-  content?: string;
   /** SDK-assigned task ID when this result belongs to a TaskCreate call.
    *  Extracted in the main process from the raw structured tool result and
    *  passed here so the renderer can key its task-list state deterministically
    *  without re-parsing joined text. */
   taskListId?: string;
+  /**
+   * Claude Code's task list as a TaskList call answered it, from the call's
+   * structured result: every task, with the id Claude Code gave it. Its text
+   * is prose ("#16 [completed] …"), never read.
+   */
+  taskList?: TaskListSnapshotItem[];
   /**
    * The agent an Agent/Task call ran, from its structured result: its id,
    * and whether it was launched into the background (`async_launched`)
@@ -1067,9 +1059,8 @@ export interface Conversation {
    * Includes `deleted` items: the panel hides them, but their ids are how a
    * later update resolves.
    *
-   * Absent on conversations saved before this existed — those have their list
-   * replayed from the Task* calls in the transcript instead, which is close
-   * but not exact (see `rebuildTaskList`).
+   * Absent on conversations saved before this existed: their panel starts
+   * empty, and is filled by Claude's next TaskList (ToolResultData.taskList).
    */
   taskList?: TaskListItem[];
   /**
@@ -1346,6 +1337,13 @@ export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'stopped
  * One entry in the model's SDK-managed todo list, reconstructed on the
  * renderer from TaskCreate / TaskUpdate / TaskList tool calls.
  */
+/** One task of Claude Code's list, as its TaskList tool states it. */
+export interface TaskListSnapshotItem {
+  id: string;
+  subject: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
 export interface TaskListItem {
   /** SDK-assigned task ID (from TaskCreate's response). Falls back to the
    *  tool_use block ID during the brief window before the result arrives. */
