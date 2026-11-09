@@ -831,6 +831,14 @@ export const useChatStore = defineStore('chat', () => {
     state.bufferingMessages = true;
   }
 
+  /** The ids of every message held for a conversation: its window, and a turn held apart from it. */
+  function heldMessageIds(conversationId: string): Set<string> {
+    const held = new Set<string>();
+    for (const message of windowList(conversationId) ?? []) held.add(message.id);
+    for (const message of conversationStates.value.get(conversationId)?.detachedTurn ?? []) held.add(message.id);
+    return held;
+  }
+
   /** Buffered messages for a conversation, or null when it is not buffering. */
   function getBufferedMessages(conversationId: string): ChatMessage[] | null {
     const state = conversationStates.value.get(conversationId);
@@ -3133,6 +3141,7 @@ export const useChatStore = defineStore('chat', () => {
     withTasksAsTracked,
     beginMessageBuffer,
     getBufferedMessages,
+    heldMessageIds,
     retainUnsavedMessages,
     endMessageBuffer,
     reconcileBackgroundTasks,

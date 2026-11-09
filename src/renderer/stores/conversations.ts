@@ -475,6 +475,10 @@ export const useConversationsStore = defineStore('conversations', () => {
         await settingsStore.setWorkingDirectory(conversation.workingDirectory);
       }
 
+      // What is known of the conversations left is forgotten with their windows.
+      for (const other of [...writtenJson.keys()]) {
+        if (other !== id) pruneWritten(other);
+      }
       logger.info('Loaded conversation', { id, messageCount: conversation.messages.length });
       return true;
     } catch (err) {
@@ -575,6 +579,36 @@ export const useConversationsStore = defineStore('conversations', () => {
   function noteRead(conversationId: string, messages: readonly ChatMessage[], epoch: number): void {
     if (writtenEpoch(conversationId) !== epoch) return;
     noteWritten(conversationId, messages.map((m) => [m.id, JSON.stringify(m)] as const));
+    // The page just read is kept: it is about to be held.
+    pruneWritten(conversationId, messages.map((m) => m.id));
+  }
+
+  /**
+   * Forget what is known of messages no longer held — let go of by the
+   * window as it is trimmed or slides, or with the whole conversation once
+   * it is not in memory. What is known is only ever of messages a save can
+   * carry, so it stays as small as the window: kept for every message read,
+   * it grew to the whole conversation for a reader scrolling to its start.
+   * One read again is known again from that read; one not known is only
+   * sent once more by a save, which the main process finds unchanged.
+   */
+  function pruneWritten(conversationId: string, alsoKeep: Iterable<string> = []): void {
+    const known = writtenJson.get(conversationId);
+    if (!known) return;
+    const held = chatStore.heldMessageIds(conversationId);
+    for (const id of alsoKeep) held.add(id);
+    if (held.size === 0) {
+      writtenJson.delete(conversationId);
+      return;
+    }
+    for (const id of known.keys()) {
+      if (!held.has(id)) known.delete(id);
+    }
+  }
+
+  /** How many messages are known to be on disk as they are, for a conversation; for diagnostics and tests. */
+  function writtenRecordCount(conversationId: string): number {
+    return writtenJson.get(conversationId)?.size ?? 0;
   }
 
   function forgetWritten(conversationId: string): void {
@@ -892,6 +926,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     const slid = chatStore.trimWindowAround(conversationId, anchorMessageId, WINDOW_SIZE, WINDOW_SIZE);
     if (slid.droppedHead || slid.droppedTail) {
       logger.debug('Slid the message window', { conversationId, ...slid });
+      pruneWritten(conversationId);
     }
     return slid;
   }
@@ -1114,6 +1149,7 @@ export const useConversationsStore = defineStore('conversations', () => {
             // messages" count means. Held no longer.
             chatStore.detachedTurnStored(id);
             trimAfterSave(id);
+            pruneWritten(id);
             report(true);
           } catch (err) {
             const errorMessage = err instanceof Error ? err.message : String(err);
@@ -1786,6 +1822,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     setConversationArchived,
     loadConversation,
     readWindow,
+    writtenRecordCount,
     switchConversation,
     saveCurrentConversation,
     loadEarlierMessages,

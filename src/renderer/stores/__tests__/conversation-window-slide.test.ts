@@ -278,6 +278,51 @@ describe('sliding the window through a long conversation', () => {
     expect(chatStore.newerMessageCount).toBe(0);
   });
 
+  // Found reviewing what stays in memory: what the store knows to be on
+  // disk (so a save can skip it) kept every message ever read, and grew to
+  // the whole conversation for a reader scrolling to its start.
+  it('knows what is on disk only for the messages it holds, however far it reads', async () => {
+    const withinWindow = () => {
+      expect(store.writtenRecordCount(CONV)).toBeLessThanOrEqual(chatStore.messages.length);
+    };
+    withinWindow();
+    let guard = 0;
+    while (chatStore.olderMessageCount > 0 && guard < 20) {
+      await readBack();
+      guard += 1;
+      withinWindow();
+    }
+    guard = 0;
+    while (chatStore.newerMessageCount > 0 && guard < 20) {
+      await readForward();
+      guard += 1;
+      withinWindow();
+    }
+    expect(heldRange().last).toBe(TOTAL - 1);
+
+    // And of a conversation left, nothing once its window is let go of.
+    await store.switchConversation('conv-elsewhere');
+    await settle();
+    expect(store.writtenRecordCount(CONV)).toBe(0);
+  });
+
+  it('still saves only what changed after reading back and forward', async () => {
+    while (chatStore.newerMessageCount === 0) await readBack();
+    while (chatStore.newerMessageCount > 0) await readForward();
+    const update = ConversationService.prototype.update;
+    const carried: number[] = [];
+    const spy = vi.spyOn(ConversationService.prototype, 'update').mockImplementation(function (this: ConversationService, u) {
+      carried.push(u.upsert.length);
+      return update.call(this, u);
+    });
+
+    chatStore.addUserMessage('one more');
+    await store.saveCurrentConversation();
+    spy.mockRestore();
+
+    expect(carried).toEqual([1]);
+  });
+
   describe('a stored conversation with a message id twice in it', () => {
     /**
      * The conversation is a JSON file on disk. A duplicate id in it is not a
