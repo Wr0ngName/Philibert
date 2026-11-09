@@ -1211,6 +1211,22 @@ export type ConversationSearchScope = 'current' | 'all';
 /**
  * Git repository status information
  */
+/**
+ * What has changed in one file, for the file panel's "Show changes":
+ * what is not committed yet, or else the last commit that touched it.
+ * Outside a git repository the renderer shows Claude's own edits instead.
+ */
+export type FileChanges =
+  | { source: 'uncommitted'; patch: string }
+  | {
+    source: 'last-commit';
+    patch: string;
+    commit: { hash: string; shortHash: string; subject: string; author: string; date: string };
+  }
+  /** In a repository, with nothing uncommitted and no commit touching it. */
+  | { source: 'none' }
+  | { source: 'not-a-repository' };
+
 export interface GitStatus {
   /** Whether the working directory is a git repository */
   isGitRepo: boolean;
@@ -2040,6 +2056,8 @@ export const IPC_CHANNELS = {
   // Git operations
   /** Get git repository status */
   GIT_STATUS: 'git:status',
+  /** What has changed in one file: uncommitted, or its last commit */
+  GIT_FILE_CHANGES: 'git:file-changes',
   /** Commit all changes */
   GIT_COMMIT: 'git:commit',
   /** Pull from remote */
@@ -2078,6 +2096,8 @@ export const IPC_CHANNELS = {
   FILES_CHANGED: 'files:changed',
   /** Open a file in the system's default application */
   FILES_OPEN: 'files:open',
+  /** Show a file or folder selected in the system's file manager */
+  FILES_SHOW_IN_FOLDER: 'files:show-in-folder',
 
   // MCP server management
   /** List the MCP servers declared in the project's .mcp.json */

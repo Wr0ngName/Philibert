@@ -27,7 +27,14 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'select', path: string): void;
   (e: 'view-markdown', path: string): void;
+  /** Right-clicked: the panel shows its menu for this node, there. */
+  (e: 'menu', node: FileNode, x: number, y: number): void;
 }>();
+
+function openMenu(event: MouseEvent): void {
+  event.preventDefault();
+  emit('menu', props.node, event.clientX, event.clientY);
+}
 
 const MARKDOWN_EXTS = new Set(['md', 'markdown', 'mdx']);
 
@@ -107,6 +114,7 @@ function handleClick() {
       ]"
       :style="{ paddingLeft: `${depth * 12 + 8}px` }"
       @click="handleClick"
+      @contextmenu="openMenu"
     >
       <!-- Expand/collapse chevron for directories -->
       <Icon
@@ -163,6 +171,7 @@ function handleClick() {
           :depth="depth + 1"
           @select="emit('select', $event)"
           @view-markdown="emit('view-markdown', $event)"
+          @menu="(node, x, y) => emit('menu', node, x, y)"
         />
       </div>
     </TransitionFade>

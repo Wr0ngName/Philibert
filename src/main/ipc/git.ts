@@ -10,6 +10,7 @@ import FileWatcherService from '../services/FileWatcherService';
 import GitService from '../services/GitService';
 import { validateString, sendToRenderer, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
+import { isPathWithin, normalizePath } from '../utils/paths';
 
 export function setupGitIPC(
   gitService: GitService,
@@ -27,6 +28,23 @@ export function setupGitIPC(
     } catch (error) {
       logger.error('Failed to get git status', { error, workingDir });
       throw new Error(formatErrorMessage('Failed to get git status', error), { cause: error });
+    }
+  });
+
+  // What has changed in one file of the working directory
+  ipcMain.handle(IPC_CHANNELS.GIT_FILE_CHANGES, async (_event, workingDir: string, filePath: string) => {
+    try {
+      ensureService(gitService, 'GitService');
+      validateString(workingDir, 'Working directory');
+      validateString(filePath, 'File path');
+      if (!isPathWithin(normalizePath(filePath), normalizePath(workingDir))) {
+        throw new Error('File is outside the working directory');
+      }
+
+      return await gitService.getFileChanges(workingDir, filePath);
+    } catch (error) {
+      logger.error('Failed to get file changes', { error, filePath });
+      throw new Error(formatErrorMessage('Failed to get file changes', error), { cause: error });
     }
   });
 

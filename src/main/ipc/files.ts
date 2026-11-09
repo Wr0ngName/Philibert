@@ -11,12 +11,26 @@ import FileWatcherService from '../services/FileWatcherService';
 import { readLocalImage } from '../services/LocalImageReader';
 import { validateString, validatePath, sendToRenderer, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
+import { isPathWithin, normalizePath } from '../utils/paths';
 
 export function setupFilesIPC(
   fileWatcher: FileWatcherService,
   configService: ConfigService,
   getMainWindow: () => BrowserWindow | null
 ): void {
+  /**
+   * Why `target` may not be handed to the system — no working directory, or
+   * a path outside it — or null when it may. A path inside the working
+   * directory, not one merely starting with its name: a plain prefix check
+   * let `/home/u/proj2/x` through for a working directory of `/home/u/proj`.
+   */
+  async function outsideWorkingDirectory(target: string): Promise<string | null> {
+    const workingDir = await configService.getWorkingDirectory();
+    if (!workingDir) return 'No working directory set';
+    if (!isPathWithin(normalizePath(target), normalizePath(workingDir))) return 'File is outside working directory';
+    return null;
+  }
+
   // Select working directory
   ipcMain.handle(IPC_CHANNELS.FILES_SELECT_DIR, async () => {
     try {
@@ -140,17 +154,8 @@ export function setupFilesIPC(
       validateString(filePath, 'File path');
       validatePath(filePath);
 
-      const workingDir = await configService.getWorkingDirectory();
-      if (!workingDir) {
-        return { success: false, error: 'No working directory set' };
-      }
-
-      // Security: ensure path is within working directory
-      const normalizedFile = filePath.replace(/\\/g, '/');
-      const normalizedWork = workingDir.replace(/\\/g, '/');
-      if (!normalizedFile.startsWith(normalizedWork)) {
-        return { success: false, error: 'File is outside working directory' };
-      }
+      const refused = await outsideWorkingDirectory(filePath);
+      if (refused) return { success: false, error: refused };
 
       const errorMessage = await shell.openPath(filePath);
       if (errorMessage) {
@@ -163,6 +168,26 @@ export function setupFilesIPC(
     } catch (error) {
       logger.error('Failed to open file', { error, filePath });
       return { success: false, error: formatErrorMessage('Failed to open file', error) };
+    }
+  });
+
+  // Show a file or folder selected in the system's file manager
+  ipcMain.handle(IPC_CHANNELS.FILES_SHOW_IN_FOLDER, async (_event, target: string) => {
+    try {
+      logger.debug('IPC: files:show-in-folder', { target });
+
+      ensureService(configService, 'ConfigService');
+      validateString(target, 'Path');
+      validatePath(target);
+
+      const refused = await outsideWorkingDirectory(target);
+      if (refused) return { success: false, error: refused };
+
+      shell.showItemInFolder(target);
+      return { success: true };
+    } catch (error) {
+      logger.error('Failed to show in folder', { error, target });
+      return { success: false, error: formatErrorMessage('Failed to show in folder', error) };
     }
   });
 

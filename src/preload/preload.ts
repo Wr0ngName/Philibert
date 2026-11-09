@@ -303,6 +303,9 @@ const electronAPI: ElectronAPI = {
     status: (workingDir: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.GIT_STATUS, workingDir),
 
+    fileChanges: (workingDir: string, filePath: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.GIT_FILE_CHANGES, workingDir, filePath),
+
     commit: (workingDir: string, message: string, stageAll: boolean, expectedBranch?: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.GIT_COMMIT, workingDir, message, stageAll, expectedBranch),
 
@@ -367,6 +370,9 @@ const electronAPI: ElectronAPI = {
 
     open: (filePath: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.FILES_OPEN, filePath),
+
+    showInFolder: (path: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.FILES_SHOW_IN_FOLDER, path),
 
     onChange: (callback) => {
       const handler = (

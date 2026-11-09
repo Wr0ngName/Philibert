@@ -3,12 +3,16 @@
  * File tree component - displays project structure
  */
 
-import { onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
+
+import type { FileNode } from '@shared/types';
 
 import { useFilesStore } from '../../stores/files';
 import { useUiStore } from '../../stores/ui';
+import FileChangesModal from './FileChangesModal.vue';
 import FileTreeItem from './FileTreeItem.vue';
+import ContextMenu, { type ContextMenuItem } from '../shared/ContextMenu.vue';
 import Spinner from '../shared/Spinner.vue';
 import Icon from '../shared/Icon.vue';
 import { logger } from '../../utils/logger';
@@ -34,6 +38,57 @@ function handleViewMarkdown(path: string) {
 function refresh() {
   filesStore.loadFileTree();
 }
+
+// Right-click menu on a file or a folder.
+const menu = ref<{ node: FileNode; x: number; y: number } | null>(null);
+/** The file whose changes are shown, while they are. */
+const changesOf = ref<string | null>(null);
+
+function openMenu(node: FileNode, x: number, y: number): void {
+  menu.value = { node, x, y };
+}
+
+/** A path as relative to the working directory, with forward slashes. */
+function relativePath(path: string): string {
+  const base = (filesStore.workingDirectory ?? '').replace(/[\\/]+$/, '');
+  const relative = path.startsWith(base) ? path.slice(base.length).replace(/^[\\/]+/, '') : path;
+  return relative.replace(/\\/g, '/');
+}
+
+async function copy(text: string): Promise<void> {
+  try {
+    await window.electron.clipboard.writeText(text);
+  } catch (error) {
+    logger.error('Failed to copy to the clipboard', error);
+  }
+}
+
+async function showInFolder(path: string): Promise<void> {
+  const result = await window.electron.files.showInFolder(path);
+  if (!result.success) logger.error('Failed to show in the file manager', { path, error: result.error });
+}
+
+const menuItems = computed<ContextMenuItem[]>(() => {
+  const node = menu.value?.node;
+  if (!node) return [];
+  const copies: ContextMenuItem[] = [
+    { label: 'Copy path', onSelect: () => copy(node.path) },
+    { label: 'Copy relative path', onSelect: () => copy(relativePath(node.path)) },
+  ];
+  if (node.type === 'directory') {
+    return [
+      // A folder opened by the system opens in the file manager.
+      { label: 'Open in file manager', onSelect: () => filesStore.openFile(node.path) },
+      ...copies,
+    ];
+  }
+  return [
+    { label: 'Open with default app', onSelect: () => filesStore.openFile(node.path) },
+    { label: 'Show in file manager', onSelect: () => showInFolder(node.path) },
+    { label: 'Show changes', onSelect: () => { changesOf.value = node.path; } },
+    ...copies,
+  ];
+});
 
 // Deselect when the user clicks anywhere outside the file tree — matches
 // the convention in OS file explorers and signals that the selection only
@@ -137,8 +192,23 @@ onUnmounted(() => {
           :node="node"
           @select="handleFileSelect"
           @view-markdown="handleViewMarkdown"
+          @menu="openMenu"
         />
       </div>
     </div>
+
+    <ContextMenu
+      :open="menu !== null"
+      :x="menu?.x ?? 0"
+      :y="menu?.y ?? 0"
+      :items="menuItems"
+      @close="menu = null"
+    />
+    <FileChangesModal
+      :open="changesOf !== null"
+      :file-path="changesOf"
+      :working-directory="filesStore.workingDirectory"
+      @close="changesOf = null"
+    />
   </div>
 </template>

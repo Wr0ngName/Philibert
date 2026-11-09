@@ -14,10 +14,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Use vi.hoisted to ensure mocks are available before vi.mock is called
-const { mockIpcMainHandle, mockIpcMain, mockDialog } = vi.hoisted(() => {
+const { mockIpcMainHandle, mockIpcMain, mockDialog, mockShell } = vi.hoisted(() => {
   const mockIpcMainHandle = vi.fn();
   const _mockIpcMainOn = vi.fn();
   return {
+    mockShell: { openPath: vi.fn(async () => ''), showItemInFolder: vi.fn() },
     mockIpcMainHandle,
     mockIpcMain: {
       handle: mockIpcMainHandle,
@@ -34,6 +35,7 @@ const { mockIpcMainHandle, mockIpcMain, mockDialog } = vi.hoisted(() => {
 vi.mock('electron', () => ({
   ipcMain: mockIpcMain,
   dialog: mockDialog,
+  shell: mockShell,
   BrowserWindow: vi.fn(),
 }));
 
@@ -294,6 +296,42 @@ describe('Files IPC handlers', () => {
       mockFileWatcher.listDirectory.mockRejectedValue(new Error('Permission denied'));
 
       await expect(handler({}, WORKDIR, WORKDIR)).rejects.toThrow(FileSystemError);
+    });
+  });
+
+  // ===========================================================================
+  // FILES_OPEN and FILES_SHOW_IN_FOLDER, from the file panel's menu
+  // ===========================================================================
+  describe('handing a path of the working directory to the system', () => {
+    const open = () => handlers.get(IPC_CHANNELS.FILES_OPEN)!;
+    const showInFolder = () => handlers.get(IPC_CHANNELS.FILES_SHOW_IN_FOLDER)!;
+
+    it('opens a file, or a folder, of the working directory', async () => {
+      expect(await open()({}, '/home/user/project/src')).toEqual({ success: true });
+      expect(mockShell.openPath).toHaveBeenCalledWith('/home/user/project/src');
+    });
+
+    it('shows a file of the working directory in the file manager', async () => {
+      expect(await showInFolder()({}, '/home/user/project/package.json')).toEqual({ success: true });
+      expect(mockShell.showItemInFolder).toHaveBeenCalledWith('/home/user/project/package.json');
+    });
+
+    // The check was a plain prefix: a sibling folder whose name begins with
+    // the working directory's passed it.
+    it.each([
+      ['a sibling folder sharing its name', '/home/user/project2/secret.txt'],
+      ['another folder', '/etc/passwd'],
+    ])('refuses %s', async (_label, target) => {
+      expect(await open()({}, target)).toEqual({ success: false, error: 'File is outside working directory' });
+      expect(await showInFolder()({}, target)).toEqual({ success: false, error: 'File is outside working directory' });
+      expect(mockShell.openPath).not.toHaveBeenCalled();
+      expect(mockShell.showItemInFolder).not.toHaveBeenCalled();
+    });
+
+    it('refuses everything when no working directory is set', async () => {
+      mockConfigService.getWorkingDirectory.mockResolvedValue(null);
+
+      expect(await showInFolder()({}, '/home/user/project/a.ts')).toEqual({ success: false, error: 'No working directory set' });
     });
   });
 

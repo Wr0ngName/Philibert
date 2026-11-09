@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import type { GitBranch, GitCredentialRequest, GitRemoteResult, GitStatus } from '../../shared/types';
+import type { FileChanges, GitBranch, GitCredentialRequest, GitRemoteResult, GitStatus } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import logger from '../utils/logger';
 import { WindowsPaths } from '../utils/resourcePaths';
@@ -17,6 +17,31 @@ import type { CredentialSession, GitCredentialBroker } from './git/GitCredential
 import { describeHelper, effectiveHelpers, keepsLogin, parseHelperConfig } from './git/credential-helpers';
 
 const execFileAsync = promisify(execFile);
+
+/** Largest untracked file shown whole as new: past it, only its size is. */
+const NEW_FILE_PATCH_MAX_BYTES = 512 * 1024;
+
+/**
+ * An untracked file as a patch adding it: every line added. Written here
+ * rather than with `git diff --no-index /dev/null file`, which exits 1
+ * whenever there is a difference and needs a /dev/null git can read.
+ * Empty for an empty or missing file.
+ */
+export async function newFilePatch(filePath: string, cwd: string): Promise<string> {
+  let content: Buffer;
+  try {
+    content = await fs.promises.readFile(filePath);
+  } catch {
+    return '';
+  }
+  if (content.length === 0) return '';
+  const name = path.relative(cwd, filePath).split(path.sep).join('/');
+  const header = `--- /dev/null\n+++ b/${name}`;
+  if (content.includes(0)) return `${header}\nBinary file, ${content.length} bytes`;
+  if (content.length > NEW_FILE_PATCH_MAX_BYTES) return `${header}\nNew file, ${content.length} bytes — too large to show`;
+  const lines = content.toString('utf8').replace(/\n$/, '').split('\n');
+  return `${header}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join('\n')}`;
+}
 
 /**
  * Detect git's "identity not configured" failure modes from an error message.
@@ -214,6 +239,40 @@ export class GitService {
       };
     }
     return { ahead: 0, behind: 0 };
+  }
+
+  /**
+   * What has changed in one file: what is not committed yet — staged or not,
+   * or the whole file when git does not track it — or else the last commit
+   * that touched it, with that commit's own change to it.
+   */
+  async getFileChanges(cwd: string, filePath: string): Promise<FileChanges> {
+    try {
+      await this.runGit(['rev-parse', '--is-inside-work-tree'], cwd);
+    } catch {
+      return { source: 'not-a-repository' };
+    }
+
+    const tracked = await this.runGit(['ls-files', '--', filePath], cwd);
+    if (!tracked) {
+      const patch = await newFilePatch(filePath, cwd);
+      return patch ? { source: 'uncommitted', patch } : { source: 'none' };
+    }
+
+    // A repository with no commit yet has no HEAD: what is staged is all
+    // there is to compare against nothing.
+    const hasHead = await this.runGit(['rev-parse', '--verify', '--quiet', 'HEAD'], cwd).then(() => true, () => false);
+    const uncommitted = await this.runGit(
+      ['diff', '--no-color', '--no-ext-diff', hasHead ? 'HEAD' : '--cached', '--', filePath],
+      cwd,
+    );
+    if (uncommitted) return { source: 'uncommitted', patch: uncommitted };
+
+    const meta = await this.runGit(['log', '-1', '--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI', '--', filePath], cwd);
+    if (!meta) return { source: 'none' };
+    const [hash, shortHash, subject, author, date] = meta.split('\x1f');
+    const patch = await this.runGit(['show', '--no-color', '--no-ext-diff', '--format=', hash, '--', filePath], cwd);
+    return { source: 'last-commit', patch, commit: { hash, shortHash, subject, author, date } };
   }
 
   /**

@@ -20,6 +20,7 @@ import type {
   ConversationSearchResult,
   ConversationSearchScope,
   FileChange,
+  FileChanges,
   FileNode,
   GitBranch,
   GitCredentialAnswer,
@@ -232,6 +233,8 @@ export interface ElectronAPI {
   git: {
     /** Get repository status */
     status: (workingDir: string) => Promise<GitStatus>;
+    /** What has changed in one file of the working directory. */
+    fileChanges: (workingDir: string, filePath: string) => Promise<FileChanges>;
     /**
      * Commit changes (optionally stage all first).
      * If `expectedBranch` is supplied, the main process verifies HEAD matches
@@ -290,6 +293,8 @@ export interface ElectronAPI {
       baseDir: string | null,
     ) => Promise<{ base64: string; mediaType: ImageMediaType } | null>;
     open: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+    /** Show a file or folder of the working directory selected in the system's file manager. */
+    showInFolder: (path: string) => Promise<{ success: boolean; error?: string }>;
     onChange: (callback: (changes: FileChange[]) => void) => () => void;
   };
 
