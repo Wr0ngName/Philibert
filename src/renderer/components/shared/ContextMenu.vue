@@ -135,7 +135,10 @@ async function handleItemClick(item: ContextMenuItem): Promise<void> {
         type="button"
         :disabled="item.disabled"
         :class="[
-          'w-full text-left px-3 py-1.5 text-sm transition-colors',
+          // Block, each on its own line: as inline-blocks (a button's own
+          // display) they were added up side by side in the menu's natural
+          // width, so a five-item menu opened 690 px wide.
+          'block w-full text-left px-3 py-1.5 text-sm transition-colors whitespace-nowrap',
           item.disabled
             ? 'text-surface-400 dark:text-surface-500 cursor-not-allowed'
             : 'text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-700',
