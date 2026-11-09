@@ -105,6 +105,11 @@ export const MAIN_CONSTANTS = {
      */
     COMPACT_MIN_REPLACED: 2000,
     /**
+     * Bytes of lines a compaction reads and writes at a time: what it holds,
+     * however long the discussion.
+     */
+    COMPACT_BATCH_BYTES: 4 * 1024 * 1024,
+    /**
      * How long closing the window waits for saves under way in the main
      * process, after the renderer has handed over what it had. Appending a
      * save takes milliseconds; this only bounds a disk that has stopped

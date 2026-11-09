@@ -234,17 +234,27 @@ export function replay(text: string): Replayed {
   return { messages, state, damaged };
 }
 
+/**
+ * Add a message's line to the state of a log being written one put record
+ * per line, the line starting at byte `start`.
+ *
+ * @returns where the next line starts.
+ */
+export function putCompacted(state: TranscriptState, message: ChatMessage, line: string, start: number): number {
+  const length = Buffer.byteLength(line, 'utf-8');
+  if (state.put(message, line) !== 'unchanged') state.locate(message.id, { start, length });
+  state.records += 1;
+  return start + length + 1;
+}
+
 /** A log holding exactly these messages, one put record each. */
 export function compactedLog(messages: readonly ChatMessage[]): { text: string; state: TranscriptState } {
   const state = new TranscriptState();
   let start = 0;
   const lines = messages.map((message) => {
     const line = recordLine({ put: message });
-    const length = Buffer.byteLength(line, 'utf-8');
-    if (state.put(message, line) !== 'unchanged') state.locate(message.id, { start, length });
-    start += length + 1;
+    start = putCompacted(state, message, line, start);
     return line;
   });
-  state.records = lines.length;
   return { text: lines.length > 0 ? `${lines.join('\n')}\n` : '', state };
 }

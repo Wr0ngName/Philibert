@@ -36,15 +36,30 @@ export function isTemporaryFile(name: string): boolean {
 }
 
 /** Replace a file's content in one step; see the top of this file. */
-export async function replaceFile(file: string, content: string): Promise<void> {
+export function replaceFile(file: string, content: string): Promise<void> {
+  return replaceFileWith(file, (handle) => handle.writeFile(content, 'utf-8'));
+}
+
+/**
+ * Replace a file in one step with what `write` writes to the new one — in
+ * as many pieces as it likes, so content larger than memory can be written.
+ * Should `write` throw, the file is left as it was.
+ */
+export async function replaceFileWith(
+  file: string,
+  write: (handle: fs.promises.FileHandle) => Promise<void>,
+): Promise<void> {
   const temporary = temporaryFileOf(file);
   const handle = await fs.promises.open(temporary, 'w');
   try {
-    await handle.writeFile(content, 'utf-8');
+    await write(handle);
     await handle.sync();
-  } finally {
+  } catch (error) {
     await handle.close();
+    await fs.promises.unlink(temporary).catch(() => undefined);
+    throw error;
   }
+  await handle.close();
 
   for (let attempt = 1; ; attempt++) {
     try {

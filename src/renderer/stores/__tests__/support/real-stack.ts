@@ -238,8 +238,10 @@ export function fakeFsModule(): Record<string, unknown> {
           if (flags === 'w' || !files.has(p)) files.set(p, '');
         }
         return {
+          // On a handle, as in Node: each write goes on from where the last
+          // one ended (the file was emptied when opened 'w').
           writeFile: async (data: string) => {
-            files.set(p, data);
+            files.set(p, (files.get(p) ?? '') + data);
           },
           appendFile: async (data: string) => {
             files.set(p, (files.get(p) ?? '') + data);

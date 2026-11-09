@@ -35,7 +35,10 @@ vi.mock('../../constants/app', async (importOriginal) => {
     ...actual,
     MAIN_CONSTANTS: {
       ...actual.MAIN_CONSTANTS,
-      CONVERSATION: { ...actual.MAIN_CONSTANTS.CONVERSATION, COMPACT_MIN_REPLACED: 20, RETRY_BASE_DELAY_MS: 1 },
+      // Small batches, so a compaction takes several.
+      CONVERSATION: {
+        ...actual.MAIN_CONSTANTS.CONVERSATION, COMPACT_MIN_REPLACED: 20, COMPACT_BATCH_BYTES: 300, RETRY_BASE_DELAY_MS: 1,
+      },
     },
   };
 });
@@ -437,6 +440,70 @@ describe('compaction', () => {
 
     expect(logLines('c').length).toBe(lines + 1);
     expect(await ids('c')).toEqual(['m1', 'm2', 'm3']);
+  });
+
+  // Asked for: compaction loaded the whole discussion.
+  it('never reads the messages file whole, and copies it in batches', async () => {
+    await seed('c', Array.from({ length: 12 }, (_, i) => `m${i}`));
+    const wholeReads = vi.spyOn(fs.promises, 'readFile');
+    const open = fs.promises.open.bind(fs.promises);
+    let rangeReads = 0;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags) => {
+      if (flags === 'r' && String(file).endsWith('.messages.jsonl')) rangeReads += 1;
+      return open(file, flags);
+    });
+
+    for (let i = 0; i < 25; i++) await service.update({ ...base('c'), upsert: [msg('m3', `streamed ${i}`)] });
+
+    expect(logger.info).toHaveBeenCalledWith('Compacted a conversation messages file', expect.objectContaining({ id: 'c' }));
+    expect(wholeReads.mock.calls.filter(([file]) => String(file).endsWith('.messages.jsonl'))).toEqual([]);
+    // Twelve lines of about 90 bytes, 300 bytes at a time.
+    expect(rangeReads).toBeGreaterThan(2);
+    vi.restoreAllMocks();
+    expect((await whole('c', new ConversationService()))?.messages.map((m) => m.content))
+      .toEqual(Array.from({ length: 12 }, (_, i) => (i === 3 ? 'streamed 24' : `content m${i}`)));
+  });
+
+  it('leaves the file as it was when a line does not hold the message it should', async () => {
+    // Changed behind the app's back: copying lines by where they were
+    // would write one message in another's place.
+    await seed('c', ['m17', 'm18']);
+    for (let i = 0; i < 20; i++) await service.update({ ...base('c'), upsert: [msg('m17', `v${String(i).padStart(2, '0')}`)] });
+    const text = fs.readFileSync(messagesFile('c'), 'utf-8');
+    const line = (id: string) => recordLine({ put: msg(id) });
+    fs.writeFileSync(messagesFile('c'), text.replace(line('m18'), line('m18').replace('"m18"', '"m19"')));
+    const before = fs.readFileSync(messagesFile('c'), 'utf-8');
+
+    await service.update({ ...base('c'), upsert: [msg('m17', 'v20')] });
+
+    expect(logger.warn).toHaveBeenCalledWith('Failed to compact a conversation messages file', expect.objectContaining({ id: 'c' }));
+    // The file has the save's line appended, and nothing else changed.
+    expect(fs.readFileSync(messagesFile('c'), 'utf-8').startsWith(before)).toBe(true);
+    expect(fs.readdirSync(conversationsDir.path).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('leaves the file as it was when the disk fails in the middle of it', async () => {
+    await seed('c', Array.from({ length: 12 }, (_, i) => `m${i}`));
+    for (let i = 0; i < 20; i++) await service.update({ ...base('c'), upsert: [msg('m3', `streamed ${i}`)] });
+    const before = fs.readFileSync(messagesFile('c'), 'utf-8');
+    const open = fs.promises.open.bind(fs.promises);
+    let ranges = 0;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags) => {
+      if (flags === 'r' && String(file).endsWith('.messages.jsonl') && ++ranges === 2) {
+        throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+      }
+      return open(file, flags);
+    });
+
+    await service.update({ ...base('c'), upsert: [msg('m3', 'streamed 20')] });
+    vi.restoreAllMocks();
+
+    expect(logger.warn).toHaveBeenCalledWith('Failed to compact a conversation messages file', expect.objectContaining({ id: 'c' }));
+    expect(fs.readFileSync(messagesFile('c'), 'utf-8').startsWith(before)).toBe(true);
+    expect(fs.readdirSync(conversationsDir.path).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+    const reread = (await whole('c', new ConversationService()))?.messages ?? [];
+    expect(reread.map((m) => m.id)).toEqual(Array.from({ length: 12 }, (_, i) => `m${i}`));
+    expect(reread[3].content).toBe('streamed 20');
   });
 });
 

@@ -24,7 +24,7 @@ import {
   ConversationWindow,
 } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
-import { appendToFile, replaceFile } from '../utils/durable-file';
+import { appendToFile, replaceFile, replaceFileWith } from '../utils/durable-file';
 import { readRanges } from '../utils/file-ranges';
 import logger from '../utils/logger';
 import { getConversationsPath, isPathWithin } from '../utils/paths';
@@ -39,7 +39,7 @@ import {
 } from './conversation-files';
 import { ConversationIndex } from './conversation-index';
 import {
-  appendBatch, batchLocations, compactedLog, type LineLocation, recordLine, replay, TranscriptState,
+  appendBatch, batchLocations, type LineLocation, putCompacted, recordLine, replay, TranscriptState,
 } from './conversation-log';
 import { type ConversionProgress, convertConversationFolder, convertOneFileDiscussion } from './conversation-migration';
 
@@ -802,14 +802,44 @@ export class ConversationService {
     const replaced = state.records - state.size;
     if (replaced <= Math.max(MAIN_CONSTANTS.CONVERSATION.COMPACT_MIN_REPLACED, state.size)) return;
 
+    // Copied line by line from where each live message's line is: the file
+    // is never read whole, and only a batch of lines is held at a time.
+    const { ids, locations } = state.snapshot();
+    if (locations.some((location) => !location)) {
+      logger.info('Not compacting a conversation messages file: a line is not located', { id });
+      return;
+    }
     const file = messagesFileOf(this.getFilePath(id));
+    const batchBytes = MAIN_CONSTANTS.CONVERSATION.COMPACT_BATCH_BYTES;
     try {
-      const { messages } = replay(await fs.promises.readFile(file, 'utf-8'));
-      const compacted = compactedLog(messages);
-      await replaceFile(file, compacted.text);
+      const compacted = new TranscriptState();
+      await replaceFileWith(file, async (handle) => {
+        let start = 0;
+        for (let from = 0; from < ids.length;) {
+          let to = from;
+          let bytes = 0;
+          while (to < ids.length && (to === from || bytes + locations[to]!.length <= batchBytes)) {
+            bytes += locations[to]!.length + 1;
+            to += 1;
+          }
+          const lines = (await readRanges(file, locations.slice(from, to) as LineLocation[]))
+            .map((bytesOfLine) => bytesOfLine.toString('utf-8'));
+          for (const [i, line] of lines.entries()) {
+            // Each line must hold the message it is located for: one that
+            // does not leaves the file as it was (replaceFileWith).
+            const record = JSON.parse(line) as { put?: ChatMessage };
+            if (record.put?.id !== ids[from + i]) {
+              throw new Error(`the line of ${ids[from + i]} holds ${record.put?.id ?? 'no message'}`);
+            }
+            start = putCompacted(compacted, record.put, line, start);
+          }
+          await handle.writeFile(`${lines.join('\n')}\n`, 'utf-8');
+          from = to;
+        }
+      });
       this.messagesFileReplaced(id);
-      this.rememberState(id, compacted.state);
-      logger.info('Compacted a conversation messages file', { id, messages: messages.length, replaced });
+      this.rememberState(id, compacted);
+      logger.info('Compacted a conversation messages file', { id, messages: ids.length, replaced });
     } catch (error) {
       logger.warn('Failed to compact a conversation messages file', { id, error });
     }
