@@ -48,6 +48,10 @@ import realLogger from '../../utils/logger';
 import { ConversationService } from '../ConversationService';
 import { recordLine } from '../conversation-log';
 
+import { REAL_DISK_TEST_TIMEOUT_MS } from './support/real-disk';
+
+vi.setConfig({ testTimeout: REAL_DISK_TEST_TIMEOUT_MS });
+
 const logger = realLogger as unknown as Record<'debug' | 'info' | 'warn' | 'error', Mock>;
 
 let root: string;

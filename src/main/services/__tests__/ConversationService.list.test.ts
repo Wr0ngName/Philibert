@@ -24,6 +24,10 @@ import { DAY_MS } from '../../../shared/conversation-list';
 import type { AutoArchiveDays, Conversation, ConversationSummary } from '../../../shared/types';
 import { ConversationService } from '../ConversationService';
 
+import { REAL_DISK_TEST_TIMEOUT_MS } from './support/real-disk';
+
+vi.setConfig({ testTimeout: REAL_DISK_TEST_TIMEOUT_MS });
+
 let root: string;
 let service: ConversationService;
 

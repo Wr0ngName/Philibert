@@ -9,7 +9,10 @@ import * as path from 'node:path';
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+import { REAL_DISK_TEST_TIMEOUT_MS } from '../../services/__tests__/support/real-disk';
 import { appendToFile, isTemporaryFile, replaceFile, temporaryFileOf } from '../durable-file';
+
+vi.setConfig({ testTimeout: REAL_DISK_TEST_TIMEOUT_MS });
 
 let dir: string;
 let file: string;
