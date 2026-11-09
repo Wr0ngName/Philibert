@@ -58,7 +58,6 @@ describe('IPC_CHANNELS', () => {
     expect(IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT).toBe('conversation:archived-count');
     expect(IPC_CHANNELS.CONVERSATION_SUMMARY).toBe('conversation:summary');
     expect(IPC_CHANNELS.CONVERSATION_SET_ARCHIVED).toBe('conversation:set-archived');
-    expect(IPC_CHANNELS.CONVERSATION_GET).toBe('conversation:get');
     expect(IPC_CHANNELS.CONVERSATION_DELETE).toBe('conversation:delete');
   });
 

@@ -660,17 +660,6 @@ export class ConversationService {
   }
 
   /**
-   * Get a single conversation by ID, with all its messages.
-   *
-   * Null when there is no such conversation; a conversation that cannot be
-   * read is an error, never null — see readDetailsFile.
-   */
-  async get(id: string): Promise<Conversation | null> {
-    const loaded = await this.read(id);
-    return loaded ? { ...loaded.details, messages: loaded.messages } : null;
-  }
-
-  /**
    * Apply a change to a stored conversation — the renderer's only way to
    * write one.
    *

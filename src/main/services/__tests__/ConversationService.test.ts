@@ -68,8 +68,13 @@ async function seed(id: string, messageIds: string[], extra: Partial<Conversatio
   await service.update({ ...base(id), upsert: messageIds.map((m) => msg(m)), createdAt: 1_600_000_000_000, ...extra });
 }
 
+/** A whole discussion, read as the app reads it: a window with no limit. */
+async function whole(id: string, from: ConversationService = service): Promise<Conversation | null> {
+  return (await from.getWindow(id, Number.MAX_SAFE_INTEGER))?.conversation ?? null;
+}
+
 async function ids(id: string): Promise<string[]> {
-  return ((await service.get(id))?.messages ?? []).map((m) => m.id);
+  return ((await whole(id))?.messages ?? []).map((m) => m.id);
 }
 
 /** A discussion in the one-file layout versions up to 0.25.13 wrote. */
@@ -111,7 +116,7 @@ describe('what a discussion is stored as', () => {
   it('reads back as the conversation it was given', async () => {
     await seed('c', ['m1', 'm2'], { sdkSessionId: 'session-1', executionMode: 'sdk' });
 
-    expect(await service.get('c')).toEqual({
+    expect(await whole('c')).toEqual({
       id: 'c',
       title: 'content m1',
       workingDirectory: '/home/user/project',
@@ -124,7 +129,7 @@ describe('what a discussion is stored as', () => {
   });
 
   it('is null for a discussion that does not exist', async () => {
-    expect(await service.get('nope')).toBeNull();
+    expect(await whole('nope')).toBeNull();
   });
 
   it('fails on an unreadable details file rather than reporting it missing', async () => {
@@ -132,7 +137,7 @@ describe('what a discussion is stored as', () => {
     // next save start the discussion over.
     fs.writeFileSync(detailsFile('broken'), '{ not json');
 
-    await expect(service.get('broken')).rejects.toThrow();
+    await expect(whole('broken')).rejects.toThrow();
   });
 
   it('leaves an unreadable file out of the list without breaking it', async () => {
@@ -196,14 +201,14 @@ describe('a save', () => {
     await service.update({ ...base('c2'), upsert: [msg('m2', 'edited')] });
 
     expect(await ids('c2')).toEqual(['m1', 'm2', 'm3']);
-    expect((await service.get('c2'))?.messages[1].content).toBe('edited');
+    expect((await whole('c2'))?.messages[1].content).toBe('edited');
   });
 
   it('creates the conversation when there is none', async () => {
     await service.update({ ...base('c3'), upsert: [msg('m1', 'hello', 'assistant')], title: 'Fresh' });
 
     expect(await ids('c3')).toEqual(['m1']);
-    expect((await service.get('c3'))?.title).toBe('Fresh');
+    expect((await whole('c3'))?.title).toBe('Fresh');
   });
 
   it('cannot shorten a conversation on its own', async () => {
@@ -256,7 +261,7 @@ describe('a save', () => {
 
     await service.update({ ...base('c9'), upsert: [msg('m2')] });
 
-    const stored = await service.get('c9');
+    const stored = await whole('c9');
     expect(stored?.sdkSessionId).toBe('session-1');
     expect(stored?.title).toBe('Kept');
   });
@@ -266,7 +271,7 @@ describe('a save', () => {
 
     await service.update({ ...base('c10'), title: 'Renamed', customTitle: true, sdkSessionId: 'session-2' });
 
-    const stored = await service.get('c10');
+    const stored = await whole('c10');
     expect(stored?.title).toBe('Renamed');
     expect(stored?.customTitle).toBe(true);
     expect(stored?.sdkSessionId).toBe('session-2');
@@ -277,7 +282,7 @@ describe('a save', () => {
 
     await service.update({ ...base('c11'), upsert: [msg('m2')], createdAt: 999 });
 
-    expect((await service.get('c11'))?.createdAt).toBe(1_600_000_000_000);
+    expect((await whole('c11'))?.createdAt).toBe(1_600_000_000_000);
   });
 
   it('is idempotent, so a retried write cannot duplicate anything', async () => {
@@ -378,7 +383,7 @@ describe('a write stopped part-way', () => {
 
     const service2 = new ConversationService();
 
-    expect((await service2.get('c'))?.messages.map((m) => m.id)).toEqual(['m1', 'm2']);
+    expect((await whole('c', service2))?.messages.map((m) => m.id)).toEqual(['m1', 'm2']);
     expect(logger.warn).toHaveBeenCalledWith(
       'Skipped lines of a messages file that a stopped write left unfinished', { id: 'c', damaged: 1 },
     );
@@ -391,7 +396,7 @@ describe('a write stopped part-way', () => {
 
     await service2.update({ ...base('c'), upsert: [msg('m2'), msg('m3')] });
 
-    expect((await new ConversationService().get('c'))?.messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
+    expect((await whole('c', new ConversationService()))?.messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
   });
 
   it('leaves the details as they were when it stopped before its rename', async () => {
@@ -399,7 +404,7 @@ describe('a write stopped part-way', () => {
     // A replace stopped part-way: its temporary file, never renamed.
     fs.writeFileSync(`${detailsFile('c')}.tmp`, '{"id":"c","sdkSess');
 
-    expect((await service.get('c'))?.sdkSessionId).toBe('before');
+    expect((await whole('c'))?.sdkSessionId).toBe('before');
   });
 
   it('leaves temporary files that the next start removes', async () => {
@@ -420,7 +425,7 @@ describe('compaction', () => {
     for (let i = 0; i < 25; i++) await service.update({ ...base('c'), upsert: [msg('m2', `streamed ${i}`)] });
 
     expect(logLines('c').length).toBeLessThan(25);
-    expect((await new ConversationService().get('c'))?.messages).toEqual([msg('m1'), msg('m2', 'streamed 24')]);
+    expect((await whole('c', new ConversationService()))?.messages).toEqual([msg('m1'), msg('m2', 'streamed 24')]);
   });
 
   it('keeps saving after compacting, without writing what did not change', async () => {
@@ -445,7 +450,7 @@ describe('discussions stored in one file, as up to 0.25.13', () => {
     await service.upgradeStorage();
 
     expect(readJson(detailsFile('old'))).not.toHaveProperty('messages');
-    expect(await service.get('old')).toEqual(stored);
+    expect(await whole('old')).toEqual(stored);
   });
 
   it('are titled as the list showed them, not as an older version cut them', async () => {
@@ -462,7 +467,7 @@ describe('discussions stored in one file, as up to 0.25.13', () => {
 
     await service.upgradeStorage();
 
-    expect((await service.get('old'))?.messages.map((m) => [m.id, m.content])).toEqual([['m1', 'first'], ['m2', 'content m2']]);
+    expect((await whole('old'))?.messages.map((m) => [m.id, m.content])).toEqual([['m1', 'first'], ['m2', 'content m2']]);
   });
 
   it('are converted again from the one file when a conversion stopped between its two writes', async () => {
@@ -474,7 +479,7 @@ describe('discussions stored in one file, as up to 0.25.13', () => {
 
     await service.upgradeStorage();
 
-    expect((await service.get('old'))?.messages).toEqual(stored.messages);
+    expect((await whole('old'))?.messages).toEqual(stored.messages);
   });
 
   it('say which one is being converted, so startup can show why it waits', async () => {
@@ -516,7 +521,7 @@ describe('discussions stored in one file, as up to 0.25.13', () => {
     const stored = oneFile('copied', [msg('m1'), msg('m2')]);
     fs.writeFileSync(detailsFile('copied'), JSON.stringify(stored));
 
-    expect((await service.get('copied'))?.messages).toEqual(stored.messages);
+    expect((await whole('copied'))?.messages).toEqual(stored.messages);
     expect(readJson(detailsFile('copied'))).not.toHaveProperty('messages');
   });
 
@@ -539,7 +544,7 @@ describe('deleting', () => {
     await service.delete('c');
 
     expect(fs.readdirSync(conversationsDir.path)).toEqual([]);
-    expect(await service.get('c')).toBeNull();
+    expect(await whole('c')).toBeNull();
   });
 
   it('does not fail for a discussion that is not there', async () => {
@@ -828,7 +833,7 @@ describe('reads and writes at once', () => {
     const saving = service.update({ ...base('new'), upsert: [msg('m1')] });
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    const during = await service.get('new');
+    const during = await whole('new');
     release();
     await saving;
 
@@ -851,11 +856,12 @@ describe('reads and writes at once', () => {
       return content;
     });
 
-    const reading = service.get('c');
+    // Search reads a discussion whole, and keeps what it read for writes.
+    const reading = service.search('content', 'current', 'c');
     await new Promise((resolve) => setTimeout(resolve, 20));
     await service.update({ ...base('c'), upsert: [msg('m2'), msg('m3')] });
     finishRead();
-    expect((await reading)?.messages.map((m) => m.id)).toEqual(['m1']);
+    expect((await reading).map((hit) => hit.messageId)).toEqual(['m1']);
     vi.restoreAllMocks();
 
     await service.update({ ...base('c'), truncateFromId: 'm2' });

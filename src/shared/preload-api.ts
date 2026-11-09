@@ -13,7 +13,6 @@ import type {
   AskUserQuestionResponse,
   AuthStatus,
   AutoArchiveDays,
-  Conversation,
   ConversationListPage,
   ConversationListRequest,
   ConversationSummary,
@@ -374,7 +373,6 @@ export interface ElectronAPI {
     summary: (id: string) => Promise<ConversationSummary | null>;
     /** Archive a discussion, or bring it back; returns its entry as it now stands. */
     setArchived: (id: string, archived: boolean) => Promise<ConversationSummary>;
-    get: (id: string) => Promise<Conversation | null>;
     /**
      * Apply a change — add or replace messages by id, and metadata. The only
      * write: it cannot shorten a stored conversation except where it says so.

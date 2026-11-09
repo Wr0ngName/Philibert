@@ -467,8 +467,6 @@ const electronAPI: ElectronAPI = {
     setArchived: (id: string, archived: boolean) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_ARCHIVED, id, archived),
 
-    get: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET, id),
-
     update: (update) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE, update),
 

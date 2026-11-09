@@ -3,7 +3,6 @@
  *
  * Tests cover:
  * - CONVERSATION_LIST_PAGE and the archiving handlers
- * - CONVERSATION_GET handler for retrieving a single conversation
  * - CONVERSATION_UPDATE handler, the only write
  * - CONVERSATION_DELETE handler for deleting conversations
  * - Service validation for all handlers
@@ -56,7 +55,6 @@ const mockConversationService = {
   archivedCount: vi.fn(),
   summary: vi.fn(),
   setArchived: vi.fn(),
-  get: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
   sessionIdOf: vi.fn(),
@@ -109,7 +107,6 @@ describe('Conversations IPC handlers', () => {
     mockConversationService.archivedCount.mockResolvedValue(4);
     mockConversationService.summary.mockResolvedValue({ id: 'conv_123' });
     mockConversationService.setArchived.mockResolvedValue({ id: 'conv_123' });
-    mockConversationService.get.mockResolvedValue(sampleConversation);
     mockConversationService.update.mockResolvedValue(undefined);
     mockConversationService.delete.mockResolvedValue(undefined);
     mockConversationService.sessionIdOf.mockResolvedValue(undefined);
@@ -135,7 +132,6 @@ describe('Conversations IPC handlers', () => {
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_SUMMARY)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_SET_ARCHIVED)).toBe(true);
-      expect(handlers.has(IPC_CHANNELS.CONVERSATION_GET)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_UPDATE)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.CONVERSATION_DELETE)).toBe(true);
     });
@@ -210,60 +206,6 @@ describe('Conversations IPC handlers', () => {
       expect(mockConversationService.setArchived).toHaveBeenCalledWith('conv_123', true);
       await expect(setArchived({}, 'conv_123', 'true')).rejects.toThrow(ConfigurationError);
       expect(mockConversationService.setArchived).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  // ===========================================================================
-  // CONVERSATION_GET
-  // ===========================================================================
-  describe('CONVERSATION_GET handler', () => {
-    let handler: (...args: unknown[]) => unknown;
-
-    beforeEach(() => {
-      handler = handlers.get(IPC_CHANNELS.CONVERSATION_GET)!;
-    });
-
-    it('should return conversation by ID', async () => {
-      const result = await handler({}, 'conv_123');
-
-      expect(mockConversationService.get).toHaveBeenCalledWith('conv_123');
-      expect(result).toEqual(sampleConversation);
-    });
-
-    it('should throw when ID is not a string', async () => {
-      await expect(handler({}, 123)).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when ID is empty', async () => {
-      await expect(handler({}, '')).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when ID is only whitespace', async () => {
-      await expect(handler({}, '   ')).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when ID is null', async () => {
-      await expect(handler({}, null)).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when conversation is not found', async () => {
-      mockConversationService.get.mockResolvedValue(null);
-
-      await expect(handler({}, 'nonexistent_id')).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should throw when conversation service is not initialized', async () => {
-      handlers.clear();
-      setupConversationIPC(null as any, mockSessions);
-      const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_GET)!;
-
-      await expect(nullHandler({}, 'conv_123')).rejects.toThrow(ConfigurationError);
-    });
-
-    it('should propagate service errors', async () => {
-      mockConversationService.get.mockRejectedValue(new Error('Decryption failed'));
-
-      await expect(handler({}, 'conv_123')).rejects.toThrow(ConfigurationError);
     });
   });
 

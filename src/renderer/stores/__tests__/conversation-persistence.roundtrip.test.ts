@@ -120,8 +120,6 @@ async function route(channel: string, args: unknown[]): Promise<unknown> {
       return conversationService.getOlder(
         args[0] as string, args[1] as string, args[2] as number,
       );
-    case IPC_CHANNELS.CONVERSATION_GET:
-      return conversationService.get(args[0] as string);
     case IPC_CHANNELS.CONVERSATION_LIST_PAGE:
       return conversationService.listPage(args[0] as ConversationListRequest);
     case IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT:

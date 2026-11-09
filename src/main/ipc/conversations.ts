@@ -166,30 +166,6 @@ export function setupConversationIPC(conversationService: ConversationService, s
     }
   });
 
-  // Get a single conversation
-  ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET, async (_event, id: string) => {
-    try {
-      logger.debug('IPC: conversation:get', { id });
-
-      // Validate service
-      ensureService(conversationService, 'ConversationService');
-
-      // Validate input
-      validateString(id, 'Conversation ID');
-
-      const conversation = await conversationService.get(id);
-
-      if (!conversation) {
-        throw new ConfigurationError(`Conversation not found: ${id}`, ERROR_CODES.CONVERSATION_NOT_FOUND);
-      }
-
-      return conversation;
-    } catch (error) {
-      logger.error('Failed to get conversation', { error, id });
-      throw new ConfigurationError(formatErrorMessage('Failed to get conversation', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
-    }
-  });
-
   // Apply a change to a conversation — the only write path.
   //
   // Validated on the fields a conversation must have, minus the ones an

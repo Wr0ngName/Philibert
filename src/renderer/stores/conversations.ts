@@ -15,6 +15,7 @@ import type {
   ConversationListCursor,
   ConversationSummary,
   ConversationUpdate,
+  ConversationWindow,
 } from '@shared/types';
 
 import { getInMemoryMessages } from '../composables/useClaudeChat';
@@ -341,10 +342,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       // Only the tail, plus how much is older. A conversation is not read
       // whole: nothing bounded the loaded list before, so a long one sat in
       // memory in full for as long as the app ran.
-      const window_ = await window.electron.conversation.getWindow(
-        id,
-        CONSTANTS.CONVERSATION.WINDOW_SIZE,
-      );
+      const window_ = await readWindow(id);
       if (!window_) {
         error.value = 'Conversation not found';
         return false;
@@ -542,8 +540,82 @@ export const useConversationsStore = defineStore('conversations', () => {
   }
 
   /**
+   * Each message as last known to be on disk — its JSON — per conversation.
+   *
+   * A save sent every message the window holds, 500 to 1,500 of them (about
+   * 2 MB on a long discussion), deep-copied here and again across IPC, for
+   * the main process to find that nearly all were unchanged. Now it sends
+   * only those whose JSON differs from this. Compared on the JSON a write
+   * would carry, so no way of changing a message can be missed.
+   *
+   * Known from a write that landed, and from a read of the file. Forgotten
+   * when a rewind lands: it removes messages from the file.
+   */
+  const writtenJson = new Map<string, Map<string, string>>();
+  /**
+   * Times each conversation's writtenJson was forgotten, so a read begun
+   * before a rewind landed cannot record messages the rewind removed.
+   */
+  const writtenEpochs = new Map<string, number>();
+
+  function writtenEpoch(conversationId: string): number {
+    return writtenEpochs.get(conversationId) ?? 0;
+  }
+
+  function noteWritten(conversationId: string, entries: Iterable<readonly [string, string]>): void {
+    let known = writtenJson.get(conversationId);
+    if (!known) {
+      known = new Map();
+      writtenJson.set(conversationId, known);
+    }
+    for (const [id, json] of entries) known.set(id, json);
+  }
+
+  /** Messages just read from the file: on disk as they are, unless a rewind landed meanwhile. */
+  function noteRead(conversationId: string, messages: readonly ChatMessage[], epoch: number): void {
+    if (writtenEpoch(conversationId) !== epoch) return;
+    noteWritten(conversationId, messages.map((m) => [m.id, JSON.stringify(m)] as const));
+  }
+
+  function forgetWritten(conversationId: string): void {
+    writtenJson.delete(conversationId);
+    writtenEpochs.set(conversationId, writtenEpoch(conversationId) + 1);
+  }
+
+  /** A read of a conversation's stored messages, which are then known to be on disk (noteRead). */
+  async function readStored<T>(
+    conversationId: string,
+    read: () => Promise<T | null>,
+    messagesOf: (result: T) => readonly ChatMessage[],
+  ): Promise<T | null> {
+    const epoch = writtenEpoch(conversationId);
+    const result = await read();
+    if (result) noteRead(conversationId, messagesOf(result), epoch);
+    return result;
+  }
+
+  /** A conversation's tail, the size of a window, and how much is older. */
+  function readWindow(conversationId: string): Promise<ConversationWindow | null> {
+    return readStored(
+      conversationId,
+      () => window.electron.conversation.getWindow(conversationId, CONSTANTS.CONVERSATION.WINDOW_SIZE),
+      (read) => read.conversation.messages,
+    );
+  }
+
+  /** A write, with what it means once it lands or fails. */
+  interface PendingWrite {
+    update: ConversationUpdate;
+    /** The JSON of each message it carries, recorded once it lands. */
+    written: Array<readonly [string, string]>;
+    /** Everything it was built from — kept if it fails; see retainUnsavedMessages. */
+    held: ChatMessage[];
+  }
+
+  /**
    * Build the write for a conversation: its metadata, and the messages the
-   * renderer holds, to be added or replaced by id.
+   * renderer holds that are not on disk as they are, to be added or
+   * replaced by id.
    *
    * The messages are the WINDOW, not the conversation — so this cannot be a
    * full write. See ConversationUpdate: a write carrying the whole list makes
@@ -559,18 +631,27 @@ export const useConversationsStore = defineStore('conversations', () => {
     conversationId: string,
     messages: ChatMessage[],
     workingDirectory: string,
-  ): ConversationUpdate {
+  ): PendingWrite {
     // A rewind removed turns on screen; a write has to say so or they stay in
     // the file. Read here, cleared only once the write has landed.
     const truncation = chatStore.pendingTruncationFor(conversationId);
     const options = truncation ? { truncateFromId: truncation.fromId } : {};
-    // Deep clone messages to strip ALL Vue reactivity (including nested objects)
-    // Vue proxies can't be cloned across IPC - use JSON round-trip for complete deproxification.
     // Task rows are written as their tasks stand now, not as they stood when
     // the row was added.
-    const rawMessages: ChatMessage[] = JSON.parse(
-      JSON.stringify(chatStore.withTasksAsTracked(conversationId, messages)),
-    );
+    const tracked = chatStore.withTasksAsTracked(conversationId, messages);
+    // Only what differs from the file — all of it when the write cuts the
+    // file, which removes what it held from the cut on. Each sent message is
+    // a copy through JSON, which also strips Vue's reactivity: a proxy
+    // cannot cross IPC.
+    const known = truncation ? undefined : writtenJson.get(conversationId);
+    const written: Array<readonly [string, string]> = [];
+    const rawMessages: ChatMessage[] = [];
+    for (const message of tracked) {
+      const json = JSON.stringify(message);
+      if (known?.get(message.id) === json) continue;
+      written.push([message.id, json]);
+      rawMessages.push(JSON.parse(json) as ChatMessage);
+    }
     const existingConv = conversations.value.find((c: Conversation) => c.id === conversationId);
 
     // Only when the window is the whole conversation; see above.
@@ -582,8 +663,8 @@ export const useConversationsStore = defineStore('conversations', () => {
     const sdkSessionId = sdkSessionIds.value.get(conversationId);
 
     // Use last message timestamp for ordering (so history sorts by last message, not last access)
-    const lastMessageAt = rawMessages.length > 0
-      ? rawMessages[rawMessages.length - 1].timestamp
+    const lastMessageAt = tracked.length > 0
+      ? tracked[tracked.length - 1].timestamp
       : Date.now();
 
     // Stamp the execution mode the first time this conversation is saved so
@@ -619,7 +700,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     const inMemoryTaskList = chatStore.getTaskListItems(conversationId);
     const taskList = inMemoryTaskList.length > 0 ? inMemoryTaskList : existingConv?.taskList;
 
-    return {
+    const update: ConversationUpdate = {
       id: conversationId,
       ...(title !== undefined ? { title } : {}),
       ...(existingConv?.customTitle !== undefined ? { customTitle: existingConv.customTitle } : {}),
@@ -644,6 +725,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       ...(sessionPermissions && sessionPermissions.length > 0 ? { sessionPermissions } : {}),
       ...(taskList && taskList.length > 0 ? { taskList } : {}),
     };
+    return { update, written, held: [...messages] };
   }
 
   /**
@@ -855,7 +937,7 @@ export const useConversationsStore = defineStore('conversations', () => {
    * all: a save is only ever "saved" because its own write landed.
    */
   interface QueuedSave {
-    update: ConversationUpdate;
+    pending: PendingWrite;
     settle: ((saved: boolean) => void)[];
   }
   /** Writes waiting to go out, newest per conversation, in order. */
@@ -948,7 +1030,8 @@ export const useConversationsStore = defineStore('conversations', () => {
    * and that is said loudly — on screen and in main.log — instead of being
    * discovered later as lost conversations.
    */
-  function queueSave(update: ConversationUpdate): Promise<boolean> {
+  function queueSave(pending: PendingWrite): Promise<boolean> {
+    const { update } = pending;
     const outcome = new Promise<boolean>((resolve) => {
       const stalled = setTimeout(() => {
         logger.error('A save has not completed; saving may have stopped', {
@@ -964,7 +1047,7 @@ export const useConversationsStore = defineStore('conversations', () => {
         resolve(saved);
       };
       const waiting = saveQueue.get(update.id)?.settle ?? [];
-      saveQueue.set(update.id, { update, settle: [...waiting, settle] });
+      saveQueue.set(update.id, { pending, settle: [...waiting, settle] });
     });
     void drainSaveQueue();
     return outcome;
@@ -995,7 +1078,7 @@ export const useConversationsStore = defineStore('conversations', () => {
         while (saveQueue.size > 0) {
           const [id, queued] = saveQueue.entries().next().value as [string, QueuedSave];
           saveQueue.delete(id);
-          const conversation = queued.update;
+          const conversation = queued.pending.update;
           const report = (saved: boolean) => {
             for (const settle of queued.settle) settle(saved);
           };
@@ -1013,6 +1096,11 @@ export const useConversationsStore = defineStore('conversations', () => {
               id: conversation.id,
               upsertCount: conversation.upsert.length,
             });
+            // What it carried is on disk as sent. A cut it carried removed
+            // from the file what was known to be there: forgotten first, so
+            // the window refilled below is read after it.
+            if (conversation.truncateFromId) forgetWritten(id);
+            noteWritten(id, queued.pending.written);
             // The write landed: a removal it carried has reached the file,
             // and everything written is now on disk, so the window may be
             // trimmed back — the only moment at which forgetting part of a
@@ -1033,8 +1121,9 @@ export const useConversationsStore = defineStore('conversations', () => {
             error.value = `Failed to save conversation: ${errorMessage}`;
             // These messages are now in memory only, and the caller that
             // awaited this save is very often about to replace the list
-            // holding them. Keep them reachable; see retainUnsavedMessages.
-            chatStore.retainUnsavedMessages(id, conversation.upsert);
+            // holding them. Keep them reachable — all it was built from, not
+            // only the changed ones it carried; see retainUnsavedMessages.
+            chatStore.retainUnsavedMessages(id, queued.pending.held);
             report(false);
           }
         }
@@ -1138,10 +1227,10 @@ export const useConversationsStore = defineStore('conversations', () => {
     if (loadingEarlier.value) return 0;
     loadingEarlier.value = true;
     try {
-      const page = await window.electron.conversation.getOlder(
+      const page = await readStored(
         id,
-        top.id,
-        CONSTANTS.CONVERSATION.WINDOW_SIZE,
+        () => window.electron.conversation.getOlder(id, top.id, CONSTANTS.CONVERSATION.WINDOW_SIZE),
+        (read) => read.messages,
       );
       if (!page) return 0;
 
@@ -1198,9 +1287,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     if (chatStore.olderMessageCount === 0) return;
 
     try {
-      const latest = await window.electron.conversation.getWindow(
-        id, CONSTANTS.CONVERSATION.WINDOW_SIZE,
-      );
+      const latest = await readWindow(id);
       if (!latest || currentConversationId.value !== id) return;
       chatStore.loadMessages(latest.conversation.messages, latest.olderCount, 0);
       logger.info('Refilled the window after a rewind emptied it', {
@@ -1233,8 +1320,10 @@ export const useConversationsStore = defineStore('conversations', () => {
     loadingNewer.value = true;
     try {
       const held = chatStore.detachedTurnFor(id);
-      const page = await window.electron.conversation.getNewer(
-        id, from, CONSTANTS.CONVERSATION.WINDOW_SIZE, held?.[0]?.id ?? null,
+      const page = await readStored(
+        id,
+        () => window.electron.conversation.getNewer(id, from, CONSTANTS.CONVERSATION.WINDOW_SIZE, held?.[0]?.id ?? null),
+        (read) => read.messages,
       );
       if (!page) return 0;
       // Switched away while this was in flight.
@@ -1284,9 +1373,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     if (chatStore.newerMessageCount === 0) return true;
 
     try {
-      const latest = await window.electron.conversation.getWindow(
-        id, CONSTANTS.CONVERSATION.WINDOW_SIZE,
-      );
+      const latest = await readWindow(id);
       if (!latest) return false;
       if (currentConversationId.value !== id) return false;
 
@@ -1346,8 +1433,10 @@ export const useConversationsStore = defineStore('conversations', () => {
         if (currentConversationId.value !== conversationId) return false;
 
         const held = chatStore.detachedTurnFor(conversationId);
-        const around = await window.electron.conversation.getAround(
-          conversationId, messageId, half, half, held?.[0]?.id ?? null,
+        const around = await readStored(
+          conversationId,
+          () => window.electron.conversation.getAround(conversationId, messageId, half, half, held?.[0]?.id ?? null),
+          (read) => read.messages,
         );
         if (currentConversationId.value !== conversationId) return false;
         if (chatStore.detachedTurnFor(conversationId) !== held) continue;
@@ -1414,6 +1503,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     // is waited for, so it lands before the file is removed rather than
     // recreating it after.
     deletedConversationIds.add(id);
+    forgetWritten(id);
     if (saveWriting) await saveWriting;
 
     try {
@@ -1695,6 +1785,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     showListView,
     setConversationArchived,
     loadConversation,
+    readWindow,
     switchConversation,
     saveCurrentConversation,
     loadEarlierMessages,

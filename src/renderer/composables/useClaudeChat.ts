@@ -13,7 +13,6 @@ import { effectScope, onMounted, onUnmounted, shallowRef, watch, type EffectScop
 import { withGuiCommands } from '@shared/slash-commands';
 import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, MessageImage, PermissionOptionVariant, PermissionScope } from '@shared/types';
 
-import { CONSTANTS } from '../constants/app';
 import { useChatStore } from '../stores/chat';
 import { useConversationsStore } from '../stores/conversations';
 import { useFilesStore } from '../stores/files';
@@ -297,10 +296,7 @@ export function useClaudeChat() {
       }
 
       if (!chatStore.hasMessageSink(conversationId)) {
-        const window_ = await window.electron.conversation.getWindow(
-          conversationId,
-          CONSTANTS.CONVERSATION.WINDOW_SIZE,
-        );
+        const window_ = await conversationsStore.readWindow(conversationId);
         if (!window_) {
           logger.warn('Conversation to continue after usage limit no longer exists', { conversationId });
           chatStore.setUsageLimitWait(conversationId, null);

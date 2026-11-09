@@ -367,8 +367,6 @@ export async function route(channel: string, args: unknown[]): Promise<unknown> 
     switch (channel) {
       case 'conversation:update':
         return service.update(args[0] as ConversationUpdate);
-      case 'conversation:get':
-        return service.get(args[0] as string);
       case 'conversation:get-window':
         return service.getWindow(args[0] as string, args[1] as number);
       case 'conversation:get-older':
