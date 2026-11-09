@@ -3,44 +3,50 @@
  * Watches .git directory for changes and emits status updates.
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import type { FileChanges, GitBranch, GitCredentialRequest, GitRemoteResult, GitStatus } from '../../shared/types';
+import type { FileChanges, FileChangeView, GitBranch, GitCredentialRequest, GitRemoteResult, GitStatus } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import logger from '../utils/logger';
 import { WindowsPaths } from '../utils/resourcePaths';
 
 import type { CredentialSession, GitCredentialBroker } from './git/GitCredentialBroker';
 import { describeHelper, effectiveHelpers, keepsLogin, parseHelperConfig } from './git/credential-helpers';
+import { firstLines, hexComparison, imageMediaType, isBinary, MAX_PATCH_BYTES, MAX_PATCH_LINES } from './git/file-changes';
 
 const execFileAsync = promisify(execFile);
 
-/** Largest untracked file shown whole as new: past it, only its size is. */
-const NEW_FILE_PATCH_MAX_BYTES = 512 * 1024;
+/** Largest picture shown; past it, only its size is. */
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+/** How much of a binary file the hex comparison reads. */
+const MAX_HEX_BYTES = 1024 * 1024;
 
 /**
- * An untracked file as a patch adding it: every line added. Written here
- * rather than with `git diff --no-index /dev/null file`, which exits 1
- * whenever there is a difference and needs a /dev/null git can read.
- * Empty for an empty or missing file.
+ * One version of a file: a blob git holds (`HEAD:./a.txt`, `:./a.txt` for
+ * the index, `<hash>:./a.txt`), or the file on disk.
  */
-export async function newFilePatch(filePath: string, cwd: string): Promise<string> {
-  let content: Buffer;
-  try {
-    content = await fs.promises.readFile(filePath);
-  } catch {
-    return '';
-  }
-  if (content.length === 0) return '';
-  const name = path.relative(cwd, filePath).split(path.sep).join('/');
-  const header = `--- /dev/null\n+++ b/${name}`;
-  if (content.includes(0)) return `${header}\nBinary file, ${content.length} bytes`;
-  if (content.length > NEW_FILE_PATCH_MAX_BYTES) return `${header}\nNew file, ${content.length} bytes — too large to show`;
-  const lines = content.toString('utf8').replace(/\n$/, '').split('\n');
-  return `${header}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join('\n')}`;
+type FileVersion = { rev: string } | { disk: string };
+
+/** The start of a version, up to `maxBytes`, and its whole size; null where it does not exist. */
+type VersionContent = { data: Buffer; size: number } | null;
+
+/**
+ * An untracked text file as a patch adding it: every line added. Written
+ * here rather than with `git diff --no-index /dev/null file`, which exits 1
+ * whenever there is a difference and needs a /dev/null git can read.
+ */
+function newFilePatch(name: string, content: string): string {
+  const lines = content.replace(/\n$/, '').split('\n');
+  return `--- /dev/null\n+++ b/${name}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join('\n')}`;
+}
+
+/** git's count of the lines a change adds and removes; nulls for a binary file ("-\t-"). */
+function parseNumstat(numstat: string): { added: number | null; removed: number | null } {
+  const [added, removed] = numstat.split('\t');
+  return { added: added === '-' ? null : Number(added), removed: removed === '-' ? null : Number(removed) };
 }
 
 /**
@@ -252,27 +258,169 @@ export class GitService {
     } catch {
       return { source: 'not-a-repository' };
     }
+    // A blob's path, relative to cwd as `<rev>:./<path>` reads it.
+    const blob = `./${path.relative(cwd, filePath).split(path.sep).join('/')}`;
 
     const tracked = await this.runGit(['ls-files', '--', filePath], cwd);
     if (!tracked) {
-      const patch = await newFilePatch(filePath, cwd);
-      return patch ? { source: 'uncommitted', patch } : { source: 'none' };
+      const stats = await fs.promises.stat(filePath).catch(() => null);
+      if (!stats?.size) return { source: 'none' };
+      return { source: 'uncommitted', view: await this.viewOf(cwd, filePath, null, { disk: filePath }, null) };
     }
 
     // A repository with no commit yet has no HEAD: what is staged is all
-    // there is to compare against nothing.
+    // there is, compared against nothing.
     const hasHead = await this.runGit(['rev-parse', '--verify', '--quiet', 'HEAD'], cwd).then(() => true, () => false);
-    const uncommitted = await this.runGit(
-      ['diff', '--no-color', '--no-ext-diff', hasHead ? 'HEAD' : '--cached', '--', filePath],
-      cwd,
-    );
-    if (uncommitted) return { source: 'uncommitted', patch: uncommitted };
+    const base = hasHead ? 'HEAD' : '--cached';
+    const uncommitted = await this.runGit(['diff', '--numstat', base, '--', filePath], cwd);
+    if (uncommitted) {
+      const view = await this.viewOf(
+        cwd, filePath,
+        hasHead ? { rev: `HEAD:${blob}` } : null,
+        hasHead ? { disk: filePath } : { rev: `:${blob}` },
+        { args: ['diff', '--no-color', '--no-ext-diff', base, '--', filePath], numstat: uncommitted },
+      );
+      return { source: 'uncommitted', view };
+    }
 
     const meta = await this.runGit(['log', '-1', '--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI', '--', filePath], cwd);
     if (!meta) return { source: 'none' };
     const [hash, shortHash, subject, author, date] = meta.split('\x1f');
-    const patch = await this.runGit(['show', '--no-color', '--no-ext-diff', '--format=', hash, '--', filePath], cwd);
-    return { source: 'last-commit', patch, commit: { hash, shortHash, subject, author, date } };
+    const numstat = await this.runGit(['show', '--numstat', '--format=', hash, '--', filePath], cwd);
+    const view = await this.viewOf(
+      cwd, filePath,
+      { rev: `${hash}^:${blob}` },
+      { rev: `${hash}:${blob}` },
+      { args: ['show', '--no-color', '--no-ext-diff', '--format=', hash, '--', filePath], numstat },
+    );
+    return { source: 'last-commit', view, commit: { hash, shortHash, subject, author, date } };
+  }
+
+  /**
+   * How a change from `before` to `after` is shown: a picture as the two
+   * pictures, other binary content as the bytes that differ, text as git's
+   * patch — or, for a file git does not track, one written here — cut to a
+   * size. `diff` is the git command printing the patch and git's line count
+   * of the change; null for an untracked file.
+   */
+  private async viewOf(
+    cwd: string,
+    filePath: string,
+    before: FileVersion | null,
+    after: FileVersion | null,
+    diff: { args: string[]; numstat: string } | null,
+  ): Promise<FileChangeView> {
+    const mediaType = imageMediaType(filePath);
+    if (mediaType) {
+      const [old, now] = await Promise.all([this.readVersion(cwd, before, MAX_IMAGE_BYTES), this.readVersion(cwd, after, MAX_IMAGE_BYTES)]);
+      const shown = (content: VersionContent) => (content && content.size <= MAX_IMAGE_BYTES ? content.data.toString('base64') : null);
+      return {
+        kind: 'image', mediaType,
+        before: shown(old), after: shown(now),
+        beforeBytes: old?.size ?? null, afterBytes: now?.size ?? null,
+      };
+    }
+
+    const counts = diff ? parseNumstat(diff.numstat) : null;
+    const binary = counts
+      ? counts.added === null
+      : isBinary((await this.readVersion(cwd, after, 8000))?.data ?? null);
+    if (binary) {
+      const [old, now] = await Promise.all([this.readVersion(cwd, before, MAX_HEX_BYTES), this.readVersion(cwd, after, MAX_HEX_BYTES)]);
+      const { rows, truncated } = hexComparison(old?.data ?? null, now?.data ?? null);
+      return {
+        kind: 'binary', rows,
+        truncated: truncated || (old?.size ?? 0) > MAX_HEX_BYTES || (now?.size ?? 0) > MAX_HEX_BYTES,
+        beforeBytes: old?.size ?? null, afterBytes: now?.size ?? null,
+      };
+    }
+
+    // Text. git's own patch, or a file git does not track written as added.
+    let text: string;
+    let readWhole: boolean;
+    let bytes: number | null = null;
+    if (diff) {
+      const out = await this.gitBytes(diff.args, cwd, MAX_PATCH_BYTES);
+      text = out?.data.toString('utf8') ?? '';
+      readWhole = !out?.truncated;
+    } else {
+      const content = await this.readVersion(cwd, after, MAX_PATCH_BYTES);
+      bytes = content?.size ?? null;
+      readWhole = (content?.size ?? 0) <= MAX_PATCH_BYTES;
+      text = newFilePatch(path.relative(cwd, filePath).split(path.sep).join('/'), content?.data.toString('utf8') ?? '');
+    }
+    const shown = firstLines(text, MAX_PATCH_LINES);
+    if (!shown.cut && readWhole) return { kind: 'text', patch: text };
+    // Read only in part, its last line may be cut through: it is left out.
+    const patch = readWhole || shown.cut ? shown.text : shown.text.slice(0, Math.max(0, shown.text.lastIndexOf('\n')));
+    return {
+      kind: 'text', patch,
+      truncated: {
+        shownLines: patch.split('\n').length,
+        added: counts?.added ?? null, removed: counts?.removed ?? null,
+        bytes,
+      },
+    };
+  }
+
+  /** The start of one version of a file, and its whole size; null where it does not exist. */
+  private async readVersion(cwd: string, version: FileVersion | null, maxBytes: number): Promise<VersionContent> {
+    if (!version) return null;
+    if ('disk' in version) {
+      let handle: fs.promises.FileHandle | null = null;
+      try {
+        handle = await fs.promises.open(version.disk, 'r');
+        const { size } = await handle.stat();
+        const data = Buffer.alloc(Math.min(size, maxBytes));
+        await handle.read(data, 0, data.length, 0);
+        return { data, size };
+      } catch {
+        return null;
+      } finally {
+        await handle?.close();
+      }
+    }
+    // A blob that does not exist — the file added or deleted by the commit — is no version.
+    const size = await this.runGit(['cat-file', '-s', version.rev], cwd).then(Number, () => null);
+    if (size === null) return null;
+    const out = await this.gitBytes(['cat-file', 'blob', version.rev], cwd, maxBytes);
+    return out ? { data: out.data, size } : null;
+  }
+
+  /**
+   * Run git and keep at most `maxBytes` of what it prints, stopping it
+   * there: a diff of a file rewritten whole ran to megabytes, past the
+   * buffer `runGit` reads into, and failed. Null when git fails.
+   */
+  private gitBytes(args: string[], cwd: string, maxBytes: number): Promise<{ data: Buffer; truncated: boolean } | null> {
+    return new Promise((resolve) => {
+      const child = spawn(this.getGitBinary(), args, { cwd, env: this.getGitEnv() });
+      const chunks: Buffer[] = [];
+      let size = 0;
+      let truncated = false;
+      const timer = setTimeout(() => child.kill(), MAIN_CONSTANTS.GIT.COMMAND_TIMEOUT_MS);
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (truncated) return;
+        const room = maxBytes - size;
+        if (chunk.length >= room) {
+          chunks.push(chunk.subarray(0, room));
+          size = maxBytes;
+          truncated = chunk.length > room;
+          if (truncated) child.kill();
+          return;
+        }
+        chunks.push(chunk);
+        size += chunk.length;
+      });
+      child.on('error', () => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        resolve(truncated || code === 0 ? { data: Buffer.concat(chunks), truncated } : null);
+      });
+    });
   }
 
   /**

@@ -44,7 +44,7 @@ async function show() {
 
 describe('in a git repository', () => {
   it('shows what is not committed yet, line by line', async () => {
-    fileChanges.mockResolvedValue({ source: 'uncommitted', patch: '@@ -1 +1 @@\n-old\n+new' });
+    fileChanges.mockResolvedValue({ source: 'uncommitted', view: { kind: 'text', patch: '@@ -1 +1 @@\n-old\n+new' } });
 
     const modal = await show();
 
@@ -60,7 +60,7 @@ describe('in a git repository', () => {
   it('shows its last commit, named, when nothing is uncommitted', async () => {
     fileChanges.mockResolvedValue({
       source: 'last-commit',
-      patch: '+added',
+      view: { kind: 'text', patch: '+added' },
       commit: { hash: 'abcdef1234', shortHash: 'abcdef1', subject: 'Add the list', author: 'Ada', date: '2026-11-09T10:00:00+01:00' },
     });
 
@@ -68,6 +68,83 @@ describe('in a git repository', () => {
 
     expect(modal.find('.file-changes-source').text()).toBe('Last commit abcdef1');
     expect(modal.find('.file-changes-detail').text()).toContain('Add the list — Ada');
+  });
+
+  // Reported: a 200,000-line rewrite ran past what git's output was read
+  // into, and the window showed an error instead of the change.
+  it('says when only the start of a large change is shown, and how large it is', async () => {
+    fileChanges.mockResolvedValue({
+      source: 'uncommitted',
+      view: { kind: 'text', patch: '+a\n+b', truncated: { shownLines: 2000, added: 200000, removed: 200000, bytes: null } },
+    });
+
+    const modal = await show();
+
+    expect(modal.find('.file-changes-truncated').text())
+      .toBe(`Showing the first ${(2000).toLocaleString()} lines of a change of +${(200000).toLocaleString()} −${(200000).toLocaleString()} lines.`);
+  });
+
+  // Reported: a picture's change read "Binary files a/x.png and b/x.png differ".
+  it('shows a picture before and after', async () => {
+    fileChanges.mockResolvedValue({
+      source: 'uncommitted',
+      view: { kind: 'image', mediaType: 'image/png', before: 'QUJD', after: null, beforeBytes: 3, afterBytes: 20 * 1024 * 1024 },
+    });
+
+    const modal = await show();
+
+    const sides = modal.findAll('.file-changes-image');
+    expect(sides.map((s) => s.find('figcaption').text())).toEqual(['Before · 3 bytes', 'After · Too large to show (20.0 MB)']);
+    expect(sides[0].find('img').attributes('src')).toBe('data:image/png;base64,QUJD');
+    expect(sides[1].find('img').exists()).toBe(false);
+  });
+
+  it('shows the bytes that differ in a binary file, side by side', async () => {
+    const row = (offset: number, before: string[] | null, after: string[] | null) => ({ offset, before, after });
+    fileChanges.mockResolvedValue({
+      source: 'uncommitted',
+      view: {
+        kind: 'binary', beforeBytes: 4096, afterBytes: 4100, truncated: false,
+        rows: [{ skipped: 10 }, row(160, ['41', '42'], ['41', '43'])],
+      },
+    });
+
+    const modal = await show();
+
+    expect(modal.find('.file-changes-binary').text()).toContain('Binary file: 4.0 KB → 4.0 KB.');
+    expect(modal.find('.hex-skipped').text()).toBe('… 10 identical rows');
+    // A row that differs reads like a patch: before (-) above after (+).
+    const lines = modal.findAll('.hex-row .hex-line');
+    expect(lines.map((l) => l.attributes('data-side'))).toEqual(['before', 'after']);
+    expect(lines[0].text()).toContain('000000a0');
+    const [before, after] = lines.map((l) => l.find('.hex-bytes'));
+    expect(before.findAll('span').map((s) => [s.text(), s.classes().includes('bg-red-200')])).toEqual([['41', false], ['42', true]]);
+    expect(after.findAll('span').map((s) => [s.text(), s.classes().includes('bg-green-200')])).toEqual([['41', false], ['43', true]]);
+    expect(lines.map((l) => l.find('.hex-text').text())).toEqual(['AB', 'AC']);
+  });
+
+  it('shows a row the same on both sides once', async () => {
+    fileChanges.mockResolvedValue({
+      source: 'uncommitted',
+      view: { kind: 'binary', beforeBytes: 2, afterBytes: 2, truncated: false, rows: [{ offset: 0, before: ['41', '42'], after: ['41', '42'] }] },
+    });
+
+    const modal = await show();
+
+    const lines = modal.findAll('.hex-row .hex-line');
+    expect(lines.map((l) => l.attributes('data-side'))).toEqual(['both']);
+  });
+
+  it('says so when a binary file differs only further in than is compared', async () => {
+    fileChanges.mockResolvedValue({
+      source: 'uncommitted',
+      view: { kind: 'binary', beforeBytes: 5 * 1024 * 1024, afterBytes: 5 * 1024 * 1024, truncated: true, rows: [] },
+    });
+
+    const modal = await show();
+
+    expect(modal.find('.file-changes-hex').exists()).toBe(false);
+    expect(modal.find('.file-changes-hex-none').text()).toContain('the difference is further in than is compared');
   });
 
   it('says when there is nothing to show', async () => {

@@ -1211,16 +1211,58 @@ export type ConversationSearchScope = 'current' | 'all';
 /**
  * Git repository status information
  */
+/** A row of a hex comparison: 16 bytes at an offset, before and after. */
+export interface HexRow {
+  offset: number;
+  /** The bytes as hex pairs, or null where that side has none at this offset. */
+  before: string[] | null;
+  after: string[] | null;
+}
+
+/**
+ * How one file's change is shown: as a patch, as two pictures, or as the
+ * bytes that differ.
+ */
+export type FileChangeView =
+  | {
+    kind: 'text';
+    patch: string;
+    /**
+     * Set when only the start of the patch is shown: how many lines are, and
+     * the size of the whole change — lines added and removed when git counts
+     * them, else the file's size.
+     */
+    truncated?: { shownLines: number; added: number | null; removed: number | null; bytes: number | null };
+  }
+  | {
+    kind: 'image';
+    mediaType: string;
+    /** Base64 of each version, null where it did not exist or is too large to show. */
+    before: string | null;
+    after: string | null;
+    beforeBytes: number | null;
+    afterBytes: number | null;
+  }
+  | {
+    kind: 'binary';
+    beforeBytes: number | null;
+    afterBytes: number | null;
+    /** Rows that differ, with a row of context around them; `skipped` stands for identical rows left out. */
+    rows: Array<HexRow | { skipped: number }>;
+    /** Set when the comparison stopped before the end of the files. */
+    truncated: boolean;
+  };
+
 /**
  * What has changed in one file, for the file panel's "Show changes":
  * what is not committed yet, or else the last commit that touched it.
  * Outside a git repository the renderer shows Claude's own edits instead.
  */
 export type FileChanges =
-  | { source: 'uncommitted'; patch: string }
+  | { source: 'uncommitted'; view: FileChangeView }
   | {
     source: 'last-commit';
-    patch: string;
+    view: FileChangeView;
     commit: { hash: string; shortHash: string; subject: string; author: string; date: string };
   }
   /** In a repository, with nothing uncommitted and no commit touching it. */

@@ -103,6 +103,16 @@ describe('the menu of a file', () => {
     expect(electron.clipboard.writeText.mock.calls).toEqual([[`${WORKDIR}/app.ts`], ['app.ts']]);
   });
 
+  it('does not offer the changes of a video, which nothing here shows', async () => {
+    useFilesStore().fileTree = [{ name: 'clip.mp4', path: `${WORKDIR}/clip.mp4`, type: 'file' }];
+    const tree = mountTree();
+
+    const items = await rightClick(tree, 'clip.mp4');
+
+    expect(items.map((i) => i.text())).not.toContain('Show changes');
+    expect(items.map((i) => i.text())).toContain('Open with default app');
+  });
+
   it('shows its changes', async () => {
     const tree = mountTree();
     await rightClick(tree, 'app.ts');

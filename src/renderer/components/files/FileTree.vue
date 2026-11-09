@@ -6,6 +6,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 
+import { canShowChanges } from '@shared/file-changes';
 import type { FileNode } from '@shared/types';
 
 import { useFilesStore } from '../../stores/files';
@@ -85,7 +86,8 @@ const menuItems = computed<ContextMenuItem[]>(() => {
   return [
     { label: 'Open with default app', onSelect: () => filesStore.openFile(node.path) },
     { label: 'Show in file manager', onSelect: () => showInFolder(node.path) },
-    { label: 'Show changes', onSelect: () => { changesOf.value = node.path; } },
+    // Not for video, audio or archives, whose changes nothing here shows.
+    ...(canShowChanges(node.name) ? [{ label: 'Show changes', onSelect: () => { changesOf.value = node.path; } }] : []),
     ...copies,
   ];
 });
