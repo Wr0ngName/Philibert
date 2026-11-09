@@ -48,7 +48,7 @@ describe('IPC_CHANNELS', () => {
 
   it('should have all file channels', () => {
     expect(IPC_CHANNELS.FILES_SELECT_DIR).toBe('files:select-directory');
-    expect(IPC_CHANNELS.FILES_GET_TREE).toBe('files:get-tree');
+    expect(IPC_CHANNELS.FILES_LIST_DIRECTORY).toBe('files:list-directory');
     expect(IPC_CHANNELS.FILES_READ).toBe('files:read');
     expect(IPC_CHANNELS.FILES_CHANGED).toBe('files:changed');
   });

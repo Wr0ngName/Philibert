@@ -57,10 +57,10 @@ export function setupFilesIPC(
     }
   });
 
-  // Get file tree for a directory
-  ipcMain.handle(IPC_CHANNELS.FILES_GET_TREE, async (_event, directory: string) => {
+  // One directory of the working directory, one level deep
+  ipcMain.handle(IPC_CHANNELS.FILES_LIST_DIRECTORY, async (_event, directory: string, workingDirectory: string) => {
     try {
-      logger.debug('IPC: files:get-tree', { directory });
+      logger.debug('IPC: files:list-directory', { directory });
 
       // Validate service
       ensureService(fileWatcher, 'FileWatcherService');
@@ -68,17 +68,13 @@ export function setupFilesIPC(
       // Validate input
       validateString(directory, 'Directory path');
       validatePath(directory);
+      validateString(workingDirectory, 'Working directory');
+      validatePath(workingDirectory);
 
-      const fileTree = await fileWatcher.getFileTree(directory);
-
-      if (!fileTree) {
-        throw new FileSystemError('Failed to get file tree', directory, ERROR_CODES.FS_READ_FAILED);
-      }
-
-      return fileTree;
+      return await fileWatcher.listDirectory(directory, workingDirectory);
     } catch (error) {
-      logger.error('Failed to get file tree', { error, directory });
-      throw new FileSystemError(formatErrorMessage('Failed to get file tree', error), directory, ERROR_CODES.FS_READ_FAILED, error);
+      logger.error('Failed to list directory', { error, directory });
+      throw new FileSystemError(formatErrorMessage('Failed to list directory', error), directory, ERROR_CODES.FS_READ_FAILED, error);
     }
   });
 

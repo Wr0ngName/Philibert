@@ -45,6 +45,21 @@ const wasModifiedInLastQuery = computed(() => {
   return chatStore.modifiedFilesInLastQuery.has(props.node.path);
 });
 const isExpanded = computed(() => filesStore.isDirectoryExpanded(props.node.path));
+const isReading = computed(() => isDirectory.value && filesStore.isDirectoryLoading(props.node.path));
+
+/**
+ * A closed directory with a file changed somewhere inside it: its changed
+ * files are hidden, so the directory says so instead. From the changed
+ * paths, not the tree's rows — the tree only holds what has been opened.
+ */
+const holdsModified = computed(() => {
+  if (!isDirectory.value || isExpanded.value) return false;
+  const prefix = props.node.path.replace(/[\\/]+$/, '');
+  for (const changed of chatStore.modifiedFilesInLastQuery) {
+    if (changed.startsWith(`${prefix}/`) || changed.startsWith(`${prefix}\\`)) return true;
+  }
+  return false;
+});
 const isSelected = computed(() => filesStore.selectedFile === props.node.path);
 
 const icon = computed((): IconName => {
@@ -121,11 +136,17 @@ function handleClick() {
       <!-- Name -->
       <span class="truncate">{{ node.name }}</span>
 
-      <!-- Modified in last query indicator -->
+      <!-- Modified in last query indicator: a dot on the file, a ring on a
+           closed folder holding one -->
       <span
         v-if="wasModifiedInLastQuery"
-        class="w-2 h-2 rounded-full bg-blue-500 shrink-0 ml-auto"
+        class="modified-marker w-2 h-2 rounded-full bg-blue-500 shrink-0 ml-auto"
         title="Modified in last query"
+      />
+      <span
+        v-else-if="holdsModified"
+        class="modified-inside-marker w-2 h-2 rounded-full border-2 border-blue-500 shrink-0 ml-auto"
+        title="Holds files modified in last query"
       />
     </button>
 
@@ -145,5 +166,13 @@ function handleClick() {
         />
       </div>
     </TransitionFade>
+    <!-- Opened, its entries on their way -->
+    <div
+      v-if="isExpanded && !node.children && isReading"
+      class="directory-reading text-xs text-surface-400 py-1"
+      :style="{ paddingLeft: `${(depth + 1) * 12 + 28}px` }"
+    >
+      Loading…
+    </div>
   </div>
 </template>

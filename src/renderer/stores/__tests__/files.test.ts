@@ -18,11 +18,22 @@ import { DEFAULT_CONFIG } from '../../../shared/types';
 import { useFilesStore } from '../files';
 import { useSettingsStore } from '../settings';
 
+/**
+ * The folders the main process reads from: each directory's entries, by path.
+ * A test changes it to stand for another repository.
+ */
+let fakeFs: Record<string, Array<{ name: string; type: 'file' | 'directory' }>> = {};
+
+/** What listDirectory answers: one directory's entries, as the main process lists them. */
+function listOf(dir: string) {
+  return (fakeFs[dir] ?? []).map((entry) => ({ ...entry, path: `${dir}/${entry.name}` }));
+}
+
 // Mock window.electron
 const mockElectron = {
   files: {
     selectDirectory: vi.fn(),
-    getTree: vi.fn(),
+    listDirectory: vi.fn(),
     read: vi.fn(),
     onChange: vi.fn(),
   },
@@ -54,17 +65,12 @@ describe('useFilesStore', () => {
     mockElectron.config.onChange.mockReturnValue(() => {});
 
     mockElectron.files.selectDirectory.mockResolvedValue('/home/user/project');
-    mockElectron.files.getTree.mockResolvedValue([
-      {
-        name: 'src',
-        path: '/home/user/project/src',
-        type: 'directory',
-        children: [
-          { name: 'index.ts', path: '/home/user/project/src/index.ts', type: 'file', size: 100 },
-        ],
-      },
-      { name: 'package.json', path: '/home/user/project/package.json', type: 'file', size: 500 },
-    ]);
+    fakeFs = {
+      '/home/user/project': [{ name: 'src', type: 'directory' }, { name: 'package.json', type: 'file' }],
+      '/home/user/project/src': [{ name: 'lib', type: 'directory' }, { name: 'index.ts', type: 'file' }],
+      '/home/user/project/src/lib': [{ name: 'util.ts', type: 'file' }],
+    };
+    mockElectron.files.listDirectory.mockImplementation(async (dir: string) => listOf(dir));
     mockElectron.files.read.mockResolvedValue('file content');
     mockElectron.files.onChange.mockImplementation((callback) => {
       fileChangeCallback = callback;
@@ -197,7 +203,7 @@ describe('useFilesStore', () => {
       const store = useFilesStore();
       await store.selectDirectory();
 
-      expect(mockElectron.files.getTree).toHaveBeenCalled();
+      expect(mockElectron.files.listDirectory).toHaveBeenCalledWith('/home/user/project', '/home/user/project');
     });
 
     it('should return null when selection is cancelled', async () => {
@@ -246,22 +252,26 @@ describe('useFilesStore', () => {
       const store = useFilesStore();
       await store.loadFileTree();
 
-      expect(mockElectron.files.getTree).not.toHaveBeenCalled();
+      expect(mockElectron.files.listDirectory).not.toHaveBeenCalled();
     });
 
-    it('should load file tree from electron', async () => {
+    // Reported: with tens of thousands of files, the panel took forever,
+    // reading the whole tree before showing anything.
+    it("reads the working directory's own entries, and nothing below them", async () => {
       const store = useFilesStore();
       await store.loadFileTree();
 
-      expect(mockElectron.files.getTree).toHaveBeenCalledWith('/home/user/project');
-      expect(store.fileTree).toHaveLength(2);
+      expect(mockElectron.files.listDirectory).toHaveBeenCalledTimes(1);
+      expect(mockElectron.files.listDirectory).toHaveBeenCalledWith('/home/user/project', '/home/user/project');
+      expect(store.fileTree.map((n) => n.name)).toEqual(['src', 'package.json']);
+      expect(store.fileTree[0].children).toBeUndefined();
     });
 
     it('should set isLoading during load', async () => {
       const store = useFilesStore();
 
       let isLoadingDuringLoad = false;
-      mockElectron.files.getTree.mockImplementation(async () => {
+      mockElectron.files.listDirectory.mockImplementation(async () => {
         isLoadingDuringLoad = store.isLoading;
         return [];
       });
@@ -273,7 +283,7 @@ describe('useFilesStore', () => {
     });
 
     it('should set error on failure', async () => {
-      mockElectron.files.getTree.mockRejectedValue(new Error('Permission denied'));
+      mockElectron.files.listDirectory.mockRejectedValue(new Error('Permission denied'));
 
       const store = useFilesStore();
       await store.loadFileTree();
@@ -288,6 +298,119 @@ describe('useFilesStore', () => {
       await store.loadFileTree();
 
       expect(store.error).toBeNull();
+    });
+  });
+
+  // ===========================================================================
+  // Reading a level at a time
+  // ===========================================================================
+  describe('reading a directory when it is opened', () => {
+    const SRC = '/home/user/project/src';
+
+    beforeEach(async () => {
+      mockElectron.config.get.mockResolvedValue({ ...DEFAULT_CONFIG, workingDirectory: '/home/user/project' });
+      await useSettingsStore().loadConfig();
+    });
+
+    it('reads its entries the first time it is opened, and only then', async () => {
+      const store = useFilesStore();
+      await store.loadFileTree();
+
+      store.toggleDirectory(SRC);
+      expect(store.isDirectoryLoading(SRC)).toBe(true);
+      await vi.waitFor(() => expect(store.fileTree[0].children?.map((n) => n.name)).toEqual(['lib', 'index.ts']));
+      expect(store.isDirectoryLoading(SRC)).toBe(false);
+
+      store.toggleDirectory(SRC);
+      store.toggleDirectory(SRC);
+      expect(mockElectron.files.listDirectory).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps what is open, read again, when the tree is refreshed', async () => {
+      const store = useFilesStore();
+      await store.loadFileTree();
+      store.expandDirectory(SRC);
+      await vi.waitFor(() => expect(store.fileTree[0].children).toBeDefined());
+      store.expandDirectory(`${SRC}/lib`);
+      await vi.waitFor(() => expect(store.fileTree[0].children?.[0].children).toBeDefined());
+
+      fakeFs[`${SRC}/lib`] = [{ name: 'util.ts', type: 'file' }, { name: 'zz.ts', type: 'file' }];
+      await store.loadFileTree();
+
+      expect(store.isDirectoryExpanded(`${SRC}/lib`)).toBe(true);
+      expect(store.fileTree[0].children?.[0].children?.map((n) => n.name)).toEqual(['util.ts', 'zz.ts']);
+    });
+  });
+
+  // ===========================================================================
+  // Switching to another folder
+  // ===========================================================================
+  // Reported: switching to a discussion in another repository, the tree of
+  // the one left behind — still being read — appeared mixed into it.
+  describe('switching to another working directory', () => {
+    const BIG = '/home/user/big';
+    const SMALL = '/home/user/small';
+
+    beforeEach(async () => {
+      fakeFs[BIG] = [{ name: 'huge', type: 'directory' }];
+      fakeFs[SMALL] = [{ name: 'README.md', type: 'file' }];
+      mockElectron.config.get.mockResolvedValue({ ...DEFAULT_CONFIG, workingDirectory: BIG });
+      await useSettingsStore().loadConfig();
+    });
+
+    it('shows the new folder, though the old one answers after it', async () => {
+      const store = useFilesStore();
+      const settings = useSettingsStore();
+      let answerBig: (() => void) | null = null;
+      mockElectron.files.listDirectory.mockImplementation((dir: string) =>
+        dir === BIG
+          ? new Promise((resolve) => { answerBig = () => resolve(listOf(BIG)); })
+          : Promise.resolve(listOf(dir)));
+
+      const loadingBig = store.loadFileTree();
+      settings.config.workingDirectory = SMALL;
+      await store.loadFileTree();
+      answerBig!();
+      await loadingBig;
+
+      expect(store.fileTree.map((n) => n.path)).toEqual([`${SMALL}/README.md`]);
+      expect(store.isLoading).toBe(false);
+    });
+
+    it('starts from an empty tree, nothing open and nothing selected', async () => {
+      const store = useFilesStore();
+      const settings = useSettingsStore();
+      await store.loadFileTree();
+      store.expandDirectory(`${BIG}/huge`);
+      store.selectFile(`${BIG}/huge/a.ts`);
+
+      settings.config.workingDirectory = SMALL;
+      const loading = store.loadFileTree();
+      expect(store.fileTree).toEqual([]);
+      expect(store.expandedDirs.size).toBe(0);
+      expect(store.selectedFile).toBeNull();
+      await loading;
+
+      expect(store.fileTree.map((n) => n.name)).toEqual(['README.md']);
+    });
+
+    it("drops a directory's entries read for the folder left behind", async () => {
+      const store = useFilesStore();
+      const settings = useSettingsStore();
+      await store.loadFileTree();
+      let answerHuge: (() => void) | null = null;
+      mockElectron.files.listDirectory.mockImplementation((dir: string) =>
+        dir === `${BIG}/huge`
+          ? new Promise((resolve) => { answerHuge = () => resolve([{ name: 'x.ts', path: `${BIG}/huge/x.ts`, type: 'file' }]); })
+          : Promise.resolve(listOf(dir)));
+      store.expandDirectory(`${BIG}/huge`);
+
+      settings.config.workingDirectory = SMALL;
+      await store.loadFileTree();
+      answerHuge!();
+      await vi.waitFor(() => expect(store.isDirectoryLoading(`${BIG}/huge`)).toBe(false));
+
+      expect(store.fileTree.map((n) => n.path)).toEqual([`${SMALL}/README.md`]);
     });
   });
 
@@ -402,28 +525,29 @@ describe('useFilesStore', () => {
 
       // Simulate file addition
       fileChangeCallback?.([
-        { type: 'add', path: '/home/user/project/new-file.ts' },
+        { type: 'add', path: '/home/user/project/new-file.ts', kind: 'file' },
       ]);
 
       expect(store.fileTree.some((n: { name: string }) => n.name === 'new-file.ts')).toBe(true);
     });
 
-    it('should reload full tree for large change sets', async () => {
+    it('should read the tree again for large change sets', async () => {
       const store = useFilesStore();
       await store.loadFileTree();
       store.setupFileWatcher();
 
-      mockElectron.files.getTree.mockClear();
+      mockElectron.files.listDirectory.mockClear();
 
       // Simulate many changes (over threshold)
       const manyChanges = Array.from({ length: 15 }, (_, i) => ({
         type: 'add' as const,
         path: `/home/user/project/file${i}.ts`,
+        kind: 'file' as const,
       }));
 
       fileChangeCallback?.(manyChanges);
 
-      expect(mockElectron.files.getTree).toHaveBeenCalled();
+      expect(mockElectron.files.listDirectory).toHaveBeenCalledWith('/home/user/project', '/home/user/project');
     });
 
     it('should remove old watcher before setting up new one', () => {
@@ -456,9 +580,46 @@ describe('useFilesStore', () => {
       await store.loadFileTree();
       store.setupFileWatcher();
 
-      fileChangeCallback?.([{ type: 'add', path: '/home/user/project/new-file.ts' }]);
+      fileChangeCallback?.([{ type: 'add', path: '/home/user/project/new-file.ts', kind: 'file' }]);
 
       expect(store.fileTree.some((n: { name: string }) => n.name === 'new-file.ts')).toBe(true);
+    });
+
+    it('adds a new path as what the watcher says it is, not by its name', async () => {
+      const store = useFilesStore();
+      await store.loadFileTree();
+      store.setupFileWatcher();
+
+      fileChangeCallback?.([
+        { type: 'add', path: '/home/user/project/Makefile', kind: 'file' },
+        { type: 'add', path: '/home/user/project/v1.2', kind: 'directory' },
+      ]);
+
+      expect(store.fileTree.map((n) => [n.name, n.type])).toEqual([
+        ['src', 'directory'], ['v1.2', 'directory'], ['Makefile', 'file'], ['package.json', 'file'],
+      ]);
+    });
+
+    it('leaves a change inside a directory not read yet to its reading', async () => {
+      const store = useFilesStore();
+      await store.loadFileTree();
+      store.setupFileWatcher();
+
+      fileChangeCallback?.([{ type: 'add', path: '/home/user/project/src/new.ts', kind: 'file' }]);
+
+      expect(store.fileTree[0].children).toBeUndefined();
+    });
+
+    it('adds a change inside a directory already read', async () => {
+      const store = useFilesStore();
+      await store.loadFileTree();
+      store.expandDirectory('/home/user/project/src');
+      await vi.waitFor(() => expect(store.fileTree[0].children).toBeDefined());
+      store.setupFileWatcher();
+
+      fileChangeCallback?.([{ type: 'add', path: '/home/user/project/src/new.ts', kind: 'file' }]);
+
+      expect(store.fileTree[0].children?.map((n) => n.name)).toEqual(['lib', 'index.ts', 'new.ts']);
     });
 
     it('should remove file from tree', async () => {
@@ -471,27 +632,13 @@ describe('useFilesStore', () => {
       expect(store.fileTree.some((n: { name: string }) => n.name === 'package.json')).toBe(false);
     });
 
-    it('should update file timestamp on change', async () => {
-      const store = useFilesStore();
-      await store.loadFileTree();
-      store.setupFileWatcher();
-
-      const originalNode = store.fileTree.find((n: { name: string }) => n.name === 'package.json');
-      const originalTimestamp = originalNode?.modifiedAt;
-
-      fileChangeCallback?.([{ type: 'change', path: '/home/user/project/package.json' }]);
-
-      const updatedNode = store.fileTree.find((n: { name: string }) => n.name === 'package.json');
-      expect(updatedNode?.modifiedAt).not.toBe(originalTimestamp);
-    });
-
     it('should maintain sort order after adding file', async () => {
       const store = useFilesStore();
       await store.loadFileTree();
       store.setupFileWatcher();
 
       // Add a file that should sort before package.json
-      fileChangeCallback?.([{ type: 'add', path: '/home/user/project/a-file.ts' }]);
+      fileChangeCallback?.([{ type: 'add', path: '/home/user/project/a-file.ts', kind: 'file' }]);
 
       // Directories first, then alphabetically
       const fileNames = store.fileTree.map((n: { name: string }) => n.name);

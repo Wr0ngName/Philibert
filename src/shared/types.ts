@@ -721,12 +721,12 @@ export interface FileNode {
   path: string;
   /** Type of the node */
   type: FileNodeType;
-  /** Child nodes if this is a directory */
+  /**
+   * A directory's entries, once they have been read. The tree is read a
+   * level at a time, as directories are opened, so a directory not opened
+   * yet has none: undefined means not read, not empty.
+   */
   children?: FileNode[];
-  /** Size of the file in bytes (only for files) */
-  size?: number;
-  /** Unix timestamp of last modification */
-  modifiedAt?: number;
 }
 
 // Authentication types
@@ -1800,6 +1800,8 @@ export interface FileChange {
   type: 'add' | 'change' | 'unlink';
   /** Path to the file that changed */
   path: string;
+  /** What the path is, when it still exists ('add' and 'change'). */
+  kind?: FileNodeType;
 }
 
 /**
@@ -2066,8 +2068,8 @@ export const IPC_CHANNELS = {
   // File operations
   /** Open directory picker dialog */
   FILES_SELECT_DIR: 'files:select-directory',
-  /** Get file system tree for a directory */
-  FILES_GET_TREE: 'files:get-tree',
+  /** The entries of one directory of the working directory, one level deep */
+  FILES_LIST_DIRECTORY: 'files:list-directory',
   /** Read contents of a file */
   FILES_READ: 'files:read',
   /** Read an image file a message points at by path, for display */

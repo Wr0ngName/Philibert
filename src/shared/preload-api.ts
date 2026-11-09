@@ -274,7 +274,11 @@ export interface ElectronAPI {
   // File operations
   files: {
     selectDirectory: () => Promise<string | null>;
-    getTree: (directory: string) => Promise<FileNode[]>;
+    /**
+     * The entries of `directory`, one level deep, which must be the working
+     * directory or inside it. Directories come back without their entries.
+     */
+    listDirectory: (directory: string, workingDirectory: string) => Promise<FileNode[]>;
     read: (filePath: string) => Promise<string>;
     /**
      * Read an image a message points at — an absolute path, a `file:` URL,

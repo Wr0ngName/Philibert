@@ -50,7 +50,7 @@ const mockElectron = {
   },
   files: {
     selectDirectory: vi.fn(),
-    getTree: vi.fn(),
+    listDirectory: vi.fn(),
     read: vi.fn(),
     onChange: vi.fn(),
   },
@@ -99,7 +99,7 @@ describe('useClaudeChat core logic', () => {
     mockElectron.config.onChange.mockReturnValue(() => {});
 
     mockElectron.files.selectDirectory.mockResolvedValue('/home/user/project');
-    mockElectron.files.getTree.mockResolvedValue([]);
+    mockElectron.files.listDirectory.mockResolvedValue([]);
     mockElectron.files.read.mockResolvedValue('content');
     mockElectron.files.onChange.mockReturnValue(() => {});
 

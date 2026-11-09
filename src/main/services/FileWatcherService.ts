@@ -36,6 +36,12 @@ const IGNORED_DIRS = new Set([
 // Files to ignore
 const IGNORED_FILES = new Set(['.DS_Store', 'Thumbs.db', '.gitkeep']);
 
+/** The tree's order: directories first, then files, each alphabetically. */
+export function compareNodes(a: Pick<FileNode, 'name' | 'type'>, b: Pick<FileNode, 'name' | 'type'>): number {
+  if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+  return a.name.localeCompare(b.name);
+}
+
 export class FileWatcherService {
   private watcher: fs.FSWatcher | null = null;
   private watchedDirectory: string | null = null;
@@ -111,19 +117,24 @@ export class FileWatcherService {
 
     logger.debug('File watcher event', { eventType, filename, normalizedFilename, fullPath });
 
-    // Determine change type
-    let changeType: FileChange['type'];
+    // Determine change type, and what the path is while it exists: the tree
+    // used to guess a new path's kind from whether its name had a dot in it.
+    let change: FileChange;
     try {
-      fs.accessSync(fullPath);
-      changeType = eventType === 'rename' ? 'add' : 'change';
+      const stats = fs.statSync(fullPath);
+      change = {
+        type: eventType === 'rename' ? 'add' : 'change',
+        path: fullPath,
+        kind: stats.isDirectory() ? 'directory' : 'file',
+      };
     } catch {
-      changeType = 'unlink';
+      change = { type: 'unlink', path: fullPath };
     }
 
-    logger.debug('File change detected', { changeType, fullPath });
+    logger.debug('File change detected', { changeType: change.type, fullPath });
 
     // Add to pending changes (debounce)
-    this.pendingChanges.set(fullPath, { type: changeType, path: fullPath });
+    this.pendingChanges.set(fullPath, change);
 
     // Debounce the notification
     if (this.debounceTimer) {
@@ -185,82 +196,35 @@ export class FileWatcherService {
   }
 
   /**
-   * Get file tree for a directory
+   * The entries of one directory, one level deep: directories first, then
+   * files, each alphabetically. Directories come back without their entries,
+   * which are read when the directory is opened.
+   *
+   * The tree used to be read whole, up to ten levels deep with a stat of
+   * every file, before anything was shown: in a repository of tens of
+   * thousands of files that took seconds, and was sent across in one piece.
+   * One level is one readdir.
+   *
+   * `directory` must be `workingDirectory` or inside it.
    */
-  async getFileTree(directory: string, maxDepth = MAIN_CONSTANTS.FILES.MAX_TREE_DEPTH): Promise<FileNode[]> {
-    const normalizedDir = normalizePath(directory);
-
-    try {
-      return await this.scanDirectory(normalizedDir, normalizedDir, 0, maxDepth);
-    } catch (error) {
-      logger.error('Failed to get file tree', error);
-      return [];
-    }
-  }
-
-  /**
-   * Recursively scan a directory
-   */
-  private async scanDirectory(
-    dir: string,
-    baseDir: string,
-    depth: number,
-    maxDepth: number
-  ): Promise<FileNode[]> {
-    if (depth >= maxDepth) {
-      return [];
+  async listDirectory(directory: string, workingDirectory: string): Promise<FileNode[]> {
+    const dir = normalizePath(directory);
+    if (!isPathWithin(dir, normalizePath(workingDirectory))) {
+      throw new FileSystemError('Access denied: directory is outside the working directory', dir, ERROR_CODES.FS_PATH_TRAVERSAL);
     }
 
-    try {
-      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-      const nodes: FileNode[] = [];
-
-      for (const entry of entries) {
-        // Skip ignored entries
-        if (IGNORED_DIRS.has(entry.name) || IGNORED_FILES.has(entry.name)) {
-          continue;
-        }
-
-        const fullPath = path.join(dir, entry.name);
-
-        if (entry.isDirectory()) {
-          const children = await this.scanDirectory(fullPath, baseDir, depth + 1, maxDepth);
-          nodes.push({
-            name: entry.name,
-            path: fullPath,
-            type: 'directory',
-            children,
-          });
-        } else if (entry.isFile()) {
-          try {
-            const stats = await fs.promises.stat(fullPath);
-            nodes.push({
-              name: entry.name,
-              path: fullPath,
-              type: 'file',
-              size: stats.size,
-              modifiedAt: stats.mtimeMs,
-            });
-          } catch {
-            // Skip files we can't stat
-            continue;
-          }
-        }
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    const nodes: FileNode[] = [];
+    for (const entry of entries) {
+      if (IGNORED_DIRS.has(entry.name) || IGNORED_FILES.has(entry.name)) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        nodes.push({ name: entry.name, path: fullPath, type: 'directory' });
+      } else if (entry.isFile()) {
+        nodes.push({ name: entry.name, path: fullPath, type: 'file' });
       }
-
-      // Sort: directories first, then alphabetically
-      nodes.sort((a, b) => {
-        if (a.type !== b.type) {
-          return a.type === 'directory' ? -1 : 1;
-        }
-        return a.name.localeCompare(b.name);
-      });
-
-      return nodes;
-    } catch (error) {
-      logger.error('Failed to scan directory', { dir, error });
-      return [];
     }
+    return nodes.sort(compareNodes);
   }
 
   /**

@@ -1,5 +1,14 @@
 /**
  * Files store - manages file tree and file operations
+ *
+ * The tree is read a level at a time: the working directory's entries first,
+ * then a directory's own when it is opened. Reading it whole before showing
+ * anything took seconds in a repository of tens of thousands of files.
+ *
+ * Every read is for one working directory. Switching to a discussion in
+ * another folder empties the tree and reads the new one; a read for the
+ * folder left behind that answers late is dropped, rather than put on screen
+ * under the new folder's name.
  */
 
 import { defineStore } from 'pinia';
@@ -14,13 +23,32 @@ import { logger } from '../utils/logger';
 import { useChatStore } from './chat';
 import { useSettingsStore } from './settings';
 
+/** The tree's order: directories first, then files, each alphabetically. */
+function compareNodes(a: FileNode, b: FileNode): number {
+  if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+  return a.name.localeCompare(b.name);
+}
+
 export const useFilesStore = defineStore('files', () => {
   // State
   const fileTree = ref<FileNode[]>([]);
   const selectedFile = ref<string | null>(null);
   const expandedDirs = reactive(new Set<string>());
+  /**
+   * Directories whose entries are being read, by the load they belong to: a
+   * read left over from an earlier load does not stop a later one reading.
+   */
+  const loadingDirs = reactive(new Map<string, number>());
   const isLoading = ref(false);
   const error = ref<string | null>(null);
+
+  /** The working directory the tree on screen belongs to. */
+  let treeDirectory: string | null = null;
+  /**
+   * Bumped by every load of the tree, and by every switch of folder: a read
+   * that answers after the next one has started is out of date.
+   */
+  let generation = 0;
 
   // Use centralized cleanup management
   const { addCleanup, cleanup } = useEventCleanup();
@@ -51,28 +79,99 @@ export const useFilesStore = defineStore('files', () => {
     }
   }
 
+  /** Forget the tree on screen: another folder's, or none. */
+  function clearTree(): void {
+    fileTree.value = [];
+    expandedDirs.clear();
+    loadingDirs.clear();
+    selectedFile.value = null;
+    error.value = null;
+  }
+
+  /** Whether a read started for `dir` under `started` still belongs on screen. */
+  function isCurrent(dir: string, started: number): boolean {
+    return started === generation && dir === workingDirectory.value;
+  }
+
+  /**
+   * Read the tree of the working directory: its entries, and those of every
+   * directory open in it. A different working directory from the one on
+   * screen starts from an empty tree; the same one is refreshed in place,
+   * keeping what is open.
+   */
   async function loadFileTree(): Promise<void> {
-    if (!workingDirectory.value) {
-      return;
-    }
+    const dir = workingDirectory.value;
+    if (!dir) return;
 
-    // Prevent concurrent loads - if already loading, skip this request
-    if (isLoading.value) {
-      logger.debug('loadFileTree already in progress, skipping duplicate call');
-      return;
+    if (dir !== treeDirectory) {
+      clearTree();
+      treeDirectory = dir;
     }
-
+    const started = ++generation;
     isLoading.value = true;
     error.value = null;
 
     try {
-      const tree = await window.electron.files.getTree(workingDirectory.value);
-      fileTree.value = tree;
+      const entries = await window.electron.files.listDirectory(dir, dir);
+      if (!isCurrent(dir, started)) return;
+      fileTree.value = keepReadEntries(entries, fileTree.value);
+      // What was open stays open, outermost first, so each one's directory
+      // is there to put its entries in.
+      const open = [...expandedDirs].sort((a, b) => a.length - b.length);
+      for (const path of open) {
+        if (!isCurrent(dir, started)) return;
+        await readDirectory(path, dir, started);
+      }
     } catch (err) {
+      if (!isCurrent(dir, started)) return;
       logger.error('Failed to load file tree', err);
       error.value = 'Failed to load file tree';
     } finally {
-      isLoading.value = false;
+      if (started === generation) isLoading.value = false;
+    }
+  }
+
+  /**
+   * Fresh entries, with the entries of the directories already read carried
+   * over until they are read again — so a refresh does not close what is open.
+   */
+  function keepReadEntries(fresh: FileNode[], previous: FileNode[]): FileNode[] {
+    const byPath = new Map(previous.map((node) => [node.path, node]));
+    return fresh.map((node) => {
+      const before = byPath.get(node.path);
+      return node.type === 'directory' && before?.children ? { ...node, children: before.children } : node;
+    });
+  }
+
+  /** The directory node at `path`, if the tree holds it. */
+  function findDirectory(path: string, nodes: FileNode[] = fileTree.value): FileNode | null {
+    for (const node of nodes) {
+      if (node.type !== 'directory') continue;
+      if (node.path === path) return node;
+      if (node.children && (path.startsWith(`${node.path}/`) || path.startsWith(`${node.path}\\`))) {
+        return findDirectory(path, node.children);
+      }
+    }
+    return null;
+  }
+
+  /** Read one directory's entries into the tree. */
+  async function readDirectory(path: string, dir: string, started: number): Promise<void> {
+    if (loadingDirs.get(path) === started) return;
+    loadingDirs.set(path, started);
+    try {
+      const entries = await window.electron.files.listDirectory(path, dir);
+      if (!isCurrent(dir, started)) return;
+      const node = findDirectory(path);
+      if (!node) return; // gone since, or its parent was closed
+      node.children = keepReadEntries(entries, node.children ?? []);
+    } catch (err) {
+      if (!isCurrent(dir, started)) return;
+      logger.error('Failed to read directory', { path, err });
+      const node = findDirectory(path);
+      if (node) node.children = [];
+    } finally {
+      if (loadingDirs.get(path) === started) loadingDirs.delete(path);
     }
   }
 
@@ -103,16 +202,21 @@ export const useFilesStore = defineStore('files', () => {
     selectedFile.value = filePath;
   }
 
+  /** Open or close a directory; opening it for the first time reads it. */
   function toggleDirectory(dirPath: string): void {
     if (expandedDirs.has(dirPath)) {
       expandedDirs.delete(dirPath);
     } else {
-      expandedDirs.add(dirPath);
+      expandDirectory(dirPath);
     }
   }
 
   function expandDirectory(dirPath: string): void {
     expandedDirs.add(dirPath);
+    const dir = workingDirectory.value;
+    if (dir && !findDirectory(dirPath)?.children) {
+      void readDirectory(dirPath, dir, generation);
+    }
   }
 
   function collapseDirectory(dirPath: string): void {
@@ -123,151 +227,43 @@ export const useFilesStore = defineStore('files', () => {
     return expandedDirs.has(dirPath);
   }
 
+  function isDirectoryLoading(dirPath: string): boolean {
+    return loadingDirs.has(dirPath);
+  }
+
   async function setWorkingDirectory(directory: string): Promise<void> {
     const settingsStore = useSettingsStore();
     await settingsStore.setWorkingDirectory(directory);
   }
 
   /**
-   * Apply incremental changes to the file tree
-   * This avoids full tree reload on every file change
+   * Apply the watcher's changes to the directories already read. A change
+   * inside a directory not read yet is picked up when it is opened.
    */
   function applyFileChanges(changes: FileChange[]): void {
     for (const change of changes) {
-      const pathParts = getRelativePathParts(change.path);
-      if (!pathParts) continue;
-
-      switch (change.type) {
-        case 'add':
-          addNodeToTree(pathParts, change.path);
-          break;
-        case 'unlink':
-          removeNodeFromTree(pathParts);
-          break;
-        case 'change':
-          // For file content changes, we just need to update the modifiedAt timestamp
-          // which requires refetching the file info - for now, mark as needing refresh
-          updateNodeInTree(pathParts);
-          break;
+      const siblings = entriesHolding(change.path);
+      if (!siblings) continue;
+      const index = siblings.findIndex((node) => node.path === change.path);
+      if (change.type === 'unlink') {
+        if (index !== -1) siblings.splice(index, 1);
+      } else if (change.type === 'add' && index === -1 && change.kind) {
+        const node: FileNode = { name: baseName(change.path), path: change.path, type: change.kind };
+        const at = siblings.findIndex((existing) => compareNodes(node, existing) < 0);
+        siblings.splice(at === -1 ? siblings.length : at, 0, node);
       }
     }
-
-    // Force reactivity update
-    fileTree.value = [...fileTree.value];
   }
 
-  /**
-   * Get the path parts relative to working directory
-   */
-  function getRelativePathParts(fullPath: string): string[] | null {
-    if (!workingDirectory.value) return null;
-
-    // Normalize paths for comparison
-    const normalizedFull = fullPath.replace(/\\/g, '/');
-    const normalizedWork = workingDirectory.value.replace(/\\/g, '/');
-
-    if (!normalizedFull.startsWith(normalizedWork)) {
-      return null;
-    }
-
-    const relativePath = normalizedFull.slice(normalizedWork.length).replace(/^\//, '');
-    if (!relativePath) return null;
-
-    return relativePath.split('/');
-  }
-
-  /**
-   * Find a node in the tree by path parts
-   */
-  function findParentNode(pathParts: string[]): { parent: FileNode[] | null; name: string } {
-    if (pathParts.length === 0) {
-      return { parent: null, name: '' };
-    }
-
-    if (pathParts.length === 1) {
-      return { parent: fileTree.value, name: pathParts[0] };
-    }
-
-    let current = fileTree.value;
-    for (let i = 0; i < pathParts.length - 1; i++) {
-      const node = current.find((n: FileNode) => n.name === pathParts[i] && n.type === 'directory');
-      if (!node || !node.children) {
-        return { parent: null, name: '' };
-      }
-      current = node.children;
-    }
-
-    return { parent: current, name: pathParts[pathParts.length - 1] };
-  }
-
-  /**
-   * Add a new node to the tree
-   */
-  function addNodeToTree(pathParts: string[], fullPath: string): void {
-    const { parent, name } = findParentNode(pathParts);
-    if (!parent || !name) return;
-
-    // Check if already exists
-    const existingIndex = parent.findIndex(n => n.name === name);
-    if (existingIndex !== -1) {
-      return; // Already exists
-    }
-
-    // Determine if it's a file or directory
-    // For now, treat as file unless it has no extension (heuristic)
-    const isDirectory = !name.includes('.');
-
-    const newNode: FileNode = {
-      name,
-      path: fullPath,
-      type: isDirectory ? 'directory' : 'file',
-      ...(isDirectory ? { children: [] } : { modifiedAt: Date.now() }),
-    };
-
-    // Insert in sorted position (directories first, then alphabetically)
-    let insertIndex = parent.length;
-    for (let i = 0; i < parent.length; i++) {
-      const existing = parent[i];
-      if (isDirectory && existing.type === 'file') {
-        insertIndex = i;
-        break;
-      }
-      if (isDirectory === (existing.type === 'directory') && name.localeCompare(existing.name) < 0) {
-        insertIndex = i;
-        break;
-      }
-    }
-
-    parent.splice(insertIndex, 0, newNode);
-    logger.debug('Added node to tree', { name, fullPath });
-  }
-
-  /**
-   * Remove a node from the tree
-   */
-  function removeNodeFromTree(pathParts: string[]): void {
-    const { parent, name } = findParentNode(pathParts);
-    if (!parent || !name) return;
-
-    const index = parent.findIndex(n => n.name === name);
-    if (index !== -1) {
-      parent.splice(index, 1);
-      logger.debug('Removed node from tree', { name });
-    }
-  }
-
-  /**
-   * Update a node in the tree (mark as modified)
-   */
-  function updateNodeInTree(pathParts: string[]): void {
-    const { parent, name } = findParentNode(pathParts);
-    if (!parent || !name) return;
-
-    const node = parent.find(n => n.name === name);
-    if (node && node.type === 'file') {
-      node.modifiedAt = Date.now();
-      logger.debug('Updated node in tree', { name });
-    }
+  /** The read entries of the directory holding `path`, or null if not read. */
+  function entriesHolding(path: string): FileNode[] | null {
+    const dir = workingDirectory.value;
+    if (!dir) return null;
+    const parent = parentPath(path);
+    if (parent === null) return null;
+    if (samePath(parent, dir)) return fileTree.value;
+    if (!isWithin(parent, dir)) return null;
+    return findDirectory(parent)?.children ?? null;
   }
 
   function setupFileWatcher(): void {
@@ -297,10 +293,10 @@ export const useFilesStore = defineStore('files', () => {
         chatStore.trackWatcherModification(change.path);
       }
 
-      // Use incremental updates for better performance
-      // Only reload full tree if there are many changes (likely a major operation)
+      // Many changes at once — a checkout, an install — read again what is
+      // shown instead of applying them one by one.
       if (changes.length > CONSTANTS.FILES.BATCH_CHANGE_THRESHOLD) {
-        loadFileTree();
+        void loadFileTree();
       } else {
         applyFileChanges(changes);
       }
@@ -312,10 +308,10 @@ export const useFilesStore = defineStore('files', () => {
   }
 
   function reset(): void {
-    fileTree.value = [];
-    selectedFile.value = null;
-    expandedDirs.clear();
-    error.value = null;
+    clearTree();
+    treeDirectory = null;
+    generation += 1;
+    isLoading.value = false;
 
     if (fileWatcherUnsubscribe) {
       fileWatcherUnsubscribe();
@@ -402,6 +398,7 @@ export const useFilesStore = defineStore('files', () => {
     expandDirectory,
     collapseDirectory,
     isDirectoryExpanded,
+    isDirectoryLoading,
     setWorkingDirectory,
     setupFileWatcher,
     clearError,
@@ -410,3 +407,27 @@ export const useFilesStore = defineStore('files', () => {
     cleanup: cleanupStore,
   };
 });
+
+/** A path's last segment, for either separator. */
+function baseName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+/** The directory holding `path`, or null for a root. */
+function parentPath(path: string): string | null {
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return cut > 0 ? path.slice(0, cut) : null;
+}
+
+function normalized(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function samePath(a: string, b: string): boolean {
+  return normalized(a) === normalized(b);
+}
+
+/** Whether `path` is inside `dir` (not `dir` itself). */
+function isWithin(path: string, dir: string): boolean {
+  return normalized(path).startsWith(`${normalized(dir)}/`);
+}

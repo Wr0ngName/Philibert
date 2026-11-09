@@ -3,7 +3,7 @@
  *
  * Tests cover:
  * - FILES_SELECT_DIR handler for directory selection
- * - FILES_GET_TREE handler for file tree retrieval
+ * - FILES_LIST_DIRECTORY handler, one directory of the tree at a time
  * - FILES_READ handler for file content reading
  * - File change notifications
  * - Service validation for all handlers
@@ -48,7 +48,7 @@ vi.mock('../../utils/logger', () => ({
 
 const mockFileWatcher = {
   watch: vi.fn(),
-  getFileTree: vi.fn(),
+  listDirectory: vi.fn(),
   readFile: vi.fn(),
   onChange: vi.fn(),
   stop: vi.fn(),
@@ -100,15 +100,10 @@ describe('Files IPC handlers', () => {
     });
 
     mockFileWatcher.watch.mockReturnValue(undefined);
-    mockFileWatcher.getFileTree.mockResolvedValue({
-      name: 'project',
-      path: '/home/user/project',
-      type: 'directory',
-      children: [
-        { name: 'src', path: '/home/user/project/src', type: 'directory', children: [] },
-        { name: 'package.json', path: '/home/user/project/package.json', type: 'file' },
-      ],
-    });
+    mockFileWatcher.listDirectory.mockResolvedValue([
+      { name: 'src', path: '/home/user/project/src', type: 'directory' },
+      { name: 'package.json', path: '/home/user/project/package.json', type: 'file' },
+    ]);
     mockFileWatcher.readFile.mockResolvedValue('file content');
     mockFileWatcher.onChange.mockImplementation((callback) => {
       // Store callback for later testing
@@ -136,7 +131,7 @@ describe('Files IPC handlers', () => {
   describe('handler registration', () => {
     it('should register all files handlers', () => {
       expect(handlers.has(IPC_CHANNELS.FILES_SELECT_DIR)).toBe(true);
-      expect(handlers.has(IPC_CHANNELS.FILES_GET_TREE)).toBe(true);
+      expect(handlers.has(IPC_CHANNELS.FILES_LIST_DIRECTORY)).toBe(true);
       expect(handlers.has(IPC_CHANNELS.FILES_READ)).toBe(true);
     });
 
@@ -248,98 +243,57 @@ describe('Files IPC handlers', () => {
   });
 
   // ===========================================================================
-  // FILES_GET_TREE
+  // FILES_LIST_DIRECTORY
   // ===========================================================================
-  describe('FILES_GET_TREE handler', () => {
+  describe('FILES_LIST_DIRECTORY handler', () => {
+    const WORKDIR = '/home/user/project';
     let handler: (...args: unknown[]) => unknown;
 
     beforeEach(() => {
-      handler = handlers.get(IPC_CHANNELS.FILES_GET_TREE)!;
+      handler = handlers.get(IPC_CHANNELS.FILES_LIST_DIRECTORY)!;
     });
 
-    it('should return file tree for valid directory', async () => {
-      const result = await handler({}, '/home/user/project') as any;
+    it("returns the directory's entries, one level deep", async () => {
+      const result = await handler({}, `${WORKDIR}/src`, WORKDIR);
 
-      expect(mockFileWatcher.getFileTree).toHaveBeenCalledWith('/home/user/project');
-      expect(result).toHaveProperty('name', 'project');
-      expect(result).toHaveProperty('type', 'directory');
-      expect(result.children).toHaveLength(2);
+      expect(mockFileWatcher.listDirectory).toHaveBeenCalledWith(`${WORKDIR}/src`, WORKDIR);
+      expect(result).toEqual([
+        { name: 'src', path: '/home/user/project/src', type: 'directory' },
+        { name: 'package.json', path: '/home/user/project/package.json', type: 'file' },
+      ]);
     });
 
-    it('should throw when directory is not a string', async () => {
-      await expect(handler({}, 123)).rejects.toThrow(FileSystemError);
+    it.each([
+      ['not a string', 123],
+      ['empty', ''],
+      ['only whitespace', '   '],
+      ['null', null],
+    ])('refuses a directory that is %s', async (_label, directory) => {
+      await expect(handler({}, directory, WORKDIR)).rejects.toThrow(FileSystemError);
     });
 
-    it('should throw when directory is empty', async () => {
-      await expect(handler({}, '')).rejects.toThrow(FileSystemError);
+    it('refuses a working directory that is missing', async () => {
+      await expect(handler({}, `${WORKDIR}/src`, undefined)).rejects.toThrow(FileSystemError);
     });
 
-    it('should throw when directory is only whitespace', async () => {
-      await expect(handler({}, '   ')).rejects.toThrow(FileSystemError);
+    it('refuses a path that climbs out', async () => {
+      await expect(handler({}, '../relative/path', WORKDIR)).rejects.toThrow(FileSystemError);
+      await expect(handler({}, '/home/user/../etc/passwd', WORKDIR)).rejects.toThrow(FileSystemError);
     });
 
-    it('should throw when directory is null', async () => {
-      await expect(handler({}, null)).rejects.toThrow(FileSystemError);
-    });
-
-    it('should throw when path is relative', async () => {
-      // Note: validatePath doesn't actually reject relative paths - only path traversal
-      // The validateString passes, and getFileTree is called with the relative path
-      // Let's test actual traversal which DOES throw
-      await expect(handler({}, '../relative/path')).rejects.toThrow(FileSystemError);
-    });
-
-    it('should throw when path contains traversal', async () => {
-      await expect(handler({}, '/home/user/../etc/passwd')).rejects.toThrow(FileSystemError);
-    });
-
-    it('should throw when file watcher is not initialized', async () => {
+    it('fails when the file watcher is not initialized', async () => {
       handlers.clear();
       setupFilesIPC(null as any, mockConfigService as any, mockGetMainWindow as any);
-      const nullHandler = handlers.get(IPC_CHANNELS.FILES_GET_TREE)!;
+      const nullHandler = handlers.get(IPC_CHANNELS.FILES_LIST_DIRECTORY)!;
 
       // ValidationError is caught and wrapped in FileSystemError by the handler
-      await expect(nullHandler({}, '/home/user')).rejects.toThrow(FileSystemError);
+      await expect(nullHandler({}, WORKDIR, WORKDIR)).rejects.toThrow(FileSystemError);
     });
 
-    it('should throw when getFileTree returns null', async () => {
-      mockFileWatcher.getFileTree.mockResolvedValue(null);
+    it("passes on the file watcher's errors", async () => {
+      mockFileWatcher.listDirectory.mockRejectedValue(new Error('Permission denied'));
 
-      await expect(handler({}, '/home/user/project')).rejects.toThrow(FileSystemError);
-    });
-
-    it('should propagate file watcher errors', async () => {
-      mockFileWatcher.getFileTree.mockRejectedValue(new Error('Permission denied'));
-
-      await expect(handler({}, '/home/user/project')).rejects.toThrow(FileSystemError);
-    });
-
-    it('should handle deeply nested directory structure', async () => {
-      const deepTree = {
-        name: 'root',
-        path: '/root',
-        type: 'directory',
-        children: [
-          {
-            name: 'level1',
-            path: '/root/level1',
-            type: 'directory',
-            children: [
-              {
-                name: 'level2',
-                path: '/root/level1/level2',
-                type: 'directory',
-                children: [],
-              },
-            ],
-          },
-        ],
-      };
-      mockFileWatcher.getFileTree.mockResolvedValue(deepTree);
-
-      const result = await handler({}, '/root') as any;
-
-      expect(result.children[0].children[0].name).toBe('level2');
+      await expect(handler({}, WORKDIR, WORKDIR)).rejects.toThrow(FileSystemError);
     });
   });
 

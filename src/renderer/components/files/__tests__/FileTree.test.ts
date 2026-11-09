@@ -37,7 +37,7 @@ describe('FileTree empty states', () => {
     // The component registers a file watcher on mount.
     (globalThis as unknown as { window: Record<string, unknown> }).window.electron = {
       files: {
-        getTree: vi.fn().mockResolvedValue([]),
+        listDirectory: vi.fn().mockResolvedValue([]),
         onFileChange: vi.fn(() => () => {}),
         watch: vi.fn(),
         unwatch: vi.fn(),

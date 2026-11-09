@@ -22,7 +22,8 @@ const { mockFSWatcher, mockFs } = vi.hoisted(() => {
 
   const mockFs = {
     watch: vi.fn(),
-    accessSync: vi.fn(),
+    /** A path that exists, and what it is; throws for one that does not. */
+    statSync: vi.fn(),
     existsSync: vi.fn().mockReturnValue(true),
     mkdirSync: vi.fn(),
     promises: {
@@ -35,13 +36,17 @@ const { mockFSWatcher, mockFs } = vi.hoisted(() => {
   return { mockFSWatcher, mockFs };
 });
 
+/** What fs.statSync answers for a file, and for a directory. */
+const FILE_STAT = { isDirectory: () => false };
+const DIRECTORY_STAT = { isDirectory: () => true };
+
 // Store event handlers for triggering
 let watchCallback: ((eventType: string, filename: string) => void) | null = null;
 
 vi.mock('node:fs', () => ({
   default: mockFs,
   watch: mockFs.watch,
-  accessSync: mockFs.accessSync,
+  statSync: mockFs.statSync,
   existsSync: mockFs.existsSync,
   mkdirSync: mockFs.mkdirSync,
   promises: mockFs.promises,
@@ -215,7 +220,7 @@ describe('FileWatcherService', () => {
     });
 
     it('should detect file changes', () => {
-      mockFs.accessSync.mockReturnValue(undefined);
+      mockFs.statSync.mockReturnValue(FILE_STAT);
 
       if (watchCallback) {
         watchCallback('change', 'src/file.ts');
@@ -224,12 +229,12 @@ describe('FileWatcherService', () => {
       vi.advanceTimersByTime(350);
 
       expect(changeHandler).toHaveBeenCalledWith([
-        { type: 'change', path: expect.stringContaining('src') },
+        { type: 'change', path: expect.stringContaining('src'), kind: 'file' },
       ]);
     });
 
     it('should detect file additions (rename event with file existing)', () => {
-      mockFs.accessSync.mockReturnValue(undefined);
+      mockFs.statSync.mockReturnValue(FILE_STAT);
 
       if (watchCallback) {
         watchCallback('rename', 'new-file.ts');
@@ -238,12 +243,25 @@ describe('FileWatcherService', () => {
       vi.advanceTimersByTime(350);
 
       expect(changeHandler).toHaveBeenCalledWith([
-        { type: 'add', path: expect.stringContaining('new-file') },
+        { type: 'add', path: expect.stringContaining('new-file'), kind: 'file' },
+      ]);
+    });
+
+    // The tree used to guess from the name — no dot, a directory — so a new
+    // `Makefile` showed as a folder and a new `v1.2` folder as a file.
+    it('says a new path is a directory when it is one, whatever its name', () => {
+      mockFs.statSync.mockReturnValue(DIRECTORY_STAT);
+
+      watchCallback?.('rename', 'v1.2');
+      vi.advanceTimersByTime(350);
+
+      expect(changeHandler).toHaveBeenCalledWith([
+        { type: 'add', path: expect.stringContaining('v1.2'), kind: 'directory' },
       ]);
     });
 
     it('should detect file deletions (rename event with file not existing)', () => {
-      mockFs.accessSync.mockImplementation(() => {
+      mockFs.statSync.mockImplementation(() => {
         throw new Error('ENOENT');
       });
 
@@ -259,7 +277,7 @@ describe('FileWatcherService', () => {
     });
 
     it('should debounce rapid changes', () => {
-      mockFs.accessSync.mockReturnValue(undefined);
+      mockFs.statSync.mockReturnValue(FILE_STAT);
 
       if (watchCallback) {
         watchCallback('change', 'file1.ts');
@@ -298,7 +316,7 @@ describe('FileWatcherService', () => {
       changeHandler = vi.fn();
       service.onChange(changeHandler as any);
       service.watch('/home/user/project');
-      mockFs.accessSync.mockReturnValue(undefined);
+      mockFs.statSync.mockReturnValue(FILE_STAT);
     });
 
     it('should ignore node_modules changes', () => {
@@ -380,7 +398,7 @@ describe('FileWatcherService', () => {
       unsubscribe();
 
       service.watch('/home/user/project');
-      mockFs.accessSync.mockReturnValue(undefined);
+      mockFs.statSync.mockReturnValue(FILE_STAT);
 
       if (watchCallback) {
         watchCallback('change', 'file.ts');
@@ -398,7 +416,7 @@ describe('FileWatcherService', () => {
       service.onChange(callback1);
       service.onChange(callback2);
       service.watch('/home/user/project');
-      mockFs.accessSync.mockReturnValue(undefined);
+      mockFs.statSync.mockReturnValue(FILE_STAT);
 
       if (watchCallback) {
         watchCallback('change', 'file.ts');
@@ -419,7 +437,7 @@ describe('FileWatcherService', () => {
       service.onChange(errorCallback);
       service.onChange(normalCallback);
       service.watch('/home/user/project');
-      mockFs.accessSync.mockReturnValue(undefined);
+      mockFs.statSync.mockReturnValue(FILE_STAT);
 
       if (watchCallback) {
         watchCallback('change', 'file.ts');
@@ -433,150 +451,69 @@ describe('FileWatcherService', () => {
   });
 
   // ===========================================================================
-  // getFileTree()
+  // listDirectory()
   // ===========================================================================
-  describe('getFileTree()', () => {
-    beforeEach(() => {
-      mockFs.promises.readdir.mockResolvedValue([
-        { name: 'src', isDirectory: () => true, isFile: () => false },
-        { name: 'package.json', isDirectory: () => false, isFile: () => true },
-        { name: 'README.md', isDirectory: () => false, isFile: () => true },
+  describe('listDirectory()', () => {
+    const WORKDIR = '/home/user/project';
+    const dirent = (name: string, directory: boolean) => ({
+      name, isDirectory: () => directory, isFile: () => !directory,
+    });
+
+    // Reported: in a repository of tens of thousands of files the panel took
+    // forever, as the whole tree was read, and every file stat-ed, first.
+    it('reads one level, and nothing under it', async () => {
+      mockFs.promises.readdir.mockResolvedValue([dirent('src', true), dirent('package.json', false)]);
+
+      const entries = await service.listDirectory(WORKDIR, WORKDIR);
+
+      expect(entries).toEqual([
+        { name: 'src', path: expect.stringContaining('src'), type: 'directory' },
+        { name: 'package.json', path: expect.stringContaining('package.json'), type: 'file' },
       ]);
-
-      mockFs.promises.stat.mockResolvedValue({
-        size: 1024,
-        mtimeMs: Date.now(),
-      });
-    });
-
-    it('should return file tree for directory', async () => {
-      const tree = await service.getFileTree('/home/user/project');
-
-      expect(tree).toBeInstanceOf(Array);
-      expect(tree.length).toBeGreaterThan(0);
-    });
-
-    it('should include directories with children', async () => {
-      // First call for root, second for src
-      mockFs.promises.readdir
-        .mockResolvedValueOnce([
-          { name: 'src', isDirectory: () => true, isFile: () => false },
-        ])
-        .mockResolvedValueOnce([
-          { name: 'index.ts', isDirectory: () => false, isFile: () => true },
-        ]);
-
-      const tree = await service.getFileTree('/home/user/project');
-
-      expect(tree[0]).toMatchObject({
-        name: 'src',
-        type: 'directory',
-        children: expect.any(Array),
-      });
-    });
-
-    it('should include file metadata', async () => {
-      mockFs.promises.readdir.mockResolvedValue([
-        { name: 'file.ts', isDirectory: () => false, isFile: () => true },
-      ]);
-
-      mockFs.promises.stat.mockResolvedValue({
-        size: 2048,
-        mtimeMs: 1704067200000,
-      });
-
-      const tree = await service.getFileTree('/home/user/project');
-
-      expect(tree[0]).toMatchObject({
-        name: 'file.ts',
-        type: 'file',
-        size: 2048,
-        modifiedAt: 1704067200000,
-      });
-    });
-
-    it('should respect max depth', async () => {
-      // Create deeply nested structure
-      mockFs.promises.readdir.mockResolvedValue([
-        { name: 'level', isDirectory: () => true, isFile: () => false },
-      ]);
-
-      await service.getFileTree('/home/user/project', 1 as any);
-
-      // At max depth, should not recurse
+      expect(entries[0]).not.toHaveProperty('children');
       expect(mockFs.promises.readdir).toHaveBeenCalledTimes(1);
+      expect(mockFs.promises.stat).not.toHaveBeenCalled();
     });
 
-    it('should filter out node_modules', async () => {
+    it('reads a directory inside the working directory', async () => {
+      mockFs.promises.readdir.mockResolvedValue([dirent('index.ts', false)]);
+
+      const entries = await service.listDirectory(`${WORKDIR}/src`, WORKDIR);
+
+      expect(mockFs.promises.readdir).toHaveBeenCalledWith(`${WORKDIR}/src`, { withFileTypes: true });
+      expect(entries.map((n) => n.name)).toEqual(['index.ts']);
+    });
+
+    it('refuses a directory outside the working directory', async () => {
+      await expect(service.listDirectory('/etc', WORKDIR)).rejects.toThrow(FileSystemError);
+      await expect(service.listDirectory(`${WORKDIR}/../other`, WORKDIR)).rejects.toThrow(FileSystemError);
+      expect(mockFs.promises.readdir).not.toHaveBeenCalled();
+    });
+
+    it('leaves out ignored directories and files', async () => {
       mockFs.promises.readdir.mockResolvedValue([
-        { name: 'src', isDirectory: () => true, isFile: () => false },
-        { name: 'node_modules', isDirectory: () => true, isFile: () => false },
+        dirent('src', true), dirent('node_modules', true), dirent('.git', true), dirent('.DS_Store', false),
       ]);
 
-      const tree = await service.getFileTree('/home/user/project');
+      const entries = await service.listDirectory(WORKDIR, WORKDIR);
 
-      const nodeModules = tree.find((n) => n.name === 'node_modules');
-      expect(nodeModules).toBeUndefined();
+      expect(entries.map((n) => n.name)).toEqual(['src']);
     });
 
-    it('should filter out .git directory', async () => {
+    it('puts directories first, then files, each alphabetically', async () => {
       mockFs.promises.readdir.mockResolvedValue([
-        { name: 'src', isDirectory: () => true, isFile: () => false },
-        { name: '.git', isDirectory: () => true, isFile: () => false },
+        dirent('zebra.ts', false), dirent('beta', true), dirent('alpha.ts', false), dirent('adir', true),
       ]);
 
-      const tree = await service.getFileTree('/home/user/project');
+      const entries = await service.listDirectory(WORKDIR, WORKDIR);
 
-      const gitDir = tree.find((n) => n.name === '.git');
-      expect(gitDir).toBeUndefined();
+      expect(entries.map((n) => n.name)).toEqual(['adir', 'beta', 'alpha.ts', 'zebra.ts']);
     });
 
-    it('should sort directories before files', async () => {
-      mockFs.promises.readdir.mockResolvedValue([
-        { name: 'zfile.ts', isDirectory: () => false, isFile: () => true },
-        { name: 'adir', isDirectory: () => true, isFile: () => false },
-      ]);
-
-      const tree = await service.getFileTree('/home/user/project');
-
-      expect(tree[0].name).toBe('adir');
-      expect(tree[1].name).toBe('zfile.ts');
-    });
-
-    it('should sort alphabetically within type', async () => {
-      mockFs.promises.readdir.mockResolvedValue([
-        { name: 'zebra.ts', isDirectory: () => false, isFile: () => true },
-        { name: 'alpha.ts', isDirectory: () => false, isFile: () => true },
-        { name: 'beta.ts', isDirectory: () => false, isFile: () => true },
-      ]);
-
-      const tree = await service.getFileTree('/home/user/project');
-
-      expect(tree.map((n) => n.name)).toEqual(['alpha.ts', 'beta.ts', 'zebra.ts']);
-    });
-
-    it('should return empty array on error', async () => {
+    it('passes on a failure to read', async () => {
       mockFs.promises.readdir.mockRejectedValue(new Error('Permission denied'));
 
-      const tree = await service.getFileTree('/home/user/project');
-
-      expect(tree).toEqual([]);
-    });
-
-    it('should skip files that cannot be stat-ed', async () => {
-      mockFs.promises.readdir.mockResolvedValue([
-        { name: 'good.ts', isDirectory: () => false, isFile: () => true },
-        { name: 'bad.ts', isDirectory: () => false, isFile: () => true },
-      ]);
-
-      mockFs.promises.stat
-        .mockResolvedValueOnce({ size: 100, mtimeMs: Date.now() })
-        .mockRejectedValueOnce(new Error('Permission denied'));
-
-      const tree = await service.getFileTree('/home/user/project');
-
-      expect(tree).toHaveLength(1);
-      expect(tree[0].name).toBe('good.ts');
+      await expect(service.listDirectory(WORKDIR, WORKDIR)).rejects.toThrow('Permission denied');
     });
   });
 

@@ -356,8 +356,8 @@ const electronAPI: ElectronAPI = {
   files: {
     selectDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.FILES_SELECT_DIR),
 
-    getTree: (directory: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.FILES_GET_TREE, directory),
+    listDirectory: (directory: string, workingDirectory: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.FILES_LIST_DIRECTORY, directory, workingDirectory),
 
     read: (filePath: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.FILES_READ, filePath),
