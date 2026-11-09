@@ -198,6 +198,13 @@ async function main(): Promise<void> {
         () => claudeService.getRunningWork(),
         () => requestRendererFlush(mainWindow),
         () => conversationService.settleWrites(),
+        {
+          show: (message) => {
+            createSplashWindow(message);
+            updateSplashVersion(app.getVersion());
+          },
+          hide: closeSplashWindow,
+        },
       );
 
       // Close splash once main window is visible

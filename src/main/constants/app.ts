@@ -136,6 +136,12 @@ export const MAIN_CONSTANTS = {
      * closed.
      */
     CLOSE_FLUSH_TIMEOUT_MS: 5000,
+    /**
+     * How long a close waits for saves before it says so on screen. A
+     * close normally takes milliseconds; one that takes longer must not look
+     * like an app that hangs, or it gets killed mid-write.
+     */
+    CLOSE_SAVING_SCREEN_DELAY_MS: 300,
   },
   CHANNEL: {
     /** PTY terminal columns */

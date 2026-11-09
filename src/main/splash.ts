@@ -10,7 +10,13 @@ function debugLog(message: string): void {
 
 let splashWindow: BrowserWindow | null = null;
 
-export function createSplashWindow(): BrowserWindow {
+/**
+ * The splash window: at startup, and while closing waits for saves.
+ *
+ * `status` is shown from the start, in the page's address: a status sent
+ * before the page has loaded is not received.
+ */
+export function createSplashWindow(status?: string): BrowserWindow {
   debugLog('Creating splash window');
 
   splashWindow = new BrowserWindow({
@@ -31,7 +37,7 @@ export function createSplashWindow(): BrowserWindow {
     },
   });
 
-  splashWindow.loadFile(path.join(__dirname, 'splash.html'));
+  splashWindow.loadFile(path.join(__dirname, 'splash.html'), status ? { query: { status } } : undefined);
 
   splashWindow.once('ready-to-show', () => {
     debugLog('Splash window ready-to-show');

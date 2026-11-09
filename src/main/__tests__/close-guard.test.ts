@@ -13,7 +13,8 @@ import { ipcMain } from 'electron';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { IPC_CHANNELS } from '../../shared/types';
-import { describeRunningWork, installCloseGuard, requestRendererFlush } from '../window';
+import { MAIN_CONSTANTS } from '../constants/app';
+import { CLOSE_SAVING_MESSAGE, describeRunningWork, installCloseGuard, requestRendererFlush } from '../window';
 
 const { showMessageBox } = vi.hoisted(() => ({ showMessageBox: vi.fn() }));
 
@@ -81,6 +82,9 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** No conversation write under way: waiting for them ends at once. */
 const noWrites = async () => {};
+
+/** A saving screen nobody looks at. */
+const noScreen = { show: () => {}, hide: () => {} };
 
 beforeEach(() => {
   ipc.removeAllListeners();
@@ -173,7 +177,7 @@ describe('installCloseGuard', () => {
       releaseFlush = () => { flushed = true; resolve(); };
     });
 
-    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), flush, noWrites);
+    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), flush, noWrites, noScreen);
 
     fireClose();
     await settle();
@@ -194,7 +198,7 @@ describe('installCloseGuard', () => {
     const flush = vi.fn(async () => {});
     showMessageBox.mockResolvedValue({ response: 1 }); // Quit anyway
 
-    installCloseGuard(win as never, () => ({ turns: 1, tasks: 2 }), flush, noWrites);
+    installCloseGuard(win as never, () => ({ turns: 1, tasks: 2 }), flush, noWrites, noScreen);
 
     fireClose();
     await settle();
@@ -213,7 +217,7 @@ describe('installCloseGuard', () => {
     const flush = vi.fn(async () => {});
     showMessageBox.mockResolvedValue({ response: 0 }); // Keep working
 
-    installCloseGuard(win as never, () => ({ turns: 1, tasks: 0 }), flush, noWrites);
+    installCloseGuard(win as never, () => ({ turns: 1, tasks: 0 }), flush, noWrites, noScreen);
 
     fireClose();
     await settle();
@@ -230,7 +234,7 @@ describe('installCloseGuard', () => {
       throw new Error('disk full');
     });
 
-    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), flush, noWrites);
+    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), flush, noWrites, noScreen);
 
     fireClose();
     await settle();
@@ -246,7 +250,7 @@ describe('installCloseGuard', () => {
     const flush = vi.fn(async () => {});
     showMessageBox.mockResolvedValue({ response: 1 });
 
-    installCloseGuard(win as never, () => ({ turns: 1, tasks: 0 }), flush, noWrites);
+    installCloseGuard(win as never, () => ({ turns: 1, tasks: 0 }), flush, noWrites, noScreen);
 
     fireClose();
     await settle();
@@ -268,6 +272,7 @@ describe('installCloseGuard', () => {
       },
       flush,
       noWrites,
+      noScreen,
     );
 
     fireClose();
@@ -292,7 +297,7 @@ describe('installCloseGuard', () => {
       finishWrites = () => { order.push('writes done'); resolve(); };
     });
 
-    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), async () => { order.push('renderer flushed'); }, settleWrites);
+    installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), async () => { order.push('renderer flushed'); }, settleWrites, noScreen);
 
     fireClose();
     await settle();
@@ -313,7 +318,7 @@ describe('installCloseGuard', () => {
 
     installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), async () => {
       throw new Error('renderer gone');
-    }, settleWrites);
+    }, settleWrites, noScreen);
 
     fireClose();
     await settle();
@@ -328,12 +333,67 @@ describe('installCloseGuard', () => {
 
     installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), async () => {}, async () => {
       throw new Error('cannot tell');
-    });
+    }, noScreen);
 
     fireClose();
     await settle();
     await settle();
 
     expect(state.closes).toBe(1);
+  });
+
+  describe('the saving screen', () => {
+    // Asked for: a close that waits must say so, or it is taken for a hang
+    // and the app killed — in the middle of the write it is waiting for.
+    function screen() {
+      const shown: string[] = [];
+      let hidden = 0;
+      return { shown, hidden: () => hidden, show: (m: string) => { shown.push(m); }, hide: () => { hidden += 1; } };
+    }
+
+    it('says what is going on once the close has waited a moment, until it is done', async () => {
+      vi.useFakeTimers();
+      try {
+        const { win, state, fireClose } = fakeWindow();
+        const saving = screen();
+        let finishWrites: () => void = () => {};
+        const writes = new Promise<void>((resolve) => { finishWrites = resolve; });
+        installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), async () => {}, () => writes, saving);
+
+        fireClose();
+        await vi.advanceTimersByTimeAsync(MAIN_CONSTANTS.WINDOW.CLOSE_SAVING_SCREEN_DELAY_MS + 1);
+        expect(saving.shown).toEqual([CLOSE_SAVING_MESSAGE]);
+        expect(state.closes).toBe(0);
+
+        finishWrites();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(saving.hidden()).toBe(1);
+        expect(state.closes).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not flash for a close that is quick', async () => {
+      vi.useFakeTimers();
+      try {
+        const { win, state, fireClose } = fakeWindow();
+        const saving = screen();
+        // Quick, but not instant: a third of the delay.
+        const writes = () => new Promise<void>((resolve) => {
+          setTimeout(resolve, MAIN_CONSTANTS.WINDOW.CLOSE_SAVING_SCREEN_DELAY_MS / 3);
+        });
+        installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), async () => {}, writes, saving);
+
+        fireClose();
+        await vi.advanceTimersByTimeAsync(MAIN_CONSTANTS.WINDOW.CLOSE_SAVING_SCREEN_DELAY_MS * 3);
+
+        expect(state.closes).toBe(1);
+        expect(saving.shown).toEqual([]);
+        expect(saving.hidden()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

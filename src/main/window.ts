@@ -222,6 +222,14 @@ export function describeRunningWork(work: { turns: number; tasks: number }): str
   return parts.length > 0 ? parts.join(' and ') : null;
 }
 
+/** What closing shows while it waits for saves; see installCloseGuard. */
+export interface SavingScreen {
+  show(message: string): void;
+  hide(): void;
+}
+
+export const CLOSE_SAVING_MESSAGE = 'Saving your discussions before closing…';
+
 /**
  * Ask before closing while work is in flight.
  *
@@ -245,6 +253,7 @@ export function installCloseGuard(
   getRunningWork: () => { turns: number; tasks: number },
   flushRenderer: () => Promise<void>,
   settleWrites: () => Promise<unknown>,
+  savingScreen: SavingScreen,
 ): void {
   let closing = false;
 
@@ -266,6 +275,13 @@ export function installCloseGuard(
 
     const proceed = async () => {
       closing = true;
+      // Said on screen once it is not instant, so a slow save is not taken
+      // for a hang and the app killed in the middle of it.
+      let shown = false;
+      const timer = setTimeout(() => {
+        shown = true;
+        savingScreen.show(CLOSE_SAVING_MESSAGE);
+      }, MAIN_CONSTANTS.WINDOW.CLOSE_SAVING_SCREEN_DELAY_MS);
       try {
         await flushRenderer();
       } catch (error) {
@@ -278,6 +294,8 @@ export function installCloseGuard(
       } catch (error) {
         logger.error('Waiting for saves before close failed; closing anyway', { error });
       }
+      clearTimeout(timer);
+      if (shown) savingScreen.hide();
       window.close();
     };
 

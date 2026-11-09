@@ -88,6 +88,8 @@
   <div class="status" id="status">Starting...</div>
   <script>
     const { ipcRenderer } = require('electron');
+    const initialStatus = new URLSearchParams(location.search).get('status');
+    if (initialStatus) document.getElementById('status').textContent = initialStatus;
     ipcRenderer.on('splash-status', (_event, message) => {
       document.getElementById('status').textContent = message;
     });
