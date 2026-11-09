@@ -159,8 +159,6 @@ const config: ForgeConfig = {
       const arch = 'x64'; // all current builds target x64
       const platformPkg = `@anthropic-ai/claude-code-${platform}-${arch}`;
 
-      console.log('Installing external modules:', pinnedModules);
-
       const runNpm = (args: string[]) => new Promise<void>((resolve, reject) => {
         const npm = spawn('npm', args, {
           cwd: buildPath,
@@ -192,30 +190,50 @@ const config: ForgeConfig = {
         npm.on('error', reject);
       });
 
-      // Install one module at a time rather than in a single npm call. Two of
-      // these pull a large platform binary (the bundled Claude Code CLI alone
-      // is ~265MB), and installing them together means npm extracts several
-      // at once — a peak this build host cannot afford. Sequential installs
-      // are slightly slower but hold a much lower high-water mark.
-      const npmFlags = ['--no-package-lock', '--no-save', '--no-audit', '--no-fund'];
+      // What the package ships of each module is decided in
+      // scripts/package-contents.mjs; a module it says nothing about would
+      // ship whole, unexamined.
+      const contents = await import('./scripts/package-contents.mjs');
+      const undecided = contents.modulesWithoutRuntimeFiles(modulesToInstall);
+      if (undecided.length > 0) {
+        throw new Error(
+          `External module(s) ${undecided.join(', ')} have no entry in scripts/package-contents.mjs: ` +
+          'say there which of their files the app uses.',
+        );
+      }
 
-      // The packaged app's package.json is ours as written, devDependencies
-      // included, and with no lock file npm resolves every one of them from
-      // the registry before installing anything — even with --omit=dev,
-      // which only skips installing them. So a dev tool's release broke the
-      // build: playwright 1.65.0 was published needing a playwright-core
-      // 1.65.0 not yet on the registry, and the v0.25.7 Linux build, ten
-      // seconds later, failed with ETARGET. Nothing installed here needs a
-      // dev tool, and the packaged app never runs one: they are left out.
+      // The packaged app's package.json is ours as written, and npm installs
+      // what it lists: every production dependency (vue, pinia, marked… — 180
+      // packages, 45 MB in app.asar, none loaded: the bundles hold their
+      // code), and with no lock file it resolves the devDependencies from the
+      // registry too, even when not installing them — so a dev tool's broken
+      // release failed the v0.25.7 build with ETARGET. It lists the external
+      // modules only, at the locked versions.
       const packagedPkgPath = path.join(buildPath, 'package.json');
       const packagedPkg = JSON.parse(fs.readFileSync(packagedPkgPath, 'utf8'));
       delete packagedPkg.devDependencies;
+      packagedPkg.dependencies = Object.fromEntries(pinnedModules.map((pinned: string, i: number) => {
+        const name = modulesToInstall[i];
+        return [name, pinned === name ? '*' : pinned.slice(name.length + 1)];
+      }));
       fs.writeFileSync(packagedPkgPath, `${JSON.stringify(packagedPkg, null, 2)}\n`);
 
-      for (const mod of pinnedModules) {
-        console.log(`Installing external module: ${mod}`);
-        await runNpm(['install', ...npmFlags, mod]);
-      }
+      // - optional: the platform packages of the Claude CLI and the agent SDK
+      //   — the build host's, not the target's, and the app runs neither: the
+      //   target's binary is installed and placed below.
+      // - peers, by not resolving them (--legacy-peer-deps): the agent SDK's
+      //   (the Anthropic and MCP SDKs, zod), none loaded by its
+      //   self-contained entry point. --omit=peer is not enough: it leaves the
+      //   peers out but still installs their 95 dependencies (express…).
+      // - scripts, when the target is not the build host: they build for the
+      //   host — node-pty compiled a Linux pty.node into every Windows
+      //   package — and the target's prebuilt files are what runs there.
+      const npmFlags = [
+        '--no-package-lock', '--no-audit', '--no-fund', '--omit=dev', '--omit=optional', '--legacy-peer-deps',
+        ...(platform === process.platform ? [] : ['--ignore-scripts']),
+      ];
+      console.log('Installing external modules:', pinnedModules);
+      await runNpm(['install', ...npmFlags]);
 
       // Check what actually landed, instead of trusting that the loop above
       // ran to completion.
@@ -243,15 +261,18 @@ const config: ForgeConfig = {
 
       // Platform-specific binary packages have os/cpu restrictions that npm rejects
       // during cross-compilation (e.g. installing win32 package on Linux).
-      // Use --force to bypass the platform check.
+      // Use --force to bypass the platform check. Only its binary is used —
+      // copied into place below, the package then trimmed away — so it is
+      // neither saved to package.json nor given a chance to run a script.
       if (claudeCodeVersion) {
         const crossPlatformPkg = `${platformPkg}@${claudeCodeVersion}`;
         console.log(`Installing cross-platform binary: ${crossPlatformPkg}`);
-        await runNpm(['install', ...npmFlags, '--force', crossPlatformPkg]);
+        await runNpm(['install', ...npmFlags, '--no-save', '--ignore-scripts', '--force', crossPlatformPkg]);
       }
 
-      // After install, the postinstall may have placed the HOST platform's binary
-      // (e.g. Linux) into bin/claude.exe. Overwrite with the TARGET platform binary.
+      // bin/claude.exe is a placeholder until a binary is put there: the
+      // CLI's postinstall finds no platform package (optional ones are
+      // omitted) and leaves it. Put the TARGET platform's binary there.
       const binName = platform === 'win32' ? 'claude.exe' : 'claude';
       const srcBin = path.join(buildPath, 'node_modules', platformPkg, binName);
       const destBin = path.join(buildPath, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
@@ -284,6 +305,12 @@ const config: ForgeConfig = {
         console.warn('  No @anthropic-ai/claude-code version in package-lock.json to install from.');
       }
 
+      // Only what the app uses on this platform is left: no source, build or
+      // debug files, no other platform's binaries, no second copy of one.
+      // Throws if a file it needs is missing afterwards.
+      const removed = contents.trimToRuntime(path.join(buildPath, 'node_modules'), platform);
+      console.log(`Removed ${(removed / 1048576).toFixed(1)} MB the app does not use on ${platform}`);
+
       // Record what this hook installed — the LAST thing it does.
       //
       // Its position is the point. scripts/verify-package.mjs runs between
@@ -310,7 +337,8 @@ const config: ForgeConfig = {
     name: 'Philibert',
     executableName: isWindowsBuild ? 'Philibert' : 'philibert',
     asar: {
-      unpack: '**/node_modules/{node-pty,@anthropic-ai,@img}/**/*',
+      // The external modules: native files and an executable, run from disk.
+      unpack: '**/node_modules/{node-pty,@anthropic-ai}/**/*',
     },
     icon: './resources/icons/icon',
     appBundleId: 'com.philibert.app',
@@ -336,11 +364,11 @@ const config: ForgeConfig = {
       ...(isWindowsBuild && !isOnlineBuild && hasGitBashArchive ? [gitBashArchive, gitBashVersionFile] : []),
     ],
   },
-  rebuildConfig: {
-    // Rebuild native modules for the target platform
-    onlyModules: ['node-pty'],
-    force: true,
-  },
+  // No rebuildConfig: Forge rebuilds native modules after copying the app,
+  // before packageAfterPrune installs node-pty — there is nothing to rebuild
+  // then (CI logs: "Preparing native dependencies" ends before "Installing
+  // external modules"). node-pty is N-API: on Linux it is compiled by its own
+  // install script, on Windows its prebuilt files are used.
   makers: [
     // Windows NSIS installer is built separately via electron-builder (see electron-builder.json)
     // Forge handles packaging only; electron-builder creates the installer from the packaged app

@@ -30,8 +30,89 @@
  * each is then confirmed present in the package.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+
+import { RUNTIME_FILES, foreignExecutables, missingFiles, unexpectedFiles } from './package-contents.mjs';
+
+/** How many offending files a problem names before counting the rest. */
+const LISTED_FILES = 10;
+
+function listed(files) {
+  const shown = files.slice(0, LISTED_FILES).join(', ');
+  return files.length > LISTED_FILES ? `${shown} and ${files.length - LISTED_FILES} more` : shown;
+}
+
+/**
+ * The files an asar archive holds, unpacked ones included, as paths with
+ * forward slashes. Read from its header — a uint32 pickle holding the
+ * header's size, then a pickled JSON string — rather than through
+ * @electron/asar, which only reaches this project through Forge.
+ */
+export function asarFiles(asarPath) {
+  const fd = openSync(asarPath, 'r');
+  try {
+    const sizes = Buffer.alloc(8);
+    readSync(fd, sizes, 0, 8, 0);
+    const headerPickle = Buffer.alloc(sizes.readUInt32LE(4));
+    readSync(fd, headerPickle, 0, headerPickle.length, 8);
+    const json = headerPickle.toString('utf8', 8, 8 + headerPickle.readUInt32LE(4));
+    const files = [];
+    const walk = (node, prefix) => {
+      for (const [name, entry] of Object.entries(node.files ?? {})) {
+        const file = prefix ? `${prefix}/${name}` : name;
+        if (entry.files) walk(entry, file);
+        else files.push(file);
+      }
+    };
+    walk(JSON.parse(json), '');
+    return files;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * What a package holds of the external modules beyond what the app uses, and
+ * what it lacks: see scripts/package-contents.mjs.
+ */
+function contentProblems(packageDir, platform) {
+  const problems = [];
+  // The node_modules the external modules are in: node-pty's, unscoped.
+  const pty = locateModule(packageDir, 'node-pty');
+  if (!pty) return problems; // reported as a missing module already
+  const nodeModulesDir = dirname(pty);
+
+  const missing = missingFiles(nodeModulesDir, platform);
+  if (missing.length > 0) problems.push(`Files the app needs on ${platform} are missing: ${listed(missing)}.`);
+
+  const unexpected = unexpectedFiles(nodeModulesDir, platform);
+  if (unexpected.length > 0) {
+    problems.push(
+      `${unexpected.length} file(s) the app does not use on ${platform} are in ${nodeModulesDir}: ${listed(unexpected)}. ` +
+      'The packaging hook trims them (scripts/package-contents.mjs); if one is needed, say so there.',
+    );
+  }
+
+  for (const foreign of foreignExecutables(nodeModulesDir, platform)) {
+    problems.push(`A native file is not built for ${platform}: ${foreign}.`);
+  }
+
+  const asar = join(packageDir, 'resources', 'app.asar');
+  if (existsSync(asar)) {
+    const packed = asarFiles(asar)
+      .filter((file) => file.startsWith('node_modules/'))
+      .map((file) => file.slice('node_modules/'.length));
+    const inAsar = packed.filter((file) => {
+      const name = Object.keys(RUNTIME_FILES).find((module) => file.startsWith(`${module}/`));
+      return !name || !RUNTIME_FILES[name].keeps(file.slice(name.length + 1), platform);
+    });
+    if (inAsar.length > 0) {
+      problems.push(`${inAsar.length} module file(s) the app does not use are in app.asar: ${listed(inAsar)}.`);
+    }
+  }
+  return problems;
+}
 
 /** Where the Forge hook leaves its manifest. Keep in step with forge.config.ts. */
 export function manifestPathFor(platform) {
@@ -158,6 +239,7 @@ export function verifyPackage(packageDir, platform) {
     }
   }
 
+  problems.push(...contentProblems(packageDir, platform));
   return problems;
 }
 
@@ -171,13 +253,13 @@ function main(argv) {
 
   const problems = verifyPackage(packageDir, platform);
   if (problems.length > 0) {
-    console.error(`\n✖ Packaged app is incomplete (${packageDir}):\n`);
+    console.error(`\n✖ Packaged app is not sound (${packageDir}):\n`);
     for (const problem of problems) console.error(`  - ${problem}`);
     console.error('');
     return 1;
   }
 
-  console.log(`✔ Packaged app at ${packageDir} contains every external module.`);
+  console.log(`✔ Packaged app at ${packageDir} holds what the app uses of its external modules, and nothing else.`);
   return 0;
 }
 

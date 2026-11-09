@@ -13,7 +13,11 @@ export function manifestPathFor(platform: string): string;
 /** Absolute path of a module inside a packaged app, or null if absent. */
 export function locateModule(packageDir: string, name: string): string | null;
 
+/** The files an asar archive holds, unpacked ones included, with forward slashes. */
+export function asarFiles(asarPath: string): string[];
+
 /**
- * Problems found with a packaged app. An empty array means it is complete.
+ * Problems found with a packaged app: incomplete, or holding module files
+ * the app does not use. An empty array means it is sound.
  */
 export function verifyPackage(packageDir: string, platform: string): string[];
