@@ -42,6 +42,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  // One app per profile. Two would each keep their own idea of the same
+  // discussion files — what is on disk, where each line is — and their
+  // saves would interleave: a rewind made in one lost by the other, the
+  // details file the last writer's. A second launch hands over to the first.
+  if (!app.requestSingleInstanceLock()) {
+    debugLog('Another instance holds this profile: quitting, it is brought forward');
+    app.quit();
+    return;
+  }
+
   debugLog('Importing ipc...');
   const { setupIPC } = await import('./ipc');
   debugLog('Importing AuthService...');
@@ -279,6 +289,17 @@ async function main(): Promise<void> {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
+  });
+
+  // Launched again while running: this instance keeps the profile, and is
+  // shown instead (see requestSingleInstanceLock above).
+  app.on('second-instance', () => {
+    debugLog('second-instance event');
+    const window = getMainWindow();
+    if (!window) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
   });
 
   app.on('before-quit', () => {
