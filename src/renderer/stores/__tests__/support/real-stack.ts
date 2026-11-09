@@ -342,6 +342,9 @@ let conversationService: {
   delete: (id: string) => Promise<void>;
 } | null = null;
 
+/** Conversations whose Claude Code session the main process was asked to end. */
+export const sessionsEnded: string[] = [];
+
 /** Config the renderer reads at startup, as the main process would supply it. */
 export let storedConfig: Record<string, unknown> = {};
 
@@ -471,7 +474,7 @@ export async function startRealStack(options: {
    * this module stays free of main-process imports that each test file mocks
    * differently; when given, requests go through the real handlers.
    */
-  setupConversationIPC?: (service: never) => void;
+  setupConversationIPC?: (service: never, sessions: never) => void;
   workingDirectory?: string;
 }): Promise<void> {
   setActivePinia(createPinia());
@@ -494,8 +497,11 @@ export async function startRealStack(options: {
   mainListeners.clear();
   conversationService = new options.ConversationService() as unknown as typeof conversationService;
   // Register the real conversation handlers against it, when the caller
-  // supplied them.
-  options.setupConversationIPC?.(conversationService as never);
+  // supplied them. No Claude Code session runs here: ending one is recorded.
+  sessionsEnded.length = 0;
+  options.setupConversationIPC?.(conversationService as never, {
+    endConversation: async (id: string) => { sessionsEnded.push(id); return true; },
+  } as never);
 
   storedConfig = {
     workingDirectory: options.workingDirectory ?? '/home/user/project',

@@ -77,6 +77,7 @@ import {
   type ClaudeAccount,
   type TaskOutputChunk,
 } from '../../shared/types';
+import { MAIN_CONSTANTS } from '../constants/app';
 import { AsyncChannel } from '../utils/AsyncChannel';
 import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
@@ -271,6 +272,13 @@ export class ClaudeCodeService {
 
   // Multi-instance support: Map of conversation ID to active session
   private activeSessions: Map<string, SessionInstance> = new Map();
+  /**
+   * Each conversation's CLI processes not exited yet. Stopping a session only
+   * starts its process's exit, and the CLI writes the session's records as
+   * it exits: measured on deletion, the transcript was written again 1 ms
+   * after it was removed, the process exiting 0.4 s later.
+   */
+  private processExits = new Map<string, Set<Promise<void>>>();
   // Conversations currently processing a query (subset of activeSessions keys)
   private processingSessions: Set<string> = new Set();
   /**
@@ -1549,6 +1557,7 @@ export class ClaudeCodeService {
     });
 
     this.setupProcessLogging(childProcess, conversationId);
+    this.trackProcessExit(childProcess, conversationId);
 
     // Spawned with piped stdio, so both streams exist.
     const stdin = childProcess.stdin!;
@@ -1593,6 +1602,22 @@ export class ClaudeCodeService {
       spawnArgs: originalArgs,
       extraEnv,
     };
+  }
+
+  /** Keep a spawned process's exit, until it happens, for endConversation to wait on. */
+  private trackProcessExit(childProcess: ChildProcess, conversationId: string): void {
+    const exited = new Promise<void>((resolve) => {
+      childProcess.once('exit', () => resolve());
+      // A process that failed to start never exits.
+      childProcess.once('error', () => resolve());
+    });
+    const exits = this.processExits.get(conversationId) ?? new Set<Promise<void>>();
+    exits.add(exited);
+    this.processExits.set(conversationId, exits);
+    void exited.then(() => {
+      exits.delete(exited);
+      if (exits.size === 0 && this.processExits.get(conversationId) === exits) this.processExits.delete(conversationId);
+    });
   }
 
   /**
@@ -2077,8 +2102,36 @@ export class ClaudeCodeService {
   }
 
   /**
+   * End a deleted discussion's session for good, and wait for its process
+   * to exit: kept alive between turns, it would otherwise write the session's
+   * records again after they were removed (session-records).
+   *
+   * @returns whether it exited in time; if not, its records must be kept.
+   */
+  async endConversation(conversationId: string): Promise<boolean> {
+    const channelEnded = this.channelService ? this.channelService.endConversation(conversationId) : Promise.resolve(true);
+    this.terminateSession(conversationId);
+
+    const exits = [...(this.processExits.get(conversationId) ?? [])];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), MAIN_CONSTANTS.CONVERSATION.END_SESSION_WAIT_MS);
+    });
+    const exited = await Promise.race([Promise.all(exits).then(() => true), timedOut]);
+    clearTimeout(timer);
+    const ended = exited && (await channelEnded);
+    if (!ended) {
+      logger.warn('A deleted conversation\'s Claude Code process did not exit in time', {
+        conversationId, waitedMs: MAIN_CONSTANTS.CONVERSATION.END_SESSION_WAIT_MS,
+      });
+    }
+    return ended;
+  }
+
+  /**
    * Hard-kill a session: abort the subprocess, close the channel, remove from active sessions.
-   * Used only for app shutdown (abortAll) or as a fallback when interrupt fails.
+   * Used for app shutdown (abortAll), for a deleted discussion (endConversation),
+   * and as a fallback when interrupt fails.
    */
   private terminateSession(conversationId: string): void {
     const instance = this.activeSessions.get(conversationId);

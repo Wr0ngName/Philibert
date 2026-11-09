@@ -43,43 +43,51 @@ export function cliTempRoot(): string {
 const SESSION_DIR_DEPTH = 3;
 
 /**
- * A task's output file, found under the CLI's temp root by the session and
- * task ids — the two things the protocol does state. Measured layout (CLI
- * 2.1.280): `<root>/claude-<uid>/<project>/<sessionId>/tasks/<taskId>.output`.
- * Looked for by the ids rather than built from that layout, so a change in the
- * levels above the session does not lose it.
+ * A session's directories under the CLI's temp root, found by the session id.
+ * Measured layout (CLI 2.1.280): `<root>/claude-<uid>/<project>/<sessionId>/`
+ * (`claude` without the uid on Windows). Looked for by the id rather than
+ * built from that layout, so a change in the levels above the session does
+ * not lose it.
  *
  * Symbolic links are not followed into: the tree is the CLI's, and a planted
- * link must not turn this into a reader of somewhere else.
+ * link must not turn this into a reader, or a deleter, of somewhere else.
  */
-export async function locateTaskOutput(root: string, sessionId: string, taskId: string): Promise<string | undefined> {
-  async function search(dir: string, depth: number): Promise<string | undefined> {
+export async function sessionTempDirs(root: string, sessionId: string): Promise<string[]> {
+  const found: string[] = [];
+  async function search(dir: string, depth: number): Promise<void> {
     let entries: fs.Dirent[];
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch {
-      return undefined;
+      return;
     }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const child = path.join(dir, entry.name);
-      if (entry.name === sessionId) {
-        const file = path.join(child, 'tasks', `${taskId}.output`);
-        try {
-          await fs.promises.access(file);
-          return file;
-        } catch {
-          continue;
-        }
-      }
-      if (depth < SESSION_DIR_DEPTH) {
-        const found = await search(child, depth + 1);
-        if (found) return found;
-      }
+      if (entry.name === sessionId) found.push(child);
+      else if (depth < SESSION_DIR_DEPTH) await search(child, depth + 1);
     }
-    return undefined;
   }
-  return search(root, 1);
+  await search(root, 1);
+  return found;
+}
+
+/**
+ * A task's output file, found under the CLI's temp root by the session and
+ * task ids — the two things the protocol does state:
+ * `<session dir>/tasks/<taskId>.output` (sessionTempDirs).
+ */
+export async function locateTaskOutput(root: string, sessionId: string, taskId: string): Promise<string | undefined> {
+  for (const dir of await sessionTempDirs(root, sessionId)) {
+    const file = path.join(dir, 'tasks', `${taskId}.output`);
+    try {
+      await fs.promises.access(file);
+      return file;
+    } catch {
+      // Not in this one.
+    }
+  }
+  return undefined;
 }
 
 /**

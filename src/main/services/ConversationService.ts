@@ -949,6 +949,26 @@ export class ConversationService {
     logger.info('Conversation renamed', { id, newTitle: newTitle.slice(0, 30) });
   }
 
+  /** The Claude Code session a discussion continues, if any. */
+  async sessionIdOf(id: string): Promise<string | undefined> {
+    return (await this.readDetailsFile(id))?.sdkSessionId;
+  }
+
+  /** Whether any discussion continues this Claude Code session. Reads only details files. */
+  async isSessionUsed(sessionId: string): Promise<boolean> {
+    const names = (await fs.promises.readdir(this.conversationsDir)).filter(isDetailsFileName);
+    for (const name of names) {
+      try {
+        const details = await this.readDetailsFile(name.slice(0, -DETAILS_SUFFIX.length));
+        if (details?.sdkSessionId === sessionId) return true;
+      } catch {
+        // An unreadable discussion may well use it: its session is kept.
+        return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * Delete a conversation: its details file first, which is what makes it a
    * discussion, then its messages. Should removing the messages fail, the

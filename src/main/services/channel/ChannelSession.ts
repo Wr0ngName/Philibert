@@ -570,7 +570,12 @@ export class ChannelSession {
     });
   }
 
-  async stop(): Promise<void> {
+  /**
+   * Stop the session's process, waiting up to 10 s for it to exit.
+   *
+   * @returns whether it exited — or was not running.
+   */
+  async stop(): Promise<boolean> {
     this.running = false;
 
     if (this.sessionIdTimer) {
@@ -578,7 +583,7 @@ export class ChannelSession {
       this.sessionIdTimer = null;
     }
 
-    if (!this.ptyProcess) return;
+    if (!this.ptyProcess) return true;
 
     const pid = this.ptyProcess.pid;
     logger.info('Stopping Claude Code channel session', {
@@ -596,23 +601,24 @@ export class ChannelSession {
     }
 
     // Wait briefly for exit
-    await new Promise<void>((resolve) => {
+    const exited = await new Promise<boolean>((resolve) => {
       const timeout = setTimeout(() => {
-        resolve();
+        resolve(false);
       }, 10000);
 
       if (this.ptyProcess) {
         this.ptyProcess.onExit(() => {
           clearTimeout(timeout);
-          resolve();
+          resolve(true);
         });
       } else {
         clearTimeout(timeout);
-        resolve();
+        resolve(true);
       }
     });
 
     this.ptyProcess = null;
+    return exited;
   }
 
   getUsage(): ChannelUsageData | null {

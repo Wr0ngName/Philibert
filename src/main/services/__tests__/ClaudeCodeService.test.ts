@@ -27,6 +27,7 @@ import * as realFs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import type { SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Use vi.hoisted to ensure mocks are available before vi.mock is called
@@ -2217,6 +2218,47 @@ describe('ClaudeCodeService', () => {
   // ===========================================================================
   // Session Lifecycle — session ID robustness through the whole conversation
   // ===========================================================================
+  describe('ending a deleted conversation', () => {
+    // Measured on deletion: the CLI writes the session's records as it exits,
+    // after the input it is given closes — 1 ms after they were removed, its
+    // process exiting 0.4 s later. Ending must wait for that exit.
+    it('waits for its CLI process to exit, not only for it to be told to', async () => {
+      let spawned: SpawnedProcess | undefined;
+      let release: () => void = () => {};
+      mockQuery.mockImplementation(({ options }) => {
+        // A real process, which exits 300 ms after its input closes, as the CLI finishes up.
+        spawned = options.spawnClaudeCodeProcess({
+          command: process.execPath,
+          args: ['-e', "process.stdin.on('end', () => setTimeout(() => process.exit(0), 300)); process.stdin.resume();"],
+          env: { PATH: process.env.PATH },
+        });
+        return {
+          // eslint-disable-next-line require-yield
+          [Symbol.asyncIterator]: async function* () {
+            await new Promise<void>((resolve) => { release = resolve; });
+          },
+          interrupt: vi.fn(),
+          supportedCommands: vi.fn().mockResolvedValue([]),
+          // As the SDK closes a session: by ending the CLI's input.
+          close: () => { spawned?.stdin.end(); release(); },
+        };
+      });
+      const sending = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+      await vi.waitFor(() => expect(spawned).toBeDefined());
+
+      const started = Date.now();
+      const ended = await service.endConversation(TEST_CONV_ID);
+
+      expect(ended).toBe(true);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+      await sending;
+    });
+
+    it('has nothing to wait for when no process runs for it', async () => {
+      expect(await service.endConversation('conv-never-started')).toBe(true);
+    });
+  });
+
   describe('session lifecycle', () => {
     it('should emit session ID from init message to renderer', async () => {
       const mockIterator = createMockQueryIterator([

@@ -43,6 +43,14 @@ vi.mock('../../utils/logger', () => ({
   },
 }));
 
+// The records Claude Code keeps live in the user's folders: removing them is
+// tested against real folders in session-records.test.ts.
+const { deleteSessionRecords, deleteToolResults } = vi.hoisted(() => ({
+  deleteSessionRecords: vi.fn(),
+  deleteToolResults: vi.fn(),
+}));
+vi.mock('../../services/claude/session-records', () => ({ deleteSessionRecords, deleteToolResults }));
+
 const mockConversationService = {
   listPage: vi.fn(),
   archivedCount: vi.fn(),
@@ -51,7 +59,11 @@ const mockConversationService = {
   get: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
+  sessionIdOf: vi.fn(),
+  isSessionUsed: vi.fn(),
 };
+
+const mockSessions = { endConversation: vi.fn() };
 
 // Import after mocks
 import { IPC_CHANNELS, Conversation, type ConversationUpdate } from '../../../shared/types';
@@ -100,9 +112,14 @@ describe('Conversations IPC handlers', () => {
     mockConversationService.get.mockResolvedValue(sampleConversation);
     mockConversationService.update.mockResolvedValue(undefined);
     mockConversationService.delete.mockResolvedValue(undefined);
+    mockConversationService.sessionIdOf.mockResolvedValue(undefined);
+    mockConversationService.isSessionUsed.mockResolvedValue(false);
+    mockSessions.endConversation.mockResolvedValue(true);
+    deleteSessionRecords.mockResolvedValue({ transcript: true, tempDirs: 1 });
+    deleteToolResults.mockResolvedValue(0);
 
     // Register handlers
-    setupConversationIPC(mockConversationService as any);
+    setupConversationIPC(mockConversationService as any, mockSessions);
   });
 
   afterEach(() => {
@@ -157,7 +174,7 @@ describe('Conversations IPC handlers', () => {
 
     it('should throw when conversation service is not initialized', async () => {
       handlers.clear();
-      setupConversationIPC(null as any);
+      setupConversationIPC(null as any, mockSessions);
       const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_LIST_PAGE)!;
 
       await expect(nullHandler({}, request)).rejects.toThrow(ConfigurationError);
@@ -237,7 +254,7 @@ describe('Conversations IPC handlers', () => {
 
     it('should throw when conversation service is not initialized', async () => {
       handlers.clear();
-      setupConversationIPC(null as any);
+      setupConversationIPC(null as any, mockSessions);
       const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_GET)!;
 
       await expect(nullHandler({}, 'conv_123')).rejects.toThrow(ConfigurationError);
@@ -303,7 +320,7 @@ describe('Conversations IPC handlers', () => {
 
     it('should throw when conversation service is not initialized', async () => {
       handlers.clear();
-      setupConversationIPC(null as any);
+      setupConversationIPC(null as any, mockSessions);
       const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_UPDATE)!;
 
       await expect(nullHandler({}, sampleUpdate)).rejects.toThrow(ConfigurationError);
@@ -350,7 +367,7 @@ describe('Conversations IPC handlers', () => {
 
     it('should throw when conversation service is not initialized', async () => {
       handlers.clear();
-      setupConversationIPC(null as any);
+      setupConversationIPC(null as any, mockSessions);
       const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_DELETE)!;
 
       await expect(nullHandler({}, 'conv_123')).rejects.toThrow(ConfigurationError);
@@ -367,6 +384,70 @@ describe('Conversations IPC handlers', () => {
       mockConversationService.delete.mockResolvedValue(undefined);
 
       await expect(handler({}, 'nonexistent')).resolves.toBeUndefined();
+    });
+
+    // Asked for: deleting a discussion left Claude Code's records of it —
+    // its session transcript, its agents', its task outputs, its call results.
+    it("removes Claude Code's records of it, once its session has ended", async () => {
+      const order: string[] = [];
+      mockConversationService.sessionIdOf.mockResolvedValue('session-1');
+      mockConversationService.delete.mockImplementation(async () => { order.push('discussion deleted'); });
+      mockSessions.endConversation.mockImplementation(async () => { order.push('session ended'); return true; });
+      deleteToolResults.mockImplementation(async () => { order.push('call results removed'); return 3; });
+      deleteSessionRecords.mockImplementation(async () => { order.push('session records removed'); return { transcript: true, tempDirs: 1 }; });
+
+      await handler({}, 'conv_123');
+
+      // A session still running would write its records back.
+      expect(order).toEqual(['discussion deleted', 'session ended', 'call results removed', 'session records removed']);
+      expect(mockSessions.endConversation).toHaveBeenCalledWith('conv_123');
+      expect(deleteToolResults).toHaveBeenCalledWith('conv_123');
+      expect(deleteSessionRecords).toHaveBeenCalledWith('session-1');
+    });
+
+    it('keeps the session records while another discussion continues the session', async () => {
+      mockConversationService.sessionIdOf.mockResolvedValue('session-1');
+      mockConversationService.isSessionUsed.mockResolvedValue(true);
+
+      await handler({}, 'conv_123');
+
+      expect(mockConversationService.isSessionUsed).toHaveBeenCalledWith('session-1');
+      expect(deleteSessionRecords).not.toHaveBeenCalled();
+      expect(deleteToolResults).toHaveBeenCalledWith('conv_123');
+    });
+
+    it('keeps the session records when its process did not exit: it would write them back', async () => {
+      mockConversationService.sessionIdOf.mockResolvedValue('session-1');
+      mockSessions.endConversation.mockResolvedValue(false);
+
+      await expect(handler({}, 'conv_123')).resolves.toBeUndefined();
+
+      expect(deleteSessionRecords).not.toHaveBeenCalled();
+      expect(deleteToolResults).toHaveBeenCalledWith('conv_123');
+    });
+
+    it('has no session records to remove for a discussion that never had a session', async () => {
+      await handler({}, 'conv_123');
+
+      expect(deleteSessionRecords).not.toHaveBeenCalled();
+    });
+
+    it('still succeeds when the records cannot all be removed: the discussion is gone', async () => {
+      mockConversationService.sessionIdOf.mockResolvedValue('session-1');
+      deleteSessionRecords.mockRejectedValue(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }));
+
+      await expect(handler({}, 'conv_123')).resolves.toBeUndefined();
+      expect(mockConversationService.delete).toHaveBeenCalledWith('conv_123');
+    });
+
+    it('removes nothing of Claude Code when the discussion could not be deleted', async () => {
+      mockConversationService.sessionIdOf.mockResolvedValue('session-1');
+      mockConversationService.delete.mockRejectedValue(new Error('File locked'));
+
+      await expect(handler({}, 'conv_123')).rejects.toThrow(ConfigurationError);
+      expect(mockSessions.endConversation).not.toHaveBeenCalled();
+      expect(deleteSessionRecords).not.toHaveBeenCalled();
+      expect(deleteToolResults).not.toHaveBeenCalled();
     });
   });
 });

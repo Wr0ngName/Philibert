@@ -255,7 +255,7 @@ export function setupIPC(
     setupConfigIPC(configService, getMainWindow);
     setupMcpIPC(mcpService, claudeService, getMainWindow);
     setupProjectPermissionsIPC(projectPermissionService);
-    setupConversationIPC(conversationService);
+    setupConversationIPC(conversationService, claudeService);
     setupUpdateIPC(updateService);
     setupSpeechIPC(getMainWindow);
     setupAboutIPC();

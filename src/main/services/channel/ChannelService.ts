@@ -141,7 +141,7 @@ export class ChannelService {
       let active = this.sessions.get(conversationId);
       if (!active || !active.session.isRunning) {
         if (active) {
-          this.cleanupActiveSession(conversationId);
+          void this.cleanupActiveSession(conversationId);
         }
         active = await this.createSession(conversationId, workingDirectory, bridge, resumeSessionId);
       }
@@ -236,15 +236,30 @@ export class ChannelService {
   }
 
   async abort(conversationId: string): Promise<void> {
+    void this.endSession(conversationId);
+  }
+
+  /**
+   * End a deleted conversation's session, and wait for its process to exit:
+   * it writes the session's records as it goes.
+   *
+   * @returns whether it exited.
+   */
+  endConversation(conversationId: string): Promise<boolean> {
+    return this.endSession(conversationId);
+  }
+
+  private endSession(conversationId: string): Promise<boolean> {
     const active = this.sessions.get(conversationId);
     if (active?.turnDoneTimer) {
       clearTimeout(active.turnDoneTimer);
       active.turnDoneTimer = null;
     }
-    this.cleanupActiveSession(conversationId);
+    const stopped = this.cleanupActiveSession(conversationId);
     if (this.bridge) {
       this.bridge.removeConversation(conversationId);
     }
+    return stopped;
   }
 
   async shutdown(): Promise<void> {
@@ -257,7 +272,7 @@ export class ChannelService {
         clearTimeout(active.turnWatchdogTimer);
         active.turnWatchdogTimer = null;
       }
-      this.cleanupActiveSession(conversationId);
+      void this.cleanupActiveSession(conversationId);
     }
     this.sessions.clear();
 
@@ -328,7 +343,7 @@ export class ChannelService {
       onFatalError: (convId, errorMsg) => {
         this.send(IPC_CHANNELS.CLAUDE_ERROR, convId, errorMsg);
         this.emitDone(convId);
-        this.cleanupActiveSession(convId);
+        void this.cleanupActiveSession(convId);
       },
       onPtyError: (convId, errorMsg) => {
         this.send(IPC_CHANNELS.CLAUDE_ERROR, convId, errorMsg);
@@ -641,7 +656,7 @@ export class ChannelService {
           conversationId,
           restartCount: active.restartCount,
         });
-        this.cleanupActiveSession(conversationId);
+        void this.cleanupActiveSession(conversationId);
         this.send(
           IPC_CHANNELS.CLAUDE_ERROR,
           conversationId,
@@ -682,9 +697,15 @@ export class ChannelService {
     }
   }
 
-  private cleanupActiveSession(conversationId: string): void {
+  /**
+   * Stop a conversation's session and forget it.
+   *
+   * @returns whether its process exited (ChannelSession.stop), for a caller
+   * that must know — most do not wait.
+   */
+  private cleanupActiveSession(conversationId: string): Promise<boolean> {
     const active = this.sessions.get(conversationId);
-    if (!active) return;
+    if (!active) return Promise.resolve(true);
 
     if (active.usageTimer) {
       clearInterval(active.usageTimer);
@@ -708,15 +729,17 @@ export class ChannelService {
 
     this.mcpSignals.clear();
 
-    active.session.stop().catch((err) => {
+    const stopped = active.session.stop().catch((err) => {
       logger.warn('Error stopping channel session', {
         conversationId,
         error: err instanceof Error ? err.message : String(err),
       });
+      return false;
     });
 
     active.session.cleanupSessionDir();
     this.sessions.delete(conversationId);
+    return stopped;
   }
 
   private emitChannelStatus(
