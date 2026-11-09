@@ -135,6 +135,39 @@ describe('what a save carries', () => {
     expect(diskContents('conv-r')).toEqual(['kept', 'asked again']);
   });
 
+  it('does not take for stored what a read found before a rewind removed it', async () => {
+    // A read answering after a rewind landed holds messages the rewind cut
+    // from the file. Taken for stored, they would never be sent again: shown
+    // on screen, absent from disk, gone at the next opening.
+    seed('conv-race', ['kept', 'rewound', 'after']);
+    await store.loadConversationList();
+    await store.loadConversation('conv-race');
+    chat.messages[1].turnUuid = 'turn-to-rewind';
+    let answer: () => void = () => {};
+    const answered = new Promise<void>((resolve) => { answer = resolve; });
+    const getWindow = ConversationService.prototype.getWindow;
+    vi.spyOn(ConversationService.prototype, 'getWindow').mockImplementationOnce(async function (this: ConversationService, ...args) {
+      const read = await getWindow.apply(this, args); // the file as it is now, before the rewind
+      await answered;
+      return read;
+    });
+    const reading = store.readWindow('conv-race');
+    await settle();
+
+    chat.truncateAfterUserTurn('conv-race', 'turn-to-rewind');
+    await store.saveCurrentConversation();
+    expect(diskContents('conv-race')).toEqual(['kept']);
+    answer();
+    const stale = await reading;
+
+    // The stale messages come back on screen, as a late page would put them.
+    chat.loadMessages(stale!.conversation.messages);
+    await store.saveCurrentConversation();
+
+    expect(diskContents('conv-race')).toEqual(chat.messages.map((m) => m.content));
+    expect(diskContents('conv-race')).toEqual(['kept', 'rewound', 'after']);
+  });
+
   it('carries nothing again that a failed save did not write', async () => {
     await store.initialize();
     const id = store.currentConversationId!;

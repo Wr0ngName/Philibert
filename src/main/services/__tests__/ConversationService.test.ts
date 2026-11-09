@@ -143,6 +143,29 @@ describe('what a discussion is stored as', () => {
     await expect(whole('broken')).rejects.toThrow();
   });
 
+  // The file of 2026-11-09 was cut mid-string. A save treating "cannot read"
+  // as "no such discussion" would start it over, writing over what is left.
+  it('refuses a save into a discussion whose file cannot be read, leaving the file as it is', async () => {
+    const cut = '{"id":"broken","title":"x","messages":[{"id":"m1","role":"user","content":"unfini';
+    fs.writeFileSync(detailsFile('broken'), cut);
+
+    await expect(service.update({ ...base('broken'), upsert: [msg('m2')] })).rejects.toThrow();
+
+    expect(fs.readFileSync(detailsFile('broken'), 'utf-8')).toBe(cut);
+    expect(fs.existsSync(messagesFile('broken'))).toBe(false);
+  });
+
+  it('opens a discussion whose messages file is gone as having none, and saves to it again', async () => {
+    await seed('c', ['m1', 'm2']);
+    fs.unlinkSync(messagesFile('c'));
+    const fresh = new ConversationService();
+
+    expect((await whole('c', fresh))?.messages).toEqual([]);
+    await fresh.update({ ...base('c'), upsert: [msg('m3')] });
+
+    expect((await whole('c', new ConversationService()))?.messages.map((m) => m.id)).toEqual(['m3']);
+  });
+
   it('leaves an unreadable file out of the list without breaking it', async () => {
     await seed('good', ['m1']);
     fs.writeFileSync(detailsFile('broken'), '{ not json');
