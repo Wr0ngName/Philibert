@@ -25,6 +25,7 @@ import {
 } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { appendToFile, replaceFile } from '../utils/durable-file';
+import { readRanges } from '../utils/file-ranges';
 import logger from '../utils/logger';
 import { getConversationsPath, isPathWithin } from '../utils/paths';
 
@@ -37,7 +38,9 @@ import {
   messagesFileOf,
 } from './conversation-files';
 import { ConversationIndex } from './conversation-index';
-import { appendBatch, compactedLog, recordLine, replay, TranscriptState } from './conversation-log';
+import {
+  appendBatch, batchLocations, compactedLog, type LineLocation, recordLine, replay, TranscriptState,
+} from './conversation-log';
 import { convertConversationFolder, convertOneFileDiscussion } from './conversation-migration';
 
 /** A discussion as read from its two files. */
@@ -57,10 +60,10 @@ interface Loaded {
  * stretch running into it would hand back a stale copy of what is already
  * held, and count it a second time among the messages still to come.
  */
-function storedUntil(all: readonly ChatMessage[], untilId: string | null): number {
-  if (!untilId) return all.length;
-  const at = all.findIndex((m) => m.id === untilId);
-  return at === -1 ? all.length : at;
+function storedUntil(ids: readonly string[], untilId: string | null): number {
+  if (!untilId) return ids.length;
+  const at = ids.indexOf(untilId);
+  return at === -1 ? ids.length : at;
 }
 
 function isMissing(error: unknown): boolean {
@@ -93,6 +96,12 @@ export class ConversationService {
    * a few, the most recently used last; one not kept is read again.
    */
   private writeStates = new Map<string, TranscriptState>();
+  /**
+   * Times each discussion's messages file was replaced or removed. Appends
+   * leave every line where it was; these do not, so a page read by line
+   * location (`view`) that saw this change reads the file again instead.
+   */
+  private fileGenerations = new Map<string, number>();
 
   constructor() {
     this.conversationsDir = getConversationsPath();
@@ -235,6 +244,12 @@ export class ConversationService {
     }
   }
 
+  /** Forget where a discussion's lines are: its messages file was replaced or removed. */
+  private messagesFileReplaced(id: string): void {
+    this.writeStates.delete(id);
+    this.fileGenerations.set(id, (this.fileGenerations.get(id) ?? 0) + 1);
+  }
+
   /** Keep a discussion's write state, as the most recently used. */
   private rememberState(id: string, state: TranscriptState): void {
     this.writeStates.delete(id);
@@ -293,7 +308,7 @@ export class ConversationService {
   private async detailsForWriting(id: string): Promise<ConversationDetails | null> {
     const stored = await this.readDetailsFile(id);
     if (!stored || !isOneFileFormat(stored)) return stored;
-    this.writeStates.delete(id);
+    this.messagesFileReplaced(id);
     return convertOneFileDiscussion(this.getFilePath(id), stored);
   }
 
@@ -308,6 +323,92 @@ export class ConversationService {
     return state;
   }
 
+  /** A discussion's details, or null; one still in one file converted first, in the write queue: a conversion is a write. */
+  private async detailsForReading(id: string): Promise<ConversationDetails | null> {
+    const stored = await this.readDetailsFile(id);
+    return stored && isOneFileFormat(stored)
+      ? this.serialized(id, () => this.detailsForWriting(id))
+      : stored;
+  }
+
+  /**
+   * A discussion's details and the ids of its messages in order, with a way
+   * to read any stretch of them, or null when there is no such discussion.
+   *
+   * What paging needs: a page of 500 messages out of 68,000 reads those 500
+   * lines (TranscriptState's line locations), not the whole messages file.
+   * Locations are only known once the file was read whole in this process;
+   * until then this reads it whole, once.
+   *
+   * The ids and their locations are taken in one step, before anything is
+   * awaited, so a save landing meanwhile cannot shift them. A line can still
+   * move — the file compacted, converted, removed — and then the stretch is
+   * read from the whole file again; so it is when a line read does not hold
+   * the message expected.
+   */
+  private async view(id: string): Promise<{
+    details: ConversationDetails;
+    ids: readonly string[];
+    load: (from: number, to: number) => Promise<ChatMessage[]>;
+  } | null> {
+    // First: reading the details may convert the discussion, replacing its
+    // messages file, and the snapshot must describe the file as it is after.
+    const details = await this.detailsForReading(id);
+    if (!details) return null;
+
+    const kept = this.writeStates.get(id);
+    if (!kept) {
+      const loaded = await this.read(id);
+      if (!loaded) return null;
+      return {
+        details: loaded.details,
+        ids: loaded.messages.map((m) => m.id),
+        load: async (from, to) => loaded.messages.slice(from, to),
+      };
+    }
+
+    const generation = this.fileGenerations.get(id) ?? 0;
+    const { ids, locations } = kept.snapshot();
+
+    /** The stretch from the whole file, by id: what a location could not give. */
+    const fromWholeFile = async (from: number, to: number, reason: string): Promise<ChatMessage[]> => {
+      logger.info('Reading a page of a conversation from its whole messages file', { id, reason });
+      const loaded = await this.read(id);
+      const byId = new Map((loaded?.messages ?? []).map((m) => [m.id, m]));
+      return ids.slice(from, to).flatMap((messageId) => byId.get(messageId) ?? []);
+    };
+
+    const load = async (from: number, to: number): Promise<ChatMessage[]> => {
+      const wanted = locations.slice(from, to);
+      if (wanted.some((location) => !location)) return fromWholeFile(from, to, 'a line not located');
+      const replaced = () => (this.fileGenerations.get(id) ?? 0) !== generation;
+      let lines: Buffer[];
+      try {
+        lines = await readRanges(messagesFileOf(this.getFilePath(id)), wanted as LineLocation[]);
+      } catch (error) {
+        // A replaced file can be shorter than where the lines were.
+        if (replaced()) return fromWholeFile(from, to, 'the file was replaced');
+        throw error;
+      }
+      if (replaced()) return fromWholeFile(from, to, 'the file was replaced');
+
+      const messages: ChatMessage[] = [];
+      for (const [i, bytes] of lines.entries()) {
+        let record: { put?: ChatMessage } | undefined;
+        try {
+          record = JSON.parse(bytes.toString('utf-8')) as { put?: ChatMessage };
+        } catch {
+          record = undefined;
+        }
+        if (record?.put?.id !== ids[from + i]) return fromWholeFile(from, to, 'a line did not hold its message');
+        messages.push(record.put);
+      }
+      return messages;
+    };
+
+    return { details, ids, load };
+  }
+
   /**
    * A discussion's details and messages, or null. Not in the write queue;
    * see writeChains and writesQueued.
@@ -317,11 +418,7 @@ export class ConversationService {
     const queuedBefore = this.writesQueued.get(key) ?? 0;
     const quietBefore = !this.writeChains.has(key);
 
-    const stored = await this.readDetailsFile(id);
-    // Converted in the write queue: a conversion is a write.
-    const details = stored && isOneFileFormat(stored)
-      ? await this.serialized(id, () => this.detailsForWriting(id))
-      : stored;
+    const details = await this.detailsForReading(id);
     if (!details) return null;
 
     const { messages, state, damaged } = replay(await this.readMessagesFile(id));
@@ -604,6 +701,7 @@ export class ConversationService {
     } else {
       state = new TranscriptState();
       // What is left of a discussion deleted with this id is not this one's.
+      this.messagesFileReplaced(id);
       await fs.promises.unlink(messagesFileOf(file)).catch((error: unknown) => {
         if (!isMissing(error)) throw error;
       });
@@ -612,11 +710,12 @@ export class ConversationService {
     this.writeStates.delete(id);
     const storedCount = state.size;
 
-    const lines: string[] = [];
+    // The lines to append, each with the message it puts, if any.
+    const batch: Array<{ line: string; putId?: string }> = [];
     let truncated = false;
     if (update.truncateFromId) {
       if (state.cut(update.truncateFromId)) {
-        lines.push(recordLine({ cut: update.truncateFromId }));
+        batch.push({ line: recordLine({ cut: update.truncateFromId }) });
         truncated = true;
       } else {
         // The anchor is gone, so what "from" means cannot be known. Dropping
@@ -639,7 +738,7 @@ export class ConversationService {
         unchanged += 1;
         continue;
       }
-      lines.push(line);
+      batch.push({ line, putId: message.id });
       if (outcome === 'added') added += 1;
       else changed += 1;
     }
@@ -678,12 +777,24 @@ export class ConversationService {
       resultCount: state.size,
     });
 
+    const lines = batch.map((entry) => entry.line);
+    const messagesFile = messagesFileOf(file);
+    let locations: LineLocation[] = [];
     await this.withRetries(id, async () => {
       // Messages first, details last: the details file is what makes a
       // discussion exist, so a reader never finds one without the messages
       // it was saved with.
-      if (lines.length > 0) await appendToFile(messagesFileOf(file), appendBatch(lines));
+      if (lines.length > 0) {
+        await appendToFile(messagesFile, appendBatch(lines));
+        // The file ends with this batch: writes to it run one at a time.
+        // Taken from the file rather than counted, so a batch an earlier
+        // attempt half-wrote cannot shift where these lines are.
+        locations = batchLocations(lines, (await fs.promises.stat(messagesFile)).size);
+      }
       await this.writeDetails(id, details);
+    });
+    batch.forEach((entry, i) => {
+      if (entry.putId) state.locate(entry.putId, locations[i]);
     });
     state.records += lines.length;
     this.rememberState(id, state);
@@ -707,6 +818,7 @@ export class ConversationService {
       const { messages } = replay(await fs.promises.readFile(file, 'utf-8'));
       const compacted = compactedLog(messages);
       await replaceFile(file, compacted.text);
+      this.messagesFileReplaced(id);
       this.rememberState(id, compacted.state);
       logger.info('Compacted a conversation messages file', { id, messages: messages.length, replaced });
     } catch (error) {
@@ -719,20 +831,16 @@ export class ConversationService {
    *
    * Opening a conversation reads this rather than the whole conversation, so
    * the renderer holds a window instead of a history that grows without
-   * bound. The messages file is still read in full here, but that is a
-   * transient cost in this process rather than a permanent one in the
-   * renderer.
+   * bound; and only those messages' lines are read (`view`), once the
+   * discussion was read whole in this process.
    */
   async getWindow(id: string, limit: number): Promise<ConversationWindow | null> {
-    const conversation = await this.get(id);
-    if (!conversation) return null;
+    const view = await this.view(id);
+    if (!view) return null;
 
-    const all = conversation.messages;
-    const take = Math.max(0, limit);
-    const start = Math.max(0, all.length - take);
-
+    const start = Math.max(0, view.ids.length - Math.max(0, limit));
     return {
-      conversation: { ...conversation, messages: all.slice(start) },
+      conversation: { ...view.details, messages: await view.load(start, view.ids.length) },
       olderCount: start,
     };
   }
@@ -750,18 +858,17 @@ export class ConversationService {
     beforeId: string,
     limit: number,
   ): Promise<{ messages: ChatMessage[]; olderCount: number } | null> {
-    const conversation = await this.get(id);
-    if (!conversation) return null;
+    const view = await this.view(id);
+    if (!view) return null;
 
-    const all = conversation.messages;
-    const at = all.findIndex((m) => m.id === beforeId);
+    const at = view.ids.indexOf(beforeId);
     if (at === -1) {
       logger.warn('Asked for messages before an id that is not stored', { id, beforeId });
       return { messages: [], olderCount: 0 };
     }
 
     const start = Math.max(0, at - Math.max(0, limit));
-    return { messages: all.slice(start, at), olderCount: start };
+    return { messages: await view.load(start, at), olderCount: start };
   }
 
   /**
@@ -779,20 +886,19 @@ export class ConversationService {
     limit: number,
     untilId: string | null = null,
   ): Promise<{ messages: ChatMessage[]; newerCount: number } | null> {
-    const conversation = await this.get(id);
-    if (!conversation) return null;
+    const view = await this.view(id);
+    if (!view) return null;
 
-    const all = conversation.messages;
-    const at = all.findIndex((m) => m.id === afterId);
+    const at = view.ids.indexOf(afterId);
     if (at === -1) {
       logger.warn('Asked for messages after an id that is not stored', { id, afterId });
       return { messages: [], newerCount: 0 };
     }
 
-    const stop = storedUntil(all, untilId);
+    const stop = storedUntil(view.ids, untilId);
     const start = Math.min(at + 1, stop);
     const end = Math.min(stop, start + Math.max(0, limit));
-    return { messages: all.slice(start, end), newerCount: stop - end };
+    return { messages: await view.load(start, end), newerCount: stop - end };
   }
 
   /**
@@ -814,21 +920,20 @@ export class ConversationService {
     after: number,
     untilId: string | null = null,
   ): Promise<{ messages: ChatMessage[]; olderCount: number; newerCount: number } | null> {
-    const conversation = await this.get(id);
-    if (!conversation) return null;
+    const view = await this.view(id);
+    if (!view) return null;
 
-    const all = conversation.messages;
-    const at = all.findIndex((m) => m.id === messageId);
+    const at = view.ids.indexOf(messageId);
     if (at === -1) {
       logger.warn('Asked for messages around an id that is not stored', { id, messageId });
       return null;
     }
 
-    const stop = storedUntil(all, untilId);
+    const stop = storedUntil(view.ids, untilId);
     if (at >= stop) return null;
     const start = Math.max(0, at - Math.max(0, before));
     const end = Math.min(stop, at + 1 + Math.max(0, after));
-    return { messages: all.slice(start, end), olderCount: start, newerCount: stop - end };
+    return { messages: await view.load(start, end), olderCount: start, newerCount: stop - end };
   }
 
   /**
@@ -862,7 +967,7 @@ export class ConversationService {
           throw error;
         }
       }
-      this.writeStates.delete(id);
+      this.messagesFileReplaced(id);
       this.index.noteDeleted(path.basename(filePath));
 
       try {

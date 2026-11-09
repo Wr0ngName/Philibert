@@ -6,7 +6,9 @@
 import { describe, it, expect } from 'vitest';
 
 import type { ChatMessage } from '../../../shared/types';
-import { appendBatch, compactedLog, recordLine, replay, TranscriptState, type LogRecord } from '../conversation-log';
+import {
+  appendBatch, batchLocations, compactedLog, type LineLocation, recordLine, replay, TranscriptState, type LogRecord,
+} from '../conversation-log';
 
 const msg = (id: string, content = `content ${id}`, role: ChatMessage['role'] = 'user'): ChatMessage => ({
   id, role, content, timestamp: 1,
@@ -109,6 +111,59 @@ describe('TranscriptState', () => {
     // And a message added later does not take its place.
     state.put(msg('q3', 'newest'), recordLine({ put: msg('q3', 'newest') }));
     expect(state.firstUserTitle).toBeUndefined();
+  });
+});
+
+describe('line locations', () => {
+  /** The line at a location, read from the bytes of the file as a range read does. */
+  const lineAt = (text: string, location: LineLocation | undefined) => {
+    const bytes = Buffer.from(text, 'utf-8');
+    return location ? bytes.subarray(location.start, location.start + location.length).toString('utf-8') : undefined;
+  };
+
+  it('are where each live message is in the file, in bytes, past characters of several bytes', () => {
+    const text = log(
+      [{ put: msg('a', 'héllo — ünïcode 🌍') }, { put: msg('b') }],
+      [{ put: msg('a', 'édité 🌍') }, { put: msg('c') }],
+    );
+
+    const { ids, locations } = replay(text).state.snapshot();
+
+    expect(ids).toEqual(['a', 'b', 'c']);
+    expect(locations.map((l) => JSON.parse(lineAt(text, l)!).put)).toEqual([msg('a', 'édité 🌍'), msg('b'), msg('c')]);
+  });
+
+  it('are those of a batch, from where the file ends after it', () => {
+    const before = log([{ put: msg('a') }]);
+    const lines = [recordLine({ put: msg('b', 'ünï') }), recordLine({ cut: 'x' }), recordLine({ put: msg('c') })];
+    const text = before + appendBatch(lines);
+
+    const locations = batchLocations(lines, Buffer.byteLength(text, 'utf-8'));
+
+    expect(locations.map((l) => lineAt(text, l))).toEqual(lines);
+  });
+
+  it('are those of a compacted log', () => {
+    const { text, state } = compactedLog([msg('a', '🌍'), msg('b')]);
+
+    expect(state.snapshot().locations.map((l) => JSON.parse(lineAt(text, l)!).put.id)).toEqual(['a', 'b']);
+  });
+
+  it('go with the messages a cut removes', () => {
+    const { state } = replay(log([{ put: msg('a') }, { put: msg('b') }], [{ cut: 'b' }]));
+
+    expect(state.snapshot()).toMatchObject({ ids: ['a'], locations: [expect.any(Object)] });
+  });
+
+  it('stay as they were in a snapshot taken before a change', () => {
+    const { state } = replay(log([{ put: msg('a') }]));
+    const snapshot = state.snapshot();
+
+    state.put(msg('b'), recordLine({ put: msg('b') }));
+    state.locate('b', { start: 999, length: 1 });
+
+    expect(snapshot.ids).toEqual(['a']);
+    expect(snapshot.locations).toHaveLength(1);
   });
 });
 

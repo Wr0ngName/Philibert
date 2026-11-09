@@ -52,10 +52,39 @@ export function fingerprintOf(line: string): string {
 
 export type PutOutcome = 'added' | 'changed' | 'unchanged';
 
+/** Where a line is in the messages file: its first byte, and its length in bytes without its line end. */
+export interface LineLocation {
+  start: number;
+  length: number;
+}
+
+/** The live messages as they stand at one moment: their ids in order, and where each one's line is. */
+export interface TranscriptSnapshot {
+  ids: string[];
+  locations: Array<LineLocation | undefined>;
+}
+
+/**
+ * Where each of these lines is, written as one batch (appendBatch) that
+ * ended the file at byte `end`.
+ */
+export function batchLocations(lines: readonly string[], end: number): LineLocation[] {
+  const lengths = lines.map((line) => Buffer.byteLength(line, 'utf-8'));
+  // The batch: a line end, the lines each followed by one.
+  let start = end - lengths.reduce((sum, length) => sum + length + 1, 0);
+  return lengths.map((length) => {
+    const location = { start, length };
+    start += length + 1;
+    return location;
+  });
+}
+
 /**
  * What writing to a log needs to know of it, without its messages: the
  * order of the ids, a fingerprint of each message, how many records the
  * file holds, and the title its first user message gives the discussion.
+ * And where each live message's line is, so a page of the discussion reads
+ * only its own lines.
  *
  * Held per discussion between saves, so a save does not read the file.
  */
@@ -64,6 +93,12 @@ export class TranscriptState {
   private readonly isUser: boolean[] = [];
   private readonly positions = new Map<string, number>();
   private readonly fingerprints = new Map<string, string>();
+  /**
+   * The line holding each live message's current version. A message
+   * changed by a write not yet on disk keeps its previous line, which still
+   * holds the previous version: the file is only ever appended to.
+   */
+  private readonly locations = new Map<string, LineLocation>();
   /** Lines in the file that are whole records, replaced ones included. */
   records = 0;
   /**
@@ -120,6 +155,7 @@ export class TranscriptState {
     for (const removed of this.ids.splice(at)) {
       this.positions.delete(removed);
       this.fingerprints.delete(removed);
+      this.locations.delete(removed);
     }
     this.isUser.length = at;
     if (this.firstUser && !this.positions.has(this.firstUser.id)) this.firstUser = null;
@@ -129,6 +165,17 @@ export class TranscriptState {
   /** The title the first user message gives, when known. */
   get firstUserTitle(): string | undefined {
     return this.firstUser?.title;
+  }
+
+  /** Record where a live message's current line is. */
+  locate(id: string, location: LineLocation): void {
+    if (this.positions.has(id)) this.locations.set(id, location);
+  }
+
+  /** The live messages as they stand now; later changes to this state do not reach it. */
+  snapshot(): TranscriptSnapshot {
+    const ids = [...this.ids];
+    return { ids, locations: ids.map((id) => this.locations.get(id)) };
   }
 }
 
@@ -153,8 +200,13 @@ export function replay(text: string): Replayed {
   const messages: ChatMessage[] = [];
   const state = new TranscriptState();
   let damaged = 0;
+  // In bytes, as the file is read by range: lines split on a one-byte line end.
+  let next = 0;
 
   for (const line of text.split('\n')) {
+    const start = next;
+    const length = Buffer.byteLength(line, 'utf-8');
+    next += length + 1;
     if (!line) continue;
     let record: unknown;
     try {
@@ -166,7 +218,7 @@ export function replay(text: string): Replayed {
 
     if (isPut(record)) {
       const at = state.indexOf(record.put.id);
-      state.put(record.put, line);
+      if (state.put(record.put, line) !== 'unchanged') state.locate(record.put.id, { start, length });
       if (at === -1) messages.push(record.put);
       else messages[at] = record.put;
     } else if (isCut(record)) {
@@ -185,9 +237,12 @@ export function replay(text: string): Replayed {
 /** A log holding exactly these messages, one put record each. */
 export function compactedLog(messages: readonly ChatMessage[]): { text: string; state: TranscriptState } {
   const state = new TranscriptState();
+  let start = 0;
   const lines = messages.map((message) => {
     const line = recordLine({ put: message });
-    state.put(message, line);
+    const length = Buffer.byteLength(line, 'utf-8');
+    if (state.put(message, line) !== 'unchanged') state.locate(message.id, { start, length });
+    start += length + 1;
     return line;
   });
   state.records = lines.length;

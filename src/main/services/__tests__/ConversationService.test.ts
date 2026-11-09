@@ -43,6 +43,7 @@ vi.mock('../../constants/app', async (importOriginal) => {
 import type { ChatMessage, Conversation, ConversationUpdate } from '../../../shared/types';
 import realLogger from '../../utils/logger';
 import { ConversationService } from '../ConversationService';
+import { recordLine } from '../conversation-log';
 
 const logger = realLogger as unknown as Record<'debug' | 'info' | 'warn' | 'error', Mock>;
 
@@ -682,6 +683,111 @@ describe('reading a conversation as a window', () => {
     expect(await service.getAround('long', 'm960', 250, 250, 'm950')).toBeNull();
     expect(await service.getAround('long', 'nope', 250, 250)).toBeNull();
     expect(await service.getAround('nope', 'm1', 250, 250)).toBeNull();
+  });
+});
+
+describe('a page of a long discussion', () => {
+  const many = (n: number, from = 0) => Array.from({ length: n }, (_, i) => msg(`m${from + i}`, `message ${from + i}`));
+  const pageIds = (page: { messages: ChatMessage[] } | null) => (page?.messages ?? []).map((m) => m.id);
+
+  /** Whether the messages file was read whole while `run` ran. */
+  async function readWhole(id: string, run: () => Promise<unknown>): Promise<boolean> {
+    const spy = vi.spyOn(fs.promises, 'readFile');
+    try {
+      await run();
+      return spy.mock.calls.some(([file]) => String(file) === messagesFile(id));
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  beforeEach(async () => {
+    await service.update({ ...base('long'), upsert: many(300) });
+  });
+
+  it('reads only its own lines, not the whole messages file', async () => {
+    // Reported: opening and scrolling a 68,000-message discussion parsed the
+    // whole file for every page of 500.
+    expect(await readWhole('long', () => service.getWindow('long', 50))).toBe(false);
+    expect(await readWhole('long', () => service.getOlder('long', 'm250', 50))).toBe(false);
+    expect(await readWhole('long', () => service.getNewer('long', 'm100', 50))).toBe(false);
+    expect(await readWhole('long', () => service.getAround('long', 'm150', 10, 10))).toBe(false);
+  });
+
+  it('reads the whole file once, the first time in a process, then only pages', async () => {
+    const fresh = new ConversationService();
+
+    expect(await readWhole('long', () => fresh.getWindow('long', 50))).toBe(true);
+    expect(await readWhole('long', () => fresh.getOlder('long', 'm250', 50))).toBe(false);
+  });
+
+  it('holds the latest version of each message, after changes, appends and a rewind', async () => {
+    await service.update({ ...base('long'), upsert: [msg('m10', 'edited ten'), ...many(5, 300)] });
+    await service.update({ ...base('long'), truncateFromId: 'm302' });
+
+    const window = await service.getWindow('long', 5);
+    const older = await service.getOlder('long', 'm12', 3);
+
+    expect(pageIds(window?.conversation ?? null)).toEqual(['m297', 'm298', 'm299', 'm300', 'm301']);
+    expect(older?.messages.map((m) => m.content)).toEqual(['message 9', 'edited ten', 'message 11']);
+    expect(older?.olderCount).toBe(9);
+  });
+
+  it('holds the right messages after the file was compacted', async () => {
+    for (let i = 0; i < 25; i++) await service.update({ ...base('long'), upsert: [msg('m5', `streamed ${i}`)] });
+
+    const page = await service.getOlder('long', 'm7', 3);
+
+    expect(page?.messages.map((m) => m.content)).toEqual(['message 4', 'streamed 24', 'message 6']);
+  });
+
+  it('reads the whole file again when it was compacted while the page was being read', async () => {
+    // Few messages, so a few replaced lines are enough to compact.
+    await service.update({ ...base('short'), upsert: many(30) });
+    await service.getWindow('short', 10);
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const open = fs.promises.open.bind(fs.promises);
+    let holding = true;
+    // The page's locations are taken, then the file is compacted before the
+    // page opens it: its lines are no longer where they were.
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags) => {
+      if (holding && flags === 'r') {
+        holding = false;
+        await held;
+      }
+      return open(file, flags);
+    });
+
+    const reading = service.getOlder('short', 'm20', 3);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (let i = 0; i < 35; i++) await service.update({ ...base('short'), upsert: [msg('m25', `streamed ${i}`)] });
+    expect(logger.info).toHaveBeenCalledWith('Compacted a conversation messages file', expect.objectContaining({ id: 'short' }));
+    release();
+
+    expect(pageIds(await reading)).toEqual(['m17', 'm18', 'm19']);
+    expect(logger.info).toHaveBeenCalledWith(
+      'Reading a page of a conversation from its whole messages file', { id: 'short', reason: 'the file was replaced' },
+    );
+  });
+
+  it('reads the whole file again when a line does not hold the message it should', async () => {
+    // The file changed behind the app's back: its lines are no longer where
+    // they were. A page must not show one message in another's place.
+    await service.getWindow('long', 10);
+    // Two lines of the same length swapped: each location now holds a
+    // whole, readable line — of the other message.
+    const text = fs.readFileSync(messagesFile('long'), 'utf-8');
+    const line = (id: string) => recordLine({ put: msg(id, `message ${id.slice(1)}`) });
+    expect(line('m17')).toHaveLength(line('m18').length);
+    fs.writeFileSync(messagesFile('long'), text.replace(line('m17'), '@@').replace(line('m18'), line('m17')).replace('@@', line('m18')));
+
+    const page = await service.getOlder('long', 'm20', 3);
+
+    expect(page?.messages.map((m) => [m.id, m.content])).toEqual([['m17', 'message 17'], ['m18', 'message 18'], ['m19', 'message 19']]);
+    expect(logger.info).toHaveBeenCalledWith(
+      'Reading a page of a conversation from its whole messages file', { id: 'long', reason: 'a line did not hold its message' },
+    );
   });
 });
 

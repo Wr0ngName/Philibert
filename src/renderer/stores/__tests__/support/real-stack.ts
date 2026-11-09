@@ -208,6 +208,23 @@ export function fakeFsModule(): Record<string, unknown> {
        * a failure applies where a real one shows: at opening the file.
        */
       open: async (p: string, flags: string) => {
+        if (flags === 'r') {
+          // A page read by line location (ConversationService.view): held and
+          // failed as readFile is, so a page in flight is one here too.
+          if (disk.holdReads) {
+            await new Promise<void>((resolve) => disk.readWaiting.push(resolve));
+          }
+          if (disk.failReads) {
+            const err = new Error(`EIO: i/o error, read '${p}'`) as NodeJS.ErrnoException;
+            err.code = 'EIO';
+            throw err;
+          }
+          if (!files.has(p)) {
+            const err = new Error(`ENOENT: ${p}`) as NodeJS.ErrnoException;
+            err.code = 'ENOENT';
+            throw err;
+          }
+        }
         if (flags === 'w' || flags === 'a') {
           if (disk.holdWrites) {
             await new Promise<void>((resolve) => disk.waiting.push(resolve));
@@ -226,6 +243,11 @@ export function fakeFsModule(): Record<string, unknown> {
           },
           appendFile: async (data: string) => {
             files.set(p, (files.get(p) ?? '') + data);
+          },
+          read: async (buffer: Buffer, offset: number, length: number, position: number) => {
+            const bytes = Buffer.from(files.get(p) ?? '', 'utf-8');
+            const bytesRead = bytes.copy(buffer, offset, position, Math.min(bytes.length, position + length));
+            return { bytesRead, buffer };
           },
           sync: async () => {},
           close: async () => {},
