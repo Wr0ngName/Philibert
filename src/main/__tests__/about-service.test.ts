@@ -6,11 +6,15 @@
  * field into something a browser can open. A wrong parse here shows the
  * whole line, or "unknown", with nothing to explain it.
  *
- * Deliberately not tested through collectAboutInfo: that reads installed
- * manifests through the module system, which does not resolve the same way
- * under vitest as in a packaged Electron app. Asserting on it here would test
- * the test environment rather than the code.
+ * Not tested through collectAboutInfo, which asks Electron and spawns
+ * whisper. The installed versions it shows are: installedVersion reads them
+ * from the folders the module system looks in, which are this project's
+ * node_modules here — the very packages the app bundles.
  */
+
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import path from 'node:path';
 
 import { describe, it, expect, vi } from 'vitest';
 
@@ -28,7 +32,33 @@ vi.mock('../utils/logger', () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { normaliseRepositoryUrl, parseWhisperVersion } from '../services/AboutService';
+import { installedVersion, normaliseRepositoryUrl, parseWhisperVersion } from '../services/AboutService';
+
+/** Node's require, as the old lookup used it. */
+const nodeRequire = createRequire(import.meta.url);
+
+/** A package's version as its manifest in this project's node_modules says. */
+function manifestVersion(name: string): string {
+  return (JSON.parse(fs.readFileSync(path.join(process.cwd(), 'node_modules', name, 'package.json'), 'utf-8')) as { version: string }).version;
+}
+
+describe('installedVersion', () => {
+  // Reported: the About page said "unknown" for the agent SDK. Its manifest
+  // has an exports map that does not list ./package.json, and the version
+  // was read by requiring that subpath: ERR_PACKAGE_PATH_NOT_EXPORTED.
+  it('reads the agent SDK, whose exports map does not list its manifest', () => {
+    expect(() => nodeRequire('@anthropic-ai/claude-agent-sdk/package.json')).toThrow(/not defined by "exports"/);
+    expect(installedVersion('@anthropic-ai/claude-agent-sdk')).toBe(manifestVersion('@anthropic-ai/claude-agent-sdk'));
+  });
+
+  it('reads Claude Code, which has no entry point to resolve, only a binary', () => {
+    expect(installedVersion('@anthropic-ai/claude-code')).toBe(manifestVersion('@anthropic-ai/claude-code'));
+  });
+
+  it('says nothing for a package that is not installed', () => {
+    expect(installedVersion('@anthropic-ai/not-a-package')).toBeNull();
+  });
+});
 
 describe('parseWhisperVersion', () => {
   it('extracts the version from the real output format', () => {

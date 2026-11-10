@@ -10,6 +10,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { app } from 'electron';
@@ -31,20 +32,29 @@ interface PackageManifest {
 /**
  * Read an installed dependency's own version.
  *
- * Resolves the package's manifest through the module system rather than
- * joining paths by hand, so it works inside an asar archive and wherever the
- * packager put node_modules. Returns null rather than throwing: a missing
- * optional component should render as "unknown", not break the dialog.
+ * Its manifest is found where the module system looks for the package — the
+ * node_modules folders `require.resolve.paths` lists — and read as a file,
+ * which works inside an asar archive and wherever the packager put
+ * node_modules. Not required by name: a package with an `exports` map allows
+ * only the subpaths it lists, and the agent SDK's does not list
+ * `./package.json` (ERR_PACKAGE_PATH_NOT_EXPORTED), so the About page said
+ * "unknown" for an SDK the app bundles and runs. Returns null rather than
+ * throwing: a missing optional component should render as "unknown", not
+ * break the dialog.
  */
-function installedVersion(packageName: string): string | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const manifest = require(`${packageName}/package.json`) as PackageManifest;
-    return manifest.version ?? null;
-  } catch (error) {
-    logger.debug('Could not read installed package version', { packageName, error });
-    return null;
+export function installedVersion(packageName: string): string | null {
+  for (const dir of require.resolve.paths(packageName) ?? []) {
+    const file = path.join(dir, packageName, 'package.json');
+    let manifest: PackageManifest & { name?: string };
+    try {
+      manifest = JSON.parse(fs.readFileSync(file, 'utf-8')) as PackageManifest & { name?: string };
+    } catch {
+      continue;
+    }
+    if (manifest.name === packageName) return manifest.version ?? null;
   }
+  logger.debug('Could not read installed package version', { packageName });
+  return null;
 }
 
 /** The app's own manifest, for repository and licence. */
