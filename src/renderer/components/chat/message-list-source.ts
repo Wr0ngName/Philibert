@@ -104,6 +104,8 @@ export interface HeldList {
   messages: ChatMessage[];
   isLoading: boolean;
   workingDirectory: string;
+  /** Not read yet: the list is mounted, sized, and says it is opening. */
+  opening?: boolean;
 }
 
 /**
@@ -116,8 +118,10 @@ export function heldListSource(read: () => HeldList): MessageListSource {
     get conversationId() { return read().conversationId; },
     get messages() { return read().messages; },
     get isLoading() { return read().isLoading; },
-    // Shown once read: its view says it is loading until then.
-    opening: false,
+    // Mounted before it is read, as the discussion's list is, so it has its
+    // size when the messages arrive: mounted with them, it had none yet, and
+    // the virtual list rendered every row of a long transcript at once.
+    get opening() { return read().opening ?? false; },
     streamingContent: '',
     // Held in full, so it only ever grows by what arrived.
     get arrivals() { return read().messages.length; },

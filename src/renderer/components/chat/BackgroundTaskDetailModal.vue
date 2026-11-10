@@ -91,6 +91,7 @@ const transcriptSource = heldListSource(() => ({
   messages: transcript.messages.value,
   isLoading: isRunning.value,
   workingDirectory: conversationsStore.getConversationWorkingDirectory(props.conversationId) ?? '',
+  opening: !transcript.loaded.value,
 }));
 
 /** Who the transcript's assistant turns are from. */
@@ -336,18 +337,13 @@ const statusDisplay = computed(() => {
         v-if="isAgent"
         class="agent-transcript"
       >
-        <div
-          v-if="!transcript.loaded.value"
-          class="flex items-center gap-2 p-3 text-xs text-surface-500"
-        >
-          <Spinner size="xs" />
-          Loading the agent's transcript…
-        </div>
+        <!-- Mounted while the transcript is read, not after: so it has its
+             size when the messages arrive and renders only what is in view. -->
         <MessageList
-          v-else
           :source="transcriptSource"
           user-label="Claude"
           :assistant-label="agentLabel"
+          opening-text="Loading the agent's transcript…"
           empty-title="Nothing yet"
           empty-text="The agent's prompt, messages and tool calls appear here as it works."
           @open-tool-detail="openTranscriptTool"

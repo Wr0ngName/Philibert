@@ -47,12 +47,15 @@ interface Props {
   /** Said when there is nothing to list yet. */
   emptyTitle?: string;
   emptyText?: string;
+  /** Said over the list while what it lists is being opened. */
+  openingText?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   source: undefined,
   userLabel: 'You',
   assistantLabel: 'Claude',
+  openingText: 'Opening the discussion…',
   emptyTitle: 'Start a conversation',
   emptyText: 'Ask Claude to help you with coding, explain concepts, or make changes to your files.',
 });
@@ -914,15 +917,15 @@ onUnmounted(() => {
       role="status"
     >
       <Spinner size="sm" />
-      Opening the discussion…
+      {{ openingText }}
     </div>
     <div
       ref="listRef"
       class="absolute inset-0 overflow-y-auto overflow-x-hidden p-4 message-list-spacing"
     >
-      <!-- Empty state -->
+      <!-- Empty state: not while what it lists is still being opened -->
       <div
-        v-if="!hasMessages"
+        v-if="!hasMessages && !source.opening"
         class="flex flex-col items-center justify-center h-full text-center"
       >
         <div class="w-16 h-16 mb-4 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center">
