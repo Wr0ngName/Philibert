@@ -30,6 +30,7 @@ import UsageWarningBanner from './components/shared/UsageWarningBanner.vue';
 import UpdateBanner from './components/shared/UpdateBanner.vue';
 import GitControls from './components/shared/GitControls.vue';
 import ModelSelector from './components/shared/ModelSelector.vue';
+import SchedulesButton from './components/shared/SchedulesButton.vue';
 import SessionPermissionsDropdown from './components/shared/SessionPermissionsDropdown.vue';
 import SidebarResizeHandle from './components/shared/SidebarResizeHandle.vue';
 import { CHAT_MIN_WIDTH, SIDEBAR_WIDTH } from './constants/layout';
@@ -200,6 +201,9 @@ const isMac = window.electron?.platform === 'darwin';
 
           <!-- Session Permissions -->
           <SessionPermissionsDropdown />
+
+          <!-- What is scheduled, in every discussion -->
+          <SchedulesButton />
 
           <button
             class="btn-icon"

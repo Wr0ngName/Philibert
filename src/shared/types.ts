@@ -527,6 +527,39 @@ export interface PermissionSuggestionInfo {
  * A cached session permission entry.
  * Represents a permission granted via "Always Allow" with session scope.
  */
+/**
+ * Something Claude Code will do later in a discussion's session: a cron job
+ * (CronCreate, /loop) or a one-shot wake-up (ScheduleWakeup). As the SDK's
+ * Stop hook lists it at the end of every turn (`session_crons`), with what
+ * the call that made it said, when this app saw it.
+ */
+export interface SessionSchedule {
+  id: string;
+  /**
+   * Cron expression in local time ("*\/5 * * * *"). A one-shot wake-up's
+   * encodes its single fire time ("54 1 * * *").
+   */
+  schedule: string;
+  /** False for a one-shot wake-up, true for a job firing on every match. */
+  recurring: boolean;
+  /** What it sends when it fires (capped by the CLI at 1000 characters). */
+  prompt: string;
+  /**
+   * When it was first listed, in epoch milliseconds. A one-shot's expression
+   * matches every day ("54 1 * * *"): it fires at the first match after this.
+   */
+  since: number;
+  /** How CronCreate described it ("Every 5 minutes"). */
+  humanSchedule?: string;
+  /** Kept by Claude Code across restarts of the session (CronCreate durable). */
+  durable?: boolean;
+  /**
+   * No Claude process runs the discussion: nothing fires until it runs
+   * again. Only durable jobs are kept then — the others ended with it.
+   */
+  paused?: boolean;
+}
+
 export interface SessionPermissionEntry {
   /** Unique identifier for this cached permission */
   id: string;
@@ -2070,6 +2103,8 @@ export const IPC_CHANNELS = {
   CLAUDE_SEED_SESSION_PERMISSIONS: 'claude:seed-session-permissions',
   /** Session permissions changed event */
   CLAUDE_SESSION_PERMISSIONS_CHANGED: 'claude:session-permissions-changed',
+  /** A discussion's session schedules, as its last turn ended (SessionSchedule[]) */
+  CLAUDE_SESSION_SCHEDULES: 'claude:session-schedules',
   /** List allow rules and directories from the project's settings files */
   CLAUDE_GET_PROJECT_PERMISSIONS: 'claude:get-project-permissions',
   /** Remove an allow rule or directory from `.claude/settings.local.json` */

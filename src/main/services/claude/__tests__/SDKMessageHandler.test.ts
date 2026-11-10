@@ -14,7 +14,7 @@ vi.mock('../../../utils/logger', () => ({
     debug: vi.fn(),
   },
 }));
-import { SDKMessageHandler, MessageHandlerCallbacks, resolveResultError, extractTaskCreateId, extractTaskListSnapshot, usageLimitStopFrom, usageWarningFrom } from '../SDKMessageHandler';
+import { SDKMessageHandler, MessageHandlerCallbacks, resolveResultError, extractCronJob, extractTaskCreateId, extractTaskListSnapshot, usageLimitStopFrom, usageWarningFrom } from '../SDKMessageHandler';
 
 describe('SDKMessageHandler', () => {
   let callbacks: MessageHandlerCallbacks;
@@ -1597,6 +1597,21 @@ describe('SDKMessageHandler', () => {
     it('reads no text', () => {
       expect(extractTaskListSnapshot('#16 [completed] Fix bots')).toBeUndefined();
       expect(extractTaskListSnapshot(undefined)).toBeUndefined();
+    });
+  });
+
+  describe('extractCronJob', () => {
+    it("takes the job from CronCreate's structured result, as the CLI was measured to give it", () => {
+      expect(extractCronJob({ id: '6cf46d13', humanSchedule: 'Every 5 minutes', recurring: true, durable: false }))
+        .toEqual({ id: '6cf46d13', humanSchedule: 'Every 5 minutes', durable: false });
+      expect(extractCronJob({ id: 'a', humanSchedule: 'Daily', recurring: true, durable: true })?.durable).toBe(true);
+      expect(extractCronJob({ id: 'a', humanSchedule: 'Daily', recurring: true })?.durable).toBe(false);
+    });
+
+    it('returns undefined without an id and a description, and reads no text', () => {
+      expect(extractCronJob({ humanSchedule: 'Every 5 minutes' })).toBeUndefined();
+      expect(extractCronJob('Scheduled job 6cf46d13')).toBeUndefined();
+      expect(extractCronJob(undefined)).toBeUndefined();
     });
   });
 

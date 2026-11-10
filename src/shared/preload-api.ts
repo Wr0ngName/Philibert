@@ -38,6 +38,7 @@ import type {
   PermissionScope,
   ProjectPermissionEntry,
   SessionPermissionEntry,
+  SessionSchedule,
   SessionUsage,
   AgentInfo,
   RewindOutcome,
@@ -210,6 +211,8 @@ export interface ElectronAPI {
     clearSessionPermissions: (conversationId: string) => Promise<void>;
     /** Seed the main-process cache from persisted per-conversation permissions on load */
     seedSessionPermissions: (conversationId: string, entries: SessionPermissionEntry[]) => Promise<void>;
+    /** Listen for a discussion's session schedules, as each of its turns ends */
+    onSessionSchedules: (callback: (conversationId: string, schedules: SessionSchedule[]) => void) => () => void;
     /** Listen for session permission changes */
     onSessionPermissionsChanged: (callback: (conversationId: string, permissions: SessionPermissionEntry[]) => void) => () => void;
     /** Allow rules and directories from the project's settings files */

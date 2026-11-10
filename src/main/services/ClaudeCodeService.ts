@@ -95,6 +95,7 @@ import {
 } from './claude';
 import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
 import type { HandledToolResult, ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
+import { SessionSchedules } from './claude/SessionSchedules';
 import { observeCanUseToolRequests, type CanUseToolRequest } from './claude/can-use-tool-requests';
 import { claudeAiConnectorAuthPage, readClaudeAiConnectors } from './claude/connectors';
 import {
@@ -323,6 +324,8 @@ export class ClaudeCodeService {
   private configService: ConfigService;
   private notificationService: NotificationService;
   private sessionPermissionCache: SessionPermissionCache;
+  /** What each discussion's session will do later: see SessionSchedules. */
+  private sessionSchedules: SessionSchedules;
   /**
    * Where image bytes from tool results are kept; messages carry references.
    *
@@ -350,6 +353,10 @@ export class ClaudeCodeService {
     this.sessionPermissionCache = new SessionPermissionCache();
     this.sessionPermissionCache.onPermissionsChanged((conversationId, permissions) => {
       this.send(IPC_CHANNELS.CLAUDE_SESSION_PERMISSIONS_CHANGED, conversationId, permissions);
+    });
+
+    this.sessionSchedules = new SessionSchedules((conversationId, schedules) => {
+      this.send(IPC_CHANNELS.CLAUDE_SESSION_SCHEDULES, conversationId, schedules);
     });
 
     // Initialize shared modules (not per-session)
@@ -959,6 +966,7 @@ export class ClaudeCodeService {
         this.send(IPC_CHANNELS.CLAUDE_TOOL_CAPTURE, conversationId, capture);
       },
       onToolResult: (result: HandledToolResult) => {
+        if (result.cronJob) this.sessionSchedules.noteCreated(conversationId, result.cronJob);
         const outputFile = writeToolResultFile(conversationId, result.toolUseBlockId, result.content);
         logger.info('Tool result delivered', {
           toolUseBlockId: result.toolUseBlockId,
@@ -1156,6 +1164,7 @@ export class ClaudeCodeService {
           env: authEnv,
           pathToClaudeCodeExecutable: ClaudeCliPaths.findBundledCli() || undefined,
           canUseTool: permissionManager.createCanUseToolCallback(),
+          hooks: this.sessionSchedules.hooksFor(conversationId),
           includePartialMessages: true,
           agentProgressSummaries: true,
           thinking: thinkingConfig,
@@ -1808,6 +1817,8 @@ export class ClaudeCodeService {
     // set after it, their rows said Running for good.
     this.liveBackgroundTasks.delete(conversationId);
     this.send(IPC_CHANNELS.CLAUDE_BACKGROUND_TASKS_CHANGED, conversationId, [] satisfies LiveBackgroundTask[]);
+    // Its schedules too, but for durable jobs, kept for when it runs again.
+    this.sessionSchedules.sessionEnded(conversationId);
 
     // Nor read anything still waiting for its next step: said, so the
     // renderer gives those messages back to the user instead of waiting on
@@ -2096,6 +2107,7 @@ export class ClaudeCodeService {
   async endConversation(conversationId: string): Promise<boolean> {
     const channelEnded = this.channelService ? this.channelService.endConversation(conversationId) : Promise.resolve(true);
     this.terminateSession(conversationId);
+    this.sessionSchedules.forget(conversationId);
 
     const exits = [...(this.processExits.get(conversationId) ?? [])];
     let timer: ReturnType<typeof setTimeout> | undefined;

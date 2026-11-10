@@ -57,6 +57,7 @@ let cleanupUsageUpdate: (() => void) | null = null;
 let cleanupActiveQueries: (() => void) | null = null;
 let cleanupSessionId: (() => void) | null = null;
 let cleanupSessionPermissions: (() => void) | null = null;
+let cleanupSessionSchedules: (() => void) | null = null;
 let cleanupToolExecuted: (() => void) | null = null;
 let cleanupSystemNote: (() => void) | null = null;
 let cleanupToolCapture: (() => void) | null = null;
@@ -990,6 +991,11 @@ export function useClaudeChat() {
       conversationsStore.setSdkSessionId(conversationId, sessionId);
     });
 
+    // A discussion's session schedules, as its last turn ended
+    cleanupSessionSchedules = window.electron.claude.onSessionSchedules((conversationId, schedules) => {
+      chatStore.setSessionSchedules(conversationId, schedules);
+    });
+
     // Handle session permission changes
     cleanupSessionPermissions = window.electron.claude.onSessionPermissionsChanged((conversationId, permissions) => {
       logger.debug('Session permissions changed', { conversationId, count: permissions.length });
@@ -1121,6 +1127,10 @@ export function useClaudeChat() {
     if (cleanupSessionId) {
       cleanupSessionId();
       cleanupSessionId = null;
+    }
+    if (cleanupSessionSchedules) {
+      cleanupSessionSchedules();
+      cleanupSessionSchedules = null;
     }
     if (cleanupSessionPermissions) {
       cleanupSessionPermissions();

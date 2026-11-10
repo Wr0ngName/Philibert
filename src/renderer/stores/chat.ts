@@ -8,12 +8,13 @@ import { ref, computed } from 'vue';
 
 import { modifiedPathsForTool } from '@shared/file-modifications';
 import { primaryModelUsage } from '@shared/model-usage';
-import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionUsage, ToolCaptureData, TaskListItem, TaskListSnapshotItem, ToolUseInfo, ToolResultData, MessageImage, UsageWarning } from '@shared/types';
+import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionSchedule, SessionUsage, ToolCaptureData, TaskListItem, TaskListSnapshotItem, ToolUseInfo, ToolResultData, MessageImage, UsageWarning } from '@shared/types';
 
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
 import { toolUseIdForTask } from '../utils/message-tree';
 import type { DeliveringPrompt, QueuedPrompt } from '../utils/prompt-queue';
+import type { ScheduleSource } from '../utils/schedules';
 import { dueWaits, type UsageLimitWait } from '../utils/usage-limit';
 
 /**
@@ -84,6 +85,12 @@ export interface ConversationState {
    * does not come back and start working unasked.
    */
   usageLimitWait: UsageLimitWait | null;
+  /**
+   * What Claude Code will do later in this conversation's session — cron
+   * jobs and wake-ups — as the main process last reported them. Not
+   * persisted: they live in the session's CLI process.
+   */
+  sessionSchedules: SessionSchedule[];
   /** Background tasks for this conversation */
   backgroundTasks: Map<string, BackgroundTask>;
   /** Model's todo list — reconstructed from TaskCreate/TaskUpdate/TaskList tool
@@ -308,6 +315,7 @@ function createConversationState(): ConversationState {
     deliveringPrompts: [],
     queueHeld: false,
     usageLimitWait: null,
+    sessionSchedules: [],
     backgroundTasks: new Map(),
     taskListItems: new Map(),
     sessionUsage: null,
@@ -456,6 +464,18 @@ export const useChatStore = defineStore('chat', () => {
 
   /** The usage-limit reset the current conversation is waiting on, if any. */
   const usageLimitWait = computed(() => getCurrentState()?.usageLimitWait ?? null);
+
+  /**
+   * Everything scheduled, in every conversation: its session's schedules and
+   * a continue after a usage limit — for the schedules view.
+   */
+  const scheduleSources = computed((): ScheduleSource[] =>
+    Array.from(conversationStates.value, ([conversationId, state]) => ({
+      conversationId,
+      sessionSchedules: state.sessionSchedules,
+      usageLimitWait: state.usageLimitWait,
+    })).filter((source) => source.sessionSchedules.length > 0 || source.usageLimitWait?.resumeAt != null),
+  );
 
   /** Whether any conversation has a continue scheduled after a usage limit. */
   const hasScheduledUsageLimitWait = computed(() => {
@@ -2941,6 +2961,13 @@ export const useChatStore = defineStore('chat', () => {
     getConversationState(conversationId).usageLimitWait = wait;
   }
 
+  /** Replace what a conversation's session will do later, as last reported. */
+  function setSessionSchedules(conversationId: string, schedules: SessionSchedule[]): void {
+    // Nothing for a conversation that has no state must not create one.
+    if (schedules.length === 0 && !conversationStates.value.has(conversationId)) return;
+    getConversationState(conversationId).sessionSchedules = schedules;
+  }
+
   /** Conversations whose scheduled continue is due. */
   function dueUsageLimitWaits(now: number): string[] {
     return dueWaits(
@@ -3164,6 +3191,8 @@ export const useChatStore = defineStore('chat', () => {
     usageLimitWait,
     hasScheduledUsageLimitWait,
     setUsageLimitWait,
+    scheduleSources,
+    setSessionSchedules,
     dueUsageLimitWaits,
     unscheduleUsageLimitWaits,
     hasMessageSink,

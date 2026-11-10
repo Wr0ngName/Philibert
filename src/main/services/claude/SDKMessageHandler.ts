@@ -182,6 +182,13 @@ export function resultEndsOurTurn(
   return isHumanOriginatedResult(message);
 }
 
+/** A job CronCreate made (CronCreateOutput): what the Stop hook's list does not say of it. */
+export interface CreatedCronJob {
+  id: string;
+  humanSchedule: string;
+  durable: boolean;
+}
+
 /** A tool call's result, as the handler hands it on (onToolResult). */
 export interface HandledToolResult {
   toolUseBlockId: string;
@@ -190,6 +197,8 @@ export interface HandledToolResult {
   taskListId?: string;
   /** A TaskList's whole list, from its structured result. */
   taskList?: TaskListSnapshotItem[];
+  /** The job a CronCreate made, from its structured result. */
+  cronJob?: CreatedCronJob;
   agent?: AgentRun;
   /**
    * Images the tool produced, as bytes. The handler does not store them —
@@ -744,6 +753,7 @@ export class SDKMessageHandler {
             }
           }
           const taskList = toolName === 'TaskList' ? extractTaskListSnapshot(userMsg.tool_use_result) : undefined;
+          const cronJob = toolName === 'CronCreate' ? extractCronJob(userMsg.tool_use_result) : undefined;
           if (toolName === 'TaskList' && !taskList) {
             logger.warn('TaskList result: no task list in its structured result', {
               toolUseBlockId: block.tool_use_id,
@@ -758,6 +768,7 @@ export class SDKMessageHandler {
             content,
             ...(taskListId && { taskListId }),
             ...(taskList && { taskList }),
+            ...(cronJob && { cronJob }),
             ...(agent && { agent }),
             ...(images.length > 0 && { images }),
           });
@@ -1422,6 +1433,17 @@ export function extractTaskCreateId(toolUseResult: unknown): string | undefined 
   if (!toolUseResult || typeof toolUseResult !== 'object') return undefined;
   const task = (toolUseResult as { task?: { id?: unknown } }).task;
   return task && typeof task.id === 'string' ? task.id : undefined;
+}
+
+/**
+ * The job a CronCreate call made, from its structured result
+ * (CronCreateOutput: `{ id, humanSchedule, recurring, durable? }`).
+ */
+export function extractCronJob(toolUseResult: unknown): CreatedCronJob | undefined {
+  if (!toolUseResult || typeof toolUseResult !== 'object') return undefined;
+  const { id, humanSchedule, durable } = toolUseResult as { id?: unknown; humanSchedule?: unknown; durable?: unknown };
+  if (typeof id !== 'string' || typeof humanSchedule !== 'string') return undefined;
+  return { id, humanSchedule, durable: durable === true };
 }
 
 const TASK_LIST_STATUSES: ReadonlySet<string> = new Set(['pending', 'in_progress', 'completed']);
