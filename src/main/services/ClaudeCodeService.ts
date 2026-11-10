@@ -96,12 +96,10 @@ import {
 import { resultEndsOurTurn, resolveResultError } from './claude/SDKMessageHandler';
 import type { HandledToolResult, ModelReportSource, ModelSubstitutionEvent, SubagentActivity } from './claude/SDKMessageHandler';
 import { SessionSchedules } from './claude/SessionSchedules';
+import { AgentTranscripts } from './claude/agent-transcripts';
 import { observeCanUseToolRequests, type CanUseToolRequest } from './claude/can-use-tool-requests';
 import { claudeAiConnectorAuthPage, readClaudeAiConnectors } from './claude/connectors';
-import {
-  attachTranscriptImages, cliTempRoot, locateTaskOutput, mergeByTime, messagesSentToAgent, readTaskOutput,
-  transcriptToMessages, type FoundImages,
-} from './claude/task-output';
+import { attachTranscriptImages, cliTempRoot, locateTaskOutput, readTaskOutput } from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
 import { findAgentTranscript } from './claude/transcript-files';
 
@@ -326,6 +324,8 @@ export class ClaudeCodeService {
   private sessionPermissionCache: SessionPermissionCache;
   /** What each discussion's session will do later: see SessionSchedules. */
   private sessionSchedules: SessionSchedules;
+  /** Agents' transcripts as last read: see AgentTranscripts. */
+  private agentTranscripts: AgentTranscripts;
   /**
    * Where image bytes from tool results are kept; messages carry references.
    *
@@ -357,6 +357,15 @@ export class ClaudeCodeService {
 
     this.sessionSchedules = new SessionSchedules((conversationId, schedules) => {
       this.send(IPC_CHANNELS.CLAUDE_SESSION_SCHEDULES, conversationId, schedules);
+    });
+
+    this.agentTranscripts = new AgentTranscripts({
+      readEntries: (sessionId, agentId, dir) => getSubagentMessages(sessionId, agentId, dir ? { dir } : {}),
+      locate: (sessionId, agentId) => findAgentTranscript(sessionId, agentId),
+      // saveOnce: a transcript is read again while its agent runs, and every
+      // reading finds the same images.
+      storeImages: (conversationId, found) =>
+        attachTranscriptImages(found, (image) => this.imageStore.saveOnce(conversationId, image)),
     });
 
     // Initialize shared modules (not per-session)
@@ -2048,24 +2057,7 @@ export class ClaudeCodeService {
     const session = this.activeSessions.get(conversationId);
     const sessionId = session?.sdkSessionId ?? sdkSessionId;
     if (!sessionId) return [];
-
-    const entries = await getSubagentMessages(sessionId, agentId, {
-      ...(session ? { dir: session.workingDirectory } : {}),
-    });
-    const found: FoundImages[] = [];
-    const transcript = transcriptToMessages(
-      entries,
-      (toolUseBlockId, content) => writeToolResultFile(conversationId, toolUseBlockId, content),
-      (message, images) => found.push({ message, images }),
-    );
-    // What the main conversation sent the agent while it worked, which
-    // getSubagentMessages leaves out; see messagesSentToAgent.
-    const file = findAgentTranscript(sessionId, agentId);
-    const messages = file ? mergeByTime(transcript, messagesSentToAgent(file)) : transcript;
-    // saveOnce: the transcript is read again every few seconds while the
-    // agent runs, and every read finds the same images.
-    await attachTranscriptImages(found, (image) => this.imageStore.saveOnce(conversationId, image));
-    return messages;
+    return this.agentTranscripts.read(conversationId, sessionId, agentId, session?.workingDirectory);
   }
 
   async abort(conversationId: string): Promise<void> {
@@ -2108,6 +2100,7 @@ export class ClaudeCodeService {
     const channelEnded = this.channelService ? this.channelService.endConversation(conversationId) : Promise.resolve(true);
     this.terminateSession(conversationId);
     this.sessionSchedules.forget(conversationId);
+    this.agentTranscripts.forget(conversationId);
 
     const exits = [...(this.processExits.get(conversationId) ?? [])];
     let timer: ReturnType<typeof setTimeout> | undefined;

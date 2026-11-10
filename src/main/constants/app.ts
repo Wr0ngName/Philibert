@@ -58,6 +58,12 @@ export const MAIN_CONSTANTS = {
   CLAUDE: {
     /** Delay when interrupting Claude operations - 1 second */
     INTERRUPT_DELAY_MS: 1000,
+    /**
+     * Agent transcripts whose last reading is kept (AgentTranscripts): the
+     * ones open or followed. One of 1,048 messages holds about a megabyte; one
+     * not kept is read from its file again.
+     */
+    AGENT_TRANSCRIPTS_KEPT: 8,
   },
   FILES: {
     /** Debounce interval for file watcher events (from shared constants) */

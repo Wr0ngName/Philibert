@@ -16,12 +16,16 @@ export function toolResultsDir(): string {
   return path.join(os.tmpdir(), 'claude', 'tool-results');
 }
 
+/** The file a call's result is kept in. */
+export function toolResultFileOf(conversationId: string, toolUseBlockId: string): string {
+  const safeId = toolUseBlockId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(toolResultsDir(), `${conversationId}_${safeId}.txt`);
+}
+
 /** Write a call's result and return the file it is in. */
 export function writeToolResultFile(conversationId: string, toolUseBlockId: string, content: string): string {
-  const dir = toolResultsDir();
-  fs.mkdirSync(dir, { recursive: true });
-  const safeId = toolUseBlockId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const file = path.join(dir, `${conversationId}_${safeId}.txt`);
+  fs.mkdirSync(toolResultsDir(), { recursive: true });
+  const file = toolResultFileOf(conversationId, toolUseBlockId);
   fs.writeFileSync(file, content, 'utf-8');
   return file;
 }

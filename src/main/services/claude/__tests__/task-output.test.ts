@@ -243,39 +243,22 @@ describe('messagesSentToAgent', () => {
     });
   }
 
-  let dir: string;
-  let file: string;
-
-  beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-transcript-'));
-    file = path.join(dir, 'agent-a1.jsonl');
-  });
-
-  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
-
   it("takes only the main conversation's messages, as the agent's file has them", () => {
-    fs.writeFileSync(file, [
+    const lines = [
       JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-11-02T21:08:40.000Z', message: { role: 'user', content: 'Do the work' } }),
       JSON.stringify({ type: 'attachment', uuid: 'd1', attachment: { type: 'date', date: '2026-11-02' } }),
       queued('q1', 'Also do this'),
       queued('q2', 'Your background command finished', 'task-notification'),
       '',
-    ].join('\n'));
+    ].join('\n');
 
-    expect(messagesSentToAgent(file)).toEqual([
+    expect(messagesSentToAgent(lines)).toEqual([
       { id: 'q1', role: 'user', content: 'Also do this', timestamp: Date.parse('2026-11-02T21:08:42.000Z') },
     ]);
   });
 
-  it('leaves a line the CLI is still writing for the next read', () => {
-    const whole = queued('q1', 'Also do this');
-    fs.writeFileSync(file, `${whole}\n${queued('q2', 'And this').slice(0, 60)}`);
-
-    expect(messagesSentToAgent(file).map((m) => m.id)).toEqual(['q1']);
-  });
-
-  it('has nothing to give for an agent with no file', () => {
-    expect(messagesSentToAgent(path.join(dir, 'missing.jsonl'))).toEqual([]);
+  it('skips a line that is not a whole record', () => {
+    expect(messagesSentToAgent(`${queued('q1', 'Also do this')}\n{"type":"attach`).map((m) => m.id)).toEqual(['q1']);
   });
 });
 

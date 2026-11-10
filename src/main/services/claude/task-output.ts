@@ -157,18 +157,13 @@ export async function attachTranscriptImages(
  * of its own, which getSubagentMessages does return.
  *
  * Ids are the records' uuids, as in transcriptToMessages, so reading again
- * keeps them. A line that is not a whole record — the last one, while the
- * CLI is writing it — is skipped, and read in full next time.
+ * keeps them. `lines` are whole lines of the transcript: the caller reads
+ * only what was appended since last time (AgentTranscripts), and leaves a
+ * line the CLI is still writing for next time.
  */
-export function messagesSentToAgent(transcriptFile: string): ChatMessage[] {
-  let text: string;
-  try {
-    text = fs.readFileSync(transcriptFile, 'utf-8');
-  } catch {
-    return [];
-  }
+export function messagesSentToAgent(lines: string): ChatMessage[] {
   const messages: ChatMessage[] = [];
-  for (const line of text.split('\n')) {
+  for (const line of lines.split('\n')) {
     if (!line.includes('"queued_command"')) continue;
     let record: {
       type?: string;
