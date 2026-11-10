@@ -1401,4 +1401,22 @@ describe('SessionPermissionCache', () => {
       expect(cache.isAllowed('conv1', 'Bash', {})).toBe(true);
     });
   });
+
+  // A prompt after a restart was traced from the log, which said only how
+  // many grants came back — not whether its tool was among them.
+  describe('seeding from a saved discussion', () => {
+    it('logs which tools came back, not only how many', async () => {
+      const { default: logger } = await import('../../../utils/logger');
+
+      cache.seed('conv1', [
+        { id: 'p1', toolName: 'Monitor', description: 'Monitor', grantedAt: 1 },
+        { id: 'p2', toolName: 'WebFetch', description: 'WebFetch', grantedAt: 2 },
+      ]);
+
+      expect(logger.info).toHaveBeenCalledWith('Session permissions seeded from persisted state', {
+        conversationId: 'conv1', count: 2, tools: ['Monitor', 'WebFetch'],
+      });
+      expect(cache.isAllowed('conv1', 'Monitor', {})).toBe(true);
+    });
+  });
 });

@@ -209,7 +209,10 @@ export class PermissionManager {
       // Check session permission cache (persists across queries)
       if (!manualApprovalRequired && this.sessionPermissionCache && this.conversationId) {
         if (this.sessionPermissionCache.isAllowed(this.conversationId, toolName, input)) {
-          logger.debug('Session permission cache hit', { toolName, conversationId: this.conversationId });
+          // Info, not debug: the line above says a permission was requested,
+          // and without this one a request answered by a session grant reads
+          // the same as one the user was asked.
+          logger.info('Session permission cache hit', { actionId, toolName, conversationId: this.conversationId });
           return {
             behavior: 'allow',
             updatedInput: input,
@@ -1024,6 +1027,9 @@ export class PermissionManager {
         toolName: pending.toolName,
         alwaysAllow: response.alwaysAllow,
         chosenScope: response.chosenScope,
+        // The project option's variant: the whole tool, or the CLI's narrower
+        // rules — which decide whether the next call of the tool asks again.
+        ...(response.chosenVariant !== undefined && { chosenVariant: response.chosenVariant }),
       });
 
       const result: PermissionResult = {

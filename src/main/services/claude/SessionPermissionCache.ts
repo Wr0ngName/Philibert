@@ -295,6 +295,9 @@ export class SessionPermissionCache {
 		logger.info('Session permissions seeded from persisted state', {
 			conversationId,
 			count: entries.length,
+			// Which tools: a prompt after a restart is answered by whether its
+			// tool is among them, and the count alone could not say.
+			tools: entries.map((e) => e.toolName),
 		});
 		this.notifyChange(conversationId);
 	}
