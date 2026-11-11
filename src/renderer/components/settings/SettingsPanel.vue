@@ -476,7 +476,7 @@ function cancel() {
                     Archive inactive discussions
                   </div>
                   <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
-                    They move to Archived in the discussions list, and come back with their next message.
+                    They move to Archived in the discussions list. Bring one back from there to write in it again.
                   </div>
                 </div>
                 <ToggleSwitch

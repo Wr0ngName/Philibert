@@ -45,7 +45,7 @@ import { useSettingsStore } from '../settings';
 
 import {
   startRealStack, settle, onDisk, disk, files, releaseReads, releaseWrites,
-  storedConfig, unmountApp,
+  sessionOnDisk, storedConfig, unmountApp,
 } from './support/real-stack';
 
 const DIR = '/home/user/project';
@@ -751,7 +751,9 @@ describe('useConversationsStore', () => {
     function seedMany(count: number, newest = NOW): string[] {
       return Array.from({ length: count }, (_, i) => {
         const id = `conv_${String(i).padStart(3, '0')}`;
-        seed({ id, title: `Discussion ${i}`, updatedAt: newest - i * 60_000 });
+        // Continuing a session still on disk: one that can be brought back from the archive.
+        seed({ id, title: `Discussion ${i}`, updatedAt: newest - i * 60_000, sdkSessionId: `session-${id}` });
+        sessionOnDisk(`session-${id}`);
         return id;
       });
     }
@@ -832,7 +834,7 @@ describe('useConversationsStore', () => {
       expect(store.listedConversations.map((c) => c.id)).toEqual(seeded);
     });
 
-    it('brings back the discussion on screen when a message is sent in it after it was archived', async () => {
+    it('brings back the discussion on screen when a message comes into it after it was archived — a background task reporting, say', async () => {
       seedMany(1);
       await store.initialize();
       const id = store.currentConversationId!;

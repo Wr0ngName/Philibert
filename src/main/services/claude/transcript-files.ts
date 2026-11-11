@@ -32,6 +32,38 @@ export function findSessionTranscript(sessionId: string, configDir: string = cli
   return null;
 }
 
+/**
+ * The sessions with a transcript on disk, by id: for asking about many at
+ * once, where findSessionTranscript would look through every project folder
+ * for each.
+ */
+export async function sessionIdsOnDisk(configDir: string = cliConfigDir()): Promise<Set<string>> {
+  const projectsDir = path.join(configDir, 'projects');
+  const ids = new Set<string>();
+  let projects: fs.Dirent[];
+  try {
+    projects = await fs.promises.readdir(projectsDir, { withFileTypes: true });
+  } catch {
+    return ids;
+  }
+  await Promise.all(
+    projects
+      .filter((project) => project.isDirectory())
+      .map(async (project) => {
+        let names: string[];
+        try {
+          names = await fs.promises.readdir(path.join(projectsDir, project.name));
+        } catch {
+          return;
+        }
+        for (const name of names) {
+          if (name.endsWith('.jsonl')) ids.add(name.slice(0, -'.jsonl'.length));
+        }
+      }),
+  );
+  return ids;
+}
+
 /** An agent's transcript in a session, or null when it has none on disk. */
 export function findAgentTranscript(
   sessionId: string,

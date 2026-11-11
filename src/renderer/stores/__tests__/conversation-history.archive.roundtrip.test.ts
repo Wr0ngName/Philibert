@@ -37,7 +37,7 @@ import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
-import { startRealStack, settle, files, unmountApp } from './support/real-stack';
+import { startRealStack, settle, files, sessionOnDisk, unmountApp } from './support/real-stack';
 
 /** The observers the list made, so a test can bring its end marker into view. */
 const observers: FakeObserver[] = [];
@@ -80,8 +80,10 @@ function seedMany(count: number): string[] {
       messages: [{ id: `${id}-m`, role: 'user', content: `needle number ${i} here`, timestamp: now - i * 60_000 }],
       createdAt: now - i * 60_000,
       updatedAt: now - i * 60_000,
+      sdkSessionId: `session-${id}`,
     };
     files.set(`/conversations/${id}.json`, JSON.stringify(conversation));
+    sessionOnDisk(`session-${id}`);
     return id;
   });
 }
@@ -247,6 +249,57 @@ describe('the discussions list', () => {
     await settle();
     expect(rows(wrapper)).toHaveLength(3);
     expect(tab('Archived').text()).toBe('Archived');
+  });
+
+  describe('a discussion whose Claude session is gone', () => {
+    /** Claude Code cleaned the session up, as it does after its retention period. */
+    function sessionCleanedUp(id: string): void {
+      for (const key of [...files.keys()]) {
+        if (key.endsWith(`/session-${id}.jsonl`)) files.delete(key);
+      }
+    }
+
+    const tab = (wrapper: ReturnType<typeof mount>, name: string) =>
+      wrapper.findAll('[role="tab"]').find((t) => t.text().startsWith(name))!;
+
+    it('has no way back from the Archived tab', async () => {
+      seedMany(3);
+      sessionCleanedUp('conv_001');
+      const wrapper = await open();
+      const store = useConversationsStore();
+      await store.setConversationArchived('conv_001', true);
+      await store.setConversationArchived('conv_002', true);
+      await tab(wrapper, 'Archived').trigger('click');
+      await settle();
+
+      const row = (id: string) => wrapper.find(`[data-conversation-id="${id}"]`);
+      expect(row('conv_001').find('button[title="Bring back from the archive"]').exists()).toBe(false);
+      // Still deletable.
+      expect(row('conv_001').find('button[title="Delete conversation"]').exists()).toBe(true);
+      expect(row('conv_002').find('button[title="Bring back from the archive"]').exists()).toBe(true);
+    });
+
+    it('stays archived when its session went after the list was read, and loses its way back', async () => {
+      seedMany(3);
+      const wrapper = await open();
+      const store = useConversationsStore();
+      await store.setConversationArchived('conv_001', true);
+      await tab(wrapper, 'Archived').trigger('click');
+      await settle();
+      const row = () => wrapper.find('[data-conversation-id="conv_001"]');
+      expect(row().find('button[title="Bring back from the archive"]').exists()).toBe(true);
+
+      sessionCleanedUp('conv_001');
+      await row().find('button[title="Bring back from the archive"]').trigger('click');
+      await settle();
+
+      expect(row().exists()).toBe(true);
+      expect(row().find('button[title="Bring back from the archive"]').exists()).toBe(false);
+      expect(tab(wrapper, 'Archived').text()).toBe('Archived (1)');
+      const stored = JSON.parse(files.get('/conversations/conv_001.json')!) as Conversation;
+      expect(stored.archivedAt).toBeTypeOf('number');
+      expect(stored.restoredAt).toBeUndefined();
+    });
   });
 
   describe('a discussion with tasks running in the background', () => {

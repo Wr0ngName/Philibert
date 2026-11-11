@@ -70,6 +70,16 @@ const base = (id: string): ConversationUpdate => ({
   id, upsert: [], workingDirectory: '/home/user/project', updatedAt: 1_700_000_000_000,
 });
 
+/** Where Claude Code keeps its sessions, for these tests: never the real one. */
+const claudeConfigDir = () => path.join(root, 'claude');
+
+/** Put a Claude Code session's transcript where Claude Code keeps it. */
+function sessionOnDisk(sessionId: string): void {
+  const file = path.join(claudeConfigDir(), 'projects', '-home-user-project', `${sessionId}.jsonl`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '{}\n');
+}
+
 /** Create a discussion the way the app does: an update with its first messages. */
 async function seed(id: string, messageIds: string[], extra: Partial<ConversationUpdate> = {}): Promise<void> {
   await service.update({ ...base(id), upsert: messageIds.map((m) => msg(m)), createdAt: 1_600_000_000_000, ...extra });
@@ -96,7 +106,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'philibert-conversations-'));
   conversationsDir.path = path.join(root, 'conversations');
-  service = new ConversationService();
+  service = new ConversationService(claudeConfigDir);
 });
 
 afterEach(() => {
@@ -122,6 +132,7 @@ describe('what a discussion is stored as', () => {
 
   it('reads back as the conversation it was given', async () => {
     await seed('c', ['m1', 'm2'], { sdkSessionId: 'session-1', executionMode: 'sdk' });
+    sessionOnDisk('session-1');
 
     expect(await whole('c')).toEqual({
       id: 'c',
@@ -162,12 +173,12 @@ describe('what a discussion is stored as', () => {
   it('opens a discussion whose messages file is gone as having none, and saves to it again', async () => {
     await seed('c', ['m1', 'm2']);
     fs.unlinkSync(messagesFile('c'));
-    const fresh = new ConversationService();
+    const fresh = new ConversationService(claudeConfigDir);
 
     expect((await whole('c', fresh))?.messages).toEqual([]);
     await fresh.update({ ...base('c'), upsert: [msg('m3')] });
 
-    expect((await whole('c', new ConversationService()))?.messages.map((m) => m.id)).toEqual(['m3']);
+    expect((await whole('c', new ConversationService(claudeConfigDir)))?.messages.map((m) => m.id)).toEqual(['m3']);
   });
 
   it('leaves an unreadable file out of the list without breaking it', async () => {
@@ -411,7 +422,7 @@ describe('a write stopped part-way', () => {
     // What a process ended mid-append leaves: the start of a line.
     fs.appendFileSync(messagesFile('c'), '\n{"put":{"id":"m3","role":"user","cont');
 
-    const service2 = new ConversationService();
+    const service2 = new ConversationService(claudeConfigDir);
 
     expect((await whole('c', service2))?.messages.map((m) => m.id)).toEqual(['m1', 'm2']);
     expect(logger.warn).toHaveBeenCalledWith(
@@ -422,11 +433,11 @@ describe('a write stopped part-way', () => {
   it('does not take the next save down with it', async () => {
     await seed('c', ['m1']);
     fs.appendFileSync(messagesFile('c'), '\n{"put":{"id":"m2","role":"us');
-    const service2 = new ConversationService();
+    const service2 = new ConversationService(claudeConfigDir);
 
     await service2.update({ ...base('c'), upsert: [msg('m2'), msg('m3')] });
 
-    expect((await whole('c', new ConversationService()))?.messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
+    expect((await whole('c', new ConversationService(claudeConfigDir)))?.messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
   });
 
   it('leaves the details as they were when it stopped before its rename', async () => {
@@ -442,7 +453,7 @@ describe('a write stopped part-way', () => {
     fs.writeFileSync(`${detailsFile('c')}.tmp`, 'partial');
     fs.writeFileSync(`${messagesFile('c')}.tmp`, 'partial');
 
-    await new ConversationService().upgradeStorage();
+    await new ConversationService(claudeConfigDir).upgradeStorage();
 
     expect(fs.readdirSync(conversationsDir.path).sort()).toEqual(['c.json', 'c.messages.jsonl']);
   });
@@ -455,7 +466,7 @@ describe('compaction', () => {
     for (let i = 0; i < 25; i++) await service.update({ ...base('c'), upsert: [msg('m2', `streamed ${i}`)] });
 
     expect(logLines('c').length).toBeLessThan(25);
-    expect((await whole('c', new ConversationService()))?.messages).toEqual([msg('m1'), msg('m2', 'streamed 24')]);
+    expect((await whole('c', new ConversationService(claudeConfigDir)))?.messages).toEqual([msg('m1'), msg('m2', 'streamed 24')]);
   });
 
   it('keeps saving after compacting, without writing what did not change', async () => {
@@ -487,7 +498,7 @@ describe('compaction', () => {
     // Twelve lines of about 90 bytes, 300 bytes at a time.
     expect(rangeReads).toBeGreaterThan(2);
     vi.restoreAllMocks();
-    expect((await whole('c', new ConversationService()))?.messages.map((m) => m.content))
+    expect((await whole('c', new ConversationService(claudeConfigDir)))?.messages.map((m) => m.content))
       .toEqual(Array.from({ length: 12 }, (_, i) => (i === 3 ? 'streamed 24' : `content m${i}`)));
   });
 
@@ -528,7 +539,7 @@ describe('compaction', () => {
     expect(logger.warn).toHaveBeenCalledWith('Failed to compact a conversation messages file', expect.objectContaining({ id: 'c' }));
     expect(fs.readFileSync(messagesFile('c'), 'utf-8').startsWith(before)).toBe(true);
     expect(fs.readdirSync(conversationsDir.path).filter((n) => n.endsWith('.tmp'))).toEqual([]);
-    const reread = (await whole('c', new ConversationService()))?.messages ?? [];
+    const reread = (await whole('c', new ConversationService(claudeConfigDir)))?.messages ?? [];
     expect(reread.map((m) => m.id)).toEqual(Array.from({ length: 12 }, (_, i) => `m${i}`));
     expect(reread[3].content).toBe('streamed 20');
   });
@@ -540,6 +551,7 @@ describe('discussions stored in one file, as up to 0.25.13', () => {
       sdkSessionId: 'session-old', title: 'the first question',
     });
     fs.writeFileSync(detailsFile('old'), JSON.stringify(stored));
+    sessionOnDisk('session-old');
 
     await service.upgradeStorage();
 
@@ -649,7 +661,7 @@ describe('deleting', () => {
     await seed('c', ['m1']);
     fs.unlinkSync(detailsFile('c'));
 
-    await new ConversationService().upgradeStorage();
+    await new ConversationService(claudeConfigDir).upgradeStorage();
 
     expect(fs.readdirSync(conversationsDir.path)).toEqual([]);
   });
@@ -823,7 +835,7 @@ describe('finding a tool call in a stored discussion', () => {
     await seed('c', ['m0']);
     await service.update({ ...base('c'), upsert: [agentCall('m1'), ...Array.from({ length: 300 }, (_, i) => msg(`f${i}`))] });
 
-    const found = await new ConversationService().findToolCall('c', 'toolu_agent');
+    const found = await new ConversationService(claudeConfigDir).findToolCall('c', 'toolu_agent');
 
     expect(found?.id).toBe('m1');
     expect(found?.toolUse?.task?.taskId).toBe('agent-1');
@@ -886,7 +898,7 @@ describe('a page of a long discussion', () => {
   });
 
   it('reads the whole file once, the first time in a process, then only pages', async () => {
-    const fresh = new ConversationService();
+    const fresh = new ConversationService(claudeConfigDir);
 
     expect(await readWhole('long', () => fresh.getWindow('long', 50))).toBe(true);
     expect(await readWhole('long', () => fresh.getOlder('long', 'm250', 50))).toBe(false);
@@ -985,7 +997,7 @@ describe("a messages file's saved index", () => {
     await service.settleWrites(10_000);
     expect(fs.existsSync(indexFile('c'))).toBe(true);
 
-    const next = new ConversationService();
+    const next = new ConversationService(claudeConfigDir);
     let page: Awaited<ReturnType<ConversationService['getWindow']>> = null;
     expect(await readWhole('c', async () => { page = await next.getWindow('c', 5); })).toBe(false);
     expect(page!.conversation.messages.map((m) => m.id)).toEqual(['m295', 'm296', 'm297', 'm298', 'm299']);
@@ -995,13 +1007,13 @@ describe("a messages file's saved index", () => {
   it('serves the writes of the next session too, without reading the file whole', async () => {
     await service.update({ ...base('c'), upsert: many(10) });
     await service.settleWrites(10_000);
-    const next = new ConversationService();
+    const next = new ConversationService(claudeConfigDir);
 
     expect(await readWhole('c', () => next.update({ ...base('c'), upsert: [msg('m3', 'edited'), msg('m10', 'new')] }))).toBe(false);
 
     // Only what changed was appended: the index told which messages were stored as they are.
     expect(logLines('c').slice(10).map((l) => (JSON.parse(l) as { put: ChatMessage }).put.id)).toEqual(['m3', 'm10']);
-    expect((await whole('c', new ConversationService()))?.messages.map((m) => m.content).slice(2, 5)).toEqual(['message 2', 'edited', 'message 4']);
+    expect((await whole('c', new ConversationService(claudeConfigDir)))?.messages.map((m) => m.content).slice(2, 5)).toEqual(['message 2', 'edited', 'message 4']);
   });
 
   it('is ignored once the file has been saved to since, as after a crash before the next close', async () => {
@@ -1010,7 +1022,7 @@ describe("a messages file's saved index", () => {
     // Saved to, and the app killed before it could save the index again.
     await service.update({ ...base('c'), upsert: [msg('m10', 'after the index')] });
 
-    const next = new ConversationService();
+    const next = new ConversationService(claudeConfigDir);
     expect(await readWhole('c', () => next.getWindow('c', 3))).toBe(true);
     expect((await next.getWindow('c', 3))?.conversation.messages.map((m) => m.id)).toEqual(['m8', 'm9', 'm10']);
   });
@@ -1020,7 +1032,7 @@ describe("a messages file's saved index", () => {
     await service.settleWrites(10_000);
     fs.writeFileSync(indexFile('c'), '{"version":1,"bytes":12,"sta');
 
-    expect((await new ConversationService().getWindow('c', 3))?.conversation.messages.map((m) => m.id)).toEqual(['m7', 'm8', 'm9']);
+    expect((await new ConversationService(claudeConfigDir).getWindow('c', 3))?.conversation.messages.map((m) => m.id)).toEqual(['m7', 'm8', 'm9']);
   });
 
   it('cannot put one message in place of another, or in another order, even stamped like the file', async () => {
@@ -1035,7 +1047,7 @@ describe("a messages file's saved index", () => {
     const index = JSON.parse(fs.readFileSync(indexFile('c'), 'utf-8')) as { bytes: number; mtimeMs: number };
     fs.writeFileSync(indexFile('c'), JSON.stringify({ ...index, bytes: stat.size, mtimeMs: stat.mtimeMs }));
 
-    const page = await new ConversationService().getOlder('c', 'm20', 3);
+    const page = await new ConversationService(claudeConfigDir).getOlder('c', 'm20', 3);
 
     // What the file holds, in its order.
     expect(page?.messages.map((m) => [m.id, m.content])).toEqual([['m18', 'message 18'], ['m17', 'message 17'], ['m19', 'message 19']]);
@@ -1049,7 +1061,7 @@ describe("a messages file's saved index", () => {
     fs.writeFileSync(detailsFile('old'), JSON.stringify(oneFile('old', many(20))));
     await service.upgradeStorage();
 
-    expect(await readWhole('old', () => new ConversationService().getWindow('old', 3))).toBe(false);
+    expect(await readWhole('old', () => new ConversationService(claudeConfigDir).getWindow('old', 3))).toBe(false);
   });
 
   it('is saved for a discussion leaving memory, so it need not be read whole when it returns', async () => {
@@ -1089,7 +1101,7 @@ describe("a messages file's saved index", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     vi.restoreAllMocks();
 
-    expect((await new ConversationService().getWindow('x', 10))?.conversation.messages.map((m) => m.id)).toEqual(['m0', 'm1', 'm2', 'm3']);
+    expect((await new ConversationService(claudeConfigDir).getWindow('x', 10))?.conversation.messages.map((m) => m.id)).toEqual(['m0', 'm1', 'm2', 'm3']);
   });
 
   it('goes with its discussion when deleted, and is removed at start when left without one', async () => {
@@ -1099,7 +1111,7 @@ describe("a messages file's saved index", () => {
 
     await service.delete('c');
     fs.unlinkSync(detailsFile('d'));
-    await new ConversationService().upgradeStorage();
+    await new ConversationService(claudeConfigDir).upgradeStorage();
 
     expect(fs.readdirSync(conversationsDir.path)).toEqual([]);
   });

@@ -138,6 +138,20 @@ export function useClaudeChat() {
    */
   type SendOutcome = 'started' | 'handled' | 'rejected';
 
+  /**
+   * Nothing is written in an archived discussion: it is brought back from
+   * the archive first. The input is not shown for one (ChatWindow); this is
+   * the gate behind it, for every way a prompt gets sent.
+   *
+   * @returns true when refused.
+   */
+  function refuseArchived(conversationId: string): boolean {
+    if (!conversationsStore.isConversationArchived(conversationId)) return false;
+    logger.warn('Prompt refused: the discussion is archived', { conversationId });
+    chatStore.setError(conversationId, 'This discussion is archived: bring it back from the archive to write in it');
+    return true;
+  }
+
   async function sendMessage(content: string, images?: MessageImage[]): Promise<SendOutcome> {
     // Attachments alone are a message: a screenshot with no question is a
     // real thing to send, and refusing it would make an attachment useless
@@ -151,6 +165,8 @@ export function useClaudeChat() {
       chatStore.setError(currentConvId || 'unknown', 'No active conversation');
       return 'rejected';
     }
+
+    if (refuseArchived(currentConvId)) return 'rejected';
 
     // Check prerequisites
     if (!settingsStore.hasAuth) {
@@ -284,6 +300,14 @@ export function useClaudeChat() {
         return;
       }
 
+      if (conversationsStore.isConversationArchived(conversationId)) {
+        // Archived while it waited: put aside, so not continued behind the
+        // user's back — and a continue would bring it back by itself.
+        logger.info('Continue after usage limit dropped: the discussion is archived', { conversationId });
+        chatStore.setUsageLimitWait(conversationId, null);
+        return;
+      }
+
       if (chatStore.isAtResourceLimit) {
         // Not an error: the wait stays scheduled and the next check retries.
         logger.debug('Continue after usage limit waits for room under the run cap', { conversationId });
@@ -359,7 +383,7 @@ export function useClaudeChat() {
    */
   function queuePrompt(content: string, images?: MessageImage[]): void {
     const currentConvId = conversationsStore.currentConversationId;
-    if (!currentConvId) return;
+    if (!currentConvId || refuseArchived(currentConvId)) return;
 
     if (!chatStore.queuePrompt(currentConvId, content, images)) return;
     logger.info('Prompt queued for the end of the current turn', {
@@ -381,6 +405,7 @@ export function useClaudeChat() {
   async function sendDuringTurn(content: string, images?: MessageImage[]): Promise<void> {
     const conversationId = conversationsStore.currentConversationId;
     if (!conversationId || (!content.trim() && (!images || images.length === 0))) return;
+    if (refuseArchived(conversationId)) return;
 
     if (content.trim().startsWith('/')) {
       queuePrompt(content);

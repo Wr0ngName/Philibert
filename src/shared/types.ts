@@ -1097,9 +1097,11 @@ export interface Conversation {
    */
   taskList?: TaskListItem[];
   /**
-   * When the user archived it. It stays archived until something newer
-   * happens in it: a message after this time brings it back by itself. See
-   * isArchived in @shared/conversation-list.
+   * When the user archived it. It stays archived until it is brought back
+   * (restoredAt), or something newer happens in it — a background task
+   * reporting, say: a message after this time brings it back by itself. The
+   * user cannot write in it while it is archived. See isArchived in
+   * @shared/conversation-list.
    */
   archivedAt?: number;
   /**
@@ -1107,6 +1109,16 @@ export interface Conversation {
    * one archived for being inactive is not archived again straight away.
    */
   restoredAt?: number;
+  /**
+   * Its Claude Code session is no longer on disk — Claude Code cleaned it
+   * up, or it never had one — so there is nothing left to continue: an
+   * archived one stays archived (ConversationService.setArchived refuses).
+   *
+   * Worked out by the main process each time it hands the discussion out
+   * (list entries, the opened window), never stored: the session's files
+   * are Claude Code's, and can go at any time.
+   */
+  sessionGone?: true;
 }
 
 /**
@@ -1177,7 +1189,16 @@ export interface ConversationUpdate {
  */
 export type ConversationSummary = Pick<
   Conversation,
-  'id' | 'title' | 'customTitle' | 'workingDirectory' | 'createdAt' | 'updatedAt' | 'executionMode' | 'archivedAt' | 'restoredAt'
+  | 'id'
+  | 'title'
+  | 'customTitle'
+  | 'workingDirectory'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'executionMode'
+  | 'archivedAt'
+  | 'restoredAt'
+  | 'sessionGone'
 >;
 
 /** Where a page of the discussions list starts: after this entry, in newest-first order. */

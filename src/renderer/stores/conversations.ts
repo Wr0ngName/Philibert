@@ -121,6 +121,21 @@ export const useConversationsStore = defineStore('conversations', () => {
     return isArchived(conversation, autoArchiveDays(), now);
   }
 
+  /**
+   * Whether a held discussion is archived: nothing can be written in it until
+   * it is brought back. One not held is not known to be.
+   */
+  function isConversationArchived(id: string): boolean {
+    const conversation = conversations.value.find((c) => c.id === id);
+    return conversation !== undefined && inArchive(conversation);
+  }
+
+  /** The open discussion, when it is archived; see isConversationArchived. */
+  const currentArchived = computed((): Conversation | null => {
+    const conversation = currentConversation.value;
+    return conversation && inArchive(conversation) ? conversation : null;
+  });
+
   const listedConversations = computed(() => {
     const now = Date.now();
     const archived = listView.value === 'archived';
@@ -219,6 +234,7 @@ export const useConversationsStore = defineStore('conversations', () => {
         delete kept.customTitle;
         delete kept.archivedAt;
         delete kept.restoredAt;
+        delete kept.sessionGone;
         conversations.value[at] = { ...kept, ...summary, executionMode: summary.executionMode ?? kept.executionMode };
       } else {
         indexById.set(summary.id, conversations.value.length);
@@ -320,6 +336,12 @@ export const useConversationsStore = defineStore('conversations', () => {
     try {
       const summary = await window.electron.conversation.setArchived(id, archived);
       mergeSummaries([summary]);
+      if (!archived && summary.sessionGone) {
+        // Refused: its session went since the list was read.
+        logger.warn('Conversation not brought back: its Claude Code session is gone', { id });
+        error.value = "This discussion can't be brought back: Claude's session for it no longer exists";
+        return false;
+      }
       logger.info(archived ? 'Archived conversation' : 'Brought a conversation back from the archive', { id });
       await refreshArchivedCount();
       return true;
@@ -1813,6 +1835,8 @@ export const useConversationsStore = defineStore('conversations', () => {
     archivedCount,
     listRevealCount,
     currentModeMismatch,
+    currentArchived,
+    isConversationArchived,
 
     // Actions
     loadConversationList,

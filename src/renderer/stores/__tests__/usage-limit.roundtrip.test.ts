@@ -166,6 +166,22 @@ describe('a task stopped by a usage limit', () => {
     );
   });
 
+  it('does not continue a conversation archived while it waited', async () => {
+    const id = await stoppedConversation();
+    const at = resumeAt(id);
+    expect(await store.setConversationArchived(id, true)).toBe(true);
+    await settle(20);
+    expect(store.isConversationArchived(id)).toBe(true);
+
+    await clockTo(at);
+
+    expect(sends).toEqual([[id, 'build the feature']]);
+    expect(chat.getConversationState(id).usageLimitWait).toBeNull();
+    // Still archived: a continue would have brought it back by itself.
+    expect(store.isConversationArchived(id)).toBe(true);
+    expect(diskContents(id)).toEqual(['build the feature', REFUSAL]);
+  });
+
   it('holds queued prompts until the task has continued', async () => {
     store.createNewConversation();
     const id = store.currentConversationId!;

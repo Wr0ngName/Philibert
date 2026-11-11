@@ -29,7 +29,8 @@ import { readRanges } from '../utils/file-ranges';
 import logger from '../utils/logger';
 import { getConversationsPath, isPathWithin } from '../utils/paths';
 
-import { findSessionTranscript } from './claude/transcript-files';
+import { cliConfigDir } from './claude/cliCredentials';
+import { findSessionTranscript, sessionIdsOnDisk } from './claude/transcript-files';
 import {
   type ConversationDetails,
   DETAILS_SUFFIX,
@@ -131,7 +132,11 @@ export class ConversationService {
    */
   private writesDone = new Map<string, number>();
 
-  constructor() {
+  /**
+   * @param claudeConfigDir where Claude Code keeps its sessions, asked each
+   *   time: whether a discussion's session is still there (`sessionGone`).
+   */
+  constructor(private readonly claudeConfigDir: () => string = cliConfigDir) {
     this.conversationsDir = getConversationsPath();
     this.index = new ConversationIndex(
       this.conversationsDir,
@@ -639,9 +644,25 @@ export class ConversationService {
       .filter((summary) => !request.after || isAfter(summary, request.after))
       .sort(newestFirst);
     return {
-      conversations: matching.slice(0, request.limit),
+      conversations: await this.withSessionState(matching.slice(0, request.limit)),
       hasMore: matching.length > request.limit,
     };
+  }
+
+  /** List entries handed out, each saying whether its Claude Code session is gone. */
+  private async withSessionState(summaries: ConversationSummary[]): Promise<ConversationSummary[]> {
+    const sessionIds = summaries.map((summary) => this.index.sessionIdOf(summary.id));
+    // The sessions on disk are only looked for when there is one to ask about.
+    const onDisk = sessionIds.some(Boolean) ? await sessionIdsOnDisk(this.claudeConfigDir()) : new Set<string>();
+    return summaries.map((summary, i) => {
+      const sessionId = sessionIds[i];
+      return sessionId && onDisk.has(sessionId) ? summary : { ...summary, sessionGone: true };
+    });
+  }
+
+  /** Whether a discussion's Claude Code session is gone: see Conversation.sessionGone. */
+  private isSessionGone(details: ConversationDetails): boolean {
+    return !details.sdkSessionId || findSessionTranscript(details.sdkSessionId, this.claudeConfigDir()) === null;
   }
 
   /** How many discussions are archived, by hand or for being inactive. */
@@ -654,7 +675,8 @@ export class ConversationService {
   /** One discussion's list entry, or null when there is no such discussion. */
   async summary(id: string): Promise<ConversationSummary | null> {
     if (!this.index.isLoaded) await this.index.refresh();
-    return this.index.summary(id);
+    const summary = this.index.summary(id);
+    return summary ? (await this.withSessionState([summary]))[0]! : null;
   }
 
   /**
@@ -662,10 +684,17 @@ export class ConversationService {
    * activity (`restoredAt`), so one archived for being inactive stays out of
    * the archive for as long as one just written in would.
    *
+   * One whose Claude Code session is gone is not brought back: there is
+   * nothing left to continue, so it stays as it is, and the entry returned
+   * says why (`sessionGone`).
+   *
    * @returns its list entry as it now stands.
    */
   async setArchived(id: string, archived: boolean): Promise<ConversationSummary> {
-    const details = await this.changeDetails(id, (stored) => {
+    let sessionGone = false;
+    const changed = await this.changeDetails(id, (stored) => {
+      sessionGone = this.isSessionGone(stored);
+      if (!archived && sessionGone) return false;
       const now = Date.now();
       if (archived) {
         stored.archivedAt = now;
@@ -676,8 +705,15 @@ export class ConversationService {
       }
       return true;
     });
-    logger.info(archived ? 'Conversation archived' : 'Conversation brought back from the archive', { id });
-    return summaryOf({ ...(details as ConversationDetails), messages: [] });
+    if (changed) {
+      logger.info(archived ? 'Conversation archived' : 'Conversation brought back from the archive', { id });
+    } else {
+      logger.warn('Conversation not brought back from the archive: its Claude Code session is gone', { id });
+    }
+    const details = changed ?? (await this.readDetailsFile(id));
+    if (!details) throw new Error(`Conversation not found: ${id}`);
+    const summary = summaryOf({ ...details, messages: [] });
+    return sessionGone ? { ...summary, sessionGone: true } : summary;
   }
 
   /** Save the index now; for quitting. */
@@ -977,7 +1013,11 @@ export class ConversationService {
     return this.withView(id, async (view) => {
       const start = Math.max(0, view.ids.length - Math.max(0, limit));
       return {
-        conversation: { ...view.details, messages: await view.load(start, view.ids.length) },
+        conversation: {
+          ...view.details,
+          ...(this.isSessionGone(view.details) ? { sessionGone: true as const } : {}),
+          messages: await view.load(start, view.ids.length),
+        },
         olderCount: start,
       };
     });

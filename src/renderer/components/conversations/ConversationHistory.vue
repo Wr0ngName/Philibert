@@ -482,8 +482,10 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
                       size="xs"
                     />
                   </button>
-                  <!-- Archive, or bring back -->
+                  <!-- Archive, or bring back: not one whose Claude
+                       session is gone, which has nothing left to continue -->
                   <button
+                    v-if="!(showingArchive && conversation.sessionGone)"
                     class="p-1 rounded-sm hover:bg-surface-200 dark:hover:bg-surface-600 text-surface-400 hover:text-primary-500 dark:hover:text-primary-400 transition-colors"
                     :title="showingArchive ? 'Bring back from the archive' : 'Archive conversation'"
                     @click="handleArchiveClick(conversation.id, $event)"

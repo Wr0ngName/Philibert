@@ -13,6 +13,7 @@ import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
 import { useClaudeChat } from '../../composables/useClaudeChat';
 import ActionApproval from './ActionApproval.vue';
+import ArchivedDiscussionBar from './ArchivedDiscussionBar.vue';
 import AskUserQuestionModal from './AskUserQuestionModal.vue';
 import BackgroundTaskDetailModal from './BackgroundTaskDetailModal.vue';
 import BackgroundTaskPanel from './BackgroundTaskPanel.vue';
@@ -29,7 +30,7 @@ const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
 const settingsStore = useSettingsStore();
 const { pendingActions, error, hasRunningBackgroundTasks, runningBackgroundTasksList, hasTaskListItems, taskListItems, sessionUsage, hasSessionUsage, pendingScrollMessageId, usageLimitWait } = storeToRefs(chatStore);
-const { currentModeMismatch } = storeToRefs(conversationsStore);
+const { currentModeMismatch, currentArchived } = storeToRefs(conversationsStore);
 
 const {
   sendMessage,
@@ -409,7 +410,7 @@ function openAgentOfToolCall(taskId: string) {
     <!-- Execution mode mismatch banner -->
     <TransitionFade type="slideDown">
       <div
-        v-if="currentModeMismatch"
+        v-if="currentModeMismatch && !currentArchived"
         class="px-4 pt-2"
       >
         <div class="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3 text-sm">
@@ -560,8 +561,13 @@ function openAgentOfToolCall(taskId: string) {
       />
     </TransitionFade>
 
-    <!-- Input -->
+    <!-- Input: none in an archived discussion, which is brought back first -->
+    <ArchivedDiscussionBar
+      v-if="currentArchived"
+      :conversation="currentArchived"
+    />
     <InputBox
+      v-else
       @send="handleSend"
       @send-now="handleSendNow"
       @take-back="takeBackPrompt"

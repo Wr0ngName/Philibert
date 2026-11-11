@@ -29,9 +29,11 @@ import { REAL_DISK_TEST_TIMEOUT_MS } from './support/real-disk';
 vi.setConfig({ testTimeout: REAL_DISK_TEST_TIMEOUT_MS });
 
 let root: string;
+/** Where Claude Code keeps its sessions, for these tests. */
+let claudeDir: string;
 let service: ConversationService;
 
-/** A discussion titled, as one not renamed is, by its first message. */
+/** A discussion titled, as one not renamed is, by its first message, continuing its own session. */
 function conversation(id: string, updatedAt: number, overrides: Partial<Conversation> = {}): Conversation {
   const title = overrides.title ?? `Title ${id}`;
   return {
@@ -41,14 +43,31 @@ function conversation(id: string, updatedAt: number, overrides: Partial<Conversa
     messages: [{ id: `${id}-m`, role: 'user', content: title, timestamp: updatedAt }],
     createdAt: updatedAt,
     updatedAt,
+    sdkSessionId: `session-${id}`,
     ...overrides,
   };
 }
 
-/** Store a discussion the way the app does: one update creating it with its messages. */
+function transcriptOf(sessionId: string): string {
+  return path.join(claudeDir, 'projects', '-project', `${sessionId}.jsonl`);
+}
+
+/**
+ * Store a discussion the way the app does: one update creating it with its
+ * messages — its session's transcript written by Claude Code meanwhile.
+ */
 async function store(c: Conversation): Promise<void> {
   const { messages, ...details } = c;
+  if (c.sdkSessionId) {
+    fs.mkdirSync(path.dirname(transcriptOf(c.sdkSessionId)), { recursive: true });
+    fs.writeFileSync(transcriptOf(c.sdkSessionId), '{}\n');
+  }
   await service.update({ ...details, upsert: messages });
+}
+
+/** Claude Code cleaned the session up, as it does after its retention period. */
+function sessionCleanedUp(sessionId: string): void {
+  fs.rmSync(transcriptOf(sessionId));
 }
 
 async function page(archived: boolean, autoArchiveDays: AutoArchiveDays = 0, after?: ConversationSummary, limit = 50) {
@@ -67,7 +86,8 @@ async function ids(archived: boolean, autoArchiveDays: AutoArchiveDays = 0): Pro
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'philibert-list-'));
   conversationsDir.path = path.join(root, 'conversations');
-  service = new ConversationService();
+  claudeDir = path.join(root, 'claude');
+  service = new ConversationService(() => claudeDir);
 });
 
 afterEach(() => {
@@ -179,6 +199,75 @@ describe('archiving', () => {
     expect(stored.sdkSessionId).toBe('after');
     expect(stored.archivedAt).toBeGreaterThanOrEqual(now - 1000);
     expect(await ids(true)).toEqual(['a']);
+  });
+
+  describe('a discussion whose Claude Code session is gone', () => {
+    it('is listed as such, in either list, from the transcripts on disk', async () => {
+      const now = Date.now();
+      await store(conversation('kept', now));
+      await store(conversation('cleaned', now - 1));
+      await store(conversation('none', now - 2, { sdkSessionId: undefined }));
+      await service.setArchived('kept', true);
+      await service.setArchived('cleaned', true);
+      sessionCleanedUp('session-cleaned');
+
+      const gone = async (archived: boolean) =>
+        Object.fromEntries((await page(archived)).conversations.map((c) => [c.id, c.sessionGone ?? false]));
+      expect(await gone(true)).toEqual({ kept: false, cleaned: true });
+      expect(await gone(false)).toEqual({ none: true });
+      expect((await service.summary('cleaned'))?.sessionGone).toBe(true);
+      expect((await service.summary('kept'))?.sessionGone).toBeUndefined();
+    });
+
+    it('is not brought back from the archive, and the entry says why', async () => {
+      await store(conversation('a', Date.now() - 1000));
+      await service.setArchived('a', true);
+      sessionCleanedUp('session-a');
+
+      const entry = await service.setArchived('a', false);
+
+      expect(entry.sessionGone).toBe(true);
+      expect(entry.archivedAt).toBeTypeOf('number');
+      expect(await ids(true)).toEqual(['a']);
+      const stored = JSON.parse(fs.readFileSync(path.join(conversationsDir.path, 'a.json'), 'utf-8')) as Conversation;
+      expect(stored.archivedAt).toBe(entry.archivedAt);
+      expect(stored.restoredAt).toBeUndefined();
+    });
+
+    it('nor one archived for being inactive', async () => {
+      await store(conversation('old', Date.now() - 40 * DAY_MS));
+      sessionCleanedUp('session-old');
+
+      expect((await service.setArchived('old', false)).sessionGone).toBe(true);
+      expect(await ids(true, 30)).toEqual(['old']);
+    });
+
+    it('can still be archived', async () => {
+      await store(conversation('a', Date.now() - 1000));
+      sessionCleanedUp('session-a');
+
+      expect((await service.setArchived('a', true)).sessionGone).toBe(true);
+      expect(await ids(true)).toEqual(['a']);
+    });
+
+    it('is opened saying so', async () => {
+      await store(conversation('kept', Date.now()));
+      await store(conversation('cleaned', Date.now()));
+      sessionCleanedUp('session-cleaned');
+
+      expect((await service.getWindow('kept', 10))?.conversation.sessionGone).toBeUndefined();
+      expect((await service.getWindow('cleaned', 10))?.conversation.sessionGone).toBe(true);
+    });
+
+    it('is never stored as such', async () => {
+      await store(conversation('a', Date.now()));
+      sessionCleanedUp('session-a');
+      await service.setArchived('a', true);
+      await service.rename('a', 'Renamed');
+
+      const stored = JSON.parse(fs.readFileSync(path.join(conversationsDir.path, 'a.json'), 'utf-8')) as Conversation;
+      expect(stored).not.toHaveProperty('sessionGone');
+    });
   });
 
   it('answers a summary for one discussion, wherever it is in the list', async () => {

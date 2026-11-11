@@ -28,10 +28,21 @@ import { nextTick } from 'vue';
 
 import type { AutoArchiveDays, Conversation, ConversationListRequest, ConversationUpdate } from '@shared/types';
 
+import { cliConfigDir } from '../../../../main/services/claude/cliCredentials';
 import { replay } from '../../../../main/services/conversation-log';
 
 /** The "disk": path → file contents. */
 export const files = new Map<string, string>();
+
+/**
+ * Put a Claude Code session's transcript on the disk, where Claude Code
+ * keeps it: a discussion continuing it can then be brought back from the
+ * archive (Conversation.sessionGone). Under the real config directory's
+ * path, on this fake disk only.
+ */
+export function sessionOnDisk(sessionId: string): void {
+  files.set(`${cliConfigDir()}/projects/-home-user-project/${sessionId}.jsonl`, '{}\n');
+}
 
 /** Channel → IPC listeners registered by the renderer. */
 export const ipcListeners = new Map<string, ((event: unknown, ...args: unknown[]) => void)[]>();
@@ -74,6 +85,26 @@ export const disk = {
 /** The node:fs surface the real ConversationService uses. */
 export function fakeFsModule(): Record<string, unknown> {
   const dirs = new Set<string>(['/conversations']);
+  /**
+   * What a folder holds, as readdir lists it: its files and its folders —
+   * those made, and those its files' paths go through — not what is deeper.
+   */
+  const listing = (dir: string, options?: { withFileTypes?: boolean }) => {
+    const prefix = `${dir}/`;
+    const entries = new Map<string, boolean>();
+    for (const p of files.keys()) {
+      if (!p.startsWith(prefix)) continue;
+      const rest = p.slice(prefix.length);
+      const slash = rest.indexOf('/');
+      if (slash === -1) entries.set(rest, false);
+      else entries.set(rest.slice(0, slash), true);
+    }
+    for (const d of dirs) {
+      if (d.startsWith(prefix) && !d.slice(prefix.length).includes('/')) entries.set(d.slice(prefix.length), true);
+    }
+    if (!options?.withFileTypes) return [...entries.keys()];
+    return [...entries].map(([name, isDir]) => ({ name, isDirectory: () => isDir, isFile: () => !isDir }));
+  };
   const api = {
     // The real service checks writability with fs.constants.W_OK. Leaving
     // these out made every save throw a TypeError that the service logged and
@@ -84,8 +115,9 @@ export function fakeFsModule(): Record<string, unknown> {
     mkdirSync: (p: string) => {
       dirs.add(p);
     },
+    readdirSync: (dir: string, options?: { withFileTypes?: boolean }) => listing(dir, options),
     promises: {
-      readdir: async (dir: string) => {
+      readdir: async (dir: string, options?: { withFileTypes?: boolean }) => {
         if (disk.holdReads) {
           await new Promise<void>((resolve) => disk.readWaiting.push(resolve));
         }
@@ -94,10 +126,8 @@ export function fakeFsModule(): Record<string, unknown> {
           err.code = 'EIO';
           throw err;
         }
-        // The folder's own files only: the list's index sits beside it.
-        return [...files.keys()]
-          .filter((p) => p.startsWith(`${dir}/`) && !p.slice(dir.length + 1).includes('/'))
-          .map((p) => p.slice(dir.length + 1));
+        // The folder's own entries only: the list's index sits beside it.
+        return listing(dir, options);
       },
       readFile: async (p: string) => {
         if (disk.holdReads) {

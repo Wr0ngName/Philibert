@@ -7,7 +7,9 @@
  * once both ways, and coming back to a discussion needs no write:
  *
  * - archived by hand: `archivedAt` is set and nothing has happened in the
- *   discussion since — a message after it brings it back by itself;
+ *   discussion since — a message after it, a background task reporting say,
+ *   brings it back by itself (the user cannot write in an archived one: it
+ *   is brought back first);
  * - otherwise, archived when its last activity — its last message, or being
  *   brought back from the archive — is older than the setting's days.
  */

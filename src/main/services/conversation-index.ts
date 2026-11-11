@@ -27,6 +27,17 @@ interface IndexEntry {
   mtimeMs: number;
   size: number;
   summary: ConversationSummary;
+  /** The Claude Code session it continues: whether that is still on disk is asked when the entry is handed out. */
+  sessionId?: string;
+}
+
+function entryOf(mtimeMs: number, size: number, details: ConversationDetails): IndexEntry {
+  return {
+    mtimeMs,
+    size,
+    summary: summaryOfStored(details),
+    ...(details.sdkSessionId ? { sessionId: details.sdkSessionId } : {}),
+  };
 }
 
 interface SavedIndex {
@@ -37,8 +48,9 @@ interface SavedIndex {
 /**
  * Bumped when an entry's shape or content changes, so an older index is
  * rebuilt. 2: titles listed whole, where 1 kept them as saved, cut at 50.
+ * 3: each entry's session id.
  */
-const INDEX_VERSION = 2;
+const INDEX_VERSION = 3;
 /** Files looked at together during a refresh. */
 const STAT_BATCH = 64;
 /** Saving waits for writes to settle: a turn saves its conversation often. */
@@ -75,17 +87,26 @@ export class ConversationIndex {
   }
 
   summary(id: string): ConversationSummary | null {
+    return this.entryOf(id)?.summary ?? null;
+  }
+
+  /** The Claude Code session a listed discussion continues, if any. */
+  sessionIdOf(id: string): string | undefined {
+    return this.entryOf(id)?.sessionId;
+  }
+
+  private entryOf(id: string): IndexEntry | undefined {
     for (const entry of this.entries.values()) {
-      if (entry.summary.id === id) return entry.summary;
+      if (entry.summary.id === id) return entry;
     }
-    return null;
+    return undefined;
   }
 
   /** Record what was just written to a file, as its stat now stands. */
   async noteWritten(fileName: string, details: ConversationDetails): Promise<void> {
     try {
       const stat = await fs.promises.stat(path.join(this.dir, fileName));
-      this.entries.set(fileName, { mtimeMs: stat.mtimeMs, size: stat.size, summary: summaryOfStored(details) });
+      this.entries.set(fileName, entryOf(stat.mtimeMs, stat.size, details));
       this.scheduleSave();
     } catch (error) {
       // The next refresh reads the file again.
@@ -151,7 +172,7 @@ export class ConversationIndex {
       const known = this.entries.get(name);
       if (known && known.mtimeMs === stat.mtimeMs && known.size === stat.size) return 'unchanged';
       const details = JSON.parse(await fs.promises.readFile(file, 'utf-8')) as ConversationDetails;
-      this.entries.set(name, { mtimeMs: stat.mtimeMs, size: stat.size, summary: summaryOfStored(details) });
+      this.entries.set(name, entryOf(stat.mtimeMs, stat.size, details));
       return 'parsed';
     } catch (error) {
       // Left out, as the list always left out a file it could not parse.
@@ -169,7 +190,8 @@ export class ConversationIndex {
           typeof entry?.mtimeMs === 'number' &&
           typeof entry.size === 'number' &&
           typeof entry.summary?.id === 'string' &&
-          typeof entry.summary.updatedAt === 'number'
+          typeof entry.summary.updatedAt === 'number' &&
+          (entry.sessionId === undefined || typeof entry.sessionId === 'string')
         ) {
           this.entries.set(name, entry);
         }

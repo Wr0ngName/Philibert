@@ -15,7 +15,8 @@
 import { summaryOf } from '../../shared/conversation-list';
 import type { Conversation, ConversationSummary } from '../../shared/types';
 
-export type ConversationDetails = Omit<Conversation, 'messages'>;
+/** What is stored of a discussion besides its messages; `sessionGone` is worked out, never stored. */
+export type ConversationDetails = Omit<Conversation, 'messages' | 'sessionGone'>;
 
 export const DETAILS_SUFFIX = '.json';
 const MESSAGES_SUFFIX = '.messages.jsonl';
