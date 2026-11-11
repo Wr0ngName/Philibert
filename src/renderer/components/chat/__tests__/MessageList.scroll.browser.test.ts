@@ -183,8 +183,6 @@ function installWindowIpc(): void {
         };
       },
     },
-    // The open discussion's session is watched for being deleted; not what this file is about.
-    claude: { watchSession: async () => undefined },
     config: { get: async () => ({}), set: async () => undefined, onChange: () => () => {} },
   };
 }

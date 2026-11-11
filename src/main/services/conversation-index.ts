@@ -95,6 +95,13 @@ export class ConversationIndex {
     return this.entryOf(id)?.sessionId;
   }
 
+  /** The listed discussions continuing one of these Claude Code sessions. */
+  idsContinuing(sessionIds: ReadonlySet<string>): string[] {
+    return [...this.entries.values()]
+      .filter((entry) => entry.sessionId !== undefined && sessionIds.has(entry.sessionId))
+      .map((entry) => entry.summary.id);
+  }
+
   private entryOf(id: string): IndexEntry | undefined {
     for (const entry of this.entries.values()) {
       if (entry.summary.id === id) return entry;

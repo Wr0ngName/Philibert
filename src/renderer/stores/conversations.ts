@@ -1666,29 +1666,6 @@ export const useConversationsStore = defineStore('conversations', () => {
   }
 
   /**
-   * Have the main process watch the open discussion's Claude Code session,
-   * so the discussion is archived the moment Claude Code deletes it — not
-   * when the user next tries to send (see SessionTranscriptWatch). Done
-   * again when the open discussion or its session changes, and when a turn
-   * ends: a new discussion's transcript is only written by its first turn.
-   */
-  function watchCurrentSession(): void {
-    const id = currentConversationId.value;
-    if (!id) return;
-    const gone = conversations.value.find((c) => c.id === id)?.sessionGone;
-    const sessionId = gone ? null : (sdkSessionIds.value.get(id) ?? null);
-    window.electron.claude.watchSession(id, sessionId).catch((err: unknown) => {
-      // Not watched: the check before each send still finds it.
-      logger.warn('Could not watch the Claude Code session', { id, err });
-    });
-  }
-
-  watch(
-    () => [currentConversationId.value, currentConversationId.value && sdkSessionIds.value.get(currentConversationId.value)],
-    watchCurrentSession,
-  );
-
-  /**
    * Check if the current conversation has an active SDK session.
    * Used to determine if model changes will require a session reset.
    */
@@ -1877,7 +1854,6 @@ export const useConversationsStore = defineStore('conversations', () => {
     currentArchived,
     isConversationArchived,
     markSessionGone,
-    watchCurrentSession,
 
     // Actions
     loadConversationList,

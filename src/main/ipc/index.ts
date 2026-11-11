@@ -85,7 +85,6 @@ const REGISTERED_CHANNELS = {
     IPC_CHANNELS.CLAUDE_GET_PROJECT_PERMISSIONS,
     IPC_CHANNELS.CLAUDE_REVOKE_PROJECT_PERMISSION,
     IPC_CHANNELS.CLAUDE_SESSION_EXISTS,
-    IPC_CHANNELS.CLAUDE_WATCH_SESSION,
     IPC_CHANNELS.CLAUDE_GET_SESSION_RETENTION,
     IPC_CHANNELS.CLAUDE_SET_SESSION_RETENTION,
     IPC_CHANNELS.CLAUDE_USER_QUESTION_ANSWER,
@@ -260,7 +259,7 @@ export function setupIPC(
     setupConfigIPC(configService, getMainWindow);
     setupMcpIPC(mcpService, claudeService, getMainWindow);
     setupProjectPermissionsIPC(projectPermissionService);
-    setupClaudeSessionsIPC(getMainWindow);
+    const stopSessionsWatch = setupClaudeSessionsIPC(getMainWindow, conversationService);
     setupConversationIPC(conversationService, claudeService);
     setupUpdateIPC(updateService);
     setupSpeechIPC(getMainWindow);
@@ -274,6 +273,7 @@ export function setupIPC(
     return () => {
       try {
         logger.info('Cleaning up IPC handlers');
+        stopSessionsWatch();
 
         // Remove handlers (registered with ipcMain.handle)
         for (const channel of REGISTERED_CHANNELS.handlers) {

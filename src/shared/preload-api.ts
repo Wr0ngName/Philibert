@@ -204,10 +204,8 @@ export interface ElectronAPI {
     onUsageWarning: (callback: (warning: UsageWarning | null) => void) => () => void;
     /** SDK session ID received for a conversation (for resume support) */
     onSessionId: (callback: (conversationId: string, sessionId: string) => void) => () => void;
-    /** A discussion's Claude Code session turned out gone: deleted while watched, or found so on resuming */
+    /** A discussion's Claude Code session turned out gone: seen deleted, or found so on resuming */
     onSessionGone: (callback: (conversationId: string) => void) => () => void;
-    /** Watch the open discussion's Claude Code session for being deleted; null for none */
-    watchSession: (conversationId: string, sessionId: string | null) => Promise<void>;
     /** Whether a Claude Code session's transcript is still on disk */
     sessionExists: (sessionId: string) => Promise<boolean>;
     /** How long Claude Code keeps sessions (`cleanupPeriodDays` in its user settings) */

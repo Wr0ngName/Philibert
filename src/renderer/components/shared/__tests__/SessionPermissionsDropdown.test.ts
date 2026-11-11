@@ -56,9 +56,7 @@ describe('SessionPermissionsDropdown project permissions', () => {
         getSessionPermissions: vi.fn().mockResolvedValue([SESSION_GRANT]),
         revokeSessionPermission: vi.fn(),
         getProjectPermissions,
-        revokeProjectPermission,
-        watchSession: vi.fn().mockResolvedValue(undefined),
-      },
+        revokeProjectPermission,      },
       files: {
         onChange: vi.fn((callback: (changes: FileChange[]) => void) => {
           emitFileChanges = callback;

@@ -60,9 +60,7 @@ function installIpc(options: { refuse?: boolean } = {}) {
     // any `on…` answers with a subscription that does nothing.
     claude: new Proxy({
       getCommands: async () => [],
-      getActiveQueries: async () => ({ count: 0, maxCount: 1, processingCount: 0, activeConversationIds: [] }),
-      watchSession: async () => undefined,
-    } as Record<string | symbol, unknown>, {
+      getActiveQueries: async () => ({ count: 0, maxCount: 1, processingCount: 0, activeConversationIds: [] }),    } as Record<string | symbol, unknown>, {
       get: (target, name) =>
         name in target || typeof name !== 'string' || !name.startsWith('on')
           ? target[name]

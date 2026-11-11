@@ -9,6 +9,9 @@
  * faked.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 import type { mount } from '@vue/test-utils';
 import type { BrowserWindow } from 'electron';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -33,20 +36,23 @@ vi.mock('../../utils/logger', () => ({
 import { setupClaudeSessionsIPC } from '../../../main/ipc/claudeSessions';
 import { setupConversationIPC } from '../../../main/ipc/conversations';
 import { ConversationService } from '../../../main/services/ConversationService';
+import { cliConfigDir } from '../../../main/services/claude/cliCredentials';
+import { SESSIONS_RESCAN_DELAY_MS } from '../../../main/services/claude/sessions-watch';
 import '../../../preload/preload';
 import ChatWindow from '../../components/chat/ChatWindow.vue';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
 import {
-  emitIpc, files, mainHandlers, mountApp, removeFileOutside, send, sessionOnDisk, sessionTranscriptPath, settle,
-  startRealStack, unmountApp,
+  emitIpc, files, mainHandlers, mountApp, realConversationService, removeFileOutside, send, sessionOnDisk,
+  sessionTranscriptPath, settle, startRealStack, unmountApp,
 } from './support/real-stack';
 
 const DIR = '/home/user/project';
 
 let store: ReturnType<typeof useConversationsStore>;
 let app: ReturnType<typeof mount>;
+let stopSessionsWatch: () => void;
 
 function seed(id: string, overrides: Partial<Conversation> = {}): void {
   const at = Date.now() - 1000;
@@ -73,12 +79,15 @@ beforeEach(async () => {
     setupConversationIPC: setupConversationIPC as unknown as (service: never) => void,
     workingDirectory: DIR,
   });
-  // The real handlers: whether a session is on disk is read from the fake
-  // disk, and what they send reaches the renderer as from the main window.
-  setupClaudeSessionsIPC(() => ({
+  // The real handlers and sessions watch: whether a session is on disk is
+  // read from the fake disk — where Claude Code has run, so its projects
+  // folder is there — and what they send reaches the renderer as from the
+  // main window.
+  fs.mkdirSync(path.join(cliConfigDir(), 'projects'));
+  stopSessionsWatch = setupClaudeSessionsIPC(() => ({
     isDestroyed: () => false,
     webContents: { send: (channel: string, ...args: unknown[]) => emitIpc(channel, ...args) },
-  }) as unknown as BrowserWindow);
+  }) as unknown as BrowserWindow, realConversationService());
   store = useConversationsStore();
   const settings = useSettingsStore();
   settings.config.workingDirectory = DIR;
@@ -90,6 +99,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  stopSessionsWatch();
   unmountApp();
   document.body.innerHTML = '';
 });
@@ -160,6 +170,12 @@ describe('a discussion whose Claude session is gone', () => {
     });
   });
 
+  /** Long enough for the sessions watch to list a changed folder, and for what it sends to land. */
+  async function watchSettles(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, SESSIONS_RESCAN_DELAY_MS + 50));
+    await settle(20);
+  }
+
   /** Claude Code deleted the session, as it does after its retention period. */
   function sessionCleanedUp(sessionId: string): void {
     for (const key of [...files.keys()]) {
@@ -223,12 +239,14 @@ describe('a discussion whose Claude session is gone', () => {
   it('loses its input the moment Claude Code deletes the session, with nothing sent', async () => {
     seed('a');
     sessionOnDisk('session-a');
+    // Seen by the watch, as a session written days before is.
+    await watchSettles();
     await store.loadConversation('a');
     await settle();
     expect(input().exists()).toBe(true);
 
     removeFileOutside(sessionTranscriptPath('session-a'));
-    await settle(20);
+    await watchSettles();
 
     expect(input().exists()).toBe(false);
     expect(bar().text()).toContain("Claude's session for it no longer exists");
@@ -236,35 +254,45 @@ describe('a discussion whose Claude session is gone', () => {
     expect(sends).toEqual([]);
   });
 
-  it('watches the discussion on screen only, and a new one once its first turn wrote its transcript', async () => {
+  it('moves a discussion not on screen out of the active list the moment its session is deleted', async () => {
     seed('a');
-    sessionOnDisk('session-a');
     seed('b');
+    sessionOnDisk('session-a');
     sessionOnDisk('session-b');
-    await store.loadConversation('a');
-    await settle();
+    // Seen by the watch, as sessions written days before are.
+    await watchSettles();
+    await store.loadConversationList();
     await store.loadConversation('b');
     await settle();
+    expect(store.listedConversations.map((c) => c.id).sort()).toEqual(['a', 'b']);
 
-    // No longer on screen: its session is not watched.
     removeFileOutside(sessionTranscriptPath('session-a'));
-    await settle(20);
-    expect(store.isConversationArchived('a')).toBe(false);
+    await watchSettles();
 
-    // A new discussion: its session id comes before its transcript is written.
+    expect(store.listedConversations.map((c) => c.id)).toEqual(['b']);
+    expect(store.archivedCount).toBe(1);
+    // The one on screen is untouched.
+    expect(input().exists()).toBe(true);
+  });
+
+  it('archives a new discussion too, once its first turn is saved', async () => {
     store.createNewConversation();
     const id = store.currentConversationId!;
     await send(app, 'hello');
     emitIpc('claude:session-id', id, 'session-new');
-    await settle(20);
-    expect(store.isConversationArchived(id)).toBe(false);
+    // Claude Code writes the transcript in a project folder of its own.
     sessionOnDisk('session-new');
+    emitIpc('claude:chunk', id, 'hi');
     emitIpc('claude:done', id);
     await settle(20);
+    await watchSettles();
+    expect(store.isConversationArchived(id)).toBe(false);
 
     removeFileOutside(sessionTranscriptPath('session-new'));
-    await settle(20);
+    await watchSettles();
+
     expect(store.isConversationArchived(id)).toBe(true);
+    expect(input().exists()).toBe(false);
   });
 
   it('is archived when a resume finds it gone', async () => {

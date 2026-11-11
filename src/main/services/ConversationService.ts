@@ -677,6 +677,15 @@ export class ConversationService {
       .filter((summary) => isArchived(summary, autoArchiveDays, now)).length;
   }
 
+  /** The discussions continuing one of these Claude Code sessions: what deleting them took. */
+  async conversationsContinuing(sessionIds: readonly string[]): Promise<string[]> {
+    // Brought in line with the folder first, as the first page of the list
+    // is: a discussion changed outside the app is not missed. Rare enough
+    // — sessions deleted — for the look at each file's stat.
+    await this.index.refresh();
+    return this.index.idsContinuing(new Set(sessionIds));
+  }
+
   /** One discussion's list entry, or null when there is no such discussion. */
   async summary(id: string): Promise<ConversationSummary | null> {
     if (!this.index.isLoaded) await this.index.refresh();

@@ -41,7 +41,27 @@ export const files = new Map<string, string>();
  * path, on this fake disk only.
  */
 export function sessionOnDisk(sessionId: string): void {
-  files.set(sessionTranscriptPath(sessionId), '{}\n');
+  addFileOutside(sessionTranscriptPath(sessionId), '{}\n');
+}
+
+/**
+ * Write a file as something outside the app does, telling whoever watches
+ * its folder — and, for a folder that is new, whoever watches the folder
+ * above it — as fs.watch does.
+ */
+export function addFileOutside(p: string, content: string): void {
+  const folder = p.slice(0, p.lastIndexOf('/'));
+  const folderIsNew = ![...files.keys()].some((key) => key.startsWith(`${folder}/`));
+  files.set(p, content);
+  notifyWatchers(folder, p.slice(folder.length + 1));
+  if (folderIsNew) {
+    const parent = folder.slice(0, folder.lastIndexOf('/'));
+    notifyWatchers(parent, folder.slice(parent.length + 1));
+  }
+}
+
+function notifyWatchers(p: string, name: string): void {
+  for (const listener of [...(fileWatchers.get(p) ?? [])]) listener('rename', name);
 }
 
 /** Where sessionOnDisk puts a session's transcript. */
@@ -50,12 +70,16 @@ export function sessionTranscriptPath(sessionId: string): string {
 }
 
 /** `fs.watch` listeners on the fake disk, by path. */
-const fileWatchers = new Map<string, Set<(event: string) => void>>();
+const fileWatchers = new Map<string, Set<(event: string, name?: string) => void>>();
 
-/** Remove a file as something outside the app does, telling whoever watches it — as fs.watch does. */
+/**
+ * Remove a file as something outside the app does, telling whoever watches
+ * it or its folder — as fs.watch does.
+ */
 export function removeFileOutside(p: string): void {
   files.delete(p);
   for (const listener of [...(fileWatchers.get(p) ?? [])]) listener('rename');
+  notifyWatchers(p.slice(0, p.lastIndexOf('/')), p.slice(p.lastIndexOf('/') + 1));
 }
 
 /** Channel → IPC listeners registered by the renderer. */
@@ -130,9 +154,10 @@ export function fakeFsModule(): Record<string, unknown> {
       dirs.add(p);
     },
     readdirSync: (dir: string, options?: { withFileTypes?: boolean }) => listing(dir, options),
-    /** Told of removals made with removeFileOutside. */
-    watch: (p: string, listener: (event: string) => void) => {
-      if (!files.has(p)) {
+    /** A file or a folder, told of removals made with removeFileOutside. */
+    watch: (p: string, listener: (event: string, name?: string) => void) => {
+      const isFolder = dirs.has(p) || [...files.keys()].some((key) => key.startsWith(`${p}/`));
+      if (!files.has(p) && !isFolder) {
         const err = new Error(`ENOENT: no such file or directory, watch '${p}'`) as NodeJS.ErrnoException;
         err.code = 'ENOENT';
         throw err;
@@ -405,6 +430,12 @@ let conversationService: {
   setArchived: (id: string, archived: boolean) => Promise<unknown>;
   delete: (id: string) => Promise<void>;
 } | null = null;
+
+/** The real service `startRealStack` constructed, for main-process handlers a test sets up itself. */
+export function realConversationService(): never {
+  if (!conversationService) throw new Error('startRealStack has not run');
+  return conversationService as never;
+}
 
 /** Conversations whose Claude Code session the main process was asked to end. */
 export const sessionsEnded: string[] = [];
