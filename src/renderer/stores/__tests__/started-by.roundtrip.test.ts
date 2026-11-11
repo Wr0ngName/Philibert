@@ -39,11 +39,12 @@ import transcriptFixture from '../../../main/services/claude/__tests__/fixtures/
 import { transcriptToMessages } from '../../../main/services/claude/task-output';
 import '../../../preload/preload';
 import ChatWindow from '../../components/chat/ChatWindow.vue';
+import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
 import {
-  startRealStack, settle, emitIpc, mainHandlers, mountApp, unmountApp, send,
+  startRealStack, settle, emitIpc, mainHandlers, mountApp, unmountApp, send, files,
 } from './support/real-stack';
 
 const transcript = transcriptFixture as unknown as SessionMessage[];
@@ -282,6 +283,82 @@ describe('who started it, in the details', () => {
     // The details name the same agent the list puts it under.
     await openPanelRow('Client ghost research');
     expect(startedBy('Task Details')).toContain('— Agent reads notes.txt (running)');
+  });
+
+  // Reported, from main.log 2026-11-11: commands an agent ran ("Wait for the
+  // (a) regression") were listed at the top of the tasks list, and their
+  // details said "started by an agent" without naming it. The agent's own
+  // Agent call was made a day before, far back in a long discussion; the
+  // agent had since been resumed by a SendMessage; its commands named the
+  // original Agent call as their parent, and main sent no parentTaskId.
+  describe("an agent whose call is not among the loaded messages", () => {
+    const LONG = 'conv-long-agent';
+    const FILLER = 600;
+
+    beforeEach(async () => {
+      const agentCall = {
+        id: 'msg-agent-call', role: 'assistant', content: '', timestamp: 1,
+        toolUse: {
+          actionId: 'toolu_agent_old', toolUseBlockId: 'toolu_agent_old', toolName: 'Agent', status: 'executed',
+          description: 'Agent: Plan B: P1 asmdefs, P2 Core',
+          input: { description: 'Plan B: P1 asmdefs, P2 Core', subagent_type: 'builder', prompt: 'Plan B', run_in_background: true },
+          task: { taskId: 'agent-old', description: 'Plan B: P1 asmdefs, P2 Core', status: 'running', startedAt: 1, toolUseId: 'toolu_agent_old' },
+        },
+      };
+      const filler = Array.from({ length: FILLER }, (_unused, i) => ({
+        id: `filler-${i}`, role: i % 2 === 0 ? 'user' : 'assistant', content: `message ${i}`, timestamp: 2 + i,
+      }));
+      files.set(`/conversations/${LONG}.json`, JSON.stringify({
+        id: LONG, title: 'A long discussion with an old agent', workingDirectory: '/home/user/project',
+        createdAt: 1, updatedAt: 2 + FILLER, messages: [{ id: 'msg-ask', role: 'user', content: 'start the plan', timestamp: 0 }, agentCall, ...filler],
+      }));
+      await store.loadConversationList();
+      // As after a restart: nothing of the agent is tracked.
+      await restart();
+      await store.switchConversation(LONG);
+      conversationId = LONG;
+      await settle(20);
+    });
+
+    async function resumedAgentRunsACommand(): Promise<void> {
+      // Resumed by a message: main knows the agent by the SendMessage call.
+      call({ toolUseBlockId: 'toolu_resume', toolName: 'SendMessage', input: { to: 'agent-old', message: 'Hold step 2' }, description: 'SendMessage: agent-old' });
+      notify({ taskId: 'agent-old', status: 'running', description: 'Plan B: P1 asmdefs, P2 Core', toolUseId: 'toolu_resume', taskType: 'agent', backgrounded: true });
+      // Its command, as main.log has bshkkck59: the call names the ORIGINAL
+      // Agent call; started by an agent, linked to none.
+      call({
+        toolUseBlockId: 'toolu_wait', toolName: 'Bash', parentToolUseId: 'toolu_agent_old',
+        input: { command: 'until grep -q DONE regression.log; do sleep 30; done', description: 'Wait for the (a) regression', run_in_background: true },
+        description: 'Wait for the (a) regression',
+      });
+      notify({
+        taskId: 'bshkkck59', status: 'running', description: 'Wait for the (a) regression', toolUseId: 'toolu_wait',
+        taskType: 'command', backgrounded: true, startedByAgent: true,
+      });
+      await settle(20);
+    }
+
+    it('is not among the loaded messages: the premise of the case', () => {
+      expect(useChatStore().messages.some((m) => m.toolUse?.toolUseBlockId === 'toolu_agent_old')).toBe(false);
+      expect(useChatStore().olderMessageCount).toBeGreaterThan(0);
+    });
+
+    it('lists a command that agent ran under it', async () => {
+      await resumedAgentRunsACommand();
+
+      const rows = app.findAll('.background-task-panel .task-item').map((row) => ({
+        wait: row.text().includes('Wait for the (a) regression'), depth: Number(row.attributes('data-depth')),
+      }));
+      expect(rows).toEqual([{ wait: false, depth: 0 }, { wait: true, depth: 1 }]);
+    });
+
+    it('names that agent in the command\'s details', async () => {
+      await resumedAgentRunsACommand();
+
+      await openPanelRow('Wait for the (a) regression');
+
+      expect(startedBy('Task Details')).toContain('— Plan B: P1 asmdefs, P2 Core');
+    });
   });
 
   it('says an agent started it when the CLI says so but the agent is not known here', async () => {

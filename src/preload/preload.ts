@@ -492,6 +492,9 @@ const electronAPI: ElectronAPI = {
       IPC_CHANNELS.CONVERSATION_GET_AROUND, id, messageId, before, after, untilId,
     ),
 
+    findToolCall: (id: string, toolUseBlockId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_FIND_TOOL_CALL, id, toolUseBlockId),
+
     saveImage: (conversationId: string, input: { base64: string; mediaType: string; label?: string }) =>
       ipcRenderer.invoke(IPC_CHANNELS.IMAGE_SAVE, conversationId, input),
 

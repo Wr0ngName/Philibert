@@ -2229,6 +2229,8 @@ export const IPC_CHANNELS = {
   CONVERSATION_GET_NEWER: 'conversation:get-newer',
   /** Read the stretch of a conversation around one message. */
   CONVERSATION_GET_AROUND: 'conversation:get-around',
+  /** Find the stored message holding a tool call, wherever it is in the conversation. */
+  CONVERSATION_FIND_TOOL_CALL: 'conversation:find-tool-call',
   /** Rename a conversation */
   CONVERSATION_RENAME: 'conversation:rename',
   /** Delete a conversation */

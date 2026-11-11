@@ -40,7 +40,7 @@ import {
 } from './conversation-files';
 import { ConversationIndex } from './conversation-index';
 import {
-  appendBatch, batchLocations, type LineLocation, putCompacted, recordLine, replay, TranscriptState,
+  appendBatch, batchLocations, type LineLocation, parseRecord, putCompacted, recordLine, replay, TranscriptState,
 } from './conversation-log';
 import { type ConversionProgress, convertConversationFolder, convertOneFileDiscussion } from './conversation-migration';
 import { readTranscriptIndex, writeTranscriptIndex } from './transcript-index';
@@ -1068,6 +1068,51 @@ export class ConversationService {
       const start = Math.max(0, at - Math.max(0, before));
       const end = Math.min(stop, at + 1 + Math.max(0, after));
       return { messages: await view.load(start, end), olderCount: start, newerCount: stop - end };
+    });
+  }
+
+  /**
+   * The stored message holding the tool call `toolUseBlockId`, as the
+   * discussion has it now; null when it holds none.
+   *
+   * For a call outside what the window holds: an agent's Agent call made long
+   * before the commands it runs today, in a long discussion (the chat store's
+   * parentAgentOf). Only lines naming the call are parsed; the message each
+   * names is then read as the discussion holds it, so a call rewound away
+   * since is not found, and a message saved again is read as it is now.
+   */
+  async findToolCall(id: string, toolUseBlockId: string): Promise<ChatMessage | null> {
+    // Through a view first: it converts a one-file discussion, so the
+    // messages file read below is the one there is.
+    if (!(await this.view(id))) return null;
+
+    const needle = JSON.stringify(toolUseBlockId);
+    const named: string[] = [];
+    let text: string;
+    try {
+      text = await fs.promises.readFile(messagesFileOf(this.getFilePath(id)), 'utf-8');
+    } catch (error) {
+      if (isMissing(error)) return null;
+      throw error;
+    }
+    for (const line of text.split('\n')) {
+      if (!line.includes(needle)) continue;
+      const record = parseRecord(line);
+      if (record && 'put' in record && record.put.toolUse?.toolUseBlockId === toolUseBlockId) {
+        named.push(record.put.id);
+      }
+    }
+    if (named.length === 0) return null;
+
+    return this.withView(id, async (view) => {
+      // The latest line first: a message saved again holds the call as it is now.
+      for (const messageId of [...new Set(named)].reverse()) {
+        const at = view.ids.indexOf(messageId);
+        if (at === -1) continue;
+        const [message] = await view.load(at, at + 1);
+        if (message?.toolUse?.toolUseBlockId === toolUseBlockId) return message;
+      }
+      return null;
     });
   }
 

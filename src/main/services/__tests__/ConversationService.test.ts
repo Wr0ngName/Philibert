@@ -808,6 +808,55 @@ describe('reading a conversation as a window', () => {
   });
 });
 
+// For a call the window does not hold: an agent's Agent call, a day back in
+// a long discussion, needed to say which agent started the commands it runs.
+describe('finding a tool call in a stored discussion', () => {
+  const agentCall = (id: string, description = 'Plan B'): ChatMessage => ({
+    ...msg(id, '', 'assistant'),
+    toolUse: {
+      actionId: 'toolu_agent', toolUseBlockId: 'toolu_agent', toolName: 'Agent', status: 'executed', description,
+      task: { taskId: 'agent-1', description, status: 'running', toolUseId: 'toolu_agent' },
+    },
+  });
+
+  it('finds it however far back it is', async () => {
+    await seed('c', ['m0']);
+    await service.update({ ...base('c'), upsert: [agentCall('m1'), ...Array.from({ length: 300 }, (_, i) => msg(`f${i}`))] });
+
+    const found = await new ConversationService().findToolCall('c', 'toolu_agent');
+
+    expect(found?.id).toBe('m1');
+    expect(found?.toolUse?.task?.taskId).toBe('agent-1');
+  });
+
+  it('gives the message as it is now, saved again since', async () => {
+    await service.update({ ...base('c'), upsert: [agentCall('m1', 'Plan B')] });
+    await service.update({ ...base('c'), upsert: [agentCall('m1', 'Plan B, renamed')] });
+
+    expect((await service.findToolCall('c', 'toolu_agent'))?.toolUse?.description).toBe('Plan B, renamed');
+  });
+
+  it('does not find a call rewound away', async () => {
+    await service.update({ ...base('c'), upsert: [msg('m0'), agentCall('m1'), msg('m2')] });
+    await service.update({ ...base('c'), truncateFromId: 'm1' });
+
+    expect(await service.findToolCall('c', 'toolu_agent')).toBeNull();
+  });
+
+  it('finds it in a discussion still in the one-file layout', async () => {
+    fs.writeFileSync(detailsFile('old'), JSON.stringify(oneFile('old', [msg('m0'), agentCall('m1')])));
+
+    expect((await service.findToolCall('old', 'toolu_agent'))?.id).toBe('m1');
+  });
+
+  it('answers null for a call no message holds, a mere mention, or no discussion', async () => {
+    await service.update({ ...base('c'), upsert: [msg('m0', 'it was started by toolu_agent')] });
+
+    expect(await service.findToolCall('c', 'toolu_agent')).toBeNull();
+    expect(await service.findToolCall('missing', 'toolu_agent')).toBeNull();
+  });
+});
+
 describe('a page of a long discussion', () => {
   const many = (n: number, from = 0) => Array.from({ length: n }, (_, i) => msg(`m${from + i}`, `message ${from + i}`));
   const pageIds = (page: { messages: ChatMessage[] } | null) => (page?.messages ?? []).map((m) => m.id);

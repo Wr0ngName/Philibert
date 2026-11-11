@@ -428,6 +428,8 @@ export interface ElectronAPI {
       after: number,
       untilId?: string | null,
     ) => Promise<{ messages: ChatMessage[]; olderCount: number; newerCount: number } | null>;
+    /** The stored message holding a tool call, wherever it is in the conversation; null when none. */
+    findToolCall: (id: string, toolUseBlockId: string) => Promise<ChatMessage | null>;
     rename: (id: string, newTitle: string) => Promise<void>;
     delete: (id: string) => Promise<void>;
     search: (

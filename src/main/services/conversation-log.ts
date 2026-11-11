@@ -253,6 +253,17 @@ function isCut(record: unknown): record is { cut: string } {
   return typeof (record as { cut?: unknown }).cut === 'string';
 }
 
+/** A line of the log as its record, or null when it is not a whole one. */
+export function parseRecord(line: string): LogRecord | null {
+  let record: unknown;
+  try {
+    record = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  return isPut(record) || isCut(record) ? record : null;
+}
+
 /** A log's messages, and the state for writing after it; see the top of this file. */
 export function replay(text: string): Replayed {
   const messages: ChatMessage[] = [];
@@ -266,25 +277,20 @@ export function replay(text: string): Replayed {
     const length = Buffer.byteLength(line, 'utf-8');
     next += length + 1;
     if (!line) continue;
-    let record: unknown;
-    try {
-      record = JSON.parse(line);
-    } catch {
+    const record = parseRecord(line);
+    if (!record) {
       damaged += 1;
       continue;
     }
 
-    if (isPut(record)) {
+    if ('put' in record) {
       const at = state.indexOf(record.put.id);
       if (state.put(record.put, line) !== 'unchanged') state.locate(record.put.id, { start, length });
       if (at === -1) messages.push(record.put);
       else messages[at] = record.put;
-    } else if (isCut(record)) {
+    } else {
       const at = state.indexOf(record.cut);
       if (state.cut(record.cut)) messages.length = at;
-    } else {
-      damaged += 1;
-      continue;
     }
     state.records += 1;
   }

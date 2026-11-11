@@ -2464,11 +2464,40 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * Calls looked up in the stored conversation because the window did not
+   * hold them, by conversation and call: the message holding the call, or
+   * null when none does. See agentOfCall.
+   */
+  const storedCalls = ref(new Map<string, ChatMessage | null>());
+  const storedCallLookups = new Set<string>();
+
+  /** Ask the main process for a call the window does not hold, once. */
+  function lookUpStoredCall(conversationId: string, toolUseBlockId: string): void {
+    const key = `${conversationId}\0${toolUseBlockId}`;
+    if (storedCallLookups.has(key)) return;
+    storedCallLookups.add(key);
+    void window.electron.conversation.findToolCall(conversationId, toolUseBlockId)
+      .then((message) => { storedCalls.value.set(key, message); })
+      .catch((err) => {
+        logger.warn('Could not look up a call in the stored conversation', { conversationId, toolUseBlockId, error: String(err) });
+        storedCalls.value.set(key, null);
+      });
+  }
+
+  /**
    * The agent that made a call, from the call's `parentToolUseId` — the id of
    * the Agent call that ran the agent. That call stands for the agent, so the
    * agent is found through it, tracked or from its record, and still after
    * the agent has gone idle or the app has restarted. Without the call in the
-   * list, a tracked agent started by that call. Null when neither is here.
+   * list, a tracked agent started by that call.
+   *
+   * Without either, the call is looked up in the stored conversation, and
+   * this answers again once it has been found. An agent started long before
+   * the commands it runs now — a day back in a long discussion, resumed by
+   * a SendMessage since — has its call outside the window, and is tracked
+   * by the SendMessage call instead: neither of the above found it, and its
+   * commands were listed at the top, "started by an agent" without a name.
+   * Null until then, and when the conversation holds no such call.
    */
   function agentOfCall(parentToolUseId: string): BackgroundTask | null {
     const conversationId = currentConversationId.value;
@@ -2481,6 +2510,9 @@ export const useChatStore = defineStore('chat', () => {
     for (const task of state?.backgroundTasks.values() ?? []) {
       if (task.taskType === 'agent' && task.toolUseId === parentToolUseId) return task;
     }
+    const stored = storedCalls.value.get(`${conversationId}\0${parentToolUseId}`);
+    if (stored?.toolUse) return taskForToolCall(stored.toolUse, stored.timestamp);
+    if (stored === undefined) lookUpStoredCall(conversationId, parentToolUseId);
     return null;
   }
 

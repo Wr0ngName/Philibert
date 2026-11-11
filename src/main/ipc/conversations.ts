@@ -314,6 +314,25 @@ export function setupConversationIPC(conversationService: ConversationService, s
     },
   );
 
+  // The stored message holding a tool call outside the window the renderer
+  // holds — the Agent call of an agent started long before, to say which
+  // agent started a command.
+  ipcMain.handle(
+    IPC_CHANNELS.CONVERSATION_FIND_TOOL_CALL,
+    async (_event, id: string, toolUseBlockId: string) => {
+      try {
+        ensureService(conversationService, 'ConversationService');
+        validateString(id, 'Conversation ID');
+        validateString(toolUseBlockId, 'Tool use ID');
+        // Null when no stored message holds it: an answer, not a failure.
+        return await conversationService.findToolCall(id, toolUseBlockId);
+      } catch (error) {
+        logger.error('Failed to find a tool call', { error, id, toolUseBlockId });
+        throw new ConfigurationError(formatErrorMessage('Failed to find a tool call', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
+      }
+    },
+  );
+
   // Rename a conversation
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_RENAME, async (_event, id: string, newTitle: string) => {
     try {
