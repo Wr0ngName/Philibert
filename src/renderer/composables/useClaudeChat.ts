@@ -1037,11 +1037,6 @@ export function useClaudeChat() {
 
     // Handle SDK session ID for resume support
     cleanupSessionId = window.electron.claude.onSessionId((conversationId, sessionId) => {
-      if (!sessionId) {
-        logger.info('Clearing stale SDK session ID (resume failed)', { conversationId });
-        conversationsStore.clearSdkSessionId(conversationId);
-        return;
-      }
       logger.info('Received SDK session ID', {
         conversationId,
         sessionIdPreview: sessionId.slice(0, 20) + '...',
@@ -1097,9 +1092,8 @@ export function useClaudeChat() {
     cleanupAuthInvalidated = window.electron.auth.onInvalidated(() => {
       logger.warn('Auth invalidated — credentials cleared by main process, reloading config');
       settingsStore.loadConfig();
-      // Clear all stale SDK session IDs so conversations don't attempt to resume
-      // under a different auth context (e.g. after migration or re-login)
-      conversationsStore.clearAllSdkSessionIds();
+      // Session ids are kept: a discussion is never continued without its
+      // session. A resume that fails says so (handleFailedResume in main).
     });
   }
 

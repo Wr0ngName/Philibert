@@ -53,10 +53,6 @@ function handleContinueUsageLimitNow() {
   nextTick(() => messageListRef.value?.scrollToBottom());
 }
 
-async function continueInCurrentMode() {
-  await conversationsStore.adoptCurrentExecutionMode();
-}
-
 async function switchExecutionMode() {
   if (!currentModeMismatch.value) return;
   await settingsStore.setExecutionMode(currentModeMismatch.value.conversationMode);
@@ -420,7 +416,7 @@ function openAgentOfToolCall(taskId: string) {
             <span class="font-mono">{{ currentModeMismatch.conversationMode }}</span>
             mode but you're using
             <span class="font-mono">{{ currentModeMismatch.currentMode }}</span>
-            now. The previous session can't be resumed — pick one:
+            now. Its Claude session can only be continued in the mode it was started in:
           </p>
           <div class="flex gap-2 mt-2">
             <button
@@ -429,13 +425,6 @@ function openAgentOfToolCall(taskId: string) {
               @click="switchExecutionMode"
             >
               Switch back to {{ currentModeMismatch.conversationMode }} mode
-            </button>
-            <button
-              type="button"
-              class="px-3 py-1 text-xs rounded border border-amber-400 text-amber-900 dark:text-amber-100 hover:bg-amber-100 dark:hover:bg-amber-900/40"
-              @click="continueInCurrentMode"
-            >
-              Continue in {{ currentModeMismatch.currentMode }} (starts fresh, loses prior context)
             </button>
           </div>
         </div>

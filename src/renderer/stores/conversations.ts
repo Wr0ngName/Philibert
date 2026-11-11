@@ -1685,66 +1685,6 @@ export const useConversationsStore = defineStore('conversations', () => {
   }
 
   /**
-   * Clear SDK session ID for a conversation
-   */
-  function clearSdkSessionId(conversationId: string): void {
-    sdkSessionIds.value.delete(conversationId);
-    logger.info('Cleared SDK session ID for conversation', { conversationId });
-  }
-
-  /**
-   * Clear SDK session ID for the current conversation.
-   * Used when the user confirms a model change mid-conversation.
-   */
-  function clearCurrentSdkSessionId(): void {
-    if (currentConversationId.value) {
-      clearSdkSessionId(currentConversationId.value);
-    }
-  }
-
-  /**
-   * Acknowledge a mode mismatch on the current conversation: re-stamp the
-   * conversation with the user's current execution mode and drop the stored
-   * SDK session ID so the next send starts fresh in the new mode.
-   */
-  async function adoptCurrentExecutionMode(): Promise<void> {
-    if (!currentConversationId.value) return;
-    const settingsStore = useSettingsStore();
-    const conv = conversations.value.find(
-      (c: Conversation) => c.id === currentConversationId.value,
-    );
-    if (!conv) return;
-
-    conv.executionMode = settingsStore.executionMode;
-    clearCurrentSdkSessionId();
-
-    logger.info('Adopted current execution mode for conversation', {
-      conversationId: currentConversationId.value,
-      newMode: settingsStore.executionMode,
-    });
-
-    // Persist the mode change so future loads reflect it
-    if (chatStore.messages.length > 0) {
-      await saveCurrentConversation().catch((err) => {
-        logger.warn('Failed to persist adopted execution mode', { error: err });
-      });
-    }
-  }
-
-  /**
-   * Clear ALL stored SDK session IDs.
-   * Used when authentication changes (re-login, migration) to prevent
-   * stale session resume attempts with a different auth context.
-   */
-  function clearAllSdkSessionIds(): void {
-    const count = sdkSessionIds.value.size;
-    sdkSessionIds.value.clear();
-    if (count > 0) {
-      logger.info('Cleared all SDK session IDs after auth change', { count });
-    }
-  }
-
-  /**
    * Persist the last active conversation ID to config for auto-restore on startup.
    */
   function persistLastConversationId(id: string): void {
@@ -1885,12 +1825,6 @@ export const useConversationsStore = defineStore('conversations', () => {
     setSdkSessionId,
     getSdkSessionId,
     getConversationWorkingDirectory,
-    clearSdkSessionId,
-    clearCurrentSdkSessionId,
-    clearAllSdkSessionIds,
     currentConversationHasSession,
-
-    // Execution mode tracking
-    adoptCurrentExecutionMode,
   };
 });

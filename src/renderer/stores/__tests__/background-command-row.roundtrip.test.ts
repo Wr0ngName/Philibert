@@ -45,7 +45,7 @@ import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
 import {
-  startRealStack, settle, onDisk, emitIpc, mainHandlers, mountApp, unmountApp, send, files,
+  startRealStack, settle, onDisk, emitIpc, mainHandlers, mountApp, unmountApp, send, files, sessionOnDisk,
 } from './support/real-stack';
 
 const SUMMARY = 'Background command "npm run build" completed (exit code 0)';
@@ -141,6 +141,9 @@ describe('a background command in the discussion', () => {
     store.createNewConversation();
     conversationId = store.currentConversationId!;
     await send(app, 'start the work');
+    // The turn's session, as Claude Code reports it, its transcript on disk.
+    sessionOnDisk('session-work');
+    emitIpc('claude:session-id', conversationId, 'session-work');
   });
 
   afterEach(() => {

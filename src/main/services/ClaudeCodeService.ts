@@ -187,6 +187,17 @@ const TASK_LIST_TOOLS = ['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'] as c
  * Unlike the old single-turn QueryInstance, this keeps the SDK process alive
  * between user messages via an AsyncChannel that feeds the prompt iterable.
  */
+/**
+ * What the user is told when a resume fails with the session still on disk
+ * (handleFailedResume): the session is kept, and nothing is continued
+ * without it.
+ */
+export const RESUME_FAILED_NOTICE =
+  "Could not resume this discussion's Claude session. It is kept, with the whole discussion: send again to retry.";
+export const RESUME_AUTH_FAILED_NOTICE =
+  "Could not resume this discussion's Claude session: authentication failed. Check that you are signed in, " +
+  'then send again. The session is kept, with the whole discussion.';
+
 interface SessionInstance {
   conversationId: string;
   query: Query;
@@ -1067,13 +1078,11 @@ export class ClaudeCodeService {
       onAuthError: () => {
         const session = this.activeSessions.get(conversationId);
         if (session?.isResumeAttempt) {
-          // During resume, a 401 likely means the stale session belongs to a
-          // different auth context (e.g. after migration/re-login).  Clear the
-          // session ID and let the user retry without destroying the fresh token.
+          // A 401 during a resume: reported as a failed resume, the session
+          // kept, and the credentials left as they are (handleAuthInvalidated
+          // is not run from here, as it always has not been).
           logger.warn('Auth error during resume attempt — treating as stale session, not token invalidation', { conversationId });
-          this.handleFailedResume(conversationId, session,
-            'Could not resume conversation context — authentication failed for the previous session. ' +
-            'Your conversation history is preserved. Send your message again to continue with a fresh context.');
+          this.handleFailedResume(conversationId, session, RESUME_AUTH_FAILED_NOTICE);
           return;
         }
         this.handleAuthInvalidated().catch(err =>
@@ -1375,10 +1384,7 @@ export class ClaudeCodeService {
                 conversationId,
                 error: resultError,
               });
-              this.handleFailedResume(conversationId, session,
-                'Could not resume conversation context — the session has expired or was cleaned up. ' +
-                'Your conversation history is preserved, but Claude will not remember previous messages. ' +
-                'Send your message again to continue with a fresh context.');
+              this.handleFailedResume(conversationId, session, RESUME_FAILED_NOTICE);
               break;
             }
           }
@@ -1724,18 +1730,15 @@ export class ClaudeCodeService {
         lowerError.includes('invalid bearer') || lowerError.includes('invalid token');
 
     if (session?.isResumeAttempt && (this.isResumeSessionError(errorMessage) || isAuthError)) {
-      // During resume, auth errors likely mean the stale session belongs to a
-      // different auth context (e.g. after migration/re-login).  Clear the
-      // session ID and let the user retry without destroying the fresh token.
+      // A resume that failed — the session not found, or an auth error — is
+      // reported as such, its session kept (handleFailedResume); the
+      // credentials are left as they are.
       logger.warn('Resume session failed', {
         conversationId,
         error: errorMessage,
         wasAuthError: isAuthError,
       });
-      this.handleFailedResume(conversationId, session,
-        'Could not resume conversation context — the session has expired or was cleaned up. ' +
-        'Your conversation history is preserved, but Claude will not remember previous messages. ' +
-        'Send your message again to continue with a fresh context.');
+      this.handleFailedResume(conversationId, session, isAuthError ? RESUME_AUTH_FAILED_NOTICE : RESUME_FAILED_NOTICE);
       this.emitDone(conversationId);
       return;
     }
@@ -2338,8 +2341,9 @@ export class ClaudeCodeService {
    * session in it instead would answer with a Claude that remembers none of
    * the discussion.
    *
-   * Otherwise — a session filed under another sign-in, say — the id is
-   * cleared and the user told that the next message starts afresh.
+   * Otherwise — an auth error, say — the id is kept all the same, and the
+   * user told so: the discussion is bound to its session, and is never
+   * continued without it. The resume can be tried again.
    */
   private handleFailedResume(conversationId: string, session: SessionInstance | undefined, notice: string): void {
     const resumed = session?.resumedSessionId;
@@ -2349,18 +2353,8 @@ export class ClaudeCodeService {
       this.emitError(conversationId, SESSION_GONE_NOTICE);
       return;
     }
-    this.emitClearSessionId(conversationId);
+    logger.warn('Resume failed with the session still on disk — its id is kept', { conversationId });
     this.emitError(conversationId, notice);
-  }
-
-  /**
-   * Clear a stale session ID in the renderer.
-   * Sends empty string via the existing session ID channel — the renderer
-   * interprets this as "delete the stored session ID for this conversation".
-   */
-  private emitClearSessionId(conversationId: string): void {
-    logger.info('Clearing stale SDK session ID in renderer', { conversationId });
-    this.send(IPC_CHANNELS.CLAUDE_SESSION_ID, conversationId, '');
   }
 
   /**

@@ -82,6 +82,7 @@ vi.mock('electron', () => ({
 
 // The real main-process persistence, running against the in-memory fs.
 import { ConversationService } from '../../../main/services/ConversationService';
+import { findSessionTranscript } from '../../../main/services/claude/transcript-files';
 import { IPC_CHANNELS } from '../../../shared/types';
 import ChatWindow from '../../components/chat/ChatWindow.vue';
 import { useChatStore } from '../chat';
@@ -90,7 +91,7 @@ import { useSettingsStore } from '../settings';
 
 // settle drains a whole turn of the event loop, not a count of ticks: how
 // many ticks a write takes is the persistence code's business.
-import { disk, diskContents, files, onDisk, settle } from './support/real-stack';
+import { disk, diskContents, files, onDisk, sessionOnDisk, settle } from './support/real-stack';
 
 // Importing the real preload populates `exposed.api`.
 import '../../../preload/preload';
@@ -128,6 +129,9 @@ async function route(channel: string, args: unknown[]): Promise<unknown> {
       return conversationService.summary(args[0] as string);
     case IPC_CHANNELS.CONVERSATION_DELETE:
       return conversationService.delete(args[0] as string);
+    case IPC_CHANNELS.CLAUDE_SESSION_EXISTS:
+      // Asked before each resume: the real look, on the in-memory disk.
+      return findSessionTranscript(args[0] as string) !== null;
     case IPC_CHANNELS.CONFIG_GET:
       return storedConfig;
     case IPC_CHANNELS.CONFIG_SET:
@@ -223,7 +227,13 @@ describe('a conversation through the real persistence stack', () => {
    * Deliver a turn's worth of events the way the main process does, for a
    * conversation that may or may not be the one on screen.
    */
+  /**
+   * Claude answering, as Claude Code does: its session id first — each turn
+   * reports it — with the session's transcript on disk, then the text.
+   */
   function streamAssistant(conversationId: string, text: string) {
+    sessionOnDisk(`session-${conversationId}`);
+    emitIpc(IPC_CHANNELS.CLAUDE_SESSION_ID, conversationId, `session-${conversationId}`);
     emitIpc(IPC_CHANNELS.CLAUDE_CHUNK, conversationId, text);
   }
 

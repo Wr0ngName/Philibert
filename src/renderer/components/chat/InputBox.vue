@@ -186,7 +186,7 @@ const placeholder = computed(() => {
     return 'Please select a working directory first...';
   }
   if (currentModeMismatch.value) {
-    return `This conversation was started in ${currentModeMismatch.value.conversationMode} mode — switch back or continue in ${currentModeMismatch.value.currentMode} mode to send.`;
+    return `This conversation was started in ${currentModeMismatch.value.conversationMode} mode — switch back to it to send.`;
   }
   return 'Ask Claude anything... (try /compact, /help, /cost)';
 });

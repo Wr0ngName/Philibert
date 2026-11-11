@@ -1131,10 +1131,13 @@ export interface Conversation {
   restoredAt?: number;
   /**
    * The Claude Code session it continues (`sdkSessionId`) is no longer on
-   * disk — Claude Code cleaned it up after its retention period, say — so
-   * there is nothing left to continue: it is archived for good, and cannot
-   * be brought back (isArchived, ConversationService.setArchived). One with
-   * no session yet, just started, has not lost one.
+   * disk — Claude Code cleaned it up after its retention period, say — or it
+   * has no session id although Claude replied in it (an older version
+   * dropped the id when a resume failed), so there is nothing left to
+   * continue: it is archived for good, and cannot be brought back (isArchived,
+   * ConversationService.setArchived). Continuing it would answer with a
+   * Claude that remembers none of it. One with no session yet and no reply,
+   * just started, has not lost one.
    *
    * Worked out by the main process each time it hands the discussion out
    * (list entries, the opened window), never stored: the session's files

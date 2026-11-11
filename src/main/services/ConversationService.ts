@@ -34,6 +34,7 @@ import { findSessionTranscript, sessionIdsOnDisk } from './claude/transcript-fil
 import {
   type ConversationDetails,
   DETAILS_SUFFIX,
+  hasClaudeReply,
   isDetailsFileName,
   isOneFileFormat,
   messagesFileOf,
@@ -655,18 +656,26 @@ export class ConversationService {
    * gone. Claude Code's sessions are listed once for all of them.
    */
   private async withSessionState(summaries: ConversationSummary[]): Promise<ConversationSummary[]> {
-    const sessionIds = summaries.map((summary) => this.index.sessionIdOf(summary.id));
+    const sessions = summaries.map((summary) => this.index.sessionOf(summary.id));
     // The sessions on disk are only looked for when there is one to ask about.
-    const onDisk = sessionIds.some(Boolean) ? await sessionIdsOnDisk(this.claudeConfigDir()) : new Set<string>();
+    const onDisk = sessions.some((session) => session.sessionId)
+      ? await sessionIdsOnDisk(this.claudeConfigDir())
+      : new Set<string>();
     return summaries.map((summary, i) => {
-      const sessionId = sessionIds[i];
-      return sessionId && !onDisk.has(sessionId) ? { ...summary, sessionGone: true } : summary;
+      const { sessionId, sessionLost } = sessions[i]!;
+      const gone = sessionId ? !onDisk.has(sessionId) : sessionLost === true;
+      return gone ? { ...summary, sessionGone: true } : summary;
     });
   }
 
-  /** Whether a discussion's Claude Code session is gone: see Conversation.sessionGone. */
-  private isSessionGone(details: ConversationDetails): boolean {
-    return !!details.sdkSessionId && findSessionTranscript(details.sdkSessionId, this.claudeConfigDir()) === null;
+  /**
+   * Whether a discussion's Claude Code session is gone (Conversation.
+   * sessionGone): its transcript is no longer on disk — or it has no session
+   * id although Claude replied in it, so it had one and lost it.
+   */
+  private async isSessionGone(id: string, details: ConversationDetails): Promise<boolean> {
+    if (details.sdkSessionId) return findSessionTranscript(details.sdkSessionId, this.claudeConfigDir()) === null;
+    return hasClaudeReply(this.getFilePath(id), details);
   }
 
   /** How many discussions are archived: by hand, for being inactive, or for their session being gone. */
@@ -706,8 +715,8 @@ export class ConversationService {
    */
   async setArchived(id: string, archived: boolean): Promise<ConversationSummary> {
     let sessionGone = false;
-    const changed = await this.changeDetails(id, (stored) => {
-      sessionGone = this.isSessionGone(stored);
+    const changed = await this.changeDetails(id, async (stored) => {
+      sessionGone = await this.isSessionGone(id, stored);
       if (!archived && sessionGone) return false;
       const now = Date.now();
       if (archived) {
@@ -1026,10 +1035,11 @@ export class ConversationService {
   getWindow(id: string, limit: number): Promise<ConversationWindow | null> {
     return this.withView(id, async (view) => {
       const start = Math.max(0, view.ids.length - Math.max(0, limit));
+      const sessionGone = await this.isSessionGone(id, view.details);
       return {
         conversation: {
           ...view.details,
-          ...(this.isSessionGone(view.details) ? { sessionGone: true as const } : {}),
+          ...(sessionGone ? { sessionGone: true as const } : {}),
           messages: await view.load(start, view.ids.length),
         },
         olderCount: start,

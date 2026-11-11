@@ -1116,41 +1116,6 @@ describe('useConversationsStore', () => {
       });
     });
 
-    describe('clearSdkSessionId', () => {
-      it('should remove session ID from map', () => {
-        store.setSdkSessionId('conv_1', 'session-abc');
-        store.clearSdkSessionId('conv_1');
-        expect(store.getSdkSessionId('conv_1')).toBeUndefined();
-      });
-
-      it('should not affect other conversations', () => {
-        store.setSdkSessionId('conv_1', 'session-aaa');
-        store.setSdkSessionId('conv_2', 'session-bbb');
-        store.clearSdkSessionId('conv_1');
-        expect(store.getSdkSessionId('conv_2')).toBe('session-bbb');
-      });
-
-      it('should handle clearing non-existent ID gracefully', () => {
-        expect(() => store.clearSdkSessionId('nonexistent')).not.toThrow();
-      });
-    });
-
-    describe('clearCurrentSdkSessionId', () => {
-      it('should clear session ID for current conversation', () => {
-        store.currentConversationId = 'conv_1';
-        store.setSdkSessionId('conv_1', 'session-abc');
-        store.clearCurrentSdkSessionId();
-        expect(store.getSdkSessionId('conv_1')).toBeUndefined();
-      });
-
-      it('should do nothing when no current conversation', () => {
-        store.setSdkSessionId('conv_1', 'session-abc');
-        store.currentConversationId = null;
-        store.clearCurrentSdkSessionId();
-        expect(store.getSdkSessionId('conv_1')).toBe('session-abc');
-      });
-    });
-
     describe('currentConversationHasSession', () => {
       it('should return true when current conversation has session', () => {
         store.currentConversationId = 'conv_1';
@@ -1291,7 +1256,8 @@ describe('useConversationsStore', () => {
         await store.saveCurrentConversation();
         expect(onDisk('conv_roundtrip')?.sdkSessionId).toBe('roundtrip-session');
 
-        store.clearSdkSessionId('conv_roundtrip');
+        // What memory holds is replaced by what the disk says.
+        store.setSdkSessionId('conv_roundtrip', 'held-in-memory');
         await store.loadConversation('conv_roundtrip');
 
         expect(store.getSdkSessionId('conv_roundtrip')).toBe('roundtrip-session');

@@ -279,6 +279,26 @@ describe('the discussions list', () => {
       expect(row('conv_002').find('button[title="Bring back from the archive"]').exists()).toBe(true);
     });
 
+    it('has no way back on the pages loaded by scrolling either', async () => {
+      const ids = seedMany(120);
+      for (const id of ids) sessionCleanedUp(id);
+      const wrapper = await open();
+      await tab(wrapper, 'Archived').trigger('click');
+      await settle();
+      expect(rows(wrapper)).toHaveLength(50);
+
+      activeObserver()!.reach();
+      await settle();
+      activeObserver()!.reach();
+      await settle();
+
+      expect(rows(wrapper)).toHaveLength(120);
+      const offered = rows(wrapper)
+        .filter((r) => r.find('button[title="Bring back from the archive"]').exists())
+        .map((r) => r.attributes('data-conversation-id'));
+      expect(offered).toEqual([]);
+    });
+
     it('stays archived when its session went after the list was read, and loses its way back', async () => {
       seedMany(3);
       const wrapper = await open();

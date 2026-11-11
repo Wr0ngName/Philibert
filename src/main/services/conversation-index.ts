@@ -21,7 +21,7 @@ import type { ConversationSummary } from '../../shared/types';
 import { replaceFile } from '../utils/durable-file';
 import logger from '../utils/logger';
 
-import { type ConversationDetails, isDetailsFileName, summaryOfStored } from './conversation-files';
+import { type ConversationDetails, hasClaudeReply, isDetailsFileName, summaryOfStored } from './conversation-files';
 
 interface IndexEntry {
   mtimeMs: number;
@@ -29,15 +29,24 @@ interface IndexEntry {
   summary: ConversationSummary;
   /** The Claude Code session it continues: whether that is still on disk is asked when the entry is handed out. */
   sessionId?: string;
+  /**
+   * With no session id: Claude replied in it all the same, so it had a
+   * session and lost it (hasClaudeReply) — not one just started.
+   */
+  sessionLost?: true;
 }
 
-function entryOf(mtimeMs: number, size: number, details: ConversationDetails): IndexEntry {
-  return {
-    mtimeMs,
-    size,
-    summary: summaryOfStored(details),
-    ...(details.sdkSessionId ? { sessionId: details.sdkSessionId } : {}),
-  };
+/** What a discussion has to continue, from its details — and, with no session id, its messages. */
+export interface SessionOfEntry {
+  sessionId?: string;
+  sessionLost?: true;
+}
+
+async function entryOf(dir: string, fileName: string, mtimeMs: number, size: number, details: ConversationDetails): Promise<IndexEntry> {
+  const session: SessionOfEntry = details.sdkSessionId
+    ? { sessionId: details.sdkSessionId }
+    : (await hasClaudeReply(path.join(dir, fileName), details)) ? { sessionLost: true } : {};
+  return { mtimeMs, size, summary: summaryOfStored(details), ...session };
 }
 
 interface SavedIndex {
@@ -48,9 +57,9 @@ interface SavedIndex {
 /**
  * Bumped when an entry's shape or content changes, so an older index is
  * rebuilt. 2: titles listed whole, where 1 kept them as saved, cut at 50.
- * 3: each entry's session id.
+ * 3: each entry's session id. 4: whether one with none lost it.
  */
-const INDEX_VERSION = 3;
+const INDEX_VERSION = 4;
 /** Files looked at together during a refresh. */
 const STAT_BATCH = 64;
 /** Saving waits for writes to settle: a turn saves its conversation often. */
@@ -90,9 +99,13 @@ export class ConversationIndex {
     return this.entryOf(id)?.summary ?? null;
   }
 
-  /** The Claude Code session a listed discussion continues, if any. */
-  sessionIdOf(id: string): string | undefined {
-    return this.entryOf(id)?.sessionId;
+  /** The Claude Code session a listed discussion continues, or that it lost one. */
+  sessionOf(id: string): SessionOfEntry {
+    const entry = this.entryOf(id);
+    return {
+      ...(entry?.sessionId ? { sessionId: entry.sessionId } : {}),
+      ...(entry?.sessionLost ? { sessionLost: true as const } : {}),
+    };
   }
 
   /** The listed discussions continuing one of these Claude Code sessions. */
@@ -113,7 +126,7 @@ export class ConversationIndex {
   async noteWritten(fileName: string, details: ConversationDetails): Promise<void> {
     try {
       const stat = await fs.promises.stat(path.join(this.dir, fileName));
-      this.entries.set(fileName, entryOf(stat.mtimeMs, stat.size, details));
+      this.entries.set(fileName, await entryOf(this.dir, fileName, stat.mtimeMs, stat.size, details));
       this.scheduleSave();
     } catch (error) {
       // The next refresh reads the file again.
@@ -179,7 +192,7 @@ export class ConversationIndex {
       const known = this.entries.get(name);
       if (known && known.mtimeMs === stat.mtimeMs && known.size === stat.size) return 'unchanged';
       const details = JSON.parse(await fs.promises.readFile(file, 'utf-8')) as ConversationDetails;
-      this.entries.set(name, entryOf(stat.mtimeMs, stat.size, details));
+      this.entries.set(name, await entryOf(this.dir, name, stat.mtimeMs, stat.size, details));
       return 'parsed';
     } catch (error) {
       // Left out, as the list always left out a file it could not parse.
@@ -198,7 +211,8 @@ export class ConversationIndex {
           typeof entry.size === 'number' &&
           typeof entry.summary?.id === 'string' &&
           typeof entry.summary.updatedAt === 'number' &&
-          (entry.sessionId === undefined || typeof entry.sessionId === 'string')
+          (entry.sessionId === undefined || typeof entry.sessionId === 'string') &&
+          (entry.sessionLost === undefined || entry.sessionLost === true)
         ) {
           this.entries.set(name, entry);
         }

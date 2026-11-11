@@ -131,7 +131,7 @@ import { SESSION_GONE_NOTICE } from '../../../shared/conversation-list';
 import { familyKeyOf, isSameModel, modelVersionRank } from '../../../shared/model-id';
 import { IPC_CHANNELS } from '../../../shared/types';
 import { createMockBrowserWindow } from '../../__tests__/setup';
-import ClaudeCodeService from '../ClaudeCodeService';
+import ClaudeCodeService, { RESUME_FAILED_NOTICE } from '../ClaudeCodeService';
 import ConfigService from '../ConfigService';
 import agentSentMessageFixture from '../claude/__tests__/fixtures/agent-sent-message.jsonl?raw';
 import { cliTempRoot } from '../claude/task-output';
@@ -2407,8 +2407,8 @@ describe('ClaudeCodeService', () => {
         expect(mockSend).not.toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_SESSION_ID, TEST_CONV_ID, '');
       });
 
-      it('clears the session id and says the next message starts afresh when the transcript is still there', async () => {
-        // A session filed under another sign-in, say: on disk, but not resumable.
+      it('keeps the session id and says so when the transcript is still there — never a fresh start', async () => {
+        // On disk, but the resume failed all the same.
         const project = path.join(configDir, 'projects', 'some-project');
         realFs.mkdirSync(project, { recursive: true });
         realFs.writeFileSync(path.join(project, 'abc123.jsonl'), '');
@@ -2416,13 +2416,9 @@ describe('ClaudeCodeService', () => {
         await service.sendMessage(TEST_CONV_ID, 'Resume attempt', '/home/user', 'abc123');
 
         await vi.waitFor(() => {
-          expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_SESSION_ID, TEST_CONV_ID, '');
-          expect(mockSend).toHaveBeenCalledWith(
-            IPC_CHANNELS.CLAUDE_ERROR,
-            TEST_CONV_ID,
-            expect.stringContaining('session has expired'),
-          );
+          expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_ERROR, TEST_CONV_ID, RESUME_FAILED_NOTICE);
         });
+        expect(mockSend).not.toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_SESSION_ID, TEST_CONV_ID, '');
         expect(mockSend).not.toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_SESSION_GONE, TEST_CONV_ID);
       });
     });

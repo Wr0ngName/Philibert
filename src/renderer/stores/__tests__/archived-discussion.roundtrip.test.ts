@@ -295,6 +295,30 @@ describe('a discussion whose Claude session is gone', () => {
     expect(input().exists()).toBe(false);
   });
 
+  it('is archived for good when it has no session id although Claude replied in it, as older versions left some', async () => {
+    const at = Date.now() - 1000;
+    seed('legacy', {
+      sdkSessionId: undefined,
+      messages: [
+        { id: 'legacy-q', role: 'user', content: 'the question', timestamp: at },
+        { id: 'legacy-a', role: 'assistant', content: 'an answer', timestamp: at },
+      ],
+    });
+    await store.loadConversationList();
+    await settle();
+    expect(store.listedConversations.map((c) => c.id)).toEqual([]);
+    expect(store.archivedCount).toBe(1);
+
+    await store.loadConversation('legacy');
+    await settle();
+
+    expect(input().exists()).toBe(false);
+    expect(bar().text()).toContain("Claude's session for it no longer exists");
+    expect(bringBack().exists()).toBe(false);
+    expect(await store.setConversationArchived('legacy', false)).toBe(false);
+    expect(sends).toEqual([]);
+  });
+
   it('is archived when a resume finds it gone', async () => {
     seed('a');
     sessionOnDisk('session-a');

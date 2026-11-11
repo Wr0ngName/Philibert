@@ -12,8 +12,13 @@
  * converts those.
  */
 
+import fs from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
+
 import { summaryOf } from '../../shared/conversation-list';
 import type { Conversation, ConversationSummary } from '../../shared/types';
+
+import { parseRecord } from './conversation-log';
 
 /** What is stored of a discussion besides its messages; `sessionGone` is worked out, never stored. */
 export type ConversationDetails = Omit<Conversation, 'messages' | 'sessionGone'>;
@@ -70,6 +75,57 @@ export function detailsOf(conversation: Conversation): ConversationDetails {
   delete details.messages;
   return details;
 }
+
+/**
+ * Whether Claude has replied in a discussion: a message of Claude's is in its
+ * messages file — or, for a one-file discussion not converted yet, among the
+ * messages it holds. Read a piece at a time, up to the first reply, which is
+ * near the start of any discussion that has one.
+ *
+ * What it is for: a discussion Claude replied in had a Claude Code session,
+ * so one with no session id has lost it (Conversation.sessionGone) — it is
+ * not one just started. A reply taken back since by a rewind still counts.
+ */
+export async function hasClaudeReply(
+  detailsFile: string,
+  stored: ConversationDetails & { messages?: unknown },
+): Promise<boolean> {
+  if (isOneFileFormat(stored)) return stored.messages.some((message) => message.role === 'assistant');
+  let handle: fs.promises.FileHandle;
+  try {
+    handle = await fs.promises.open(messagesFileOf(detailsFile), 'r');
+  } catch (error) {
+    // No messages file: nothing was said in it.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  const isReply = (line: string) => {
+    const record = parseRecord(line);
+    return record !== null && 'put' in record && record.put.role === 'assistant';
+  };
+  try {
+    // A piece at a time, split into lines: a line may end in the next piece,
+    // and a character across two of them is put together by the decoder.
+    const buffer = Buffer.alloc(REPLY_SCAN_CHUNK_BYTES);
+    const decoder = new StringDecoder('utf8');
+    let rest = '';
+    let position = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (bytesRead === 0) break;
+      position += bytesRead;
+      const lines = (rest + decoder.write(buffer.subarray(0, bytesRead))).split('\n');
+      rest = lines.pop()!;
+      if (lines.some(isReply)) return true;
+    }
+    return isReply(rest + decoder.end());
+  } finally {
+    await handle.close();
+  }
+}
+
+/** How much of a messages file hasClaudeReply reads at a time. */
+const REPLY_SCAN_CHUNK_BYTES = 64 * 1024;
 
 /**
  * The list entry of a parsed details file — or of a one-file discussion

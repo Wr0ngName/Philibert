@@ -224,6 +224,46 @@ describe('archiving', () => {
       expect((await service.summary('kept'))?.sessionGone).toBeUndefined();
     });
 
+    describe('with no session id although Claude replied in it — an older version dropped it', () => {
+      const reply = (id: string, at: number) =>
+        ({ id: `${id}-r`, role: 'assistant' as const, content: 'an answer', timestamp: at });
+
+      it('is archived for good, and opened saying so', async () => {
+        const at = Date.now() - 1000;
+        const base = conversation('lost', at, { sdkSessionId: undefined });
+        await store({ ...base, messages: [...base.messages, reply('lost', at)] });
+        // Asked, never answered: no session lost.
+        await store(conversation('unanswered', at - 1, { sdkSessionId: undefined }));
+
+        expect(await ids(true)).toEqual(['lost']);
+        expect(await ids(false)).toEqual(['unanswered']);
+        expect((await service.getWindow('lost', 10))?.conversation.sessionGone).toBe(true);
+        expect((await service.getWindow('unanswered', 10))?.conversation.sessionGone).toBeUndefined();
+      });
+
+      it('is not brought back from the archive', async () => {
+        const at = Date.now() - 1000;
+        const base = conversation('lost', at, { sdkSessionId: undefined });
+        await store({ ...base, messages: [...base.messages, reply('lost', at)] });
+        await service.setArchived('lost', true);
+
+        expect((await service.setArchived('lost', false)).sessionGone).toBe(true);
+        expect(await ids(true)).toEqual(['lost']);
+      });
+
+      it('is found so in a discussion still in the one-file layout', async () => {
+        const at = Date.now();
+        const base = conversation('old', at, { sdkSessionId: undefined });
+        fs.mkdirSync(conversationsDir.path, { recursive: true });
+        fs.writeFileSync(
+          path.join(conversationsDir.path, 'old.json'),
+          JSON.stringify({ ...base, messages: [...base.messages, reply('old', at)] }),
+        );
+
+        expect(await ids(true)).toEqual(['old']);
+      });
+    });
+
     it('is archived even when brought back by a message after it was archived', async () => {
       await store(conversation('a', Date.now() - 1000));
       sessionCleanedUp('session-a');
