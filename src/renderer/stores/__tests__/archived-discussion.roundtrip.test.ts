@@ -10,6 +10,7 @@
  */
 
 import type { mount } from '@vue/test-utils';
+import type { BrowserWindow } from 'electron';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import { DAY_MS, SESSION_GONE_NOTICE } from '@shared/conversation-list';
@@ -38,7 +39,8 @@ import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
 import {
-  emitIpc, files, mainHandlers, mountApp, send, sessionOnDisk, settle, startRealStack, unmountApp,
+  emitIpc, files, mainHandlers, mountApp, removeFileOutside, send, sessionOnDisk, sessionTranscriptPath, settle,
+  startRealStack, unmountApp,
 } from './support/real-stack';
 
 const DIR = '/home/user/project';
@@ -71,8 +73,12 @@ beforeEach(async () => {
     setupConversationIPC: setupConversationIPC as unknown as (service: never) => void,
     workingDirectory: DIR,
   });
-  // The real handlers: whether a session is on disk is read from the fake disk.
-  setupClaudeSessionsIPC();
+  // The real handlers: whether a session is on disk is read from the fake
+  // disk, and what they send reaches the renderer as from the main window.
+  setupClaudeSessionsIPC(() => ({
+    isDestroyed: () => false,
+    webContents: { send: (channel: string, ...args: unknown[]) => emitIpc(channel, ...args) },
+  }) as unknown as BrowserWindow);
   store = useConversationsStore();
   const settings = useSettingsStore();
   settings.config.workingDirectory = DIR;
@@ -212,6 +218,53 @@ describe('a discussion whose Claude session is gone', () => {
     await settle(20);
 
     expect(sends).toEqual([['a', 'and now?']]);
+  });
+
+  it('loses its input the moment Claude Code deletes the session, with nothing sent', async () => {
+    seed('a');
+    sessionOnDisk('session-a');
+    await store.loadConversation('a');
+    await settle();
+    expect(input().exists()).toBe(true);
+
+    removeFileOutside(sessionTranscriptPath('session-a'));
+    await settle(20);
+
+    expect(input().exists()).toBe(false);
+    expect(bar().text()).toContain("Claude's session for it no longer exists");
+    expect(store.isConversationArchived('a')).toBe(true);
+    expect(sends).toEqual([]);
+  });
+
+  it('watches the discussion on screen only, and a new one once its first turn wrote its transcript', async () => {
+    seed('a');
+    sessionOnDisk('session-a');
+    seed('b');
+    sessionOnDisk('session-b');
+    await store.loadConversation('a');
+    await settle();
+    await store.loadConversation('b');
+    await settle();
+
+    // No longer on screen: its session is not watched.
+    removeFileOutside(sessionTranscriptPath('session-a'));
+    await settle(20);
+    expect(store.isConversationArchived('a')).toBe(false);
+
+    // A new discussion: its session id comes before its transcript is written.
+    store.createNewConversation();
+    const id = store.currentConversationId!;
+    await send(app, 'hello');
+    emitIpc('claude:session-id', id, 'session-new');
+    await settle(20);
+    expect(store.isConversationArchived(id)).toBe(false);
+    sessionOnDisk('session-new');
+    emitIpc('claude:done', id);
+    await settle(20);
+
+    removeFileOutside(sessionTranscriptPath('session-new'));
+    await settle(20);
+    expect(store.isConversationArchived(id)).toBe(true);
   });
 
   it('is archived when a resume finds it gone', async () => {

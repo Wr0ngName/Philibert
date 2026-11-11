@@ -1,18 +1,37 @@
 /**
  * IPC handlers for Claude Code's own session files: whether a session is
- * still on disk, and how long Claude Code keeps them (`cleanupPeriodDays`).
+ * still on disk, watching the open discussion's for being deleted, and how
+ * long Claude Code keeps them (`cleanupPeriodDays`).
  */
 
-import { ipcMain } from 'electron';
+import { type BrowserWindow, ipcMain } from 'electron';
 
 import { IPC_CHANNELS } from '../../shared/types';
 import { ValidationError, ERROR_CODES } from '../errors';
 import { readSessionRetention, writeSessionRetention } from '../services/claude/session-retention';
+import { SessionTranscriptWatch } from '../services/claude/session-watch';
 import { findSessionTranscript } from '../services/claude/transcript-files';
-import { validateString, toSettingsIpcError } from '../utils/ipc-helpers';
+import { createSender, validateString, toSettingsIpcError } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
-export function setupClaudeSessionsIPC(): void {
+export function setupClaudeSessionsIPC(getMainWindow: () => BrowserWindow | null): void {
+  const send = createSender(getMainWindow);
+  const transcriptWatch = new SessionTranscriptWatch((conversationId) => {
+    send(IPC_CHANNELS.CLAUDE_SESSION_GONE, conversationId);
+  });
+
+  // The open discussion's session, watched for Claude Code deleting it.
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_WATCH_SESSION, async (_event, conversationId: string, sessionId: string | null) => {
+    try {
+      validateString(conversationId, 'Conversation ID');
+      if (sessionId !== null) validateString(sessionId, 'Session ID');
+      transcriptWatch.watch(conversationId, sessionId);
+    } catch (error) {
+      logger.error('Failed to watch a Claude Code session', { error, conversationId });
+      throw toSettingsIpcError('Failed to watch the Claude Code session', error);
+    }
+  });
+
   // Asked before a prompt resumes a session: one that is gone is not resumed.
   ipcMain.handle(IPC_CHANNELS.CLAUDE_SESSION_EXISTS, async (_event, sessionId: string) => {
     try {

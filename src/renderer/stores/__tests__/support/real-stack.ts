@@ -41,7 +41,21 @@ export const files = new Map<string, string>();
  * path, on this fake disk only.
  */
 export function sessionOnDisk(sessionId: string): void {
-  files.set(`${cliConfigDir()}/projects/-home-user-project/${sessionId}.jsonl`, '{}\n');
+  files.set(sessionTranscriptPath(sessionId), '{}\n');
+}
+
+/** Where sessionOnDisk puts a session's transcript. */
+export function sessionTranscriptPath(sessionId: string): string {
+  return `${cliConfigDir()}/projects/-home-user-project/${sessionId}.jsonl`;
+}
+
+/** `fs.watch` listeners on the fake disk, by path. */
+const fileWatchers = new Map<string, Set<(event: string) => void>>();
+
+/** Remove a file as something outside the app does, telling whoever watches it — as fs.watch does. */
+export function removeFileOutside(p: string): void {
+  files.delete(p);
+  for (const listener of [...(fileWatchers.get(p) ?? [])]) listener('rename');
 }
 
 /** Channel → IPC listeners registered by the renderer. */
@@ -116,6 +130,24 @@ export function fakeFsModule(): Record<string, unknown> {
       dirs.add(p);
     },
     readdirSync: (dir: string, options?: { withFileTypes?: boolean }) => listing(dir, options),
+    /** Told of removals made with removeFileOutside. */
+    watch: (p: string, listener: (event: string) => void) => {
+      if (!files.has(p)) {
+        const err = new Error(`ENOENT: no such file or directory, watch '${p}'`) as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      }
+      const listeners = fileWatchers.get(p) ?? new Set();
+      listeners.add(listener);
+      fileWatchers.set(p, listeners);
+      return {
+        on: () => undefined,
+        unref: () => undefined,
+        close: () => {
+          listeners.delete(listener);
+        },
+      };
+    },
     promises: {
       readdir: async (dir: string, options?: { withFileTypes?: boolean }) => {
         if (disk.holdReads) {
@@ -509,6 +541,7 @@ export async function startRealStack(options: {
 }): Promise<void> {
   setActivePinia(createPinia());
   files.clear();
+  fileWatchers.clear();
   ipcListeners.clear();
   disk.holdWrites = false;
   disk.failWrites = false;

@@ -247,6 +247,9 @@ const electronAPI: ElectronAPI = {
 
     sessionExists: (sessionId: string) => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SESSION_EXISTS, sessionId),
 
+    watchSession: (conversationId: string, sessionId: string | null) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_WATCH_SESSION, conversationId, sessionId),
+
     getSessionRetention: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_SESSION_RETENTION),
 
     setSessionRetention: (days: number) => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SET_SESSION_RETENTION, days),

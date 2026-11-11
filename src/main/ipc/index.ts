@@ -85,6 +85,7 @@ const REGISTERED_CHANNELS = {
     IPC_CHANNELS.CLAUDE_GET_PROJECT_PERMISSIONS,
     IPC_CHANNELS.CLAUDE_REVOKE_PROJECT_PERMISSION,
     IPC_CHANNELS.CLAUDE_SESSION_EXISTS,
+    IPC_CHANNELS.CLAUDE_WATCH_SESSION,
     IPC_CHANNELS.CLAUDE_GET_SESSION_RETENTION,
     IPC_CHANNELS.CLAUDE_SET_SESSION_RETENTION,
     IPC_CHANNELS.CLAUDE_USER_QUESTION_ANSWER,
@@ -259,7 +260,7 @@ export function setupIPC(
     setupConfigIPC(configService, getMainWindow);
     setupMcpIPC(mcpService, claudeService, getMainWindow);
     setupProjectPermissionsIPC(projectPermissionService);
-    setupClaudeSessionsIPC();
+    setupClaudeSessionsIPC(getMainWindow);
     setupConversationIPC(conversationService, claudeService);
     setupUpdateIPC(updateService);
     setupSpeechIPC(getMainWindow);

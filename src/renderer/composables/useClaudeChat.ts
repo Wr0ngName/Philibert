@@ -897,6 +897,8 @@ export function useClaudeChat() {
       chatStore.setLoading(conversationId, false);
       chatStore.finishStreaming(conversationId);
       chatStore.completeToolUseMessages(conversationId);
+      // Its transcript is on disk now, a new discussion's included: watched.
+      if (conversationId === conversationsStore.currentConversationId) conversationsStore.watchCurrentSession();
 
       // If anything is still flagged streaming after this, the spinner will
       // stay on screen regardless of isLoading — say so loudly rather than

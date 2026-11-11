@@ -2151,8 +2151,10 @@ export const IPC_CHANNELS = {
   CLAUDE_SESSION_SCHEDULES: 'claude:session-schedules',
   /** Whether a Claude Code session's transcript is still on disk (boolean) */
   CLAUDE_SESSION_EXISTS: 'claude:session-exists',
-  /** A discussion's Claude Code session turned out gone when it was resumed (conversationId) */
+  /** A discussion's Claude Code session turned out gone: deleted while watched, or found so on resuming (conversationId) */
   CLAUDE_SESSION_GONE: 'claude:session-gone',
+  /** Watch the open discussion's Claude Code session for being deleted (conversationId, sessionId | null) */
+  CLAUDE_WATCH_SESSION: 'claude:watch-session',
   /** How long Claude Code keeps sessions (SessionRetention) */
   CLAUDE_GET_SESSION_RETENTION: 'claude:get-session-retention',
   /** Set how long Claude Code keeps sessions, in days (SessionRetention) */
