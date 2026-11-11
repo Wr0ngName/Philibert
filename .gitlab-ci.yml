@@ -185,7 +185,12 @@ build:linux:
     paths:
       - out/make/**/*.deb
       - out/make/**/*.rpm
-    expire_in: 1 week
+    # A day, for every artifact in this file: each is only read later in its
+    # own pipeline (the builds by publish:packages, release-info/ by
+    # create:release), and published packages live in the package registry.
+    # A day still covers retrying a failed publish. Kept a week, they held
+    # 43 GB after a week of ~30 releases (2026-11-11).
+    expire_in: 1 day
   rules:
     - if: $CI_COMMIT_TAG
 
@@ -478,7 +483,7 @@ build:windows:
     name: "philibert-windows-offline-${CI_COMMIT_REF_SLUG}"
     paths:
       - out/make/nsis/*.exe
-    expire_in: 1 week
+    expire_in: 1 day
   rules:
     - if: $CI_COMMIT_TAG
 
@@ -489,7 +494,7 @@ build:windows:online:
     name: "philibert-windows-online-${CI_COMMIT_REF_SLUG}"
     paths:
       - out-online/nsis/*.exe
-    expire_in: 1 week
+    expire_in: 1 day
   rules:
     - if: $CI_COMMIT_TAG
 
@@ -523,7 +528,7 @@ build:windows:online:manual:
 #     paths:
 #       - out/make/**/*.dmg
 #       - out/make/**/*.zip
-#     expire_in: 1 week
+#     expire_in: 1 day
 #   rules:
 #     - if: $CI_COMMIT_TAG
 #     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -650,7 +655,7 @@ publish:packages:
   artifacts:
     paths:
       - release-info/
-    expire_in: 1 week
+    expire_in: 1 day
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(-rc\.\d+)?$/
 
