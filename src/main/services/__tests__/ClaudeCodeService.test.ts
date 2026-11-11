@@ -129,7 +129,7 @@ vi.mock('../../utils/ipc-helpers', () => ({
 // Import after mocks
 import { SESSION_GONE_NOTICE } from '../../../shared/conversation-list';
 import { familyKeyOf, isSameModel, modelVersionRank } from '../../../shared/model-id';
-import { IPC_CHANNELS } from '../../../shared/types';
+import { type DiscussionSettings, IPC_CHANNELS } from '../../../shared/types';
 import { createMockBrowserWindow } from '../../__tests__/setup';
 import ClaudeCodeService, { RESUME_FAILED_NOTICE } from '../ClaudeCodeService';
 import ConfigService from '../ConfigService';
@@ -2074,41 +2074,94 @@ describe('ClaudeCodeService', () => {
       );
     });
 
-    it("runs the discussion's own model, not the one last picked in the app", async () => {
-      await configService.setSelectedModel('claude-opus-4-7');
-      mockQuery.mockReturnValue(createMockQueryIterator([]));
+    describe("a discussion's own settings", () => {
+      const HAIKU: DiscussionSettings = { model: 'claude-haiku-4-5-20251001', effortLevel: 'low', thinkingMode: 'disabled' };
 
-      await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, 'claude-haiku-4-5-20251001');
+      /** A session that stays open after its init, as a persistent one does. */
+      function openSession() {
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        const iterator = {
+          [Symbol.asyncIterator]: async function* () {
+            yield { type: 'system', subtype: 'init', session_id: 'session-a', slash_commands: [] };
+            await held;
+            yield { type: 'result', subtype: 'success' };
+          },
+          interrupt: vi.fn(),
+          supportedCommands: vi.fn().mockResolvedValue([]),
+          supportedModels: vi.fn().mockResolvedValue([]),
+          setModel: vi.fn().mockResolvedValue(undefined),
+          applyFlagSettings: vi.fn().mockResolvedValue(undefined),
+          setMaxThinkingTokens: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn(),
+        };
+        mockQuery.mockReturnValue(iterator);
+        return { iterator, release };
+      }
 
-      expect(mockQuery.mock.calls[0][0].options.model).toBe('claude-haiku-4-5-20251001');
-    });
+      it('start its session, not the ones last picked in the app', async () => {
+        await configService.setSelectedModel('claude-opus-4-7');
+        await configService.setEffortLevel('max');
+        await configService.setThinkingMode('auto');
+        mockQuery.mockReturnValue(createMockQueryIterator([]));
 
-    it('leaves a running discussion on its model when another discussion picks a different one', async () => {
-      let resolveFirst!: () => void;
-      const waitPromise = new Promise<void>((resolve) => { resolveFirst = resolve; });
-      const iterator = {
-        [Symbol.asyncIterator]: async function* () {
-          yield { type: 'system', subtype: 'init', session_id: 'session-a', slash_commands: [] };
-          await waitPromise;
-          yield { type: 'result', subtype: 'success' };
-        },
-        interrupt: vi.fn(),
-        supportedCommands: vi.fn().mockResolvedValue([]),
-        supportedModels: vi.fn().mockResolvedValue([]),
-        setModel: vi.fn().mockResolvedValue(undefined),
-        close: vi.fn(),
-      };
-      mockQuery.mockReturnValue(iterator);
-      const first = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, 'claude-haiku-4-5-20251001');
-      await new Promise((resolve) => setTimeout(resolve, 50));
+        await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, HAIKU);
 
-      // Picked in another discussion: the app's setting follows it.
-      await configService.setSelectedModel('claude-opus-4-7');
-      await service.sendMessage(TEST_CONV_ID, 'Second', '/home/user', undefined, undefined, 'claude-haiku-4-5-20251001');
+        const options = mockQuery.mock.calls[0][0].options;
+        expect(options.model).toBe('claude-haiku-4-5-20251001');
+        expect(options.effort).toBe('low');
+        expect(options.thinking).toEqual({ type: 'disabled' });
+      });
 
-      expect(iterator.setModel).not.toHaveBeenCalled();
-      resolveFirst();
-      await first.catch(() => {});
+      it('leave a running session alone when another discussion picks different ones', async () => {
+        const { iterator, release } = openSession();
+        const first = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, HAIKU);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        // Picked in another discussion: the app's settings follow them.
+        await configService.setSelectedModel('claude-opus-4-7');
+        await configService.setEffortLevel('max');
+        await configService.setThinkingMode('auto');
+        await service.sendMessage(TEST_CONV_ID, 'Second', '/home/user', undefined, undefined, HAIKU);
+
+        expect(iterator.setModel).not.toHaveBeenCalled();
+        expect(iterator.applyFlagSettings).not.toHaveBeenCalled();
+        expect(iterator.setMaxThinkingTokens).not.toHaveBeenCalled();
+        release();
+        await first.catch(() => {});
+      });
+
+      it("are applied to its running session when they change — effort, then thinking on and off", async () => {
+        const { iterator, release } = openSession();
+        const first = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, HAIKU);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        await service.sendMessage(TEST_CONV_ID, 'harder', '/home/user', undefined, undefined, { ...HAIKU, effortLevel: 'high' });
+        expect(iterator.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'high' });
+        expect(iterator.setMaxThinkingTokens).not.toHaveBeenCalled();
+
+        await service.sendMessage(TEST_CONV_ID, 'think', '/home/user', undefined, undefined, { ...HAIKU, effortLevel: 'high', thinkingMode: 'auto' });
+        expect(iterator.setMaxThinkingTokens).toHaveBeenLastCalledWith(31999);
+
+        await service.sendMessage(TEST_CONV_ID, 'stop', '/home/user', undefined, undefined, { ...HAIKU, effortLevel: 'high' });
+        expect(iterator.setMaxThinkingTokens).toHaveBeenLastCalledWith(0);
+        expect(iterator.applyFlagSettings).toHaveBeenCalledTimes(1);
+        expect(iterator.setModel).not.toHaveBeenCalled();
+        release();
+        await first.catch(() => {});
+      });
+
+      it("takes its running session back to Claude Code's default model when it is unpinned", async () => {
+        const { iterator, release } = openSession();
+        const first = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, HAIKU);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        await service.sendMessage(TEST_CONV_ID, 'any model', '/home/user', undefined, undefined, { ...HAIKU, model: '' });
+
+        expect(iterator.setModel).toHaveBeenCalledWith(undefined);
+        release();
+        await first.catch(() => {});
+      });
     });
 
     it('should NOT pass model when selectedModel is empty (use SDK default)', async () => {

@@ -864,6 +864,22 @@ export type PromptDeliveryState = 'started' | 'cancelled';
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /**
+ * How a discussion runs: its own model, reasoning effort and thinking mode.
+ *
+ * Each discussion has its own: they used to be app settings, so a change
+ * made in one discussion reached every other at its next message. The app's
+ * settings of the same names are now only what a new discussion starts with
+ * — the last ones picked. Every send carries the discussion's, and the main
+ * process starts or adjusts that discussion's session to them only.
+ */
+export interface DiscussionSettings {
+  /** '' for Claude Code's default. */
+  model: string;
+  effortLevel: EffortLevel;
+  thinkingMode: ThinkingMode;
+}
+
+/**
  * A whisper.cpp GGML model offered for local dictation. The catalogue, with
  * sizes and download URLs, lives in @shared/speech.
  */
@@ -1077,16 +1093,14 @@ export interface Conversation {
   /** SDK session ID for resuming conversation context */
   sdkSessionId?: string;
   /**
-   * The model chosen for this discussion; '' for Claude Code's default.
-   *
-   * Its own, not the app's: the model picked in one discussion used to be
-   * one setting for all, so every other discussion switched to it at its
-   * next message. The app's setting (`selectedModel`) is now only what a new
-   * discussion starts with — the last model picked. Absent on a discussion
-   * saved before this existed: it is given the app's setting when it is
-   * opened, and keeps it from then on.
+   * How this discussion runs (DiscussionSettings): its own model ('' for
+   * Claude Code's default), reasoning effort and thinking mode. Each is absent
+   * on a discussion saved before it existed: it is given the app's setting
+   * when the discussion is opened, and keeps it from then on.
    */
   model?: string;
+  effortLevel?: EffortLevel;
+  thinkingMode?: ThinkingMode;
   /**
    * Execution mode this conversation was started in. The SDK and channel CLI
    * keep separate session stores, so a conversation started in one mode can't
@@ -1215,6 +1229,8 @@ export interface ConversationUpdate {
   sdkSessionId?: string;
   /** See Conversation.model. */
   model?: string;
+  effortLevel?: EffortLevel;
+  thinkingMode?: ThinkingMode;
   executionMode?: ExecutionMode;
   lastSessionUsage?: SessionUsage;
   sessionPermissions?: SessionPermissionEntry[];

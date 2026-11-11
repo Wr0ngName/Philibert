@@ -13,11 +13,25 @@
 
 import { ipcMain } from 'electron';
 
-import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionOptionVariant, PermissionScope, RewindScope, SessionPermissionEntry, IMAGE_MEDIA_TYPES, type MessageImage } from '../../shared/types';
+import { isEffortLevel } from '../../shared/effort';
+import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionOptionVariant, PermissionScope, RewindScope, SessionPermissionEntry, IMAGE_MEDIA_TYPES, type DiscussionSettings, type MessageImage } from '../../shared/types';
 import { IpcError, ValidationError, AppError, ERROR_CODES } from '../errors';
 import ClaudeCodeService from '../services/ClaudeCodeService';
 import { validateString, validateObject, validateBoolean, formatErrorMessage, ensureService } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
+
+/** A discussion's own settings, as a send carries them: every field there and known. */
+function validateDiscussionSettings(settings: unknown): asserts settings is DiscussionSettings {
+  validateObject(settings, 'Discussion settings');
+  const { model, effortLevel, thinkingMode } = settings as Record<string, unknown>;
+  validateString(model, 'Model', { allowEmpty: true });
+  if (!isEffortLevel(effortLevel)) {
+    throw new ValidationError(`Unknown effort level: ${String(effortLevel)}`, 'effortLevel', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+  }
+  if (thinkingMode !== 'auto' && thinkingMode !== 'disabled') {
+    throw new ValidationError(`Unknown thinking mode: ${String(thinkingMode)}`, 'thinkingMode', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+  }
+}
 
 /**
  * Register IPC handlers for Claude Code operations.
@@ -54,7 +68,7 @@ function validImages(images?: unknown): MessageImage[] | undefined {
 
 export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
   // Send message to Claude
-  ipcMain.handle(IPC_CHANNELS.CLAUDE_SEND, async (_event, conversationId: string, message: string, workingDir: string, resumeSessionId: string | undefined, images: MessageImage[] | undefined, model: string) => {
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_SEND, async (_event, conversationId: string, message: string, workingDir: string, resumeSessionId: string | undefined, images: MessageImage[] | undefined, settings: DiscussionSettings) => {
     try {
       logger.debug('IPC: claude:send', {
         conversationId,
@@ -70,15 +84,15 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
       validateString(conversationId, 'Conversation ID');
       validateString(message, 'Message', { allowEmpty: (images?.length ?? 0) > 0 });
       validateString(workingDir, 'Working directory');
-      // The discussion's own model, always given: '' is Claude Code's
-      // default, and nothing falls back to another discussion's choice.
-      validateString(model, 'Model', { allowEmpty: true });
+      // The discussion's own settings, always given: nothing falls back to
+      // another discussion's choices.
+      validateDiscussionSettings(settings);
 
       // An empty message is normally refused, but a message that is only
       // images is a real thing to send: a screenshot with no question.
       // Resolves to the uuid the turn was sent under: its rewind target.
       return await claudeService.sendMessage(
-        conversationId, message, workingDir, resumeSessionId, validImages(images), model,
+        conversationId, message, workingDir, resumeSessionId, validImages(images), settings,
       );
     } catch (error) {
       logger.error('Failed to send message to Claude', { error, conversationId, messageLength: message?.length });

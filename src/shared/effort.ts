@@ -43,15 +43,16 @@ export const PERSISTABLE_EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium
 const BASELINE_EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high'];
 
 /**
- * Resolves the effort level to use for a selected model, already clamped to
- * what that model accepts, or null when it accepts none.
+ * Resolves the effort level to use for a selected model — the one the
+ * discussion asks for, already clamped to what that model accepts — or null
+ * when it accepts none.
  *
  * Exists as a contract because the authoritative model rows — the ones
  * carrying each model's supported levels — are owned by one service, while
  * both execution paths need the same answer. Injecting the resolver keeps a
  * single implementation instead of letting the two paths drift.
  */
-export type EffortResolver = (selectedModel: string) => Promise<EffortLevel | null>;
+export type EffortResolver = (selectedModel: string, requested: EffortLevel) => Promise<EffortLevel | null>;
 
 /** Whether a value is one of the known effort levels. */
 export function isEffortLevel(value: unknown): value is EffortLevel {

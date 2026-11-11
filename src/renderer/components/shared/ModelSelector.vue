@@ -32,14 +32,15 @@ const settingsStore = useSettingsStore();
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
 const {
-  thinkingMode,
-  effortLevel,
   switchModelsOnFlag,
   strictModelEnforcement,
 } = storeToRefs(settingsStore);
 
-// The model of the discussion on screen: each has its own (Conversation.model).
-const { currentModel: selectedModel } = storeToRefs(conversationsStore);
+// The model, effort and thinking mode of the discussion on screen: each has
+// its own (DiscussionSettings).
+const selectedModel = computed(() => conversationsStore.currentSettings.model);
+const effortLevel = computed(() => conversationsStore.currentSettings.effortLevel);
+const thinkingMode = computed(() => conversationsStore.currentSettings.thinkingMode);
 
 const models = ref<ModelInfo[]>([]);
 const { isLoading, execute } = useAsyncOperation();
@@ -254,7 +255,7 @@ async function loadModels(): Promise<void> {
 // Apply model change (shared by direct selection and confirmation): to the
 // discussion on screen only, and as what the next one started begins with.
 async function applyModelChange(modelValue: string): Promise<void> {
-  await conversationsStore.setCurrentModel(modelValue);
+  await conversationsStore.setCurrentSettings({ model: modelValue });
   logger.info('Model changed', {
     conversationId: conversationsStore.currentConversationId,
     model: modelValue || '(default)',
@@ -316,7 +317,7 @@ function cancelModelChange(): void {
 
 async function toggleThinking(): Promise<void> {
   const newMode = thinkingMode.value === 'auto' ? 'disabled' : 'auto';
-  await settingsStore.setThinkingMode(newMode);
+  await conversationsStore.setCurrentSettings({ thinkingMode: newMode });
   logger.info('Thinking mode changed', { mode: newMode });
 }
 
@@ -379,7 +380,7 @@ const sessionBehaviourSummary = computed(() => {
 
 async function selectEffortLevel(level: EffortLevel): Promise<void> {
   if (level === effortLevel.value) return;
-  await settingsStore.setEffortLevel(level);
+  await conversationsStore.setCurrentSettings({ effortLevel: level });
   logger.info('Effort level changed', { level });
 }
 

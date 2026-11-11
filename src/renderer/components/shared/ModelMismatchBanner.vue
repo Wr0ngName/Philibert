@@ -24,8 +24,8 @@ import { formatModelId } from '../../utils/model';
 import NoticeBanner from './NoticeBanner.vue';
 
 const conversationsStore = useConversationsStore();
-// The model of the discussion on screen: each has its own (Conversation.model).
-const { currentModel: selectedModel } = storeToRefs(conversationsStore);
+// The model of the discussion on screen: each has its own (DiscussionSettings).
+const selectedModel = computed(() => conversationsStore.currentSettings.model);
 // Single source of truth for the main-loop model — registered once in
 // useClaudeChat rather than each component opening its own IPC listener.
 const { activeModel } = storeToRefs(useChatStore());
@@ -63,7 +63,7 @@ function dismiss(): void {
 async function reapply(): Promise<void> {
   const target = selectedModel.value;
   if (!target) return;
-  await conversationsStore.setCurrentModel(target);
+  await conversationsStore.setCurrentSettings({ model: target });
   dismiss();
 }
 

@@ -23,7 +23,7 @@ import type {
   PendingAction,
   SessionUsage,
 } from '../../../shared/types';
-import { IPC_CHANNELS } from '../../../shared/types';
+import { type DiscussionSettings, IPC_CHANNELS } from '../../../shared/types';
 import { MAIN_CONSTANTS } from '../../constants/app';
 import logger from '../../utils/logger';
 import { ClaudeCliPaths, ChannelPaths } from '../../utils/resourcePaths';
@@ -71,7 +71,6 @@ export class ChannelService {
   private bridge: ChannelBridge | null = null;
   private sessions: Map<string, ActiveChannelSession> = new Map();
   private send: (channel: string, ...args: unknown[]) => boolean;
-  private configService: ConfigService;
   private resolveEffort: EffortResolver;
   private notificationService: NotificationService;
   private authValidator: AuthValidator;
@@ -87,7 +86,6 @@ export class ChannelService {
     notificationService: NotificationService,
     resolveEffort: EffortResolver,
   ) {
-    this.configService = configService;
     this.send = send;
     this.notificationService = notificationService;
     this.resolveEffort = resolveEffort;
@@ -130,14 +128,16 @@ export class ChannelService {
   }
 
   /**
-   * @param model the discussion's own model (Conversation.model): what a
-   *   session started for it runs.
+   * @param settings the discussion's own model, effort and thinking mode
+   *   (DiscussionSettings): what a session started for it runs. A channel
+   *   session already running keeps what it started with, as it always has
+   *   in this mode: they apply from the next session it starts.
    */
   async sendMessage(
     conversationId: string,
     message: string,
     workingDirectory: string,
-    model: string,
+    settings: DiscussionSettings,
     resumeSessionId?: string,
   ): Promise<void> {
     try {
@@ -148,7 +148,7 @@ export class ChannelService {
         if (active) {
           void this.cleanupActiveSession(conversationId);
         }
-        active = await this.createSession(conversationId, workingDirectory, bridge, model, resumeSessionId);
+        active = await this.createSession(conversationId, workingDirectory, bridge, settings, resumeSessionId);
       }
 
       bridge.pushMessage(conversationId, message);
@@ -309,9 +309,10 @@ export class ChannelService {
     conversationId: string,
     workingDirectory: string,
     bridge: ChannelBridge,
-    selectedModel: string,
+    settings: DiscussionSettings,
     resumeSessionId?: string,
   ): Promise<ActiveChannelSession> {
+    const selectedModel = settings.model;
     const claudeCliPath = ClaudeCliPaths.findBundledCli();
     if (!claudeCliPath) {
       throw new Error(
@@ -326,8 +327,8 @@ export class ChannelService {
       );
     }
 
-    const thinkingMode = await this.configService.getThinkingMode();
-    const effortLevel = await this.resolveEffort(selectedModel);
+    const thinkingMode = settings.thinkingMode;
+    const effortLevel = await this.resolveEffort(selectedModel, settings.effortLevel);
     const authEnv = await this.authValidator.setupAuthEnv();
 
     const session = new ChannelSession({

@@ -5,7 +5,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type { ElectronAPI } from '../shared/preload-api';
-import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type McpServerInput, type MessageImage, type ProjectPermissionEntry, type PromptDeliveryState, type RendererLogEntry, type SessionPermissionEntry, type SessionSchedule, type ToolCaptureData, type ToolResultData, type UsageLimitStop, type UsageWarning } from '../shared/types';
+import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type DiscussionSettings, type McpServerInput, type MessageImage, type ProjectPermissionEntry, type PromptDeliveryState, type RendererLogEntry, type SessionPermissionEntry, type SessionSchedule, type ToolCaptureData, type ToolResultData, type UsageLimitStop, type UsageWarning } from '../shared/types';
 
 // Create the API object that will be exposed to the renderer
 const electronAPI: ElectronAPI = {
@@ -17,10 +17,10 @@ const electronAPI: ElectronAPI = {
       workingDir: string,
       resumeSessionId: string | undefined,
       images: MessageImage[] | undefined,
-      model: string,
+      settings: DiscussionSettings,
     ) =>
       ipcRenderer.invoke(
-        IPC_CHANNELS.CLAUDE_SEND, conversationId, message, workingDir, resumeSessionId, images, model,
+        IPC_CHANNELS.CLAUDE_SEND, conversationId, message, workingDir, resumeSessionId, images, settings,
       ),
 
     sendDuringTurn: (conversationId: string, message: string, images?: MessageImage[]) =>

@@ -16,6 +16,7 @@ import type {
   ConversationSummary,
   ConversationUpdate,
   ConversationWindow,
+  DiscussionSettings,
 } from '@shared/types';
 
 import { getInMemoryMessages } from '../composables/useClaudeChat';
@@ -47,12 +48,29 @@ export const useConversationsStore = defineStore('conversations', () => {
   const sdkSessionIds = ref<Map<string, string>>(new Map());
 
   /**
-   * Each discussion's own model (Conversation.model), by id: given to every
-   * send in it, so a model picked in one discussion never reaches another.
-   * Held as the session ids are — a discussion just started is not in
-   * `conversations` until it is saved — and saved with the discussion.
+   * Each discussion's own model, effort and thinking mode
+   * (DiscussionSettings), by id: given to every send in it, so what is picked
+   * in one discussion never reaches another. Held as the session ids are — a
+   * discussion just started is not in `conversations` until it is saved —
+   * and saved with the discussion.
    */
-  const conversationModels = ref<Map<string, string>>(new Map());
+  const discussionSettings = ref<Map<string, DiscussionSettings>>(new Map());
+
+  /** The app's settings: what a new discussion starts with, and an old one is given. */
+  function appSettings(): DiscussionSettings {
+    const settings = useSettingsStore();
+    return { model: settings.selectedModel, effortLevel: settings.effortLevel, thinkingMode: settings.thinkingMode };
+  }
+
+  /** A stored discussion's settings; each one it was saved without is the app's. */
+  function storedSettings(conversation: Conversation): DiscussionSettings {
+    const app = appSettings();
+    return {
+      model: conversation.model ?? app.model,
+      effortLevel: conversation.effortLevel ?? app.effortLevel,
+      thinkingMode: conversation.thinkingMode ?? app.thinkingMode,
+    };
+  }
 
   // Set up watchers at store creation time for proper reactivity
   const chatStore = useChatStore();
@@ -411,11 +429,11 @@ export const useConversationsStore = defineStore('conversations', () => {
         conversations.value.push(conversation);
       }
 
-      // Its own model, as saved — unless one picked since is held. One saved
-      // before discussions had their own is given the app's setting now,
-      // and keeps it from then on, whatever is picked elsewhere.
-      if (!conversationModels.value.has(id)) {
-        conversationModels.value.set(id, conversation.model ?? useSettingsStore().selectedModel);
+      // Its own settings, as saved — unless ones picked since are held. One
+      // saved before discussions had their own is given the app's now, and
+      // keeps them from then on, whatever is picked elsewhere.
+      if (!discussionSettings.value.has(id)) {
+        discussionSettings.value.set(id, storedSettings(conversation));
       }
 
       // Restore SDK session ID from persisted data (for resume support after app restart)
@@ -806,9 +824,9 @@ export const useConversationsStore = defineStore('conversations', () => {
       createdAt: existingConv?.createdAt || Date.now(),
       updatedAt: lastMessageAt,
       sdkSessionId,
-      // Its own model, held since it was started or opened; one never opened
-      // in this run keeps what was saved (the field is left out).
-      ...(conversationModels.value.has(conversationId) ? { model: conversationModels.value.get(conversationId) } : {}),
+      // Its own settings, held since it was started or opened; one never
+      // opened in this run keeps what was saved (the fields are left out).
+      ...(discussionSettings.value.get(conversationId) ?? {}),
       executionMode,
       ...(lastSessionUsage ? { lastSessionUsage } : {}),
       ...(sessionPermissions && sessionPermissions.length > 0 ? { sessionPermissions } : {}),
@@ -1287,8 +1305,8 @@ export const useConversationsStore = defineStore('conversations', () => {
     currentConversationId.value = id;
     startedConversationId.value = id;
     chatStore.setCurrentConversation(id);
-    // It starts on the last model picked: the app's setting.
-    conversationModels.value.set(id, useSettingsStore().selectedModel);
+    // It starts on the last ones picked: the app's settings.
+    discussionSettings.value.set(id, appSettings());
 
     // Clear current chat messages
     chatStore.clearMessages();
@@ -1622,7 +1640,7 @@ export const useConversationsStore = defineStore('conversations', () => {
 
       // Clear conversation state from chat store
       chatStore.clearConversationState(id);
-      conversationModels.value.delete(id);
+      discussionSettings.value.delete(id);
 
       // And the remembered scroll position, which is view state and so is not
       // part of that.
@@ -1687,37 +1705,41 @@ export const useConversationsStore = defineStore('conversations', () => {
   }
 
   /**
-   * A discussion's own model ('' for Claude Code's default): the one held
-   * for it, or the one it was saved with; the app's setting only for one
-   * that has neither — saved before discussions had their own.
+   * A discussion's own settings: the ones held for it, or the ones it was
+   * saved with; the app's only for one that has neither — saved before
+   * discussions had their own, and never opened in this run.
    */
-  function modelOf(conversationId: string): string {
-    return conversationModels.value.get(conversationId)
-      ?? conversations.value.find((c) => c.id === conversationId)?.model
-      ?? useSettingsStore().selectedModel;
+  function settingsOf(conversationId: string): DiscussionSettings {
+    const held = discussionSettings.value.get(conversationId);
+    if (held) return held;
+    const stored = conversations.value.find((c) => c.id === conversationId);
+    return stored ? storedSettings(stored) : appSettings();
   }
 
-  /** The model of the discussion on screen; the app's setting with none open. */
-  const currentModel = computed(() =>
-    currentConversationId.value ? modelOf(currentConversationId.value) : useSettingsStore().selectedModel);
+  /** The settings of the discussion on screen; the app's with none open. */
+  const currentSettings = computed((): DiscussionSettings =>
+    currentConversationId.value ? settingsOf(currentConversationId.value) : appSettings());
 
   /**
-   * Pick a model for the discussion on screen. Saved with it, and the app's
-   * setting too: a discussion started next starts on the last model picked.
-   * Another discussion keeps its own.
+   * Change the model, effort or thinking mode of the discussion on screen.
+   * Saved with it, and as the app's too: a discussion started next starts on
+   * the last ones picked. Another discussion keeps its own.
    */
-  async function setCurrentModel(model: string): Promise<void> {
+  async function setCurrentSettings(change: Partial<DiscussionSettings>): Promise<void> {
     const id = currentConversationId.value;
     if (id) {
-      conversationModels.value.set(id, model);
+      discussionSettings.value.set(id, { ...settingsOf(id), ...change });
       // Saved now, not at the next turn: a restart keeps the choice.
       if (chatStore.messages.length > 0) {
         await saveCurrentConversation().catch((err) => {
-          logger.warn('Failed to save the model picked for a conversation', { id, error: err });
+          logger.warn('Failed to save the settings picked for a conversation', { id, error: err });
         });
       }
     }
-    await useSettingsStore().setSelectedModel(model);
+    const app = useSettingsStore();
+    if (change.model !== undefined) await app.setSelectedModel(change.model);
+    if (change.effortLevel !== undefined) await app.setEffortLevel(change.effortLevel);
+    if (change.thinkingMode !== undefined) await app.setThinkingMode(change.thinkingMode);
   }
 
   /**
@@ -1882,9 +1904,9 @@ export const useConversationsStore = defineStore('conversations', () => {
     getConversationWorkingDirectory,
     currentConversationHasSession,
 
-    // Each discussion's own model
-    modelOf,
-    currentModel,
-    setCurrentModel,
+    // Each discussion's own model, effort and thinking mode
+    settingsOf,
+    currentSettings,
+    setCurrentSettings,
   };
 });

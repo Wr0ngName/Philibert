@@ -73,9 +73,11 @@ import {
   MessageImage,
   ImageMediaType,
   type ChatMessage,
+  type DiscussionSettings,
   type PromptDeliveryState,
   type ClaudeAccount,
   type TaskOutputChunk,
+  type ThinkingMode,
 } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { AsyncChannel } from '../utils/AsyncChannel';
@@ -188,6 +190,19 @@ const TASK_LIST_TOOLS = ['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'] as c
  * between user messages via an AsyncChannel that feeds the prompt iterable.
  */
 /**
+ * The thinking budget that turns thinking on in a running session
+ * (setMaxThinkingTokens), as starting it with `thinking: adaptive` would.
+ *
+ * Measured against a fake API with CLI 2.1.280: started with thinking
+ * disabled, then given this, the next request asked for `adaptive` on Opus
+ * 4.6, 4.7 and 5.5, and for `enabled` with a budget of 31999 on Sonnet 4.5 and
+ * Haiku 4.5 — what those requests ask for when the session starts with
+ * thinking on. A smaller value turns it on too, but with that budget instead
+ * (1 gave 1024 on Sonnet and Haiku 4.5). 0 turns it off, on all five.
+ */
+const THINKING_ON_BUDGET = 31999;
+
+/**
  * What the user is told when a resume fails with the session still on disk
  * (handleFailedResume): the session is kept, and nothing is continued
  * without it.
@@ -219,6 +234,10 @@ interface SessionInstance {
   resolveSessionReady: (() => void) | null;
   /** Model that was used to start this session */
   sessionModel: string;
+  /** The reasoning effort it runs at, as resolved for its model (null: the model's default). */
+  effortLevel: EffortLevel | null;
+  /** Its thinking mode. */
+  thinkingMode: ThinkingMode;
   /** Whether this session was started with --resume (for error recovery) */
   isResumeAttempt: boolean;
   /** The session it resumes, when it was started with --resume: see handleFailedResume. */
@@ -565,14 +584,22 @@ export class ClaudeCodeService {
     workingDirectory: string,
     resumeSessionId?: string,
     images?: MessageImage[],
-    model?: string,
+    settings?: DiscussionSettings,
   ): Promise<string | null> {
-    // The discussion's own model (Conversation.model): another discussion's
-    // choice must not reach it. Only a caller with no discussion's choice to
-    // give gets the app's setting.
-    const discussionModel = model ?? await this.configService.getSelectedModel();
-    const uuid = await this.deliverMessage(conversationId, message, workingDirectory, discussionModel, resumeSessionId, images);
+    // The discussion's own settings: another discussion's choices must not
+    // reach it. Only a caller with no discussion's to give gets the app's.
+    const discussionSettings = settings ?? await this.appDiscussionSettings();
+    const uuid = await this.deliverMessage(conversationId, message, workingDirectory, discussionSettings, resumeSessionId, images);
     return isSlashCommandText(message) ? null : uuid;
+  }
+
+  /** The app's settings: what a new discussion starts with. */
+  private async appDiscussionSettings(): Promise<DiscussionSettings> {
+    return {
+      model: await this.configService.getSelectedModel(),
+      effortLevel: await this.configService.getEffortLevel(),
+      thinkingMode: await this.configService.getThinkingMode(),
+    };
   }
 
   /** sendMessage, returning the uuid the message went under whatever it was. */
@@ -580,7 +607,7 @@ export class ClaudeCodeService {
     conversationId: string,
     message: string,
     workingDirectory: string,
-    selectedModel: string,
+    settings: DiscussionSettings,
     resumeSessionId?: string,
     images?: MessageImage[],
   ): Promise<string | null> {
@@ -592,7 +619,7 @@ export class ClaudeCodeService {
           this.configService,
           this.send,
           this.notificationService,
-          (model) => this.resolveEffortForModel(model),
+          (model, requested) => this.resolveEffortForModel(model, requested),
         );
         this.channelService.setOnTurnDone((convId) => {
           this.processingSessions.delete(convId);
@@ -601,7 +628,7 @@ export class ClaudeCodeService {
       }
       this.processingSessions.add(conversationId);
       this.emitActiveQueryCount();
-      await this.channelService.sendMessage(conversationId, message, workingDirectory, selectedModel, resumeSessionId);
+      await this.channelService.sendMessage(conversationId, message, workingDirectory, settings, resumeSessionId);
       return null;
     }
 
@@ -663,35 +690,22 @@ export class ClaudeCodeService {
       const resumeFrom = resumeSessionId ?? existingSession.sdkSessionId ?? undefined;
       this.cleanupSession(conversationId);
       return this.startNewSession(
-        conversationId, message, workingDirectory, selectedModel, isSlashCommand, resumeFrom, images,
+        conversationId, message, workingDirectory, settings, isSlashCommand, resumeFrom, images,
       );
     }
 
     if (existingSession && !existingSession.inputChannel.isClosed()) {
-      // If the model changed, use SDK's setModel() to switch mid-session
-      // (no need to kill the session — context is preserved)
-      if (selectedModel && existingSession.sessionModel !== selectedModel) {
-        // Capture before the assignment below, otherwise the log reports the
-        // new model as both the old and the new value.
-        const previousModel = existingSession.sessionModel || '(default)';
-        try {
-          await existingSession.query.setModel(selectedModel);
-          existingSession.sessionModel = selectedModel;
-          existingSession.requestedModel = selectedModel;
-          // Let the reconciler speak again if the new model doesn't stick.
-          existingSession.announcedModels.clear();
-          logger.info('Model changed on existing session via setModel()', {
-            conversationId,
-            oldModel: previousModel,
-            newModel: selectedModel,
-          });
-        } catch (error) {
-          logger.warn('Failed to setModel on existing session, will start new session', {
-            conversationId, error,
-          });
-          this.cleanupSession(conversationId);
-          return this.startNewSession(conversationId, message, workingDirectory, selectedModel, isSlashCommand, resumeSessionId, images);
-        }
+      // The discussion's settings changed since the session started: applied
+      // to it as it runs (context is kept). Should that fail, it is started
+      // again on them, resuming its session.
+      try {
+        await this.adjustSession(conversationId, existingSession, settings);
+      } catch (error) {
+        logger.warn('Failed to apply the discussion settings to its session, will start new session', {
+          conversationId, error,
+        });
+        this.cleanupSession(conversationId);
+        return this.startNewSession(conversationId, message, workingDirectory, settings, isSlashCommand, resumeSessionId, images);
       }
       // Reuse existing session — push message to channel
       return this.sendToExistingSession(existingSession, message, isSlashCommand, images);
@@ -704,7 +718,54 @@ export class ClaudeCodeService {
     }
 
     // Create new persistent session
-    return this.startNewSession(conversationId, message, workingDirectory, selectedModel, isSlashCommand, resumeSessionId, images);
+    return this.startNewSession(conversationId, message, workingDirectory, settings, isSlashCommand, resumeSessionId, images);
+  }
+
+  /**
+   * Bring a running session to its discussion's settings, each only when it
+   * differs from what the session runs: the model with setModel, reasoning
+   * effort with applyFlagSettings, thinking with setMaxThinkingTokens — each
+   * measured to give the session what starting it on the setting would
+   * (THINKING_ON_BUDGET).
+   *
+   * @throws when one could not be applied: the caller starts the session again.
+   */
+  private async adjustSession(
+    conversationId: string,
+    session: SessionInstance,
+    settings: DiscussionSettings,
+  ): Promise<void> {
+    if (session.sessionModel !== settings.model) {
+      // Capture before the assignment below, otherwise the log reports the
+      // new model as both the old and the new value.
+      const previousModel = session.sessionModel || '(default)';
+      // No model: back to Claude Code's default.
+      await session.query.setModel(settings.model || undefined);
+      session.sessionModel = settings.model;
+      session.requestedModel = settings.model;
+      // Let the reconciler speak again if the new model doesn't stick.
+      session.announcedModels.clear();
+      logger.info('Model changed on existing session via setModel()', {
+        conversationId,
+        oldModel: previousModel,
+        newModel: settings.model || '(default)',
+      });
+    }
+
+    // After the model: which levels a model takes differs between models.
+    const effort = await this.resolveEffortForModel(settings.model, settings.effortLevel);
+    if (session.effortLevel !== effort) {
+      // null: the model's own default — one that takes no effort level.
+      await session.query.applyFlagSettings({ effortLevel: effort });
+      logger.info('Effort changed on existing session', { conversationId, from: session.effortLevel, to: effort });
+      session.effortLevel = effort;
+    }
+
+    if (session.thinkingMode !== settings.thinkingMode) {
+      await session.query.setMaxThinkingTokens(settings.thinkingMode === 'disabled' ? 0 : THINKING_ON_BUDGET);
+      logger.info('Thinking changed on existing session', { conversationId, from: session.thinkingMode, to: settings.thinkingMode });
+      session.thinkingMode = settings.thinkingMode;
+    }
   }
 
   /**
@@ -939,11 +1000,12 @@ export class ClaudeCodeService {
     conversationId: string,
     message: string,
     workingDirectory: string,
-    selectedModel: string,
+    settings: DiscussionSettings,
     isSlashCommand: boolean,
     resumeSessionId?: string,
     images?: MessageImage[],
   ): Promise<string | null> {
+    const selectedModel = settings.model;
     // Create abort controller for this session
     const abortController = new AbortController();
 
@@ -1116,7 +1178,7 @@ export class ClaudeCodeService {
     const originalEnv: Record<string, string | undefined> = {};
 
     try {
-      const thinkingMode = await this.configService.getThinkingMode();
+      const thinkingMode = settings.thinkingMode;
       const thinkingConfig: ThinkingConfig = thinkingMode === 'disabled'
         ? { type: 'disabled' }
         : { type: 'adaptive' };
@@ -1124,7 +1186,7 @@ export class ClaudeCodeService {
       // would silently downgrade an unsupported level anyway, but clamping
       // here means the level we log is the level that ran, and a model that
       // takes no effort gets no effort parameter at all.
-      const effort = await this.resolveEffortForModel(selectedModel);
+      const effort = await this.resolveEffortForModel(selectedModel, settings.effortLevel);
       // When resuming we also call setModel() after init, because a resumed
       // session restores the model it was created with.
       const shouldResume = !!resumeSessionId;
@@ -1263,6 +1325,8 @@ export class ClaudeCodeService {
         sessionReady,
         resolveSessionReady,
         sessionModel: shouldResume ? '' : selectedModel,
+        effortLevel: effort,
+        thinkingMode,
         isResumeAttempt: shouldResume,
         resumedSessionId: shouldResume ? resumeSessionId! : null,
         pendingTurnUuid: firstTurnUuid,
@@ -3182,8 +3246,7 @@ export class ClaudeCodeService {
    * and the CLI downgrades it if need be; suppressing effort because the list
    * has not loaded would silently ignore the user's choice on the first turn.
    */
-  private async resolveEffortForModel(selectedModel: string): Promise<EffortLevel | null> {
-    const requested = await this.configService.getEffortLevel();
+  private async resolveEffortForModel(selectedModel: string, requested: EffortLevel): Promise<EffortLevel | null> {
     return resolveEffortForSelection(requested, selectedModel, this.cachedModels);
   }
 

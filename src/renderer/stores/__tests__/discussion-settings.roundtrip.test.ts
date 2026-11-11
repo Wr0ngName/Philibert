@@ -1,8 +1,9 @@
 /**
- * Each discussion keeps its own model: the one picked in a discussion is what
- * its messages are sent with, and picking another in a different discussion
- * changes nothing here — reported: changing the model in one discussion
- * switched another, ongoing one at its next message.
+ * Each discussion keeps its own model, reasoning effort and thinking mode:
+ * what is picked in a discussion is what its messages are sent with, and
+ * picking otherwise in a different discussion changes nothing here —
+ * reported: changing the model in one discussion switched another, ongoing
+ * one at its next message; effort and thinking were app-wide the same way.
  *
  * Real ChatWindow, real stores, real preload, real conversation IPC handlers
  * and the real ConversationService; only Electron and the filesystem are
@@ -13,7 +14,7 @@ import type { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import type { Conversation } from '@shared/types';
+import type { Conversation, DiscussionSettings } from '@shared/types';
 
 vi.mock('node:fs', async () => (await import('./support/real-stack')).fakeFsModule());
 vi.mock('electron', async () => (await import('./support/real-stack')).fakeElectronModule());
@@ -47,7 +48,7 @@ const OPUS = 'claude-opus-4-7';
 let store: ReturnType<typeof useConversationsStore>;
 let settings: ReturnType<typeof useSettingsStore>;
 let app: ReturnType<typeof mount>;
-/** What reached the main process's send handler: [conversationId, prompt, model]. */
+/** What reached the main process's send handler: [conversationId, prompt, settings]. */
 let sends: [string, string, unknown][];
 
 beforeEach(async () => {
@@ -57,8 +58,8 @@ beforeEach(async () => {
     workingDirectory: DIR,
   });
   sends = [];
-  mainHandlers.set('claude:send', (_event, conversationId, prompt, _cwd, _resume, _images, model) => {
-    sends.push([conversationId as string, prompt as string, model]);
+  mainHandlers.set('claude:send', (_event, conversationId, prompt, _cwd, _resume, _images, sent) => {
+    sends.push([conversationId as string, prompt as string, sent]);
     return null;
   });
   mainHandlers.set('claude:session-exists', () => true);
@@ -89,40 +90,50 @@ async function turn(prompt: string): Promise<string> {
   return id;
 }
 
-describe("a discussion's model", () => {
-  it('is not changed by a model picked in another discussion', async () => {
-    await store.setCurrentModel(HAIKU);
+const run = (model: string, effortLevel: DiscussionSettings['effortLevel'], thinkingMode: DiscussionSettings['thinkingMode']) =>
+  ({ model, effortLevel, thinkingMode });
+
+describe("a discussion's model, effort and thinking", () => {
+  it('are not changed by what is picked in another discussion', async () => {
+    await store.setCurrentSettings({ model: HAIKU, effortLevel: 'low', thinkingMode: 'auto' });
     store.createNewConversation();
     const a = await turn('in a');
 
     store.createNewConversation();
     const b = await turn('in b');
-    await store.setCurrentModel(OPUS);
+    await store.setCurrentSettings({ model: OPUS });
+    await store.setCurrentSettings({ effortLevel: 'max' });
+    await store.setCurrentSettings({ thinkingMode: 'disabled' });
 
     await store.switchConversation(a);
     await settle(20);
     await turn('a again');
 
     expect(sends).toEqual([
-      [a, 'in a', HAIKU],
-      [b, 'in b', HAIKU],
-      [a, 'a again', HAIKU],
+      [a, 'in a', run(HAIKU, 'low', 'auto')],
+      [b, 'in b', run(HAIKU, 'low', 'auto')],
+      [a, 'a again', run(HAIKU, 'low', 'auto')],
     ]);
-    expect(store.currentModel).toBe(HAIKU);
-    // What the next new discussion starts on: the last model picked.
-    expect(settings.selectedModel).toBe(OPUS);
+    expect(store.currentSettings).toEqual(run(HAIKU, 'low', 'auto'));
+    // What the next new discussion starts on: the last ones picked.
+    expect([settings.selectedModel, settings.effortLevel, settings.thinkingMode]).toEqual([OPUS, 'max', 'disabled']);
+
+    await store.switchConversation(b);
+    await settle(20);
+    await turn('b again');
+    expect(sends.at(-1)).toEqual([b, 'b again', run(OPUS, 'max', 'disabled')]);
   });
 
-  it('is saved with the discussion, and kept after a restart', async () => {
-    await store.setCurrentModel(OPUS);
+  it('are saved with the discussion, and kept after a restart', async () => {
+    await store.setCurrentSettings({ model: OPUS });
     store.createNewConversation();
     const id = await turn('hello');
-    await store.setCurrentModel(HAIKU);
+    await store.setCurrentSettings({ model: HAIKU, effortLevel: 'medium', thinkingMode: 'disabled' });
     await settle(20);
 
-    expect(onDisk(id)?.model).toBe(HAIKU);
+    expect(onDisk(id)).toMatchObject(run(HAIKU, 'medium', 'disabled'));
     store.createNewConversation();
-    await store.setCurrentModel(OPUS);
+    await store.setCurrentSettings({ model: OPUS, effortLevel: 'high', thinkingMode: 'auto' });
     await settle();
 
     // A restart: fresh stores, nothing held — read from disk.
@@ -134,11 +145,11 @@ describe("a discussion's model", () => {
     await fresh.loadConversation(id);
     await settle(20);
 
-    expect(fresh.currentModel).toBe(HAIKU);
-    expect(fresh.modelOf(id)).toBe(HAIKU);
+    expect(fresh.currentSettings).toEqual(run(HAIKU, 'medium', 'disabled'));
+    expect(fresh.settingsOf(id)).toEqual(run(HAIKU, 'medium', 'disabled'));
   });
 
-  it('is given to one saved before discussions had their own, once, when it is opened', async () => {
+  it('are given to one saved before discussions had their own, once, when it is opened', async () => {
     const at = Date.now() - 1000;
     const legacy: Conversation = {
       id: 'legacy', title: 'Old', workingDirectory: DIR, createdAt: at, updatedAt: at, sdkSessionId: 'session-legacy',
@@ -150,18 +161,20 @@ describe("a discussion's model", () => {
     files.set('/conversations/legacy.json', JSON.stringify(legacy));
     sessionOnDisk('session-legacy');
     await settings.setSelectedModel(HAIKU);
+    await settings.setEffortLevel('low');
+    await settings.setThinkingMode('disabled');
     await store.loadConversation('legacy');
     await settle();
 
     // Picked elsewhere afterwards: the old one keeps what it was given.
     store.createNewConversation();
-    await store.setCurrentModel(OPUS);
+    await store.setCurrentSettings({ model: OPUS, effortLevel: 'max', thinkingMode: 'auto' });
     await store.switchConversation('legacy');
     await settle(20);
 
-    expect(store.currentModel).toBe(HAIKU);
+    expect(store.currentSettings).toEqual(run(HAIKU, 'low', 'disabled'));
     await turn('still there?');
-    expect(sends.at(-1)).toEqual(['legacy', 'still there?', HAIKU]);
-    expect(onDisk('legacy')?.model).toBe(HAIKU);
+    expect(sends.at(-1)).toEqual(['legacy', 'still there?', run(HAIKU, 'low', 'disabled')]);
+    expect(onDisk('legacy')).toMatchObject(run(HAIKU, 'low', 'disabled'));
   });
 });

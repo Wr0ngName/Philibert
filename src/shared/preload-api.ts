@@ -38,6 +38,7 @@ import type {
   PermissionScope,
   ProjectPermissionEntry,
   SessionPermissionEntry,
+  DiscussionSettings,
   SessionRetention,
   SessionSchedule,
   SessionUsage,
@@ -91,8 +92,8 @@ export interface ElectronAPI {
        * the main process reads them back to build the image content blocks.
        */
       images: MessageImage[] | undefined,
-      /** The discussion's own model (Conversation.model); '' for Claude Code's default. */
-      model: string,
+      /** The discussion's own model, effort and thinking mode. */
+      settings: DiscussionSettings,
     ) => Promise<string | null>;
     /**
      * Send a message into the turn running now, for Claude to read at its

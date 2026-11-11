@@ -287,8 +287,9 @@ export function useClaudeChat() {
       const plainImages = images?.map((image) => ({ ...image }));
       const turnUuid = await window.electron.claude.send(
         conversationId, content, effectiveCwd, resumeSessionId, plainImages,
-        // Its own model: what was picked in another discussion stays there.
-        conversationsStore.modelOf(conversationId),
+        // Its own model, effort and thinking: what was picked in another
+        // discussion stays there. A plain copy, as Electron copies across IPC.
+        { ...conversationsStore.settingsOf(conversationId) },
       );
       // The uuid the CLI filed this turn's file checkpoint under: what makes
       // the message a point the rewind dialog can return to. Null for a turn

@@ -27,7 +27,6 @@ import type { AboutInfo, AgentInfo, SlashCommandInfo } from '@shared/types';
 import { useChatStore } from '../stores/chat';
 import { useConversationsStore } from '../stores/conversations';
 import { useFilesStore } from '../stores/files';
-import { useSettingsStore } from '../stores/settings';
 import { useUiStore } from '../stores/ui';
 import { logger } from '../utils/logger';
 import { formatModelId } from '../utils/model';
@@ -119,7 +118,6 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
   const chatStore = useChatStore();
   const conversationsStore = useConversationsStore();
   const filesStore = useFilesStore();
-  const settingsStore = useSettingsStore();
   const uiStore = useUiStore();
 
   const { sessionUsage, activeModel, totalTokensUsed, contextWindowSize, contextUsagePercent } =
@@ -194,7 +192,7 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
 
   function renderStatus(): string {
     const conversationId = chatStore.currentConversationId;
-    const model = activeModel.value || conversationsStore.currentModel;
+    const model = activeModel.value || conversationsStore.currentSettings.model;
     const sdkSessionId = conversationId ? conversationsStore.getSdkSessionId(conversationId) : null;
     const cwd = conversationId
       ? conversationsStore.getConversationWorkingDirectory(conversationId) || filesStore.workingDirectory
@@ -203,7 +201,7 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
     return [
       '## Status\n',
       `- **Model:** ${model ? formatModelId(model) : '_default_'}`,
-      `- **Reasoning effort:** ${settingsStore.effortLevel ?? '_default_'}`,
+      `- **Reasoning effort:** ${conversationsStore.currentSettings.effortLevel}`,
       `- **Working directory:** \`${cwd || '_none_'}\``,
       `- **Claude Code session:** ${sdkSessionId ? `\`${sdkSessionId}\`` : '_not started yet_'}`,
       `- **Turns this conversation:** ${formatCount(sessionUsage.value?.numTurns ?? 0)}`,
@@ -386,7 +384,7 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
 
   async function handleModel(args: string): Promise<void> {
     const models = await window.electron.claude.getModels();
-    const current = activeModel.value || conversationsStore.currentModel;
+    const current = activeModel.value || conversationsStore.currentSettings.model;
 
     if (!args) {
       const lines = [
@@ -424,7 +422,7 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
     }
 
     // This discussion's model; the others keep theirs.
-    await conversationsStore.setCurrentModel(match.value);
+    await conversationsStore.setCurrentSettings({ model: match.value });
     reply(
       `## Model\n\nSwitched to **${formatModelId(match.value)}**. ` +
         'It applies from your next message; this conversation keeps its context.',
