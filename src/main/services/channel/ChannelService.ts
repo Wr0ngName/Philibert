@@ -129,10 +129,15 @@ export class ChannelService {
     return this.bridge;
   }
 
+  /**
+   * @param model the discussion's own model (Conversation.model): what a
+   *   session started for it runs.
+   */
   async sendMessage(
     conversationId: string,
     message: string,
     workingDirectory: string,
+    model: string,
     resumeSessionId?: string,
   ): Promise<void> {
     try {
@@ -143,7 +148,7 @@ export class ChannelService {
         if (active) {
           void this.cleanupActiveSession(conversationId);
         }
-        active = await this.createSession(conversationId, workingDirectory, bridge, resumeSessionId);
+        active = await this.createSession(conversationId, workingDirectory, bridge, model, resumeSessionId);
       }
 
       bridge.pushMessage(conversationId, message);
@@ -304,6 +309,7 @@ export class ChannelService {
     conversationId: string,
     workingDirectory: string,
     bridge: ChannelBridge,
+    selectedModel: string,
     resumeSessionId?: string,
   ): Promise<ActiveChannelSession> {
     const claudeCliPath = ClaudeCliPaths.findBundledCli();
@@ -320,7 +326,6 @@ export class ChannelService {
       );
     }
 
-    const selectedModel = await this.configService.getSelectedModel();
     const thinkingMode = await this.configService.getThinkingMode();
     const effortLevel = await this.resolveEffort(selectedModel);
     const authEnv = await this.authValidator.setupAuthEnv();

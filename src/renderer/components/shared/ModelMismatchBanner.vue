@@ -19,12 +19,13 @@ import { storeToRefs } from 'pinia';
 import { familyKeyOf, isSameModel } from '@shared/model-id';
 import type { ModelInfo } from '@shared/types';
 import { useChatStore } from '../../stores/chat';
-import { useSettingsStore } from '../../stores/settings';
+import { useConversationsStore } from '../../stores/conversations';
 import { formatModelId } from '../../utils/model';
 import NoticeBanner from './NoticeBanner.vue';
 
-const settingsStore = useSettingsStore();
-const { selectedModel } = storeToRefs(settingsStore);
+const conversationsStore = useConversationsStore();
+// The model of the discussion on screen: each has its own (Conversation.model).
+const { currentModel: selectedModel } = storeToRefs(conversationsStore);
 // Single source of truth for the main-loop model — registered once in
 // useClaudeChat rather than each component opening its own IPC listener.
 const { activeModel } = storeToRefs(useChatStore());
@@ -62,7 +63,7 @@ function dismiss(): void {
 async function reapply(): Promise<void> {
   const target = selectedModel.value;
   if (!target) return;
-  await settingsStore.setSelectedModel(target);
+  await conversationsStore.setCurrentModel(target);
   dismiss();
 }
 

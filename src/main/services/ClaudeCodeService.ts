@@ -559,13 +559,31 @@ export class ClaudeCodeService {
    *   model. So a slash command gets null, as does a message that did not go
    *   to the CLI as ours (channel mode, refused, failed).
    */
-  async sendMessage(conversationId: string, message: string, workingDirectory: string, resumeSessionId?: string, images?: MessageImage[]): Promise<string | null> {
-    const uuid = await this.deliverMessage(conversationId, message, workingDirectory, resumeSessionId, images);
+  async sendMessage(
+    conversationId: string,
+    message: string,
+    workingDirectory: string,
+    resumeSessionId?: string,
+    images?: MessageImage[],
+    model?: string,
+  ): Promise<string | null> {
+    // The discussion's own model (Conversation.model): another discussion's
+    // choice must not reach it. Only a caller with no discussion's choice to
+    // give gets the app's setting.
+    const discussionModel = model ?? await this.configService.getSelectedModel();
+    const uuid = await this.deliverMessage(conversationId, message, workingDirectory, discussionModel, resumeSessionId, images);
     return isSlashCommandText(message) ? null : uuid;
   }
 
   /** sendMessage, returning the uuid the message went under whatever it was. */
-  private async deliverMessage(conversationId: string, message: string, workingDirectory: string, resumeSessionId?: string, images?: MessageImage[]): Promise<string | null> {
+  private async deliverMessage(
+    conversationId: string,
+    message: string,
+    workingDirectory: string,
+    selectedModel: string,
+    resumeSessionId?: string,
+    images?: MessageImage[],
+  ): Promise<string | null> {
     // Channel mode: delegate to ChannelService (only valid with OAuth auth)
     const currentConfig = await this.configService.getConfig();
     if (currentConfig.executionMode === 'channel' && currentConfig.authMethod === 'oauth') {
@@ -583,7 +601,7 @@ export class ClaudeCodeService {
       }
       this.processingSessions.add(conversationId);
       this.emitActiveQueryCount();
-      await this.channelService.sendMessage(conversationId, message, workingDirectory, resumeSessionId);
+      await this.channelService.sendMessage(conversationId, message, workingDirectory, selectedModel, resumeSessionId);
       return null;
     }
 
@@ -626,9 +644,6 @@ export class ClaudeCodeService {
       return null;
     }
 
-    // Get selected model to apply to the session
-    const selectedModel = await this.configService.getSelectedModel();
-
     // Check for existing persistent session
     const existingSession = this.activeSessions.get(conversationId);
 
@@ -648,7 +663,7 @@ export class ClaudeCodeService {
       const resumeFrom = resumeSessionId ?? existingSession.sdkSessionId ?? undefined;
       this.cleanupSession(conversationId);
       return this.startNewSession(
-        conversationId, message, workingDirectory, isSlashCommand, resumeFrom, images,
+        conversationId, message, workingDirectory, selectedModel, isSlashCommand, resumeFrom, images,
       );
     }
 
@@ -675,7 +690,7 @@ export class ClaudeCodeService {
             conversationId, error,
           });
           this.cleanupSession(conversationId);
-          return this.startNewSession(conversationId, message, workingDirectory, isSlashCommand, resumeSessionId, images);
+          return this.startNewSession(conversationId, message, workingDirectory, selectedModel, isSlashCommand, resumeSessionId, images);
         }
       }
       // Reuse existing session — push message to channel
@@ -689,7 +704,7 @@ export class ClaudeCodeService {
     }
 
     // Create new persistent session
-    return this.startNewSession(conversationId, message, workingDirectory, isSlashCommand, resumeSessionId, images);
+    return this.startNewSession(conversationId, message, workingDirectory, selectedModel, isSlashCommand, resumeSessionId, images);
   }
 
   /**
@@ -924,6 +939,7 @@ export class ClaudeCodeService {
     conversationId: string,
     message: string,
     workingDirectory: string,
+    selectedModel: string,
     isSlashCommand: boolean,
     resumeSessionId?: string,
     images?: MessageImage[],
@@ -1100,8 +1116,6 @@ export class ClaudeCodeService {
     const originalEnv: Record<string, string | undefined> = {};
 
     try {
-      // Get selected model from config
-      const selectedModel = await this.configService.getSelectedModel();
       const thinkingMode = await this.configService.getThinkingMode();
       const thinkingConfig: ThinkingConfig = thinkingMode === 'disabled'
         ? { type: 'disabled' }

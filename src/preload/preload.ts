@@ -15,11 +15,12 @@ const electronAPI: ElectronAPI = {
       conversationId: string,
       message: string,
       workingDir: string,
-      resumeSessionId?: string,
-      images?: MessageImage[],
+      resumeSessionId: string | undefined,
+      images: MessageImage[] | undefined,
+      model: string,
     ) =>
       ipcRenderer.invoke(
-        IPC_CHANNELS.CLAUDE_SEND, conversationId, message, workingDir, resumeSessionId, images,
+        IPC_CHANNELS.CLAUDE_SEND, conversationId, message, workingDir, resumeSessionId, images, model,
       ),
 
     sendDuringTurn: (conversationId: string, message: string, images?: MessageImage[]) =>

@@ -32,12 +32,14 @@ const settingsStore = useSettingsStore();
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
 const {
-  selectedModel,
   thinkingMode,
   effortLevel,
   switchModelsOnFlag,
   strictModelEnforcement,
 } = storeToRefs(settingsStore);
+
+// The model of the discussion on screen: each has its own (Conversation.model).
+const { currentModel: selectedModel } = storeToRefs(conversationsStore);
 
 const models = ref<ModelInfo[]>([]);
 const { isLoading, execute } = useAsyncOperation();
@@ -249,10 +251,14 @@ async function loadModels(): Promise<void> {
   }, 'Failed to load models');
 }
 
-// Apply model change (shared by direct selection and confirmation)
+// Apply model change (shared by direct selection and confirmation): to the
+// discussion on screen only, and as what the next one started begins with.
 async function applyModelChange(modelValue: string): Promise<void> {
-  await settingsStore.setSelectedModel(modelValue);
-  logger.info('Model changed', { model: modelValue || '(default)' });
+  await conversationsStore.setCurrentModel(modelValue);
+  logger.info('Model changed', {
+    conversationId: conversationsStore.currentConversationId,
+    model: modelValue || '(default)',
+  });
 }
 
 // Select a model. If an active session exists we confirm before switching —

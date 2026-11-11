@@ -62,6 +62,8 @@ import { setupClaudeIPC } from '../claude';
 
 // Test conversation ID used across tests
 const TEST_CONV_ID = 'test-conv-123';
+/** The discussion's own model, which every send now says. */
+const MODEL = 'claude-haiku-4-5-20251001';
 
 describe('Claude IPC handlers', () => {
   let handlers: Map<string, (...args: unknown[]) => unknown>;
@@ -123,15 +125,27 @@ describe('Claude IPC handlers', () => {
     });
 
     it('should call sendMessage with correct parameters', async () => {
-      await handler({}, TEST_CONV_ID, 'Hello Claude', '/home/user/project');
+      await handler({}, TEST_CONV_ID, 'Hello Claude', '/home/user/project', undefined, undefined, MODEL);
 
       expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(
         TEST_CONV_ID,
         'Hello Claude',
         '/home/user/project',
         undefined, // resumeSessionId is optional
-        undefined // images, likewise
+        undefined, // images, likewise
+        MODEL,
       );
+    });
+
+    it("passes the discussion's own model, '' for Claude Code's default", async () => {
+      await handler({}, TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, '');
+
+      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, '');
+    });
+
+    it('refuses a send that does not say its model — another discussion\'s must not stand in', async () => {
+      await expect(handler({}, TEST_CONV_ID, 'Hello', '/home/user')).rejects.toThrow(IpcError);
+      expect(mockClaudeService.sendMessage).not.toHaveBeenCalled();
     });
 
     it('should throw when conversationId is not a string', async () => {
@@ -173,30 +187,31 @@ describe('Claude IPC handlers', () => {
     it('should propagate service errors', async () => {
       mockClaudeService.sendMessage.mockRejectedValue(new Error('SDK error'));
 
-      await expect(handler({}, TEST_CONV_ID, 'Hello', '/home/user')).rejects.toThrow(IpcError);
+      await expect(handler({}, TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, MODEL)).rejects.toThrow(IpcError);
+      expect(mockClaudeService.sendMessage).toHaveBeenCalled();
     });
 
     it('should handle very long messages', async () => {
       const longMessage = 'x'.repeat(10000);
-      await handler({}, TEST_CONV_ID, longMessage, '/home/user');
+      await handler({}, TEST_CONV_ID, longMessage, '/home/user', undefined, undefined, MODEL);
 
-      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, longMessage, '/home/user', undefined, undefined);
+      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, longMessage, '/home/user', undefined, undefined, MODEL);
     });
 
     it('should handle special characters in message', async () => {
       const specialMessage = 'Hello\n\t"quotes" <tags> & symbols™';
-      await handler({}, TEST_CONV_ID, specialMessage, '/home/user');
+      await handler({}, TEST_CONV_ID, specialMessage, '/home/user', undefined, undefined, MODEL);
 
-      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, specialMessage, '/home/user', undefined, undefined);
+      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, specialMessage, '/home/user', undefined, undefined, MODEL);
     });
 
     it('passes image attachments through to the service', async () => {
       const images = [{ id: 'img_1', mediaType: 'image/png', byteSize: 10, origin: 'user' }];
 
-      await handler({}, TEST_CONV_ID, 'what is this?', '/home/user', undefined, images);
+      await handler({}, TEST_CONV_ID, 'what is this?', '/home/user', undefined, images, MODEL);
 
       expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(
-        TEST_CONV_ID, 'what is this?', '/home/user', undefined, images,
+        TEST_CONV_ID, 'what is this?', '/home/user', undefined, images, MODEL,
       );
     });
 
@@ -206,10 +221,10 @@ describe('Claude IPC handlers', () => {
       // useless on its own.
       const images = [{ id: 'img_1', mediaType: 'image/png', byteSize: 10, origin: 'user' }];
 
-      await handler({}, TEST_CONV_ID, '', '/home/user', undefined, images);
+      await handler({}, TEST_CONV_ID, '', '/home/user', undefined, images, MODEL);
 
       expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(
-        TEST_CONV_ID, '', '/home/user', undefined, images,
+        TEST_CONV_ID, '', '/home/user', undefined, images, MODEL,
       );
     });
 
@@ -227,29 +242,30 @@ describe('Claude IPC handlers', () => {
         { id: 'img_ok', mediaType: 'image/png', byteSize: 1, origin: 'user' },
         null,
         'not an object',
-      ]);
+      ], MODEL);
 
       expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(
         TEST_CONV_ID, 'look', '/home/user', undefined,
         [{ id: 'img_ok', mediaType: 'image/png', byteSize: 1, origin: 'user' }],
+        MODEL,
       );
     });
 
     it('treats a send with no usable attachment as a send with none', async () => {
       await handler({}, TEST_CONV_ID, 'look', '/home/user', undefined, [
         { id: 'bad id!', mediaType: 'image/png', byteSize: 1, origin: 'user' },
-      ]);
+      ], MODEL);
 
       expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(
-        TEST_CONV_ID, 'look', '/home/user', undefined, undefined,
+        TEST_CONV_ID, 'look', '/home/user', undefined, undefined, MODEL,
       );
     });
 
     it('should pass resumeSessionId when provided', async () => {
       const sessionId = 'session-abc-123';
-      await handler({}, TEST_CONV_ID, 'Hello', '/home/user', sessionId);
+      await handler({}, TEST_CONV_ID, 'Hello', '/home/user', sessionId, undefined, MODEL);
 
-      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, 'Hello', '/home/user', sessionId, undefined);
+      expect(mockClaudeService.sendMessage).toHaveBeenCalledWith(TEST_CONV_ID, 'Hello', '/home/user', sessionId, undefined, MODEL);
     });
   });
 
@@ -678,7 +694,7 @@ describe('Claude IPC handlers', () => {
       mockClaudeService.sendMessage.mockRejectedValue(new Error('Network timeout'));
 
       try {
-        await handler({}, TEST_CONV_ID, 'Hello', '/home/user');
+        await handler({}, TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, MODEL);
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).toBeInstanceOf(IpcError);

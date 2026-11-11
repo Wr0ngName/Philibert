@@ -194,7 +194,7 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
 
   function renderStatus(): string {
     const conversationId = chatStore.currentConversationId;
-    const model = activeModel.value || settingsStore.selectedModel;
+    const model = activeModel.value || conversationsStore.currentModel;
     const sdkSessionId = conversationId ? conversationsStore.getSdkSessionId(conversationId) : null;
     const cwd = conversationId
       ? conversationsStore.getConversationWorkingDirectory(conversationId) || filesStore.workingDirectory
@@ -386,7 +386,7 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
 
   async function handleModel(args: string): Promise<void> {
     const models = await window.electron.claude.getModels();
-    const current = activeModel.value || settingsStore.selectedModel;
+    const current = activeModel.value || conversationsStore.currentModel;
 
     if (!args) {
       const lines = [
@@ -423,7 +423,8 @@ export function useSlashCommands(commands: Ref<SlashCommandInfo[]>) {
       return;
     }
 
-    await settingsStore.setSelectedModel(match.value);
+    // This discussion's model; the others keep theirs.
+    await conversationsStore.setCurrentModel(match.value);
     reply(
       `## Model\n\nSwitched to **${formatModelId(match.value)}**. ` +
         'It applies from your next message; this conversation keeps its context.',

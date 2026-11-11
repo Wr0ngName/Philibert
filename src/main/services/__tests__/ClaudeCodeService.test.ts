@@ -2074,6 +2074,43 @@ describe('ClaudeCodeService', () => {
       );
     });
 
+    it("runs the discussion's own model, not the one last picked in the app", async () => {
+      await configService.setSelectedModel('claude-opus-4-7');
+      mockQuery.mockReturnValue(createMockQueryIterator([]));
+
+      await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, 'claude-haiku-4-5-20251001');
+
+      expect(mockQuery.mock.calls[0][0].options.model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    it('leaves a running discussion on its model when another discussion picks a different one', async () => {
+      let resolveFirst!: () => void;
+      const waitPromise = new Promise<void>((resolve) => { resolveFirst = resolve; });
+      const iterator = {
+        [Symbol.asyncIterator]: async function* () {
+          yield { type: 'system', subtype: 'init', session_id: 'session-a', slash_commands: [] };
+          await waitPromise;
+          yield { type: 'result', subtype: 'success' };
+        },
+        interrupt: vi.fn(),
+        supportedCommands: vi.fn().mockResolvedValue([]),
+        supportedModels: vi.fn().mockResolvedValue([]),
+        setModel: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn(),
+      };
+      mockQuery.mockReturnValue(iterator);
+      const first = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, 'claude-haiku-4-5-20251001');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Picked in another discussion: the app's setting follows it.
+      await configService.setSelectedModel('claude-opus-4-7');
+      await service.sendMessage(TEST_CONV_ID, 'Second', '/home/user', undefined, undefined, 'claude-haiku-4-5-20251001');
+
+      expect(iterator.setModel).not.toHaveBeenCalled();
+      resolveFirst();
+      await first.catch(() => {});
+    });
+
     it('should NOT pass model when selectedModel is empty (use SDK default)', async () => {
       await configService.setSelectedModel('');
       const mockIterator = createMockQueryIterator([]);

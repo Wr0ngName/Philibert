@@ -84,13 +84,15 @@ export interface ElectronAPI {
       conversationId: string,
       message: string,
       workingDir: string,
-      resumeSessionId?: string,
+      resumeSessionId: string | undefined,
       /**
        * Images the user attached, as references. The bytes were stored when
        * they were attached, so they cross IPC once rather than on every send;
        * the main process reads them back to build the image content blocks.
        */
-      images?: MessageImage[],
+      images: MessageImage[] | undefined,
+      /** The discussion's own model (Conversation.model); '' for Claude Code's default. */
+      model: string,
     ) => Promise<string | null>;
     /**
      * Send a message into the turn running now, for Claude to read at its

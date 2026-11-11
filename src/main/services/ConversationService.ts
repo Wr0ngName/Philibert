@@ -928,6 +928,7 @@ export class ConversationService {
       ...(update.customTitle !== undefined ? { customTitle: update.customTitle } : {}),
       ...(update.createdAt !== undefined ? { createdAt: base.createdAt || update.createdAt } : {}),
       ...(update.sdkSessionId !== undefined ? { sdkSessionId: update.sdkSessionId } : {}),
+      ...(update.model !== undefined ? { model: update.model } : {}),
       ...(update.executionMode !== undefined ? { executionMode: update.executionMode } : {}),
       ...(update.lastSessionUsage !== undefined ? { lastSessionUsage: update.lastSessionUsage } : {}),
       ...(update.sessionPermissions !== undefined ? { sessionPermissions: update.sessionPermissions } : {}),

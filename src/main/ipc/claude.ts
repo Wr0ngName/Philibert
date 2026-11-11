@@ -54,7 +54,7 @@ function validImages(images?: unknown): MessageImage[] | undefined {
 
 export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
   // Send message to Claude
-  ipcMain.handle(IPC_CHANNELS.CLAUDE_SEND, async (_event, conversationId: string, message: string, workingDir: string, resumeSessionId?: string, images?: MessageImage[]) => {
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_SEND, async (_event, conversationId: string, message: string, workingDir: string, resumeSessionId: string | undefined, images: MessageImage[] | undefined, model: string) => {
     try {
       logger.debug('IPC: claude:send', {
         conversationId,
@@ -70,12 +70,15 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
       validateString(conversationId, 'Conversation ID');
       validateString(message, 'Message', { allowEmpty: (images?.length ?? 0) > 0 });
       validateString(workingDir, 'Working directory');
+      // The discussion's own model, always given: '' is Claude Code's
+      // default, and nothing falls back to another discussion's choice.
+      validateString(model, 'Model', { allowEmpty: true });
 
       // An empty message is normally refused, but a message that is only
       // images is a real thing to send: a screenshot with no question.
       // Resolves to the uuid the turn was sent under: its rewind target.
       return await claudeService.sendMessage(
-        conversationId, message, workingDir, resumeSessionId, validImages(images),
+        conversationId, message, workingDir, resumeSessionId, validImages(images), model,
       );
     } catch (error) {
       logger.error('Failed to send message to Claude', { error, conversationId, messageLength: message?.length });

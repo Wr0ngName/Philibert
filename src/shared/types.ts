@@ -1077,6 +1077,17 @@ export interface Conversation {
   /** SDK session ID for resuming conversation context */
   sdkSessionId?: string;
   /**
+   * The model chosen for this discussion; '' for Claude Code's default.
+   *
+   * Its own, not the app's: the model picked in one discussion used to be
+   * one setting for all, so every other discussion switched to it at its
+   * next message. The app's setting (`selectedModel`) is now only what a new
+   * discussion starts with — the last model picked. Absent on a discussion
+   * saved before this existed: it is given the app's setting when it is
+   * opened, and keeps it from then on.
+   */
+  model?: string;
+  /**
    * Execution mode this conversation was started in. The SDK and channel CLI
    * keep separate session stores, so a conversation started in one mode can't
    * resume in the other. The UI uses this to block sends and prompt the user
@@ -1202,6 +1213,8 @@ export interface ConversationUpdate {
   customTitle?: boolean;
   createdAt?: number;
   sdkSessionId?: string;
+  /** See Conversation.model. */
+  model?: string;
   executionMode?: ExecutionMode;
   lastSessionUsage?: SessionUsage;
   sessionPermissions?: SessionPermissionEntry[];

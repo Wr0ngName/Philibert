@@ -46,6 +46,14 @@ export const useConversationsStore = defineStore('conversations', () => {
   // This is stored in memory, not persisted - sessions are only valid for the current app session
   const sdkSessionIds = ref<Map<string, string>>(new Map());
 
+  /**
+   * Each discussion's own model (Conversation.model), by id: given to every
+   * send in it, so a model picked in one discussion never reaches another.
+   * Held as the session ids are — a discussion just started is not in
+   * `conversations` until it is saved — and saved with the discussion.
+   */
+  const conversationModels = ref<Map<string, string>>(new Map());
+
   // Set up watchers at store creation time for proper reactivity
   const chatStore = useChatStore();
   const { messages: chatMessages } = storeToRefs(chatStore);
@@ -401,6 +409,13 @@ export const useConversationsStore = defineStore('conversations', () => {
         conversations.value[index] = conversation;
       } else {
         conversations.value.push(conversation);
+      }
+
+      // Its own model, as saved — unless one picked since is held. One saved
+      // before discussions had their own is given the app's setting now,
+      // and keeps it from then on, whatever is picked elsewhere.
+      if (!conversationModels.value.has(id)) {
+        conversationModels.value.set(id, conversation.model ?? useSettingsStore().selectedModel);
       }
 
       // Restore SDK session ID from persisted data (for resume support after app restart)
@@ -791,6 +806,9 @@ export const useConversationsStore = defineStore('conversations', () => {
       createdAt: existingConv?.createdAt || Date.now(),
       updatedAt: lastMessageAt,
       sdkSessionId,
+      // Its own model, held since it was started or opened; one never opened
+      // in this run keeps what was saved (the field is left out).
+      ...(conversationModels.value.has(conversationId) ? { model: conversationModels.value.get(conversationId) } : {}),
       executionMode,
       ...(lastSessionUsage ? { lastSessionUsage } : {}),
       ...(sessionPermissions && sessionPermissions.length > 0 ? { sessionPermissions } : {}),
@@ -1269,6 +1287,8 @@ export const useConversationsStore = defineStore('conversations', () => {
     currentConversationId.value = id;
     startedConversationId.value = id;
     chatStore.setCurrentConversation(id);
+    // It starts on the last model picked: the app's setting.
+    conversationModels.value.set(id, useSettingsStore().selectedModel);
 
     // Clear current chat messages
     chatStore.clearMessages();
@@ -1602,6 +1622,7 @@ export const useConversationsStore = defineStore('conversations', () => {
 
       // Clear conversation state from chat store
       chatStore.clearConversationState(id);
+      conversationModels.value.delete(id);
 
       // And the remembered scroll position, which is view state and so is not
       // part of that.
@@ -1663,6 +1684,40 @@ export const useConversationsStore = defineStore('conversations', () => {
    */
   function getSdkSessionId(conversationId: string): string | undefined {
     return sdkSessionIds.value.get(conversationId);
+  }
+
+  /**
+   * A discussion's own model ('' for Claude Code's default): the one held
+   * for it, or the one it was saved with; the app's setting only for one
+   * that has neither — saved before discussions had their own.
+   */
+  function modelOf(conversationId: string): string {
+    return conversationModels.value.get(conversationId)
+      ?? conversations.value.find((c) => c.id === conversationId)?.model
+      ?? useSettingsStore().selectedModel;
+  }
+
+  /** The model of the discussion on screen; the app's setting with none open. */
+  const currentModel = computed(() =>
+    currentConversationId.value ? modelOf(currentConversationId.value) : useSettingsStore().selectedModel);
+
+  /**
+   * Pick a model for the discussion on screen. Saved with it, and the app's
+   * setting too: a discussion started next starts on the last model picked.
+   * Another discussion keeps its own.
+   */
+  async function setCurrentModel(model: string): Promise<void> {
+    const id = currentConversationId.value;
+    if (id) {
+      conversationModels.value.set(id, model);
+      // Saved now, not at the next turn: a restart keeps the choice.
+      if (chatStore.messages.length > 0) {
+        await saveCurrentConversation().catch((err) => {
+          logger.warn('Failed to save the model picked for a conversation', { id, error: err });
+        });
+      }
+    }
+    await useSettingsStore().setSelectedModel(model);
   }
 
   /**
@@ -1826,5 +1881,10 @@ export const useConversationsStore = defineStore('conversations', () => {
     getSdkSessionId,
     getConversationWorkingDirectory,
     currentConversationHasSession,
+
+    // Each discussion's own model
+    modelOf,
+    currentModel,
+    setCurrentModel,
   };
 });
