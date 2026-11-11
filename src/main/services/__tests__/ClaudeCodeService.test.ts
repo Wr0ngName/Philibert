@@ -127,6 +127,7 @@ vi.mock('../../utils/ipc-helpers', () => ({
 }));
 
 // Import after mocks
+import { SESSION_GONE_NOTICE } from '../../../shared/conversation-list';
 import { familyKeyOf, isSameModel, modelVersionRank } from '../../../shared/model-id';
 import { IPC_CHANNELS } from '../../../shared/types';
 import { createMockBrowserWindow } from '../../__tests__/setup';
@@ -2379,28 +2380,50 @@ describe('ClaudeCodeService', () => {
       expect(secondQueryOptions.resume).toBe('original-session');
     });
 
-    it('should clear stale session ID and show error when --resume fails', async () => {
-      const mockIterator = createMockQueryIterator([
-        { type: 'result', subtype: 'error_during_execution', error: 'No conversation found with session ID abc123', num_turns: 0, duration_ms: 0, is_error: true, session_id: 'stale-id' },
-      ]);
-      mockQuery.mockReturnValue(mockIterator);
+    describe('a --resume that fails', () => {
+      let configDir: string;
 
-      await service.sendMessage(TEST_CONV_ID, 'Resume attempt', '/home/user', 'abc123');
+      beforeEach(() => {
+        configDir = realFs.mkdtempSync(path.join(os.tmpdir(), 'cli-config-'));
+        vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          { type: 'result', subtype: 'error_during_execution', error: 'No conversation found with session ID abc123', num_turns: 0, duration_ms: 0, is_error: true, session_id: 'stale-id' },
+        ]));
+      });
 
-      await vi.waitFor(() => {
-        // Should clear the stale session ID (empty string)
-        expect(mockSend).toHaveBeenCalledWith(
-          IPC_CHANNELS.CLAUDE_SESSION_ID,
-          TEST_CONV_ID,
-          ''
-        );
+      afterEach(() => {
+        vi.unstubAllEnvs();
+        realFs.rmSync(configDir, { recursive: true, force: true });
+      });
 
-        // Should show a user-friendly error
-        expect(mockSend).toHaveBeenCalledWith(
-          IPC_CHANNELS.CLAUDE_ERROR,
-          TEST_CONV_ID,
-          expect.stringContaining('session has expired')
-        );
+      it('reports the session gone when its transcript is gone, and keeps its id', async () => {
+        await service.sendMessage(TEST_CONV_ID, 'Resume attempt', '/home/user', 'abc123');
+
+        await vi.waitFor(() => {
+          expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_SESSION_GONE, TEST_CONV_ID);
+          expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_ERROR, TEST_CONV_ID, SESSION_GONE_NOTICE);
+        });
+        // Kept: the discussion is still known as gone after a restart.
+        expect(mockSend).not.toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_SESSION_ID, TEST_CONV_ID, '');
+      });
+
+      it('clears the session id and says the next message starts afresh when the transcript is still there', async () => {
+        // A session filed under another sign-in, say: on disk, but not resumable.
+        const project = path.join(configDir, 'projects', 'some-project');
+        realFs.mkdirSync(project, { recursive: true });
+        realFs.writeFileSync(path.join(project, 'abc123.jsonl'), '');
+
+        await service.sendMessage(TEST_CONV_ID, 'Resume attempt', '/home/user', 'abc123');
+
+        await vi.waitFor(() => {
+          expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_SESSION_ID, TEST_CONV_ID, '');
+          expect(mockSend).toHaveBeenCalledWith(
+            IPC_CHANNELS.CLAUDE_ERROR,
+            TEST_CONV_ID,
+            expect.stringContaining('session has expired'),
+          );
+        });
+        expect(mockSend).not.toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_SESSION_GONE, TEST_CONV_ID);
       });
     });
 

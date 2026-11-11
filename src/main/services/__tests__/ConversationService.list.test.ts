@@ -117,7 +117,7 @@ describe('listPage', () => {
     expect(await ids(false)).toEqual(['a']);
 
     const file = path.join(conversationsDir.path, 'b.json');
-    fs.writeFileSync(file, JSON.stringify(conversation('b', Date.now() + 1)));
+    fs.writeFileSync(file, JSON.stringify(conversation('b', Date.now() + 1, { sdkSessionId: undefined })));
 
     expect(await ids(false)).toEqual(['b', 'a']);
   });
@@ -202,21 +202,40 @@ describe('archiving', () => {
   });
 
   describe('a discussion whose Claude Code session is gone', () => {
-    it('is listed as such, in either list, from the transcripts on disk', async () => {
+    it('is listed as such, from the transcripts on disk — and archived, whatever else', async () => {
       const now = Date.now();
       await store(conversation('kept', now));
-      await store(conversation('cleaned', now - 1));
-      await store(conversation('none', now - 2, { sdkSessionId: undefined }));
+      await store(conversation('archived-cleaned', now - 1));
+      await store(conversation('active-cleaned', now - 2));
+      await store(conversation('active', now - 3));
+      // Just started: no session yet, so none lost.
+      await store(conversation('new', now - 4, { sdkSessionId: undefined }));
       await service.setArchived('kept', true);
-      await service.setArchived('cleaned', true);
-      sessionCleanedUp('session-cleaned');
+      await service.setArchived('archived-cleaned', true);
+      sessionCleanedUp('session-archived-cleaned');
+      sessionCleanedUp('session-active-cleaned');
 
       const gone = async (archived: boolean) =>
         Object.fromEntries((await page(archived)).conversations.map((c) => [c.id, c.sessionGone ?? false]));
-      expect(await gone(true)).toEqual({ kept: false, cleaned: true });
-      expect(await gone(false)).toEqual({ none: true });
-      expect((await service.summary('cleaned'))?.sessionGone).toBe(true);
+      expect(await gone(true)).toEqual({ 'kept': false, 'archived-cleaned': true, 'active-cleaned': true });
+      expect(await gone(false)).toEqual({ active: false, new: false });
+      expect(await service.archivedCount(0)).toBe(3);
+      expect((await service.summary('active-cleaned'))?.sessionGone).toBe(true);
       expect((await service.summary('kept'))?.sessionGone).toBeUndefined();
+    });
+
+    it('is archived even when brought back by a message after it was archived', async () => {
+      await store(conversation('a', Date.now() - 1000));
+      sessionCleanedUp('session-a');
+      const later = Date.now() + 1000;
+      await service.update({
+        id: 'a',
+        workingDirectory: '/project',
+        updatedAt: later,
+        upsert: [{ id: 'a-new', role: 'user', content: 'again', timestamp: later }],
+      });
+
+      expect(await ids(true)).toEqual(['a']);
     });
 
     it('is not brought back from the archive, and the entry says why', async () => {

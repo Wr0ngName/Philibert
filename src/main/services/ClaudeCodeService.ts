@@ -39,6 +39,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { BrowserWindow } from 'electron';
 
+import { SESSION_GONE_NOTICE } from '../../shared/conversation-list';
 import { resolveEffortForSelection } from '../../shared/effort';
 import {
   familyKeyOf,
@@ -101,7 +102,7 @@ import { observeCanUseToolRequests, type CanUseToolRequest } from './claude/can-
 import { claudeAiConnectorAuthPage, readClaudeAiConnectors } from './claude/connectors';
 import { attachTranscriptImages, cliTempRoot, locateTaskOutput, readTaskOutput } from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
-import { findAgentTranscript } from './claude/transcript-files';
+import { findAgentTranscript, findSessionTranscript } from './claude/transcript-files';
 
 /**
  * An entry in the known-model catalog. `minor` is absent for the Claude 5
@@ -209,6 +210,8 @@ interface SessionInstance {
   sessionModel: string;
   /** Whether this session was started with --resume (for error recovery) */
   isResumeAttempt: boolean;
+  /** The session it resumes, when it was started with --resume: see handleFailedResume. */
+  resumedSessionId: string | null;
   /**
    * `uuid` of the user message whose turn we are waiting on, or null between
    * turns.
@@ -1068,8 +1071,7 @@ export class ClaudeCodeService {
           // different auth context (e.g. after migration/re-login).  Clear the
           // session ID and let the user retry without destroying the fresh token.
           logger.warn('Auth error during resume attempt — treating as stale session, not token invalidation', { conversationId });
-          this.emitClearSessionId(conversationId);
-          this.emitError(conversationId,
+          this.handleFailedResume(conversationId, session,
             'Could not resume conversation context — authentication failed for the previous session. ' +
             'Your conversation history is preserved. Send your message again to continue with a fresh context.');
           return;
@@ -1239,6 +1241,7 @@ export class ClaudeCodeService {
         resolveSessionReady,
         sessionModel: shouldResume ? '' : selectedModel,
         isResumeAttempt: shouldResume,
+        resumedSessionId: shouldResume ? resumeSessionId! : null,
         pendingTurnUuid: firstTurnUuid,
         unpromptedTurn: false,
         deliveringPrompts: new Map<string, string | null>(),
@@ -1368,12 +1371,11 @@ export class ClaudeCodeService {
               sdkMessage as { error?: string; errors?: string[] },
             );
             if (this.isResumeSessionError(resultError)) {
-              logger.warn('Resume session failed (result message) — clearing stale session ID', {
+              logger.warn('Resume session failed (result message)', {
                 conversationId,
                 error: resultError,
               });
-              this.emitClearSessionId(conversationId);
-              this.emitError(conversationId,
+              this.handleFailedResume(conversationId, session,
                 'Could not resume conversation context — the session has expired or was cleaned up. ' +
                 'Your conversation history is preserved, but Claude will not remember previous messages. ' +
                 'Send your message again to continue with a fresh context.');
@@ -1725,13 +1727,12 @@ export class ClaudeCodeService {
       // During resume, auth errors likely mean the stale session belongs to a
       // different auth context (e.g. after migration/re-login).  Clear the
       // session ID and let the user retry without destroying the fresh token.
-      logger.warn('Resume session failed — clearing stale session ID', {
+      logger.warn('Resume session failed', {
         conversationId,
         error: errorMessage,
         wasAuthError: isAuthError,
       });
-      this.emitClearSessionId(conversationId);
-      this.emitError(conversationId,
+      this.handleFailedResume(conversationId, session,
         'Could not resume conversation context — the session has expired or was cleaned up. ' +
         'Your conversation history is preserved, but Claude will not remember previous messages. ' +
         'Send your message again to continue with a fresh context.');
@@ -2325,6 +2326,31 @@ export class ClaudeCodeService {
   private emitSessionId(conversationId: string, sessionId: string): void {
     logger.info('Emitting SDK session ID to renderer', { conversationId, sessionId: sessionId.slice(0, 20) + '...' });
     this.send(IPC_CHANNELS.CLAUDE_SESSION_ID, conversationId, sessionId);
+  }
+
+  /**
+   * A resume that failed.
+   *
+   * When the session's transcript is gone — Claude Code deleted it after its
+   * retention period, say — the discussion has nothing left to continue: the
+   * renderer archives it for good (Conversation.sessionGone), and its session
+   * id is kept, so it is still known as gone after a restart. Starting a new
+   * session in it instead would answer with a Claude that remembers none of
+   * the discussion.
+   *
+   * Otherwise — a session filed under another sign-in, say — the id is
+   * cleared and the user told that the next message starts afresh.
+   */
+  private handleFailedResume(conversationId: string, session: SessionInstance | undefined, notice: string): void {
+    const resumed = session?.resumedSessionId;
+    if (resumed && findSessionTranscript(resumed) === null) {
+      logger.warn("Resume failed: the session's transcript is gone — the discussion is archived", { conversationId });
+      this.send(IPC_CHANNELS.CLAUDE_SESSION_GONE, conversationId);
+      this.emitError(conversationId, SESSION_GONE_NOTICE);
+      return;
+    }
+    this.emitClearSessionId(conversationId);
+    this.emitError(conversationId, notice);
   }
 
   /**

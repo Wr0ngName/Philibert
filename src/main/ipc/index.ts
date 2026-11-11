@@ -35,6 +35,7 @@ import logger from '../utils/logger';
 
 import { setupAuthHandlers } from './auth';
 import { setupClaudeIPC } from './claude';
+import { setupClaudeSessionsIPC } from './claudeSessions';
 import { setupConfigIPC } from './config';
 import { setupConversationIPC } from './conversations';
 import { setupFilesIPC } from './files';
@@ -83,6 +84,9 @@ const REGISTERED_CHANNELS = {
     IPC_CHANNELS.CLAUDE_SEED_SESSION_PERMISSIONS,
     IPC_CHANNELS.CLAUDE_GET_PROJECT_PERMISSIONS,
     IPC_CHANNELS.CLAUDE_REVOKE_PROJECT_PERMISSION,
+    IPC_CHANNELS.CLAUDE_SESSION_EXISTS,
+    IPC_CHANNELS.CLAUDE_GET_SESSION_RETENTION,
+    IPC_CHANNELS.CLAUDE_SET_SESSION_RETENTION,
     IPC_CHANNELS.CLAUDE_USER_QUESTION_ANSWER,
     IPC_CHANNELS.CLAUDE_GET_MODELS,
     IPC_CHANNELS.CLAUDE_GET_ACTIVE_QUERIES,
@@ -255,6 +259,7 @@ export function setupIPC(
     setupConfigIPC(configService, getMainWindow);
     setupMcpIPC(mcpService, claudeService, getMainWindow);
     setupProjectPermissionsIPC(projectPermissionService);
+    setupClaudeSessionsIPC();
     setupConversationIPC(conversationService, claudeService);
     setupUpdateIPC(updateService);
     setupSpeechIPC(getMainWindow);

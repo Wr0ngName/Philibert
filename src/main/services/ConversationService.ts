@@ -638,38 +638,43 @@ export class ConversationService {
   async listPage(request: ConversationListRequest): Promise<ConversationListPage> {
     if (!request.after || !this.index.isLoaded) await this.index.refresh();
     const now = Date.now();
-    const matching = this.index
-      .summaries()
+    // Whether a session is gone decides which list an entry is in, so it is
+    // worked out for all of them first.
+    const matching = (await this.withSessionState(this.index.summaries()))
       .filter((summary) => isArchived(summary, request.autoArchiveDays, now) === request.archived)
       .filter((summary) => !request.after || isAfter(summary, request.after))
       .sort(newestFirst);
     return {
-      conversations: await this.withSessionState(matching.slice(0, request.limit)),
+      conversations: matching.slice(0, request.limit),
       hasMore: matching.length > request.limit,
     };
   }
 
-  /** List entries handed out, each saying whether its Claude Code session is gone. */
+  /**
+   * List entries handed out, each saying whether its Claude Code session is
+   * gone. Claude Code's sessions are listed once for all of them.
+   */
   private async withSessionState(summaries: ConversationSummary[]): Promise<ConversationSummary[]> {
     const sessionIds = summaries.map((summary) => this.index.sessionIdOf(summary.id));
     // The sessions on disk are only looked for when there is one to ask about.
     const onDisk = sessionIds.some(Boolean) ? await sessionIdsOnDisk(this.claudeConfigDir()) : new Set<string>();
     return summaries.map((summary, i) => {
       const sessionId = sessionIds[i];
-      return sessionId && onDisk.has(sessionId) ? summary : { ...summary, sessionGone: true };
+      return sessionId && !onDisk.has(sessionId) ? { ...summary, sessionGone: true } : summary;
     });
   }
 
   /** Whether a discussion's Claude Code session is gone: see Conversation.sessionGone. */
   private isSessionGone(details: ConversationDetails): boolean {
-    return !details.sdkSessionId || findSessionTranscript(details.sdkSessionId, this.claudeConfigDir()) === null;
+    return !!details.sdkSessionId && findSessionTranscript(details.sdkSessionId, this.claudeConfigDir()) === null;
   }
 
-  /** How many discussions are archived, by hand or for being inactive. */
+  /** How many discussions are archived: by hand, for being inactive, or for their session being gone. */
   async archivedCount(autoArchiveDays: AutoArchiveDays): Promise<number> {
     if (!this.index.isLoaded) await this.index.refresh();
     const now = Date.now();
-    return this.index.summaries().filter((summary) => isArchived(summary, autoArchiveDays, now)).length;
+    return (await this.withSessionState(this.index.summaries()))
+      .filter((summary) => isArchived(summary, autoArchiveDays, now)).length;
   }
 
   /** One discussion's list entry, or null when there is no such discussion. */

@@ -10,6 +10,7 @@
 
 import { effectScope, onMounted, onUnmounted, shallowRef, watch, type EffectScope } from 'vue';
 
+import { SESSION_GONE_NOTICE } from '@shared/conversation-list';
 import { withGuiCommands } from '@shared/slash-commands';
 import type { AskUserQuestionAnswer, AskUserQuestionResponse, SlashCommandInfo, ChatMessage, MessageImage, PermissionOptionVariant, PermissionScope } from '@shared/types';
 
@@ -56,6 +57,7 @@ let cleanupBackgroundTasksChanged: (() => void) | null = null;
 let cleanupUsageUpdate: (() => void) | null = null;
 let cleanupActiveQueries: (() => void) | null = null;
 let cleanupSessionId: (() => void) | null = null;
+let cleanupSessionGone: (() => void) | null = null;
 let cleanupSessionPermissions: (() => void) | null = null;
 let cleanupSessionSchedules: (() => void) | null = null;
 let cleanupToolExecuted: (() => void) | null = null;
@@ -152,6 +154,31 @@ export function useClaudeChat() {
     return true;
   }
 
+  /**
+   * A prompt that would resume a session Claude Code no longer has is not
+   * sent: Claude would answer it remembering none of the discussion. The
+   * discussion is archived for good instead (markSessionGone). Asked before
+   * every resume rather than trusted from when the discussion was opened:
+   * Claude Code can delete the session at any time.
+   *
+   * @returns true when refused.
+   */
+  async function refuseSessionGone(conversationId: string): Promise<boolean> {
+    const sessionId = conversationsStore.getSdkSessionId(conversationId);
+    if (!sessionId) return false;
+    try {
+      if (await window.electron.claude.sessionExists(sessionId)) return false;
+    } catch (err) {
+      // Not known: the resume itself finds out (handleFailedResume in main).
+      logger.warn('Could not look for the Claude Code session before sending', { conversationId, err });
+      return false;
+    }
+    logger.warn('Prompt refused: the Claude Code session is gone', { conversationId });
+    conversationsStore.markSessionGone(conversationId);
+    chatStore.setError(conversationId, SESSION_GONE_NOTICE);
+    return true;
+  }
+
   async function sendMessage(content: string, images?: MessageImage[]): Promise<SendOutcome> {
     // Attachments alone are a message: a screenshot with no question is a
     // real thing to send, and refusing it would make an attachment useless
@@ -167,6 +194,7 @@ export function useClaudeChat() {
     }
 
     if (refuseArchived(currentConvId)) return 'rejected';
+    if (await refuseSessionGone(currentConvId)) return 'rejected';
 
     // Check prerequisites
     if (!settingsStore.hasAuth) {
@@ -304,6 +332,11 @@ export function useClaudeChat() {
         // Archived while it waited: put aside, so not continued behind the
         // user's back — and a continue would bring it back by itself.
         logger.info('Continue after usage limit dropped: the discussion is archived', { conversationId });
+        chatStore.setUsageLimitWait(conversationId, null);
+        return;
+      }
+
+      if (await refuseSessionGone(conversationId)) {
         chatStore.setUsageLimitWait(conversationId, null);
         return;
       }
@@ -1016,6 +1049,11 @@ export function useClaudeChat() {
       conversationsStore.setSdkSessionId(conversationId, sessionId);
     });
 
+    // A resume found the session gone: the discussion is archived for good.
+    cleanupSessionGone = window.electron.claude.onSessionGone((conversationId) => {
+      conversationsStore.markSessionGone(conversationId);
+    });
+
     // A discussion's session schedules, as its last turn ended
     cleanupSessionSchedules = window.electron.claude.onSessionSchedules((conversationId, schedules) => {
       chatStore.setSessionSchedules(conversationId, schedules);
@@ -1152,6 +1190,10 @@ export function useClaudeChat() {
     if (cleanupSessionId) {
       cleanupSessionId();
       cleanupSessionId = null;
+    }
+    if (cleanupSessionGone) {
+      cleanupSessionGone();
+      cleanupSessionGone = null;
     }
     if (cleanupSessionSchedules) {
       cleanupSessionSchedules();

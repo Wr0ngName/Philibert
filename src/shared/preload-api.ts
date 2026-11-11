@@ -38,6 +38,7 @@ import type {
   PermissionScope,
   ProjectPermissionEntry,
   SessionPermissionEntry,
+  SessionRetention,
   SessionSchedule,
   SessionUsage,
   AgentInfo,
@@ -203,6 +204,14 @@ export interface ElectronAPI {
     onUsageWarning: (callback: (warning: UsageWarning | null) => void) => () => void;
     /** SDK session ID received for a conversation (for resume support) */
     onSessionId: (callback: (conversationId: string, sessionId: string) => void) => () => void;
+    /** A discussion's Claude Code session turned out gone when it was resumed */
+    onSessionGone: (callback: (conversationId: string) => void) => () => void;
+    /** Whether a Claude Code session's transcript is still on disk */
+    sessionExists: (sessionId: string) => Promise<boolean>;
+    /** How long Claude Code keeps sessions (`cleanupPeriodDays` in its user settings) */
+    getSessionRetention: () => Promise<SessionRetention>;
+    /** Set how long Claude Code keeps sessions, in days */
+    setSessionRetention: (days: number) => Promise<SessionRetention>;
     /** Get session permissions for a conversation */
     getSessionPermissions: (conversationId: string) => Promise<SessionPermissionEntry[]>;
     /** Revoke a session permission */

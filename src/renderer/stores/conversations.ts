@@ -97,7 +97,7 @@ export const useConversationsStore = defineStore('conversations', () => {
   const listCursor = ref<ConversationListCursor | null>(null);
   const listHasMore = ref(false);
   const loadingMoreConversations = ref(false);
-  /** How many discussions are archived, by hand or for being inactive. */
+  /** How many discussions are archived: by hand, for being inactive, or for their session being gone. */
   const archivedCount = ref(0);
   /** Pages asked for with an older request than this are dropped: the list was reloaded since. */
   let listGeneration = 0;
@@ -128,6 +128,22 @@ export const useConversationsStore = defineStore('conversations', () => {
   function isConversationArchived(id: string): boolean {
     const conversation = conversations.value.find((c) => c.id === id);
     return conversation !== undefined && inArchive(conversation);
+  }
+
+  /**
+   * A held discussion's Claude Code session turned out gone when a prompt
+   * was about to resume it: archived for good from now on (sessionGone). Its
+   * session id is kept, so the main process finds it gone too after a
+   * restart.
+   */
+  function markSessionGone(id: string): void {
+    const conversation = conversations.value.find((c) => c.id === id);
+    if (!conversation || conversation.sessionGone) return;
+    conversation.sessionGone = true;
+    logger.warn('Conversation archived: its Claude Code session is gone', { id });
+    void refreshArchivedCount();
+    // The open one's row moves with it, so the list still shows where the user is.
+    if (id === currentConversationId.value) void followInList(conversation);
   }
 
   /** The open discussion, when it is archived; see isConversationArchived. */
@@ -1837,6 +1853,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     currentModeMismatch,
     currentArchived,
     isConversationArchived,
+    markSessionGone,
 
     // Actions
     loadConversationList,

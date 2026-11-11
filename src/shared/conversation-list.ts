@@ -11,7 +11,11 @@
  *   brings it back by itself (the user cannot write in an archived one: it
  *   is brought back first);
  * - otherwise, archived when its last activity — its last message, or being
- *   brought back from the archive — is older than the setting's days.
+ *   brought back from the archive — is older than the setting's days;
+ * - and archived for good, whatever the above, once the Claude Code session
+ *   it continues is gone (`sessionGone`): there is nothing left to continue,
+ *   and writing in it would start over with a Claude that remembers none of
+ *   it.
  */
 
 import { titleFromMessages } from './conversation-title';
@@ -19,9 +23,15 @@ import type { AutoArchiveDays, Conversation, ConversationListCursor, Conversatio
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
-type ArchiveFields = Pick<ConversationSummary, 'updatedAt' | 'archivedAt' | 'restoredAt'>;
+/** What the user is told when a prompt finds the discussion's Claude Code session gone. */
+export const SESSION_GONE_NOTICE =
+  "Claude's session for this discussion no longer exists — Claude Code deleted it — " +
+  'so the discussion was moved to the archive. Its history is kept.';
+
+type ArchiveFields = Pick<ConversationSummary, 'updatedAt' | 'archivedAt' | 'restoredAt' | 'sessionGone'>;
 
 export function isArchived(conversation: ArchiveFields, autoArchiveDays: AutoArchiveDays, now: number): boolean {
+  if (conversation.sessionGone) return true;
   if (conversation.archivedAt !== undefined) return conversation.archivedAt >= conversation.updatedAt;
   if (autoArchiveDays === 0) return false;
   const lastActivity = Math.max(conversation.updatedAt, conversation.restoredAt ?? 0);

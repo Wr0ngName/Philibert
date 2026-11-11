@@ -889,6 +889,26 @@ export type SidebarLayout = 'left' | 'split' | 'right';
 export const AUTO_ARCHIVE_DAYS = [0, 7, 14, 30, 60, 90, 180, 365] as const;
 export type AutoArchiveDays = (typeof AUTO_ARCHIVE_DAYS)[number];
 
+/** How long Claude Code keeps session transcripts when its settings do not say (`cleanupPeriodDays`). */
+export const CLAUDE_DEFAULT_SESSION_RETENTION_DAYS = 30;
+
+/**
+ * The stops of the setting for how long Claude Code keeps sessions, in days,
+ * shortest first: a week to ten years. A value set outside the app that is
+ * not one of them is shown as a stop of its own.
+ */
+export const SESSION_RETENTION_STOPS = [7, 14, 30, 60, 90, 180, 365, 730, 3650] as const;
+
+/**
+ * How long Claude Code keeps session transcripts, from its user settings
+ * (`cleanupPeriodDays`): set there, Claude Code's default, or not known — the
+ * file is not JSON, or the value is not a whole number of days.
+ */
+export type SessionRetention =
+  | { status: 'set'; days: number }
+  | { status: 'default'; days: number }
+  | { status: 'unreadable' };
+
 /** A dialog's size as the user dragged it, in pixels. */
 export interface ModalSize {
   width: number;
@@ -1110,13 +1130,16 @@ export interface Conversation {
    */
   restoredAt?: number;
   /**
-   * Its Claude Code session is no longer on disk — Claude Code cleaned it
-   * up, or it never had one — so there is nothing left to continue: an
-   * archived one stays archived (ConversationService.setArchived refuses).
+   * The Claude Code session it continues (`sdkSessionId`) is no longer on
+   * disk — Claude Code cleaned it up after its retention period, say — so
+   * there is nothing left to continue: it is archived for good, and cannot
+   * be brought back (isArchived, ConversationService.setArchived). One with
+   * no session yet, just started, has not lost one.
    *
    * Worked out by the main process each time it hands the discussion out
    * (list entries, the opened window), never stored: the session's files
-   * are Claude Code's, and can go at any time.
+   * are Claude Code's, and can go at any time. The renderer also learns it
+   * when a send finds the session gone (CLAUDE_SESSION_GONE).
    */
   sessionGone?: true;
 }
@@ -2126,6 +2149,14 @@ export const IPC_CHANNELS = {
   CLAUDE_SESSION_PERMISSIONS_CHANGED: 'claude:session-permissions-changed',
   /** A discussion's session schedules, as its last turn ended (SessionSchedule[]) */
   CLAUDE_SESSION_SCHEDULES: 'claude:session-schedules',
+  /** Whether a Claude Code session's transcript is still on disk (boolean) */
+  CLAUDE_SESSION_EXISTS: 'claude:session-exists',
+  /** A discussion's Claude Code session turned out gone when it was resumed (conversationId) */
+  CLAUDE_SESSION_GONE: 'claude:session-gone',
+  /** How long Claude Code keeps sessions (SessionRetention) */
+  CLAUDE_GET_SESSION_RETENTION: 'claude:get-session-retention',
+  /** Set how long Claude Code keeps sessions, in days (SessionRetention) */
+  CLAUDE_SET_SESSION_RETENTION: 'claude:set-session-retention',
   /** List allow rules and directories from the project's settings files */
   CLAUDE_GET_PROJECT_PERMISSIONS: 'claude:get-project-permissions',
   /** Remove an allow rule or directory from `.claude/settings.local.json` */

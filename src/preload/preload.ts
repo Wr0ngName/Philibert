@@ -239,6 +239,18 @@ const electronAPI: ElectronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_SESSION_ID, handler);
     },
 
+    onSessionGone: (callback: (conversationId: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, conversationId: string) => callback(conversationId);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_SESSION_GONE, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_SESSION_GONE, handler);
+    },
+
+    sessionExists: (sessionId: string) => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SESSION_EXISTS, sessionId),
+
+    getSessionRetention: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_SESSION_RETENTION),
+
+    setSessionRetention: (days: number) => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SET_SESSION_RETENTION, days),
+
     getSessionPermissions: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_SESSION_PERMISSIONS, conversationId),
 
