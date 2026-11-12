@@ -244,14 +244,9 @@ export class ChannelService {
     void this.endSession(conversationId);
   }
 
-  /**
-   * End a deleted conversation's session, and wait for its process to exit:
-   * it writes the session's records as it goes.
-   *
-   * @returns whether it exited.
-   */
-  endConversation(conversationId: string): Promise<boolean> {
-    return this.endSession(conversationId);
+  /** End a deleted conversation's session for good. */
+  endConversation(conversationId: string): void {
+    void this.endSession(conversationId);
   }
 
   private endSession(conversationId: string): Promise<boolean> {

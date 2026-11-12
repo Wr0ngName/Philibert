@@ -31,6 +31,7 @@ import type {
   AgentInfo as SDKAgentInfo,
   ModelInfo as SDKModelInfo,
   Query,
+  SDKControlInitializeResponse,
   SDKUserMessage,
   SlashCommand,
   SpawnOptions,
@@ -79,7 +80,6 @@ import {
   type TaskOutputChunk,
   type ThinkingMode,
 } from '../../shared/types';
-import { MAIN_CONSTANTS } from '../constants/app';
 import { AsyncChannel } from '../utils/AsyncChannel';
 import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
@@ -302,13 +302,6 @@ export class ClaudeCodeService {
 
   // Multi-instance support: Map of conversation ID to active session
   private activeSessions: Map<string, SessionInstance> = new Map();
-  /**
-   * Each conversation's CLI processes not exited yet. Stopping a session only
-   * starts its process's exit, and the CLI writes the session's records as
-   * it exits: measured on deletion, the transcript was written again 1 ms
-   * after it was removed, the process exiting 0.4 s later.
-   */
-  private processExits = new Map<string, Set<Promise<void>>>();
   // Conversations currently processing a query (subset of activeSessions keys)
   private processingSessions: Set<string> = new Set();
   /**
@@ -347,6 +340,12 @@ export class ClaudeCodeService {
   private cachedSlashCommands: SlashCommandInfo[] = [];
   // Cached subagent list (shared across all sessions)
   private cachedAgents: AgentInfo[] = [];
+  /**
+   * A read of the initialize handshake under way (loadSessionCatalog), shared
+   * by everyone asking under the same login: models, commands, agents and
+   * account are asked for together at startup.
+   */
+  private catalogRequest: { generation: number; promise: Promise<SDKControlInitializeResponse | null> } | null = null;
   /**
    * Conversations whose next session must resume at an earlier user message,
    * set by a conversation-scope rewind and consumed when that session starts.
@@ -1646,7 +1645,6 @@ export class ClaudeCodeService {
     });
 
     this.setupProcessLogging(childProcess, conversationId);
-    this.trackProcessExit(childProcess, conversationId);
 
     // Spawned with piped stdio, so both streams exist.
     const stdin = childProcess.stdin!;
@@ -1691,22 +1689,6 @@ export class ClaudeCodeService {
       spawnArgs: originalArgs,
       extraEnv,
     };
-  }
-
-  /** Keep a spawned process's exit, until it happens, for endConversation to wait on. */
-  private trackProcessExit(childProcess: ChildProcess, conversationId: string): void {
-    const exited = new Promise<void>((resolve) => {
-      childProcess.once('exit', () => resolve());
-      // A process that failed to start never exits.
-      childProcess.once('error', () => resolve());
-    });
-    const exits = this.processExits.get(conversationId) ?? new Set<Promise<void>>();
-    exits.add(exited);
-    this.processExits.set(conversationId, exits);
-    void exited.then(() => {
-      exits.delete(exited);
-      if (exits.size === 0 && this.processExits.get(conversationId) === exits) this.processExits.delete(conversationId);
-    });
   }
 
   /**
@@ -2172,32 +2154,15 @@ export class ClaudeCodeService {
   }
 
   /**
-   * End a deleted discussion's session for good, and wait for its process
-   * to exit: kept alive between turns, it would otherwise write the session's
-   * records again after they were removed (session-records).
-   *
-   * @returns whether it exited in time; if not, its records must be kept.
+   * End a deleted discussion's session for good: kept alive between turns,
+   * its process would otherwise stay until the app quits. What the session
+   * leaves on disk is Claude Code's, to its own retention clean-up.
    */
-  async endConversation(conversationId: string): Promise<boolean> {
-    const channelEnded = this.channelService ? this.channelService.endConversation(conversationId) : Promise.resolve(true);
+  endConversation(conversationId: string): void {
+    this.channelService?.endConversation(conversationId);
     this.terminateSession(conversationId);
     this.sessionSchedules.forget(conversationId);
     this.agentTranscripts.forget(conversationId);
-
-    const exits = [...(this.processExits.get(conversationId) ?? [])];
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timedOut = new Promise<false>((resolve) => {
-      timer = setTimeout(() => resolve(false), MAIN_CONSTANTS.CONVERSATION.END_SESSION_WAIT_MS);
-    });
-    const exited = await Promise.race([Promise.all(exits).then(() => true), timedOut]);
-    clearTimeout(timer);
-    const ended = exited && (await channelEnded);
-    if (!ended) {
-      logger.warn('A deleted conversation\'s Claude Code process did not exit in time', {
-        conversationId, waitedMs: MAIN_CONSTANTS.CONVERSATION.END_SESSION_WAIT_MS,
-      });
-    }
-    return ended;
   }
 
   /**
@@ -2446,38 +2411,73 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Get available slash commands
-   * Returns cached commands from the last SDK init message
-   */
-  /**
-   * Subagents the session can delegate to, from the SDK.
+   * What Claude Code answers its initialize handshake with — models, slash
+   * commands, agents, account — read once for all four, and kept.
    *
-   * Same shape as getSlashCommands(): cache, then a live session, then a
-   * throwaway query, because `/agents` has to answer before any conversation
-   * exists. supportedAgents() is a free control command.
+   * From a session already running under the current login, whose handshake
+   * is long done (initializationResult answers from it: no request); with
+   * none, from one temporary query that sends no prompt, so no turn runs and
+   * no tokens are spent — the TypeScript SDK's way of the Python SDK's
+   * connect() without a prompt. Each of the four used to start its own.
+   *
+   * @returns the handshake's answer, or null when none could be read.
    */
-  async getAgents(): Promise<AgentInfo[]> {
-    if (this.cachedAgents.length > 0) {
-      return this.cachedAgents;
-    }
+  private loadSessionCatalog(): Promise<SDKControlInitializeResponse | null> {
+    const generation = this.authGeneration;
+    if (this.catalogRequest?.generation === generation) return this.catalogRequest.promise;
+    const promise = this.readSessionCatalog()
+      .then((catalog) => {
+        if (catalog) this.keepSessionCatalog(catalog);
+        return catalog;
+      })
+      .finally(() => {
+        // Read again when asked again: the lists are cached, and a lookup
+        // that failed may succeed later (credentials arriving, say).
+        if (this.catalogRequest?.promise === promise) this.catalogRequest = null;
+      });
+    this.catalogRequest = { generation, promise };
+    return promise;
+  }
 
+  private async readSessionCatalog(): Promise<SDKControlInitializeResponse | null> {
     for (const instance of this.activeSessions.values()) {
+      // A session left over from the previous login would report that one.
+      if (instance.authGeneration !== this.authGeneration) continue;
       try {
-        const agents = await instance.query.supportedAgents();
-        this.cachedAgents = agents.map(ClaudeCodeService.toAgentInfo);
-        logger.info('Fetched agents from session', { count: this.cachedAgents.length });
-        return this.cachedAgents;
+        const catalog = await instance.query.initializationResult();
+        logger.info('Read the session catalog from a running session', { conversationId: instance.conversationId });
+        return catalog;
       } catch (error) {
-        logger.warn('Failed to fetch agents from session', { error });
+        logger.warn('Failed to read the session catalog from a session', { error });
       }
     }
+    const catalog = await this.withTemporaryQuery('initialize', (tempQuery) => tempQuery.initializationResult());
+    if (catalog) logger.info('Read the session catalog via a temporary session');
+    return catalog;
+  }
 
-    await this.withTemporaryQuery('supportedAgents', async (tempQuery) => {
-      const agents = await tempQuery.supportedAgents();
-      this.cachedAgents = agents.map(ClaudeCodeService.toAgentInfo);
-      logger.info('Fetched agents via temporary session', { count: this.cachedAgents.length });
+  /** Keep what the handshake answered: the cached lists, and the account under its login. */
+  private keepSessionCatalog(catalog: SDKControlInitializeResponse): void {
+    this.cachedModels = ClaudeCodeService.mergeWithKnownModels(
+      catalog.models.map((m) => ClaudeCodeService.toModelInfo(m)),
+    );
+    this.cachedSlashCommands = catalog.commands.map((cmd) => ClaudeCodeService.toSlashCommandInfo(cmd));
+    this.cachedAgents = catalog.agents.map(ClaudeCodeService.toAgentInfo);
+    logger.info('Session catalog cached', {
+      models: this.cachedModels.length,
+      commands: this.cachedSlashCommands.length,
+      agents: this.cachedAgents.length,
     });
+    this.send(IPC_CHANNELS.CLAUDE_MODEL_CHANGED, this.cachedModels);
+  }
 
+  /**
+   * Subagents the session can delegate to, from the SDK: cached, or read
+   * with the rest of the handshake (loadSessionCatalog), because `/agents`
+   * has to answer before any conversation exists.
+   */
+  async getAgents(): Promise<AgentInfo[]> {
+    if (this.cachedAgents.length === 0) await this.loadSessionCatalog();
     return this.cachedAgents;
   }
 
@@ -2619,42 +2619,19 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Available slash commands, from the SDK.
+   * Available slash commands, from the SDK: cached, or read with the rest of
+   * the handshake (loadSessionCatalog). That read is what matters — this is
+   * called when the renderer mounts, before any conversation exists, and
+   * returning an empty list there left the prompt box with nothing to
+   * autocomplete, so the commands appeared not to exist at all until after
+   * the first message of a session.
    *
-   * Mirrors getModels(): cache, then any live session, then a throwaway query.
-   * The last step is what matters — this is called when the renderer mounts,
-   * before any conversation exists, and returning an empty list there left the
-   * prompt box with nothing to autocomplete, so the commands appeared not to
-   * exist at all until after the first message of a session.
+   * No emit here: the renderer's own getCommands() call assigns the awaited
+   * value. The CLAUDE_SLASH_COMMANDS push exists for the SDK's mid-session
+   * changes, which carry a conversation.
    */
   async getSlashCommands(): Promise<SlashCommandInfo[]> {
-    if (this.cachedSlashCommands.length > 0) {
-      return this.cachedSlashCommands;
-    }
-
-    for (const instance of this.activeSessions.values()) {
-      try {
-        const commands = await instance.query.supportedCommands();
-        this.cachedSlashCommands = commands.map((cmd) => ClaudeCodeService.toSlashCommandInfo(cmd));
-        logger.info('Fetched slash commands from session', { count: this.cachedSlashCommands.length });
-        return this.cachedSlashCommands;
-      } catch (error) {
-        logger.warn('Failed to fetch slash commands from session', { error });
-      }
-    }
-
-    await this.withTemporaryQuery('supportedCommands', async (tempQuery) => {
-      const commands = await tempQuery.supportedCommands();
-      this.cachedSlashCommands = commands.map((cmd) => ClaudeCodeService.toSlashCommandInfo(cmd));
-      logger.info('Fetched slash commands via temporary session', {
-        count: this.cachedSlashCommands.length,
-      });
-      // No emit here: this path is driven by the renderer's own getCommands()
-      // call and the awaited return value is what it assigns. The
-      // CLAUDE_SLASH_COMMANDS push exists for the SDK's mid-session changes,
-      // which carry a conversation.
-    });
-
+    if (this.cachedSlashCommands.length === 0) await this.loadSessionCatalog();
     return this.cachedSlashCommands;
   }
 
@@ -2888,36 +2865,9 @@ export class ClaudeCodeService {
    * Returns cached models if available
    */
   async getModels(): Promise<ModelInfo[]> {
-    if (this.cachedModels.length > 0) {
-      return this.cachedModels;
-    }
-
-    // Try to fetch from any active session
-    for (const instance of this.activeSessions.values()) {
-      try {
-        const models = await instance.query.supportedModels();
-        this.cachedModels = ClaudeCodeService.mergeWithKnownModels(
-          models.map((m) => ClaudeCodeService.toModelInfo(m)),
-        );
-        logger.info('Fetched models from SDK', { count: this.cachedModels.length });
-        return this.cachedModels;
-      } catch (error) {
-        logger.warn('Failed to fetch models from session', { error });
-      }
-    }
-
-    // No active sessions — spawn a temporary SDK query to fetch models.
-    // supportedModels() is a free control command (no token cost).
-    try {
-      await this.fetchModelsViaTemporarySession();
-      if (this.cachedModels.length > 0) {
-        return this.cachedModels;
-      }
-    } catch (error) {
-      logger.warn('Failed to fetch models via temporary session', { error });
-    }
-
-    return [];
+    // Cached, or read with the rest of the handshake (loadSessionCatalog).
+    if (this.cachedModels.length === 0) await this.loadSessionCatalog();
+    return this.cachedModels;
   }
 
   /**
@@ -2949,18 +2899,10 @@ export class ClaudeCodeService {
     return promise;
   }
 
+  /** The account, from the handshake read under the current login (loadSessionCatalog). */
   private async readAccountInfo(): Promise<ClaudeAccount | null> {
-    for (const instance of this.activeSessions.values()) {
-      // A session left over from the previous login would report that one.
-      if (instance.authGeneration !== this.authGeneration) continue;
-      try {
-        return ClaudeCodeService.toClaudeAccount(await instance.query.accountInfo());
-      } catch (error) {
-        logger.warn('Failed to read account info from session', { error });
-      }
-    }
-    return this.withTemporaryQuery('accountInfo', async (tempQuery) =>
-      ClaudeCodeService.toClaudeAccount(await tempQuery.accountInfo()));
+    const catalog = await this.loadSessionCatalog();
+    return catalog ? ClaudeCodeService.toClaudeAccount(catalog.account) : null;
   }
 
   /** Only the fields shown, and only when the CLI reported them as text. */
@@ -2985,10 +2927,10 @@ export class ClaudeCodeService {
    * Run a control command against a throwaway SDK query.
    *
    * The query is created with an input channel nothing is ever pushed to, so
-   * the CLI starts, answers the control command and is aborted without a turn
-   * ever running — `supportedModels()` and `supportedCommands()` are both free
-   * and cost no tokens. This is the only way to answer "what can I do?" before
-   * the user has sent a first message.
+   * the CLI starts, completes its initialize handshake, answers the control
+   * command and is aborted without a turn ever running — no tokens are spent.
+   * This is the only way to answer "what can I do?" before the user has sent
+   * a first message: loadSessionCatalog reads the handshake this way.
    *
    * Returns null when there are no credentials, since the CLI cannot start.
    *
@@ -3151,17 +3093,6 @@ export class ClaudeCodeService {
       }
     }
     return connectors;
-  }
-
-  private async fetchModelsViaTemporarySession(): Promise<void> {
-    await this.withTemporaryQuery('supportedModels', async (tempQuery) => {
-      const models = await tempQuery.supportedModels();
-      this.cachedModels = ClaudeCodeService.mergeWithKnownModels(
-        models.map((m) => ClaudeCodeService.toModelInfo(m)),
-      );
-      logger.info('Fetched models via temporary session', { count: this.cachedModels.length });
-      this.send(IPC_CHANNELS.CLAUDE_MODEL_CHANGED, this.cachedModels);
-    });
   }
 
   /**

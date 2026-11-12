@@ -17,7 +17,7 @@ import {
 import { ConfigurationError, ValidationError, ERROR_CODES } from '../errors';
 import ConversationService from '../services/ConversationService';
 import { ImageStore } from '../services/ImageStore';
-import { deleteSessionRecords, deleteToolResults } from '../services/claude/session-records';
+import { deleteToolResults } from '../services/claude/session-records';
 import { validateString, validateObject, ensureService, formatErrorMessage } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
@@ -48,8 +48,7 @@ function optionalMessageId(value: unknown, label: string): string | null {
 
 /** What deleting a discussion needs of its Claude Code session; see ClaudeCodeService.endConversation. */
 export interface ConversationSessions {
-  /** @returns whether its process exited: its records are only removed then. */
-  endConversation(conversationId: string): Promise<boolean>;
+  endConversation(conversationId: string): void;
 }
 
 export function setupConversationIPC(conversationService: ConversationService, sessions: ConversationSessions): void {
@@ -363,14 +362,10 @@ export function setupConversationIPC(conversationService: ConversationService, s
       // Validate input
       validateString(id, 'Conversation ID');
 
-      // Read before the details go: they are what names it.
-      const sessionId = await conversationService.sessionIdOf(id);
-
       await conversationService.delete(id);
 
-      // Its Claude Code process ended before its records are removed: one
-      // still running writes them back as it exits.
-      const ended = await sessions.endConversation(id);
+      // A discussion that no longer exists has no turn to run.
+      sessions.endConversation(id);
 
       // The transcript is gone, so nothing will ever name its images again.
       // These are the largest files this app writes; left behind they are an
@@ -383,19 +378,15 @@ export function setupConversationIPC(conversationService: ConversationService, s
         logger.info('Cleaned up channel session data', { conversationId: id });
       }
 
-      // What Claude Code keeps of it (session-records). The discussion is
-      // already gone: a record that cannot be removed is reported, and the
-      // delete still succeeds.
+      // The call results this app wrote for it (session-records). Its Claude
+      // Code session is left to Claude Code's own retention clean-up. The
+      // discussion is already gone: a result that cannot be removed is
+      // reported, and the delete still succeeds.
       try {
         const results = await deleteToolResults(id);
-        if (sessionId && !ended) {
-          logger.warn('Kept the session records of a deleted discussion: its process did not exit', { id, sessionId });
-        } else if (sessionId && !(await conversationService.isSessionUsed(sessionId))) {
-          await deleteSessionRecords(sessionId);
-        }
-        logger.info('Deleted what Claude Code kept of a deleted discussion', { id, sessionId, results });
-      } catch (recordsError) {
-        logger.warn('Could not delete all Claude Code records of a deleted discussion', { id, sessionId, error: recordsError });
+        logger.info('Deleted the call results of a deleted discussion', { id, results });
+      } catch (resultsError) {
+        logger.warn('Could not delete all call results of a deleted discussion', { id, error: resultsError });
       }
     } catch (error) {
       logger.error('Failed to delete conversation', { error, id });

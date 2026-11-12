@@ -122,12 +122,6 @@ export const MAIN_CONSTANTS = {
      * answering, so the window can still close.
      */
     CLOSE_WRITE_WAIT_MS: 30_000,
-    /**
-     * How long deleting a discussion waits for its Claude Code process to
-     * exit before removing the session's records — and keeps them instead.
-     * Measured: 0.4 s; a channel session is given the same 10 s.
-     */
-    END_SESSION_WAIT_MS: 10_000,
   },
   LOGGING: {
     /** Maximum log file size before rotation - 5MB */

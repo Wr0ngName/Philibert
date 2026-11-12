@@ -27,7 +27,6 @@ import * as realFs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import type { SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Use vi.hoisted to ensure mocks are available before vi.mock is called
@@ -2310,43 +2309,30 @@ describe('ClaudeCodeService', () => {
   // Session Lifecycle — session ID robustness through the whole conversation
   // ===========================================================================
   describe('ending a deleted conversation', () => {
-    // Measured on deletion: the CLI writes the session's records as it exits,
-    // after the input it is given closes — 1 ms after they were removed, its
-    // process exiting 0.4 s later. Ending must wait for that exit.
-    it('waits for its CLI process to exit, not only for it to be told to', async () => {
-      let spawned: SpawnedProcess | undefined;
+    it('ends its session for good, so no process stays for a discussion that is gone', async () => {
       let release: () => void = () => {};
-      mockQuery.mockImplementation(({ options }) => {
-        // A real process, which exits 300 ms after its input closes, as the CLI finishes up.
-        spawned = options.spawnClaudeCodeProcess({
-          command: process.execPath,
-          args: ['-e', "process.stdin.on('end', () => setTimeout(() => process.exit(0), 300)); process.stdin.resume();"],
-          env: { PATH: process.env.PATH },
-        });
-        return {
-          // eslint-disable-next-line require-yield
-          [Symbol.asyncIterator]: async function* () {
-            await new Promise<void>((resolve) => { release = resolve; });
-          },
-          interrupt: vi.fn(),
-          supportedCommands: vi.fn().mockResolvedValue([]),
-          // As the SDK closes a session: by ending the CLI's input.
-          close: () => { spawned?.stdin.end(); release(); },
-        };
+      const close = vi.fn(() => release());
+      mockQuery.mockReturnValue({
+        // eslint-disable-next-line require-yield
+        [Symbol.asyncIterator]: async function* () {
+          await new Promise<void>((resolve) => { release = resolve; });
+        },
+        interrupt: vi.fn(),
+        supportedCommands: vi.fn().mockResolvedValue([]),
+        close,
       });
       const sending = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
-      await vi.waitFor(() => expect(spawned).toBeDefined());
+      await vi.waitFor(() => expect(service.isConversationActive(TEST_CONV_ID)).toBe(true));
 
-      const started = Date.now();
-      const ended = await service.endConversation(TEST_CONV_ID);
+      service.endConversation(TEST_CONV_ID);
 
-      expect(ended).toBe(true);
-      expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+      expect(close).toHaveBeenCalled();
+      expect(service.isConversationActive(TEST_CONV_ID)).toBe(false);
       await sending;
     });
 
-    it('has nothing to wait for when no process runs for it', async () => {
-      expect(await service.endConversation('conv-never-started')).toBe(true);
+    it('is nothing to do when no session runs for it', () => {
+      expect(() => service.endConversation('conv-never-started')).not.toThrow();
     });
   });
 
@@ -3087,11 +3073,16 @@ describe('ClaudeCodeService', () => {
      * wrong thing at exactly the moment they are checking.
      */
     describe('the account behind the login', () => {
-      /** A throwaway query answering only `accountInfo`, as the CLI does. */
+      /** What the CLI answers its initialize handshake with, this account in it. */
+      function handshake(account: Record<string, unknown>) {
+        return { commands: [], agents: [], models: [], output_style: 'default', available_output_styles: [], account };
+      }
+
+      /** A throwaway query that only completes its handshake, as the CLI does with no prompt. */
       function accountQuery(info: Record<string, unknown>) {
         return {
           [Symbol.asyncIterator]: async function* () { /* no turn ever runs */ },
-          accountInfo: vi.fn().mockResolvedValue(info),
+          initializationResult: vi.fn().mockResolvedValue(handshake(info)),
         };
       }
 
@@ -3143,13 +3134,13 @@ describe('ClaudeCodeService', () => {
         let answer!: (info: Record<string, unknown>) => void;
         mockQuery.mockReturnValue({
           [Symbol.asyncIterator]: async function* () { /* no turn ever runs */ },
-          accountInfo: vi.fn(() => new Promise((resolve) => { answer = resolve; })),
+          initializationResult: vi.fn(() => new Promise((resolve) => { answer = resolve; })),
         });
         const slow = service.getAccountInfo();
         await vi.waitFor(() => expect(answer).toBeDefined());
 
         service.invalidateSessionAuth('login');
-        answer({ email: 'old@example.com' });
+        answer(handshake({ email: 'old@example.com' }));
         await slow;
 
         mockQuery.mockReturnValue(accountQuery({ email: 'new@example.com' }));
@@ -3158,13 +3149,13 @@ describe('ClaudeCodeService', () => {
 
       it('asks a session running under the current login rather than starting a process', async () => {
         const session = openSession();
-        const accountInfo = vi.fn().mockResolvedValue({ email: 'someone@example.com' });
-        Object.assign(session.iterator, { accountInfo });
+        const initializationResult = vi.fn().mockResolvedValue(handshake({ email: 'someone@example.com' }));
+        Object.assign(session.iterator, { initializationResult });
         mockQuery.mockReturnValue(session.iterator);
         await sendAndSettle(session, TEST_CONV_ID, 'hello');
 
         expect((await service.getAccountInfo())?.email).toBe('someone@example.com');
-        expect(accountInfo).toHaveBeenCalledTimes(1);
+        expect(initializationResult).toHaveBeenCalledTimes(1);
         expect(mockQuery).toHaveBeenCalledTimes(1);
         session.close();
       });
@@ -3173,8 +3164,8 @@ describe('ClaudeCodeService', () => {
         // Mid-turn when the login changed, so it was kept for that turn —
         // and it is still the old account.
         const session = openSession();
-        const stale = vi.fn().mockResolvedValue({ email: 'old@example.com' });
-        Object.assign(session.iterator, { accountInfo: stale });
+        const stale = vi.fn().mockResolvedValue(handshake({ email: 'old@example.com' }));
+        Object.assign(session.iterator, { initializationResult: stale });
         mockQuery.mockReturnValue(session.iterator);
         const sent = service.sendMessage(TEST_CONV_ID, 'long job', '/home/user/project');
         await vi.waitFor(() => expect(service.isConversationActive(TEST_CONV_ID)).toBe(true));
@@ -3192,7 +3183,7 @@ describe('ClaudeCodeService', () => {
       it('answers null when the CLI cannot say, and asks again next time', async () => {
         mockQuery.mockReturnValue({
           [Symbol.asyncIterator]: async function* () { /* no turn ever runs */ },
-          accountInfo: vi.fn().mockRejectedValue(new Error('not logged in')),
+          initializationResult: vi.fn().mockRejectedValue(new Error('not logged in')),
         });
         expect(await service.getAccountInfo()).toBeNull();
 
@@ -3211,6 +3202,36 @@ describe('ClaudeCodeService', () => {
 
         expect(await service.getAccountInfo()).toBeNull();
         expect(mockQuery).not.toHaveBeenCalled();
+      });
+
+      it('reads models, commands, agents and account from one handshake — one process, not one each', async () => {
+        const initializationResult = vi.fn().mockResolvedValue({
+          ...handshake({ email: 'someone@example.com' }),
+          models: [{ value: 'claude-opus-4-7', displayName: 'Opus', description: '' }],
+          commands: [{ name: 'review', description: 'Review', argumentHint: '' }],
+          agents: [{ name: 'Explore', description: 'Explores', model: 'inherit' }],
+        });
+        mockQuery.mockReturnValue({
+          [Symbol.asyncIterator]: async function* () { /* no turn ever runs */ },
+          initializationResult,
+        });
+
+        // Asked for together, as the renderer does at startup.
+        const [models, commands, agents, account] = await Promise.all([
+          service.getModels(), service.getSlashCommands(), service.getAgents(), service.getAccountInfo(),
+        ]);
+
+        expect(models.map((m) => m.value)).toContain('claude-opus-4-7');
+        expect(commands.map((c) => c.name)).toEqual(['review']);
+        expect(agents.map((a) => a.name)).toEqual(['Explore']);
+        expect(account?.email).toBe('someone@example.com');
+        expect(mockQuery).toHaveBeenCalledTimes(1);
+        expect(initializationResult).toHaveBeenCalledTimes(1);
+
+        // Kept: asking again starts nothing.
+        await service.getModels();
+        await service.getSlashCommands();
+        expect(mockQuery).toHaveBeenCalledTimes(1);
       });
     });
 
