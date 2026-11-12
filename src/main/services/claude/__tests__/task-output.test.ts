@@ -66,6 +66,33 @@ describe('transcriptToMessages', () => {
     expect(messages.at(-1)?.toolUse?.status).toBe('approved');
   });
 
+  // As getSubagentMessages returned them for an agent that read a screenshot
+  // (CLI 2.1.280): the image result, then a note Claude Code writes for the
+  // model alone. The note read as a message from Claude.
+  it("leaves out Claude Code's notes for the model, keeping the image they are about", () => {
+    const found: { message: ChatMessage; images: unknown[] }[] = [];
+    const image = [
+      {
+        type: 'assistant', uuid: 'a1', session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-12T16:13:00Z',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_read', name: 'Read', input: { file_path: '/d/shot.png' } }] },
+      },
+      {
+        type: 'user', uuid: 'u1', session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-12T16:13:01Z',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_read', content: [{ type: 'image', source: { type: 'base64', data: 'iVBORw0KGgo=', media_type: 'image/png' } }] }] },
+      },
+      {
+        type: 'user', uuid: 'u2', session_id: 's', parent_tool_use_id: null, is_meta: true, timestamp: '2026-11-12T16:13:01Z',
+        message: { role: 'user', content: '[Image: original 3840x1080, displayed at 2000x563. Multiply coordinates by 1.92 to map to original image.]' },
+      },
+    ] as unknown as SessionMessage[];
+
+    const messages = transcriptToMessages(image, store, (message, images) => found.push({ message, images }));
+
+    expect(messages.map((m) => m.toolUse?.toolName ?? m.content)).toEqual(['Read']);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.message.toolUse?.toolUseBlockId).toBe('toolu_read');
+  });
+
   it('gives the same ids when read again, so a refresh only adds', () => {
     const first = transcriptToMessages(entries.slice(0, 6), store).map((m) => m.id);
     const again = transcriptToMessages(entries, store).map((m) => m.id);

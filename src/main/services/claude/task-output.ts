@@ -231,6 +231,11 @@ export function transcriptToMessages(
 
   for (const entry of entries) {
     if (entry.type !== 'user' && entry.type !== 'assistant') continue;
+    // A note Claude Code writes for the model, never shown to the user — the
+    // size of an image a tool returned ("[Image: original 3840x1080, …]"),
+    // say. It read as a message from Claude. `is_meta`: not in SessionMessage's
+    // type, but on such an entry read back (2.1.280).
+    if ((entry as { is_meta?: boolean }).is_meta === true) continue;
     const content = (entry.message as { content?: unknown } | null)?.content;
     // Not in SessionMessage's type, but on every entry read back (2.1.280).
     const stamp = Date.parse((entry as { timestamp?: string }).timestamp ?? '');
