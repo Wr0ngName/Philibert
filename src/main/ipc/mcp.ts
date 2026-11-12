@@ -1,16 +1,19 @@
 /**
  * IPC handlers for MCP server management.
  *
- * Every handler takes the project's working directory explicitly, matching the
- * git handlers, so the renderer's notion of the current project is always the
- * one being edited.
+ * A project's handlers take its working directory explicitly, matching the
+ * git handlers, so the renderer's notion of the project is always the one
+ * being edited. The tools every project has (claude.ai connectors and
+ * user-wide servers) are handled with no project: they are read in a folder
+ * of the app's own, and turned off everywhere in Claude Code's user settings.
  */
 
 import { dialog, ipcMain, shell, BrowserWindow } from 'electron';
 
-import { IPC_CHANNELS, type McpServerInput } from '../../shared/types';
+import { IPC_CHANNELS, type GlobalTools, type GlobalToolStatus, type McpServerInput, type ProjectTools } from '../../shared/types';
 import type ClaudeCodeService from '../services/ClaudeCodeService';
 import McpConfigService from '../services/McpConfigService';
+import { readGloballyOff, setGloballyOff } from '../services/claude/mcp-global-off';
 import { validateString, validatePath, ensureService, toSettingsIpcError } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 
@@ -83,10 +86,10 @@ export function setupMcpIPC(
     }
   });
 
-  ipcMain.handle(IPC_CHANNELS.MCP_GET_RUNTIME_INFO, async (_event, workingDirectory: string) => {
+  ipcMain.handle(IPC_CHANNELS.MCP_GET_RUNTIME_INFO, async () => {
     try {
       ensureService(mcpService, 'McpConfigService');
-      return mcpService.getRuntimeInfo(requireProject(workingDirectory));
+      return mcpService.getRuntimeInfo();
     } catch (error) {
       logger.error('Failed to read MCP runtime info', { error });
       throw toSettingsIpcError('Failed to read the MCP settings', error);
@@ -137,46 +140,109 @@ export function setupMcpIPC(
     return result.filePaths[0];
   });
 
-  ipcMain.handle(IPC_CHANNELS.MCP_CONNECTORS, async (_event, workingDirectory: string) => {
+  /** The tools every project has, and how each stands. */
+  const globalTools = async (): Promise<GlobalTools> => {
+    const [statuses, userServers, off] = await Promise.all([
+      claudeService.getGlobalToolStatuses(),
+      mcpService.listUser(),
+      readGloballyOff(),
+    ]);
+    return { statuses, userServers, offEverywhere: [...off] };
+  };
+
+  /** The tools every project has, as this project has them. */
+  const projectTools = async (workingDirectory: string, statuses?: GlobalToolStatus[] | null): Promise<ProjectTools> => {
+    const [projectStatuses, userServers, off] = await Promise.all([
+      statuses !== undefined ? statuses : claudeService.getProjectToolStatuses(workingDirectory),
+      mcpService.listUser(),
+      readGloballyOff(),
+    ]);
+    return { statuses: projectStatuses, userServers: userServers.map((s) => s.name), offEverywhere: [...off] };
+  };
+
+  ipcMain.handle(IPC_CHANNELS.MCP_GLOBAL_TOOLS, async () => {
     try {
       ensureService(claudeService, 'ClaudeCodeService');
-      return await claudeService.getClaudeAiConnectors(requireProject(workingDirectory));
+      return await globalTools();
     } catch (error) {
-      logger.error('Failed to read claude.ai connectors', { error });
-      throw toSettingsIpcError('Failed to check the claude.ai connectors', error);
+      logger.error('Failed to read the tools every project has', { error });
+      throw toSettingsIpcError('Failed to check your tools', error);
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.MCP_SET_OFF_EVERYWHERE, async (_event, name: string, off: boolean) => {
+    try {
+      ensureService(claudeService, 'ClaudeCodeService');
+      validateString(name, 'Tool name');
+      await setGloballyOff(name, off === true);
+      return await globalTools();
+    } catch (error) {
+      logger.error('Failed to turn a tool off everywhere, or back on', { error, name });
+      throw toSettingsIpcError('Failed to change the tool', error);
     }
   });
 
   ipcMain.handle(
-    IPC_CHANNELS.MCP_CONNECTOR_AUTHORIZE,
-    async (_event, workingDirectory: string, name: string) => {
+    IPC_CHANNELS.MCP_USER_SAVE,
+    async (_event, previousName: string | null, server: McpServerInput) => {
       try {
-        ensureService(claudeService, 'ClaudeCodeService');
-        validateString(name, 'Connector name');
-        const page = await claudeService.getClaudeAiConnectorAuthPage(requireProject(workingDirectory), name);
-        await shell.openExternal(page);
+        ensureService(mcpService, 'McpConfigService');
+        return await mcpService.saveUser(previousName ?? null, server);
       } catch (error) {
-        logger.error('Failed to authorise a claude.ai connector', { error, name });
-        throw toSettingsIpcError(`Failed to open the page that authorises ${String(name)}`, error);
+        logger.error('Failed to save a user-wide MCP server', { error, name: server?.name });
+        throw toSettingsIpcError('Failed to save the MCP server', error);
       }
     }
   );
 
+  ipcMain.handle(IPC_CHANNELS.MCP_USER_REMOVE, async (_event, name: string) => {
+    try {
+      ensureService(mcpService, 'McpConfigService');
+      validateString(name, 'Server name');
+      return await mcpService.removeUser(name);
+    } catch (error) {
+      logger.error('Failed to remove a user-wide MCP server', { error, name });
+      throw toSettingsIpcError('Failed to remove the MCP server', error);
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.MCP_PROJECT_TOOLS, async (_event, workingDirectory: string) => {
+    try {
+      ensureService(claudeService, 'ClaudeCodeService');
+      return await projectTools(requireProject(workingDirectory));
+    } catch (error) {
+      logger.error('Failed to read the tools of a project', { error });
+      throw toSettingsIpcError("Failed to check the project's tools", error);
+    }
+  });
+
   ipcMain.handle(
-    IPC_CHANNELS.MCP_CONNECTOR_SET_ENABLED,
+    IPC_CHANNELS.MCP_SET_ENABLED_IN_PROJECT,
     async (_event, workingDirectory: string, name: string, enabled: boolean) => {
       try {
         ensureService(claudeService, 'ClaudeCodeService');
-        validateString(name, 'Connector name');
-        return await claudeService.setClaudeAiConnectorEnabled(
-          requireProject(workingDirectory), name, enabled === true,
-        );
+        validateString(name, 'Tool name');
+        const dir = requireProject(workingDirectory);
+        const statuses = await claudeService.setToolEnabledInProject(dir, name, enabled === true);
+        return await projectTools(dir, statuses);
       } catch (error) {
-        logger.error('Failed to turn a claude.ai connector on or off', { error, name });
-        throw toSettingsIpcError('Failed to change the connector', error);
+        logger.error('Failed to turn a tool on or off in a project', { error, name });
+        throw toSettingsIpcError('Failed to change the tool', error);
       }
     }
   );
+
+  ipcMain.handle(IPC_CHANNELS.MCP_CONNECTOR_AUTHORIZE, async (_event, name: string) => {
+    try {
+      ensureService(claudeService, 'ClaudeCodeService');
+      validateString(name, 'Connector name');
+      const page = await claudeService.getConnectorAuthPage(name);
+      await shell.openExternal(page);
+    } catch (error) {
+      logger.error('Failed to authorise a claude.ai connector', { error, name });
+      throw toSettingsIpcError(`Failed to open the page that authorises ${String(name)}`, error);
+    }
+  });
 
   logger.info('MCP IPC handlers registered');
 }

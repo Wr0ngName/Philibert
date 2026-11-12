@@ -394,7 +394,7 @@ describe('commands that open a GUI surface', () => {
 
     await handleSlashCommand('/mcp');
 
-    expect(chat.messages.at(-1)?.content).toContain('Settings → Tool servers');
+    expect(chat.messages.at(-1)?.content).toContain('Settings → Tools');
   });
 });
 

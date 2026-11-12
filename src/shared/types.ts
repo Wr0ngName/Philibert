@@ -2076,15 +2076,47 @@ export interface McpCommandCheck {
  * Authorising happens on claude.ai. Turning one off is per project, as
  * `/mcp disable` does it.
  */
-export interface ClaudeAiConnector {
+/** What Claude Code names a claude.ai connector: `claude.ai <its name on claude.ai>`. */
+export const CLAUDE_AI_CONNECTOR_PREFIX = 'claude.ai ';
+
+/**
+ * One of the tools every project has — a claude.ai connector, or a
+ * user-wide MCP server — as a Claude Code session reports it.
+ */
+export interface GlobalToolStatus {
   /** The server's name as the CLI reports it, e.g. "claude.ai Gmail". */
   name: string;
-  /** 'disabled' is off in this project; 'needs-auth' waits for authorising on claude.ai. */
+  kind: 'connector' | 'user';
+  /** 'disabled' is off in the session's project; 'needs-auth' waits for authorising on claude.ai. */
   status: 'connected' | 'needs-auth' | 'failed' | 'pending' | 'disabled';
   /** Why it failed, when it did. */
   error?: string;
   /** How many tools it gives Claude, when connected. */
   toolCount?: number;
+}
+
+/** The tools every project has, for Settings → Tools. */
+export interface GlobalTools {
+  /**
+   * As a session started in no project of the user's reports them; null when
+   * none can start (not signed in). One off everywhere is not among them:
+   * Claude Code does not list it.
+   */
+  statuses: GlobalToolStatus[] | null;
+  /** The user-wide servers' definitions, each `enabled` unless off everywhere. */
+  userServers: McpServerEntry[];
+  /** The names turned off everywhere (deniedMcpServers). */
+  offEverywhere: string[];
+}
+
+/** The tools every project has, as one project has them, for Settings → Project. */
+export interface ProjectTools {
+  /** As a session in the project reports them; null when none can start. */
+  statuses: GlobalToolStatus[] | null;
+  /** The user-wide servers' names. */
+  userServers: string[];
+  /** The names turned off everywhere: not listed in `statuses`, and not to be switched on here. */
+  offEverywhere: string[];
 }
 
 export interface McpRuntimeInfo {
@@ -2096,10 +2128,6 @@ export interface McpRuntimeInfo {
    * can run a vendored `.js` server without installing Node themselves.
    */
   bundledNodePath: string | null;
-  /** Absolute path of the `.mcp.json` the UI is editing. */
-  configPath: string;
-  /** Absolute path of the `.claude/settings.local.json` holding approvals. */
-  approvalsPath: string;
 }
 
 /**
@@ -2325,12 +2353,20 @@ export const IPC_CHANNELS = {
   MCP_PICK_EXECUTABLE: 'mcp:pick-executable',
   /** Open a file picker for choosing a credentials/JSON file */
   MCP_PICK_FILE: 'mcp:pick-file',
-  /** The claude.ai connectors and how each stands, for a project */
-  MCP_CONNECTORS: 'mcp:connectors',
+  /** The tools every project has (connectors, user-wide servers) and how each stands */
+  MCP_GLOBAL_TOOLS: 'mcp:global-tools',
+  /** Turn one of them off everywhere, or back on */
+  MCP_SET_OFF_EVERYWHERE: 'mcp:set-off-everywhere',
+  /** Create or update a user-wide server */
+  MCP_USER_SAVE: 'mcp:user-save',
+  /** Remove a user-wide server */
+  MCP_USER_REMOVE: 'mcp:user-remove',
+  /** The tools every project has, as one project has them */
+  MCP_PROJECT_TOOLS: 'mcp:project-tools',
+  /** Turn one of them on or off in a project */
+  MCP_SET_ENABLED_IN_PROJECT: 'mcp:set-enabled-in-project',
   /** Open the claude.ai page that authorises one connector */
   MCP_CONNECTOR_AUTHORIZE: 'mcp:connector-authorize',
-  /** Turn one connector on or off for a project */
-  MCP_CONNECTOR_SET_ENABLED: 'mcp:connector-set-enabled',
 
   // Config operations
   /** Get current configuration */

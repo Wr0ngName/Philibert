@@ -421,21 +421,26 @@ const electronAPI: ElectronAPI = {
     checkCommand: (command: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.MCP_CHECK_COMMAND, command),
 
-    getRuntimeInfo: (workingDirectory: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_RUNTIME_INFO, workingDirectory),
+    getRuntimeInfo: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_RUNTIME_INFO),
 
     pickExecutable: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_PICK_EXECUTABLE),
 
     pickFile: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_PICK_FILE),
 
-    connectors: (workingDirectory: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.MCP_CONNECTORS, workingDirectory),
+    globalTools: () => ipcRenderer.invoke(IPC_CHANNELS.MCP_GLOBAL_TOOLS),
 
-    authorizeConnector: (workingDirectory: string, name: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.MCP_CONNECTOR_AUTHORIZE, workingDirectory, name),
+    setOffEverywhere: (name, off) => ipcRenderer.invoke(IPC_CHANNELS.MCP_SET_OFF_EVERYWHERE, name, off),
 
-    setConnectorEnabled: (workingDirectory: string, name: string, enabled: boolean) =>
-      ipcRenderer.invoke(IPC_CHANNELS.MCP_CONNECTOR_SET_ENABLED, workingDirectory, name, enabled),
+    saveUserServer: (previousName, server) => ipcRenderer.invoke(IPC_CHANNELS.MCP_USER_SAVE, previousName, server),
+
+    removeUserServer: (name) => ipcRenderer.invoke(IPC_CHANNELS.MCP_USER_REMOVE, name),
+
+    projectTools: (workingDirectory) => ipcRenderer.invoke(IPC_CHANNELS.MCP_PROJECT_TOOLS, workingDirectory),
+
+    setEnabledInProject: (workingDirectory, name, enabled) =>
+      ipcRenderer.invoke(IPC_CHANNELS.MCP_SET_ENABLED_IN_PROJECT, workingDirectory, name, enabled),
+
+    authorizeConnector: (name) => ipcRenderer.invoke(IPC_CHANNELS.MCP_CONNECTOR_AUTHORIZE, name),
   },
 
   config: {

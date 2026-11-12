@@ -27,7 +27,8 @@ import Modal from '../shared/Modal.vue';
 import AuthForm from '../shared/AuthForm.vue';
 import ToggleSwitch from '../shared/ToggleSwitch.vue';
 import AboutSection from './AboutSection.vue';
-import McpServersPanel from './McpServersPanel.vue';
+import GlobalToolsPanel from './GlobalToolsPanel.vue';
+import ProjectSettingsPanel from './ProjectSettingsPanel.vue';
 
 interface Props {
   open: boolean;
@@ -47,7 +48,8 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   account: 'Account',
   appearance: 'Appearance',
   discussions: 'Discussions',
-  tools: 'Tool servers',
+  tools: 'Tools',
+  project: 'Project',
   advanced: 'Advanced',
   about: 'About',
 };
@@ -67,6 +69,23 @@ function showTab(tab: SettingsTab): void {
 watch(activeTab, () => {
   if (pageScroller.value) pageScroller.value.scrollTop = 0;
 });
+
+/*
+ * The Tools and Project pages are mounted once first shown: each checks its
+ * tools by starting Claude Code for a few seconds, which opening Settings for
+ * anything else should not cost.
+ */
+const toolsOpened = ref(false);
+const projectOpened = ref(false);
+watch(
+  [activeTab, () => props.open] as const,
+  ([tab, open]) => {
+    if (!open) return;
+    if (tab === 'tools') toolsOpened.value = true;
+    if (tab === 'project') projectOpened.value = true;
+  },
+  { immediate: true },
+);
 
 /** Arrow keys, Home and End move between tabs, as a vertical tab list does. */
 function onTabKeydown(event: KeyboardEvent): void {
@@ -836,14 +855,27 @@ function cancel() {
           </div>
         </div>
 
-        <!-- Tool servers (MCP) for the active project -->
+        <!-- The tools every project has -->
         <div
           v-show="activeTab === 'tools'"
           :id="pageId('tools')"
           role="tabpanel"
           :aria-labelledby="tabId('tools')"
         >
-          <McpServersPanel />
+          <GlobalToolsPanel v-if="toolsOpened" />
+        </div>
+
+        <!-- One project's own settings -->
+        <div
+          v-show="activeTab === 'project'"
+          :id="pageId('project')"
+          role="tabpanel"
+          :aria-labelledby="tabId('project')"
+        >
+          <ProjectSettingsPanel
+            v-if="projectOpened"
+            @open-global="showTab('tools')"
+          />
         </div>
 
         <!-- Advanced -->

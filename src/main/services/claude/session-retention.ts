@@ -5,41 +5,17 @@
  * nothing left to continue (Conversation.sessionGone) — so the archive
  * setting is only useful below it, and the settings let the user set both.
  *
- * The file is Claude Code's, and shared with Claude Code run in a terminal:
- * only this one key is written, everything else in it is kept as it is, and
- * a file that cannot be read as JSON is never written over.
+ * The file is Claude Code's, and shared with Claude Code run in a terminal
+ * (see claude-files): only this one key is written.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-
 import { CLAUDE_DEFAULT_SESSION_RETENTION_DAYS, type SessionRetention } from '../../../shared/types';
-import { replaceFile } from '../../utils/durable-file';
 import logger from '../../utils/logger';
 
+import { changeUserSettings, readJsonObject, userSettingsFile } from './claude-files';
 import { cliConfigDir } from './cliCredentials';
 
 const KEY = 'cleanupPeriodDays';
-
-function settingsFile(configDir: string): string {
-  return path.join(configDir, 'settings.json');
-}
-
-/** The settings file as an object; null when there is none, throws when it is not a JSON object. */
-async function readSettings(file: string): Promise<Record<string, unknown> | null> {
-  let text: string;
-  try {
-    text = await fs.promises.readFile(file, 'utf-8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
-  }
-  const parsed: unknown = JSON.parse(text);
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`${file} does not hold a JSON object`);
-  }
-  return parsed as Record<string, unknown>;
-}
 
 function isRetentionDays(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1;
@@ -47,10 +23,10 @@ function isRetentionDays(value: unknown): value is number {
 
 /** How long Claude Code keeps sessions, as its user settings say. */
 export async function readSessionRetention(configDir: string = cliConfigDir()): Promise<SessionRetention> {
-  const file = settingsFile(configDir);
+  const file = userSettingsFile(configDir);
   let settings: Record<string, unknown> | null;
   try {
-    settings = await readSettings(file);
+    settings = await readJsonObject(file);
   } catch (error) {
     logger.warn("Claude Code's settings could not be read", { file, error });
     return { status: 'unreadable' };
@@ -73,11 +49,9 @@ export async function readSessionRetention(configDir: string = cliConfigDir()): 
  */
 export async function writeSessionRetention(days: number, configDir: string = cliConfigDir()): Promise<SessionRetention> {
   if (!isRetentionDays(days)) throw new Error(`${KEY} must be a whole number of days, at least 1: ${days}`);
-  const file = settingsFile(configDir);
-  const settings = (await readSettings(file)) ?? {};
-  settings[KEY] = days;
-  await fs.promises.mkdir(configDir, { recursive: true });
-  await replaceFile(file, `${JSON.stringify(settings, null, 2)}\n`);
-  logger.info(`Set Claude Code's ${KEY}`, { file, days });
+  await changeUserSettings((settings) => {
+    settings[KEY] = days;
+  }, configDir);
+  logger.info(`Set Claude Code's ${KEY}`, { file: userSettingsFile(configDir), days });
   return { status: 'set', days };
 }

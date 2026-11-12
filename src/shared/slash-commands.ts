@@ -123,15 +123,11 @@ export const GUI_DISPOSITIONS: Readonly<Record<string, CommandDisposition>> = {
   mcp: {
     kind: 'navigate',
     tab: 'tools',
-    // Deliberately does not mention `claude mcp add`: its default and `user`
-    // scopes write to $CLAUDE_CONFIG_DIR/.claude.json, and Philibert points
-    // that variable at its own config directory, so a server added that way
-    // from a terminal is invisible here. See docs/mcp-servers.md.
     message:
-      'Opening **Settings → Tool servers**. Philibert writes both files Claude Code needs — ' +
-      '`.mcp.json` and the matching approval in `.claude/settings.local.json` — so a server ' +
-      'added there is ready to use. Changes apply to **new conversations**; this one keeps the ' +
-      'servers it started with.',
+      'Opening **Settings → Tools**: the claude.ai connectors and your own tool servers, ' +
+      'available in every project, each on or off everywhere. A project\'s own servers, and ' +
+      'which of these it turns off for itself, are in **Settings → Project**. Changes apply to ' +
+      '**new conversations**; this one keeps the servers it started with.',
   },
 
   // Commands that do not apply to a GUI. Each says what it would have done and

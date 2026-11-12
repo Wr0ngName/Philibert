@@ -462,35 +462,40 @@ claude mcp add --scope project gsc \
   -- /home/you/bin/gsc-mcp-go-linux-amd64
 ```
 
-`--scope project` is the **only** scope that works with Philibert. It writes the
-same `.mcp.json`. You still need Step 2 — the CLI records approval in a file
-Philibert does not read.
+`--scope project` writes the same `.mcp.json` that **Settings → Project** edits.
+You still need Step 2 — the CLI records approval in a file Philibert does not read.
 
-### Why the other scopes do not work
+### The other scopes
 
-Philibert relocates Claude Code's config directory. Signed in with OAuth,
-`AuthValidator.setupAuthEnv()` sets
-`CLAUDE_CONFIG_DIR=<userData>/claude-config`
-(`src/main/services/claude/AuthValidator.ts:128`,
-`src/main/utils/resourcePaths.ts:187`):
+Philibert runs Claude Code with its own config directory — `$CLAUDE_CONFIG_DIR`
+when you set one, `~/.claude` otherwise — exactly as a terminal does
+(`AuthValidator.setupAuthEnv()`), so every scope reaches the app:
 
-| OS | Philibert's config dir |
-|---|---|
-| Linux | `~/.config/Philibert/claude-config` |
-| macOS | `~/Library/Application Support/Philibert/claude-config` |
-| Windows | `%APPDATA%\Philibert\claude-config` |
-
-`claude mcp add` at the default `local` scope, and at `--scope user`, both write
-to `$CLAUDE_CONFIG_DIR/.claude.json`. From a normal terminal that is
-`~/.claude.json` — a different file from the one Philibert points the CLI at, so
-the server is invisible to the app. `.mcp.json` is resolved from the working
-directory instead, which both modes set to your project folder.
-
-| Scope | Stored in | Works in Philibert |
+| Scope | Stored in | In Philibert |
 |---|---|---|
-| `project` (`.mcp.json`) | project folder | **Yes** |
-| `local` (default) | `$CLAUDE_CONFIG_DIR/.claude.json` | No |
-| `user` | `$CLAUDE_CONFIG_DIR/.claude.json` | No |
+| `project` | `.mcp.json` in the project folder | **Settings → Project**, this project's servers |
+| `user` | Claude Code's global config file, top-level `mcpServers` | **Settings → Tools**, "Your tool servers": available in every project |
+| `local` (default) | the same file, in that project's entry | Loaded by Claude Code in that project, but not listed in Settings |
+
+The global config file is `$CLAUDE_CONFIG_DIR/.claude.json` when that variable
+is set, `~/.claude/.config.json` when that file is left from an older version,
+and `~/.claude.json` otherwise (measured on CLI 2.1.280; see
+`src/main/services/claude/claude-files.ts`). Philibert reads it, and writes
+user-wide servers only through `claude mcp add-json` / `claude mcp remove`
+`--scope user`: the file is Claude Code's state, which it rewrites all the
+time.
+
+### Turning a tool off: everywhere, or in one project
+
+| Where | How Claude Code keeps it | Settings |
+|---|---|---|
+| Every project | `deniedMcpServers` in its user settings (`settings.json`), by `serverName` | **Tools**: "Turn off everywhere" |
+| One project | `disabledMcpServers` in that project's entry of the global config file (what `/mcp disable` writes) | **Project**: "Turn off here" |
+
+Off everywhere wins: Claude Code does not even list such a tool to a session,
+so a project cannot turn it back on. It also applies to Claude Code in a
+terminal, which calls it blocked by policy, and only to sessions started after
+the change — a running one keeps what it started with. Measured on CLI 2.1.280.
 
 ---
 

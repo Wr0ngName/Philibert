@@ -4,64 +4,27 @@
  * once its tab is shown — and the archive setting, a switch and a slider
  * from a week to a year.
  *
- * `window.electron` is the process boundary, so it is what is mocked; the
- * settings and ui stores run for real.
+ * The dialog is real; only the preload API is faked (support/settings-boundary).
  */
 
-import { mount, flushPromises } from '@vue/test-utils';
+import { flushPromises } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { defineComponent, h } from 'vue';
 
-import type { AboutInfo } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 
 import { useSettingsStore } from '../../../stores/settings';
 import { useUiStore } from '../../../stores/ui';
-import SettingsPanel from '../SettingsPanel.vue';
+import AuthForm from '../../shared/AuthForm.vue';
+
+import { ABOUT, fakeElectron, mountSettings } from './support/settings-boundary';
 
 const configApi = { set: vi.fn() };
 const getInfo = vi.fn();
 
-const ABOUT: AboutInfo = {
-  appVersion: '0.25.5',
-  agentSdkVersion: '0.3.280',
-  claudeCodeVersion: '2.1.280',
-  whisperVersion: 'v1.9.5',
-  whisperBinaryPath: null,
-  electronVersion: '42.0.1',
-  chromeVersion: '140',
-  nodeVersion: '22.0.0',
-  platform: 'linux',
-  arch: 'x64',
-  bundleType: null,
-  repositoryUrl: null,
-  license: 'MIT',
-  userDataPath: '/home/u/.config/Philibert',
-  logPath: '/home/u/.config/Philibert/logs/main.log',
-};
-
-/** Renders the modal's body and footer in place, so they can be clicked. */
-const ModalStub = defineComponent({
-  setup(_, { slots }) {
-    return () => h('div', [slots.default?.(), slots.footer?.()]);
-  },
-});
-
-/** The sign-in form, with the methods the panel calls on it. */
-const AuthFormStub = {
-  template: '<div data-testid="auth-form" />',
-  methods: { resetState: () => undefined, refreshAuthStatus: async () => undefined },
-};
 
 function mountPanel(open = true) {
-  return mount(SettingsPanel, {
-    props: { open },
-    attachTo: document.body,
-    global: {
-      stubs: { Modal: ModalStub, AuthForm: AuthFormStub, McpServersPanel: true, Icon: true },
-    },
-  });
+  return mountSettings(open);
 }
 
 type Panel = ReturnType<typeof mountPanel>;
@@ -95,12 +58,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   configApi.set.mockResolvedValue(undefined);
   getInfo.mockResolvedValue(ABOUT);
-  (window as unknown as { electron: unknown }).electron = {
-    config: configApi,
-    speech: { getAvailability: async () => ({ available: false, downloadedModels: [] }) },
-    about: { getInfo },
-    clipboard: { writeText: vi.fn() },
-  };
+  fakeElectron({ config: configApi, about: { getInfo } });
   useSettingsStore().config = { ...DEFAULT_CONFIG };
 });
 
@@ -112,19 +70,13 @@ afterEach(() => {
 describe('settings tabs', () => {
   // Asked for: the SDK / channel selector belongs with the advanced settings.
   it('has the execution mode, for a Pro/Max sign-in, in Advanced rather than Account', async () => {
-    wrapper = mount(SettingsPanel, {
-      props: { open: true },
-      attachTo: document.body,
-      global: {
-        stubs: {
-          Modal: ModalStub,
-          McpServersPanel: true,
-          Icon: true,
-          // Signed in with a subscription: what the selector is offered for.
-          AuthForm: { ...AuthFormStub, data: () => ({ authStatus: { method: 'oauth', isAuthenticated: true } }) },
-        },
-      },
+    // Signed in with a subscription: what the selector is offered for.
+    fakeElectron({
+      config: configApi,
+      about: { getInfo },
+      auth: { getStatus: vi.fn().mockResolvedValue({ method: 'oauth', isAuthenticated: true }) },
     });
+    wrapper = mountPanel();
     await flushPromises();
 
     const selector = () => wrapper!.find('.settings-execution-mode');
@@ -142,17 +94,17 @@ describe('settings tabs', () => {
     await flushPromises();
 
     expect(tabs(wrapper).map((t) => t.text())).toEqual([
-      'Account', 'Appearance', 'Discussions', 'Tool servers', 'Advanced', 'About',
+      'Account', 'Appearance', 'Discussions', 'Tools', 'Project', 'Advanced', 'About',
     ]);
     expect(selected(wrapper)).toEqual(['Account']);
     expect(shownPages(wrapper)).toEqual(['Account']);
-    expect(wrapper.find('[data-testid="auth-form"]').isVisible()).toBe(true);
+    expect(wrapper.findComponent(AuthForm).isVisible()).toBe(true);
 
     await showTab(wrapper, 'Appearance');
     expect(selected(wrapper)).toEqual(['Appearance']);
     expect(shownPages(wrapper)).toEqual(['Appearance']);
     expect(wrapper.find('#font-size').isVisible()).toBe(true);
-    expect(wrapper.find('[data-testid="auth-form"]').isVisible()).toBe(false);
+    expect(wrapper.findComponent(AuthForm).isVisible()).toBe(false);
   });
 
   it('moves between tabs with the arrow keys, Home and End, wrapping around', async () => {
@@ -175,7 +127,7 @@ describe('settings tabs', () => {
     await key('Home');
     expect(selected(wrapper)).toEqual(['Account']);
     // Only the selected tab is in the tab order.
-    expect(tabs(wrapper).map((t) => t.attributes('tabindex'))).toEqual(['0', '-1', '-1', '-1', '-1', '-1']);
+    expect(tabs(wrapper).map((t) => t.attributes('tabindex'))).toEqual(['0', '-1', '-1', '-1', '-1', '-1', '-1']);
   });
 
   it('opens at the tab a command asked for, once', async () => {
@@ -186,7 +138,7 @@ describe('settings tabs', () => {
     ui.openSettings('tools');
     await wrapper.setProps({ open: true });
     await flushPromises();
-    expect(selected(wrapper)).toEqual(['Tool servers']);
+    expect(selected(wrapper)).toEqual(['Tools']);
     expect(ui.pendingSettingsTab).toBeNull();
 
     // Reopened plainly, it stays where it was left.

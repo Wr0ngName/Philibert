@@ -31,9 +31,10 @@ const mcpApi = {
   getRuntimeInfo: vi.fn(),
   pickExecutable: vi.fn(),
   pickFile: vi.fn(),
-  connectors: vi.fn(),
-  authorizeConnector: vi.fn(),
-  setConnectorEnabled: vi.fn(),
+  globalTools: vi.fn(),
+  setOffEverywhere: vi.fn(),
+  saveUserServer: vi.fn(),
+  removeUserServer: vi.fn(),
 };
 
 function stdioServer(overrides: Partial<McpServerEntry> = {}): McpServerEntry {
@@ -47,12 +48,8 @@ function stdioServer(overrides: Partial<McpServerEntry> = {}): McpServerEntry {
   };
 }
 
-function mountPanel() {
-  return mount(McpServersPanel, {
-    global: {
-      stubs: { Icon: true },
-    },
-  });
+function mountPanel(scope: 'project' | 'user' = 'project') {
+  return mount(McpServersPanel, { props: { scope } });
 }
 
 /** Point the settings store at a project, or at none when null. */
@@ -66,15 +63,8 @@ beforeEach(() => {
   vi.clearAllMocks();
 
   mcpApi.list.mockResolvedValue([]);
-  mcpApi.getRuntimeInfo.mockResolvedValue({
-    platform: 'linux',
-    bundledNodePath: null,
-    configPath: `${PROJECT}/.mcp.json`,
-    approvalsPath: `${PROJECT}/.claude/settings.local.json`,
-  });
+  mcpApi.getRuntimeInfo.mockResolvedValue({ platform: 'linux', bundledNodePath: null });
   mcpApi.checkCommand.mockResolvedValue({ ok: true });
-  mcpApi.connectors.mockResolvedValue([]);
-  mcpApi.authorizeConnector.mockResolvedValue(undefined);
 
   (window as unknown as { electron: unknown }).electron = { mcp: mcpApi };
   setProject(PROJECT);
@@ -96,7 +86,7 @@ describe('project gating', () => {
     await flushPromises();
 
     expect(mcpApi.list).toHaveBeenCalledWith(PROJECT);
-    expect(mcpApi.getRuntimeInfo).toHaveBeenCalledWith(PROJECT);
+    expect(mcpApi.getRuntimeInfo).toHaveBeenCalled();
   });
 });
 
@@ -105,7 +95,7 @@ describe('server list', () => {
     const wrapper = mountPanel();
     await flushPromises();
 
-    expect(wrapper.text()).toContain('No tool servers yet');
+    expect(wrapper.text()).toContain('No tool servers in this project');
   });
 
   it('lists a server with its command and on/off state', async () => {
@@ -186,9 +176,9 @@ describe('adding a server', () => {
     mcpApi.save.mockResolvedValue([stdioServer()]);
     const wrapper = await openForm();
 
-    await wrapper.find('#mcp-name').setValue('gsc');
-    await wrapper.find('#mcp-command').setValue('/opt/gsc-mcp');
-    await wrapper.find('#mcp-args').setValue('--verbose\n\n--port 80');
+    await wrapper.find('#mcp-project-name').setValue('gsc');
+    await wrapper.find('#mcp-project-command').setValue('/opt/gsc-mcp');
+    await wrapper.find('#mcp-project-args').setValue('--verbose\n\n--port 80');
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
@@ -205,8 +195,8 @@ describe('adding a server', () => {
     mcpApi.save.mockResolvedValue([stdioServer()]);
     const wrapper = await openForm();
 
-    await wrapper.find('#mcp-name').setValue('gsc');
-    await wrapper.find('#mcp-command').setValue('/opt/gsc-mcp');
+    await wrapper.find('#mcp-project-name').setValue('gsc');
+    await wrapper.find('#mcp-project-command').setValue('/opt/gsc-mcp');
     await wrapper.findAll('button').find((b) => b.text().includes('Add a variable'))!
       .trigger('click');
     await flushPromises();
@@ -234,9 +224,9 @@ describe('adding a server', () => {
       .trigger('click');
     await flushPromises();
 
-    expect(wrapper.find('#mcp-command').exists()).toBe(false);
-    await wrapper.find('#mcp-name').setValue('remote');
-    await wrapper.find('#mcp-url').setValue('https://example.com/mcp');
+    expect(wrapper.find('#mcp-project-command').exists()).toBe(false);
+    await wrapper.find('#mcp-project-name').setValue('remote');
+    await wrapper.find('#mcp-project-url').setValue('https://example.com/mcp');
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
@@ -256,7 +246,7 @@ describe('adding a server', () => {
     });
     const wrapper = await openForm();
 
-    await wrapper.find('#mcp-command').setValue('npx');
+    await wrapper.find('#mcp-project-command').setValue('npx');
     await flushPromises();
 
     expect(mcpApi.checkCommand).toHaveBeenCalledWith('npx');
@@ -272,8 +262,8 @@ describe('adding a server', () => {
     });
     const wrapper = await openForm();
 
-    await wrapper.find('#mcp-name').setValue('gsc');
-    await wrapper.find('#mcp-command').setValue('/gone/missing');
+    await wrapper.find('#mcp-project-name').setValue('gsc');
+    await wrapper.find('#mcp-project-command').setValue('/gone/missing');
     await flushPromises();
 
     const add = wrapper.findAll('button').find((b) => b.text() === 'Add')!;
@@ -292,14 +282,14 @@ describe('adding a server', () => {
     });
     const wrapper = await openForm();
 
-    await wrapper.find('#mcp-name').setValue('gsc');
-    await wrapper.find('#mcp-command').setValue('/gone/missing');
+    await wrapper.find('#mcp-project-name').setValue('gsc');
+    await wrapper.find('#mcp-project-command').setValue('/gone/missing');
     await flushPromises();
     expect(wrapper.findAll('button').find((b) => b.text() === 'Add')!.attributes('disabled'))
       .toBeDefined();
 
     mcpApi.checkCommand.mockResolvedValue({ ok: true });
-    await wrapper.find('#mcp-command').setValue('/opt/gsc-mcp');
+    await wrapper.find('#mcp-project-command').setValue('/opt/gsc-mcp');
     await flushPromises();
 
     expect(wrapper.findAll('button').find((b) => b.text() === 'Add')!.attributes('disabled'))
@@ -316,13 +306,13 @@ describe('adding a server', () => {
     mcpApi.save.mockResolvedValue([]);
     const wrapper = await openForm();
 
-    await wrapper.find('#mcp-command').setValue('/gone/missing');
+    await wrapper.find('#mcp-project-command').setValue('/gone/missing');
     await flushPromises();
 
     await wrapper.findAll('button').find((b) => b.text().includes('A web address'))!
       .trigger('click');
-    await wrapper.find('#mcp-name').setValue('remote');
-    await wrapper.find('#mcp-url').setValue('https://example.com/mcp');
+    await wrapper.find('#mcp-project-name').setValue('remote');
+    await wrapper.find('#mcp-project-url').setValue('https://example.com/mcp');
     await flushPromises();
 
     await wrapper.find('form').trigger('submit');
@@ -338,7 +328,7 @@ describe('adding a server', () => {
     await wrapper.findAll('button').find((b) => b.text() === 'Browse…')!.trigger('click');
     await flushPromises();
 
-    expect((wrapper.find('#mcp-command').element as HTMLInputElement).value)
+    expect((wrapper.find('#mcp-project-command').element as HTMLInputElement).value)
       .toBe('/picked/server');
   });
 
@@ -348,13 +338,13 @@ describe('adding a server', () => {
     );
     const wrapper = await openForm();
 
-    await wrapper.find('#mcp-name').setValue('gsc');
-    await wrapper.find('#mcp-command').setValue('/opt/gsc-mcp');
+    await wrapper.find('#mcp-project-name').setValue('gsc');
+    await wrapper.find('#mcp-project-command').setValue('/opt/gsc-mcp');
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
     expect(wrapper.find('form').exists()).toBe(true);
-    expect((wrapper.find('#mcp-name').element as HTMLInputElement).value).toBe('gsc');
+    expect((wrapper.find('#mcp-project-name').element as HTMLInputElement).value).toBe('gsc');
     // The main process message is shown without Electron's IPC wrapper text.
     expect(wrapper.text()).toContain('A server named "gsc" already exists in this project.');
     expect(wrapper.text()).not.toContain('Error invoking remote method');
@@ -364,8 +354,8 @@ describe('adding a server', () => {
     mcpApi.save.mockResolvedValue([stdioServer()]);
     const wrapper = await openForm();
 
-    await wrapper.find('#mcp-name').setValue('gsc');
-    await wrapper.find('#mcp-command').setValue('/opt/gsc-mcp');
+    await wrapper.find('#mcp-project-name').setValue('gsc');
+    await wrapper.find('#mcp-project-command').setValue('/opt/gsc-mcp');
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
@@ -384,11 +374,11 @@ describe('editing a server', () => {
     await wrapper.find('button[title="Edit"]').trigger('click');
     await flushPromises();
 
-    expect((wrapper.find('#mcp-name').element as HTMLInputElement).value).toBe('gsc');
-    expect((wrapper.find('#mcp-command').element as HTMLInputElement).value)
+    expect((wrapper.find('#mcp-project-name').element as HTMLInputElement).value).toBe('gsc');
+    expect((wrapper.find('#mcp-project-command').element as HTMLInputElement).value)
       .toBe('/opt/gsc-mcp');
 
-    await wrapper.find('#mcp-name').setValue('renamed');
+    await wrapper.find('#mcp-project-name').setValue('renamed');
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
@@ -405,8 +395,6 @@ describe('bundled Node helper', () => {
     mcpApi.getRuntimeInfo.mockResolvedValue({
       platform: 'win32',
       bundledNodePath: 'C:\\Philibert\\resources\\node.exe',
-      configPath: `${PROJECT}/.mcp.json`,
-      approvalsPath: `${PROJECT}/.claude/settings.local.json`,
     });
     const wrapper = mountPanel();
     await flushPromises();
@@ -420,7 +408,7 @@ describe('bundled Node helper', () => {
     await helper!.trigger('click');
     await flushPromises();
 
-    expect((wrapper.find('#mcp-command').element as HTMLInputElement).value)
+    expect((wrapper.find('#mcp-project-command').element as HTMLInputElement).value)
       .toBe('C:\\Philibert\\resources\\node.exe');
   });
 
@@ -434,103 +422,77 @@ describe('bundled Node helper', () => {
   });
 });
 
-describe('claude.ai connectors', () => {
-  const GMAIL = 'claude.ai Gmail';
+/**
+ * The same panel for the user-wide servers: no project needed, written
+ * through Claude Code's own commands, and on or off everywhere rather than
+ * per project.
+ */
+describe('user-wide servers', () => {
+  const tools = (userServers: McpServerEntry[], offEverywhere: string[] = []) => ({ statuses: [], userServers, offEverywhere });
 
-  /** The connector rows, as name and status. */
-  function connectorRows(wrapper: ReturnType<typeof mountPanel>): string[] {
-    return wrapper.findAll('.connector').map((row) =>
-      `${row.find('.text-sm').text()}: ${row.find('.connector-status').text()}`);
+  beforeEach(() => {
+    mcpApi.globalTools.mockResolvedValue(tools([]));
+  });
+
+  async function mountUser(userServers: McpServerEntry[] = []) {
+    mcpApi.globalTools.mockResolvedValue(tools(userServers));
+    const wrapper = mountPanel('user');
+    // What the Tools page does when it opens.
+    const { useMcpStore } = await import('../../../stores/mcp');
+    await useMcpStore().checkGlobalTools();
+    await flushPromises();
+    return wrapper;
   }
 
-  function connectorButton(wrapper: ReturnType<typeof mountPanel>, name: string, label: string) {
-    const button = wrapper.find(`[data-connector="${name}"]`).findAll('button').find((b) => b.text() === label);
-    expect(button, `expected a ${label} button for ${name}`).toBeDefined();
-    return button!;
-  }
+  it('needs no project, and says they are in every project', async () => {
+    setProject(null);
+    const wrapper = await mountUser();
 
-  it('lists each with how it stands, checked in the project', async () => {
-    mcpApi.connectors.mockResolvedValue([
-      { name: 'claude.ai Claude Docs', status: 'connected', toolCount: 8 },
-      { name: GMAIL, status: 'needs-auth' },
-      { name: 'claude.ai Asana', status: 'failed', error: 'Server returned 500' },
-      { name: 'claude.ai Drive', status: 'disabled' },
-    ]);
-    const wrapper = mountPanel();
-    await flushPromises();
-
-    expect(mcpApi.connectors).toHaveBeenCalledWith(PROJECT);
-    expect(connectorRows(wrapper)).toEqual([
-      'Claude Docs: Connected',
-      'Gmail: Needs authorising',
-      'Asana: Failed',
-      'Drive: Off in this project',
-    ]);
-    expect(wrapper.text()).toContain('8 tools for Claude');
-    expect(wrapper.text()).toContain('Server returned 500');
+    expect(wrapper.text()).not.toContain('Choose a project folder first');
+    expect(wrapper.text()).toContain('Servers available in every project');
+    expect(wrapper.text()).toContain('No tool servers of your own yet');
+    expect(mcpApi.list).not.toHaveBeenCalled();
   });
 
-  it('authorises one on claude.ai, then says what is left to do until checked again', async () => {
-    mcpApi.connectors.mockResolvedValue([{ name: GMAIL, status: 'needs-auth' }]);
-    const wrapper = mountPanel();
+  it('adds one as a user-wide server, with ids of its own beside the project form', async () => {
+    mcpApi.saveUserServer.mockResolvedValue([stdioServer()]);
+    const wrapper = await mountUser();
+
+    await wrapper.findAll('button').find((b) => b.text().includes('Add server'))!.trigger('click');
+    await wrapper.find('#mcp-user-name').setValue('gsc');
+    await wrapper.find('#mcp-user-command').setValue('/opt/gsc-mcp');
+    await flushPromises();
+    await wrapper.find('form').trigger('submit');
     await flushPromises();
 
-    await connectorButton(wrapper, GMAIL, 'Authorise').trigger('click');
-    await flushPromises();
-
-    expect(mcpApi.authorizeConnector).toHaveBeenCalledWith(PROJECT, GMAIL);
-    expect(wrapper.text()).toContain('Finish on the claude.ai page that opened in your browser');
-
-    mcpApi.connectors.mockResolvedValue([{ name: GMAIL, status: 'connected', toolCount: 3 }]);
-    await wrapper.findAll('button').find((b) => b.text() === 'Check again')!.trigger('click');
-    await flushPromises();
-
-    expect(connectorRows(wrapper)).toEqual(['Gmail: Connected']);
-    expect(wrapper.text()).not.toContain('Finish on the claude.ai page');
+    expect(mcpApi.saveUserServer).toHaveBeenCalledWith(null, { name: 'gsc', transport: 'stdio', command: '/opt/gsc-mcp', args: [], env: undefined });
+    expect(mcpApi.save).not.toHaveBeenCalled();
+    expect(wrapper.find('#mcp-project-name').exists()).toBe(false);
   });
 
-  it('turns one off for the project, and back on', async () => {
-    mcpApi.connectors.mockResolvedValue([{ name: GMAIL, status: 'needs-auth' }]);
-    mcpApi.setConnectorEnabled.mockResolvedValue([{ name: GMAIL, status: 'disabled' }]);
-    const wrapper = mountPanel();
+  it('turns one off everywhere, and says so', async () => {
+    mcpApi.setOffEverywhere.mockResolvedValue(tools([stdioServer({ enabled: false })], ['gsc']));
+    const wrapper = await mountUser([stdioServer()]);
+
+    await wrapper.findAll('button').find((b) => b.text() === 'Turn off everywhere')!.trigger('click');
     await flushPromises();
 
-    await connectorButton(wrapper, GMAIL, 'Turn off').trigger('click');
-    await flushPromises();
-    expect(mcpApi.setConnectorEnabled).toHaveBeenCalledWith(PROJECT, GMAIL, false);
-    expect(connectorRows(wrapper)).toEqual(['Gmail: Off in this project']);
-
-    mcpApi.setConnectorEnabled.mockResolvedValue([{ name: GMAIL, status: 'needs-auth' }]);
-    await connectorButton(wrapper, GMAIL, 'Turn on').trigger('click');
-    await flushPromises();
-    expect(mcpApi.setConnectorEnabled).toHaveBeenLastCalledWith(PROJECT, GMAIL, true);
+    expect(mcpApi.setOffEverywhere).toHaveBeenCalledWith('gsc', true);
+    expect(mcpApi.setEnabled).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain('Off everywhere');
+    expect(wrapper.text()).toContain('Turn on');
   });
 
-  it('asks to sign in when no session can start, and says when there are none', async () => {
-    mcpApi.connectors.mockResolvedValue(null);
-    let wrapper = mountPanel();
-    await flushPromises();
-    expect(wrapper.text()).toContain('Sign in to Claude to see the connectors of your claude.ai account.');
-    wrapper.unmount();
+  it('asks before removing one from every project', async () => {
+    mcpApi.removeUserServer.mockResolvedValue([]);
+    const wrapper = await mountUser([stdioServer()]);
 
-    mcpApi.connectors.mockResolvedValue([]);
-    wrapper = mountPanel();
-    await flushPromises();
-    expect(wrapper.text()).toContain('No claude.ai connectors.');
-  });
-
-  it('shows why an action failed', async () => {
-    mcpApi.connectors.mockResolvedValue([{ name: GMAIL, status: 'needs-auth' }]);
-    mcpApi.authorizeConnector.mockRejectedValue(
-      new Error("Error invoking remote method 'mcp:connector-authorize': Error: Claude Code gave no claude.ai page to authorise claude.ai Gmail."),
-    );
-    const wrapper = mountPanel();
+    await wrapper.find('button[title="Remove"]').trigger('click');
+    expect(wrapper.text()).toContain('Remove “gsc” from every project?');
+    await wrapper.findAll('button').find((b) => b.text() === 'Remove')!.trigger('click');
     await flushPromises();
 
-    await connectorButton(wrapper, GMAIL, 'Authorise').trigger('click');
-    await flushPromises();
-
-    expect(wrapper.text()).toContain('Claude Code gave no claude.ai page to authorise claude.ai Gmail.');
-    expect(wrapper.text()).not.toContain('Error invoking remote method');
+    expect(mcpApi.removeUserServer).toHaveBeenCalledWith('gsc');
+    expect(mcpApi.remove).not.toHaveBeenCalled();
   });
 });

@@ -3,37 +3,27 @@
  * says Claude has finished — once everything is done, or at each reply and
  * each background task.
  *
- * `window.electron` is the process boundary, so it is what is mocked; the
- * settings store runs for real. The modal and the panels beside this one are
- * stubbed: this is about the notification section and what Save sends.
+ * The dialog is real; only the preload API is faked (support/settings-boundary).
  */
 
-import { mount, flushPromises } from '@vue/test-utils';
+import { flushPromises } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { defineComponent, h } from 'vue';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import { DEFAULT_CONFIG } from '@shared/types';
 
 import { useSettingsStore } from '../../../stores/settings';
-import SettingsPanel from '../SettingsPanel.vue';
+
+import { fakeElectron, mountSettings } from './support/settings-boundary';
 
 const configApi = { set: vi.fn() };
 
-/** Renders the modal's body and footer in place, so they can be clicked. */
-const ModalStub = defineComponent({
-  setup(_, { slots }) {
-    return () => h('div', [slots.default?.(), slots.footer?.()]);
-  },
-});
+const mounted: ReturnType<typeof mountSettings>[] = [];
 
 function mountPanel() {
-  return mount(SettingsPanel, {
-    props: { open: true },
-    global: {
-      stubs: { Modal: ModalStub, AuthForm: true, McpServersPanel: true, Icon: true },
-    },
-  });
+  const wrapper = mountSettings();
+  mounted.push(wrapper);
+  return wrapper;
 }
 
 function choices(wrapper: ReturnType<typeof mountPanel>) {
@@ -57,11 +47,14 @@ beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
   configApi.set.mockResolvedValue(undefined);
-  (window as unknown as { electron: unknown }).electron = {
+  fakeElectron({
     config: configApi,
-    speech: { getAvailability: async () => ({ available: false, downloadedModels: [] }) },
-  };
+  });
   useSettingsStore().config = { ...DEFAULT_CONFIG };
+});
+
+afterEach(() => {
+  for (const wrapper of mounted.splice(0)) wrapper.unmount();
 });
 
 describe('completion notifications', () => {

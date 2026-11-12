@@ -1,110 +1,179 @@
 /**
- * MCP store - manages the tool servers declared by the active project.
+ * MCP store — the tools Claude can use, at the two levels Claude Code has:
  *
- * All filesystem work happens in the main process (McpConfigService); this
- * store only holds the list and the last error so the settings panel can stay
- * declarative. Every mutating call resolves with the refreshed list, so there
- * is never a separate reload round-trip that could show stale state.
+ *  - every project: the claude.ai connectors and the user-wide servers,
+ *    each on, or off everywhere (Settings → Tools);
+ *  - one project: its own servers (`.mcp.json`), and the tools every project
+ *    has, each of which it can turn off for itself (Settings → Project) —
+ *    but not back on when it is off everywhere: that wins.
+ *
+ * All file work happens in the main process (McpConfigService, mcp-global-off,
+ * Claude Code's own commands); this store holds what came back and the last
+ * error, so the panels can stay declarative. Every change resolves with the
+ * refreshed state, so there is never a separate reload that could show stale
+ * state.
  */
 
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 
-import type { ClaudeAiConnector, McpCommandCheck, McpRuntimeInfo, McpServerEntry, McpServerInput } from '@shared/types';
+import type {
+  GlobalTools,
+  McpCommandCheck,
+  McpRuntimeInfo,
+  McpServerEntry,
+  McpServerInput,
+  ProjectTools,
+} from '@shared/types';
 
 import { logger } from '../utils/logger';
 
 import { useSettingsStore } from './settings';
 
+/** Which servers a list or form is about: the project's own, or the user-wide ones. */
+export type McpScope = 'project' | 'user';
+
+/**
+ * A main-process error as the user should read it: its message is written
+ * for them, but Electron prefixes it with "Error invoking remote method …".
+ */
+function userMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(?:\w*Error):\s*/, '');
+}
+
 export const useMcpStore = defineStore('mcp', () => {
-  const servers = ref<McpServerEntry[]>([]);
+  const settingsStore = useSettingsStore();
+
+  // ============================================
+  // The project being set up
+  // ============================================
+
+  /**
+   * The folder Settings → Project is about: one picked there, or else the
+   * app's working folder — the open discussion's.
+   */
+  const pickedProject = ref<string | null>(null);
+  const projectDir = computed(() => pickedProject.value ?? (settingsStore.workingDirectory || null));
+  const hasProject = computed(() => !!projectDir.value);
+
+  /** Folders to pick from: the working folder and the recent ones, each once. */
+  const projectChoices = computed(() => {
+    const choices = [settingsStore.workingDirectory, ...settingsStore.config.recentProjects, pickedProject.value];
+    return [...new Set(choices.filter((dir): dir is string => !!dir))];
+  });
+
+  /** Set up another folder; null goes back to the working folder. */
+  function pickProject(dir: string | null): void {
+    pickedProject.value = dir;
+  }
+
+  function requireProject(): string {
+    if (!projectDir.value) throw new Error('Choose a project folder first.');
+    return projectDir.value;
+  }
+
+  // ============================================
+  // Server lists and the form they share
+  // ============================================
+
+  // Each list — the project's servers, the user-wide ones — and what is going on with it.
+  const projectServers = ref<McpServerEntry[]>([]);
+  const projectLoading = ref(false);
+  const projectSaving = ref(false);
+  const projectError = ref<string | null>(null);
+  const userServers = ref<McpServerEntry[]>([]);
+  const userSaving = ref(false);
+  const userError = ref<string | null>(null);
+  const lists = {
+    project: { servers: projectServers, isSaving: projectSaving, error: projectError },
+    user: { servers: userServers, isSaving: userSaving, error: userError },
+  };
+
   const runtimeInfo = ref<McpRuntimeInfo | null>(null);
-  const isLoading = ref(false);
-  const isSaving = ref(false);
-  const error = ref<string | null>(null);
-
-  const hasProject = computed(() => !!useSettingsStore().workingDirectory);
-  const enabledCount = computed(() => servers.value.filter((s) => s.enabled).length);
-  /** Servers whose command cannot run — surfaced as a warning in the list. */
-  const brokenServers = computed(() =>
-    servers.value.filter((s) => s.check && !s.check.ok)
-  );
 
   /**
-   * A main-process error as the user should read it: its message is written
-   * for them, but Electron prefixes it with "Error invoking remote method …".
-   */
-  function userMessage(err: unknown): string {
-    const raw = err instanceof Error ? err.message : String(err);
-    return raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(?:\w*Error):\s*/, '');
-  }
-
-  function projectDir(): string {
-    const dir = useSettingsStore().workingDirectory;
-    if (!dir) throw new Error('Choose a project folder before adding tool servers.');
-    return dir;
-  }
-
-  /**
-   * Run an operation against the main process, funnelling failures into
-   * `error` so callers can stay free of try/catch.
+   * Run a change to a server list against the main process, funnelling
+   * failures into that list's `error` so callers stay free of try/catch.
    *
-   * @returns true when the operation succeeded.
+   * @returns true when it succeeded.
    */
-  async function run(
-    label: string,
-    operation: () => Promise<McpServerEntry[]>
-  ): Promise<boolean> {
-    isSaving.value = true;
-    error.value = null;
+  async function run(scope: McpScope, label: string, operation: () => Promise<McpServerEntry[]>): Promise<boolean> {
+    const list = lists[scope];
+    list.isSaving.value = true;
+    list.error.value = null;
     try {
-      servers.value = await operation();
+      list.servers.value = await operation();
       return true;
     } catch (err) {
-      error.value = userMessage(err);
-      logger.error(`MCP ${label} failed`, err);
+      list.error.value = userMessage(err);
+      logger.error(`MCP ${scope} ${label} failed`, err);
       return false;
     } finally {
-      isSaving.value = false;
+      list.isSaving.value = false;
     }
   }
 
-  async function load(): Promise<void> {
-    if (!hasProject.value) {
-      servers.value = [];
-      runtimeInfo.value = null;
+  async function loadRuntimeInfo(): Promise<void> {
+    if (runtimeInfo.value) return;
+    try {
+      runtimeInfo.value = await window.electron.mcp.getRuntimeInfo();
+    } catch (err) {
+      logger.error('MCP runtime info failed', err);
+    }
+  }
+
+  /** Read the project's own servers. */
+  async function loadProject(): Promise<void> {
+    void loadRuntimeInfo();
+    if (!projectDir.value) {
+      projectServers.value = [];
       return;
     }
-
-    isLoading.value = true;
-    error.value = null;
+    projectLoading.value = true;
+    projectError.value = null;
     try {
-      const dir = projectDir();
-      const [list, info] = await Promise.all([
-        window.electron.mcp.list(dir),
-        window.electron.mcp.getRuntimeInfo(dir),
-      ]);
-      servers.value = list;
-      runtimeInfo.value = info;
+      projectServers.value = await window.electron.mcp.list(projectDir.value);
     } catch (err) {
-      error.value = userMessage(err);
-      logger.error('MCP load failed', err);
+      projectError.value = userMessage(err);
+      logger.error('MCP project load failed', err);
     } finally {
-      isLoading.value = false;
+      projectLoading.value = false;
     }
   }
 
   /** Create a server, or update `previousName` when editing. */
-  function save(previousName: string | null, server: McpServerInput): Promise<boolean> {
-    return run('save', () => window.electron.mcp.save(projectDir(), previousName, server));
+  function save(scope: McpScope, previousName: string | null, server: McpServerInput): Promise<boolean> {
+    return scope === 'project'
+      ? run(scope, 'save', () => window.electron.mcp.save(requireProject(), previousName, server))
+      : run(scope, 'save', async () => {
+        const servers = await window.electron.mcp.saveUserServer(previousName, server);
+        void checkGlobalTools();
+        return servers;
+      });
   }
 
-  function remove(name: string): Promise<boolean> {
-    return run('remove', () => window.electron.mcp.remove(projectDir(), name));
+  function remove(scope: McpScope, name: string): Promise<boolean> {
+    return scope === 'project'
+      ? run(scope, 'remove', () => window.electron.mcp.remove(requireProject(), name))
+      : run(scope, 'remove', async () => {
+        const servers = await window.electron.mcp.removeUserServer(name);
+        void checkGlobalTools();
+        return servers;
+      });
   }
 
-  function setEnabled(name: string, enabled: boolean): Promise<boolean> {
-    return run('setEnabled', () => window.electron.mcp.setEnabled(projectDir(), name, enabled));
+  /** A project server on or off (its approval); a user-wide one on or off everywhere. */
+  async function setEnabled(scope: McpScope, name: string, enabled: boolean): Promise<boolean> {
+    if (scope === 'project') {
+      return run(scope, 'setEnabled', () => window.electron.mcp.setEnabled(requireProject(), name, enabled));
+    }
+    await setOffEverywhere(name, !enabled);
+    return globalError.value === null;
+  }
+
+  function clearError(scope: McpScope): void {
+    lists[scope].error.value = null;
   }
 
   /** Live validation for the command field; never throws. */
@@ -136,109 +205,154 @@ export const useMcpStore = defineStore('mcp', () => {
     }
   }
 
-  function clearError(): void {
-    error.value = null;
-  }
-
   // ============================================
-  // claude.ai connectors
+  // The tools every project has
   // ============================================
 
-  /** The account's connectors as this project sees them; null before the first check. */
-  const connectors = ref<ClaudeAiConnector[] | null>(null);
-  /** Whether a session could be started to check them at all — no sign-in, no session. */
-  const connectorsAvailable = ref(true);
-  const isCheckingConnectors = ref(false);
-  /** The connector an action is running for. */
-  const connectorBusy = ref<string | null>(null);
+  /** As they stand; null before the first check. */
+  const globalTools = ref<GlobalTools | null>(null);
+  const isCheckingGlobal = ref(false);
+  /** The tool an action is running for, on either page. */
+  const toolBusy = ref<string | null>(null);
   /**
    * Connectors whose claude.ai page was opened. Says what is left to do for
    * as long as one still needs authorising.
    */
   const connectorsAuthorising = ref<string[]>([]);
-  const connectorsError = ref<string | null>(null);
+  const globalError = ref<string | null>(null);
 
-  function takeConnectors(list: ClaudeAiConnector[] | null): void {
-    connectorsAvailable.value = list !== null;
-    connectors.value = list ?? [];
+  function takeGlobalTools(tools: GlobalTools): void {
+    globalTools.value = tools;
+    userServers.value = tools.userServers;
   }
 
   /**
-   * Ask how the connectors stand. It starts a Claude Code session that runs
-   * nothing, which takes a few seconds; open conversations are brought up to
-   * date with any connector authorised since they started.
+   * Ask how they stand. It starts a Claude Code session that runs nothing,
+   * which takes a few seconds; open conversations are brought up to date
+   * with any connector authorised since they started.
    */
-  async function checkConnectors(): Promise<void> {
-    if (!hasProject.value) {
-      connectors.value = null;
-      return;
-    }
-    isCheckingConnectors.value = true;
-    connectorsError.value = null;
+  async function checkGlobalTools(): Promise<void> {
+    void loadRuntimeInfo();
+    isCheckingGlobal.value = true;
+    globalError.value = null;
     try {
-      takeConnectors(await window.electron.mcp.connectors(projectDir()));
+      takeGlobalTools(await window.electron.mcp.globalTools());
     } catch (err) {
-      connectorsError.value = userMessage(err);
-      logger.error('Checking the claude.ai connectors failed', err);
+      globalError.value = userMessage(err);
+      logger.error('Checking the tools every project has failed', err);
     } finally {
-      isCheckingConnectors.value = false;
+      isCheckingGlobal.value = false;
+    }
+  }
+
+  /** Turn one off everywhere, or back on. */
+  async function setOffEverywhere(name: string, off: boolean): Promise<void> {
+    toolBusy.value = name;
+    globalError.value = null;
+    try {
+      takeGlobalTools(await window.electron.mcp.setOffEverywhere(name, off));
+    } catch (err) {
+      globalError.value = userMessage(err);
+      logger.error('Turning a tool off everywhere failed', err);
+    } finally {
+      toolBusy.value = null;
     }
   }
 
   /** Open the claude.ai page that authorises a connector. */
   async function authorizeConnector(name: string): Promise<void> {
-    connectorBusy.value = name;
-    connectorsError.value = null;
+    toolBusy.value = name;
+    globalError.value = null;
     try {
-      await window.electron.mcp.authorizeConnector(projectDir(), name);
+      await window.electron.mcp.authorizeConnector(name);
       if (!connectorsAuthorising.value.includes(name)) connectorsAuthorising.value.push(name);
     } catch (err) {
-      connectorsError.value = userMessage(err);
+      globalError.value = userMessage(err);
       logger.error('Authorising a claude.ai connector failed', err);
     } finally {
-      connectorBusy.value = null;
+      toolBusy.value = null;
     }
   }
 
-  /** Turn a connector on or off for this project. */
-  async function setConnectorEnabled(name: string, enabled: boolean): Promise<void> {
-    connectorBusy.value = name;
-    connectorsError.value = null;
+  // ============================================
+  // …as the project being set up has them
+  // ============================================
+
+  /** As the project has them; null before the first check. */
+  const projectTools = ref<ProjectTools | null>(null);
+  const isCheckingProject = ref(false);
+  const projectToolsError = ref<string | null>(null);
+
+  /** Ask how the project has them; starts a Claude Code session in it, as above. */
+  async function checkProjectTools(): Promise<void> {
+    if (!projectDir.value) {
+      projectTools.value = null;
+      return;
+    }
+    isCheckingProject.value = true;
+    projectToolsError.value = null;
     try {
-      takeConnectors(await window.electron.mcp.setConnectorEnabled(projectDir(), name, enabled));
+      projectTools.value = await window.electron.mcp.projectTools(projectDir.value);
     } catch (err) {
-      connectorsError.value = userMessage(err);
-      logger.error('Turning a claude.ai connector on or off failed', err);
+      projectToolsError.value = userMessage(err);
+      logger.error("Checking the project's tools failed", err);
     } finally {
-      connectorBusy.value = null;
+      isCheckingProject.value = false;
     }
   }
+
+  /** Turn one on or off in the project. */
+  async function setEnabledInProject(name: string, enabled: boolean): Promise<void> {
+    toolBusy.value = name;
+    projectToolsError.value = null;
+    try {
+      projectTools.value = await window.electron.mcp.setEnabledInProject(requireProject(), name, enabled);
+    } catch (err) {
+      projectToolsError.value = userMessage(err);
+      logger.error('Turning a tool on or off in a project failed', err);
+    } finally {
+      toolBusy.value = null;
+    }
+  }
+
+  // Another project, another state: what was read is not this one's.
+  watch(projectDir, () => {
+    projectTools.value = null;
+  });
 
   return {
-    servers,
-    runtimeInfo,
-    isLoading,
-    isSaving,
-    error,
+    projectDir,
     hasProject,
-    enabledCount,
-    brokenServers,
-    load,
+    projectChoices,
+    pickProject,
+    projectServers,
+    projectLoading,
+    projectSaving,
+    projectError,
+    userServers,
+    userSaving,
+    userError,
+    runtimeInfo,
+    loadProject,
     save,
     remove,
     setEnabled,
+    clearError,
     checkCommand,
     pickExecutable,
     pickFile,
-    clearError,
-    connectors,
-    connectorsAvailable,
-    isCheckingConnectors,
-    connectorBusy,
+    globalTools,
+    isCheckingGlobal,
+    toolBusy,
     connectorsAuthorising,
-    connectorsError,
-    checkConnectors,
+    globalError,
+    checkGlobalTools,
+    setOffEverywhere,
     authorizeConnector,
-    setConnectorEnabled,
+    projectTools,
+    isCheckingProject,
+    projectToolsError,
+    checkProjectTools,
+    setEnabledInProject,
   };
 });

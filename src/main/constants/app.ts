@@ -15,6 +15,8 @@ export const MAIN_CONSTANTS = {
     OAUTH_TIMEOUT_MS: 600000,
     /** Time to wait for OAuth URL to appear in CLI output - 30 seconds */
     OAUTH_URL_DETECTION_TIMEOUT_MS: 30000,
+    /** Longest a `claude` command run to its end may take (AuthService.runCli) - 30 seconds */
+    CLI_COMMAND_TIMEOUT_MS: 30000,
     /** Delay before considering OAuth URL ready - 3 seconds */
     OAUTH_URL_DETECTION_DELAY_MS: 3000,
     /** OAuth completion timeout - 45 seconds (90 attempts * 500ms) */

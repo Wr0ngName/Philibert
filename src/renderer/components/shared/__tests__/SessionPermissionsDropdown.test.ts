@@ -18,6 +18,7 @@ vi.mock('../../../utils/logger', () => ({
 import { useChatStore } from '../../../stores/chat';
 import { useConversationsStore } from '../../../stores/conversations';
 import { useSettingsStore } from '../../../stores/settings';
+import { useUiStore } from '../../../stores/ui';
 import SessionPermissionsDropdown from '../SessionPermissionsDropdown.vue';
 
 const PROJECT = '/home/user/project';
@@ -37,9 +38,7 @@ let revokeProjectPermission: ReturnType<typeof vi.fn>;
 let emitFileChanges: (changes: FileChange[]) => void;
 
 async function mountOpen() {
-  const wrapper = mount(SessionPermissionsDropdown, {
-    global: { stubs: { TransitionFade: { template: '<div><slot /></div>' } } },
-  });
+  const wrapper = mount(SessionPermissionsDropdown);
   await flushPromises();
   await wrapper.find('button').trigger('click');
   await flushPromises();
@@ -140,5 +139,17 @@ describe('SessionPermissionsDropdown project permissions', () => {
     await flushPromises();
 
     expect(getProjectPermissions).toHaveBeenCalledWith('/home/user/other');
+  });
+
+  it("opens Project settings, where all of this project's own settings are", async () => {
+    const wrapper = await mountOpen();
+
+    await wrapper.find('[data-testid="open-project-settings"]').trigger('click');
+    await flushPromises();
+
+    const ui = useUiStore();
+    expect(ui.showSettings).toBe(true);
+    expect(ui.pendingSettingsTab).toBe('project');
+    expect(wrapper.find('[data-testid="open-project-settings"]').exists()).toBe(false);
   });
 });

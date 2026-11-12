@@ -120,6 +120,12 @@ vi.mock('fs', () => ({
   writeFileSync: vi.fn(),
 }));
 
+// The app's own folders: Electron's app is not there in tests.
+vi.mock('../../utils/paths', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/paths')>()),
+  getUserDataPath: () => '/user-data',
+}));
+
 // Mock ipc-helpers
 vi.mock('../../utils/ipc-helpers', () => ({
   createSender: vi.fn(() => mockSend),
@@ -3292,15 +3298,21 @@ describe('ClaudeCodeService', () => {
     });
 
     /**
-     * The claude.ai connectors in Settings: how each stands, authorising one
-     * on claude.ai, and turning one off for a project. Statuses are shaped as
+     * The tools every project has, in Settings: the claude.ai connectors and
+     * the user-wide servers — how each stands, authorising a connector on
+     * claude.ai, and turning one off for a project. Statuses are shaped as
      * mcpServerStatus() gave them on CLI 2.1.280.
      */
-    describe('the claude.ai connectors', () => {
+    describe('the tools every project has', () => {
       const PROJECT = '/home/user/project';
+      /** Where they are read when no project is in question. */
+      const TOOLS_CHECK = '/user-data/tools-check';
 
       function connector(name: string, status: string, extra: Record<string, unknown> = {}) {
         return { name: `claude.ai ${name}`, status, scope: 'claudeai', source: 'claudeai', config: { type: 'claudeai-proxy' }, ...extra };
+      }
+      function userServer(name: string, status: string, extra: Record<string, unknown> = {}) {
+        return { name, status, scope: 'user', source: 'user', config: { type: 'stdio' }, ...extra };
       }
       const projectServer = { name: 'gsc', status: 'connected', scope: 'project', source: 'project', config: { type: 'stdio' } };
 
@@ -3314,23 +3326,48 @@ describe('ClaudeCodeService', () => {
         };
       }
 
-      it("lists the account's connectors once the CLI has fetched and tried them, and no other server", async () => {
+      it("lists the account's connectors once fetched and tried, and the user-wide servers — no other — in the app's own folder", async () => {
         mockQuery.mockReturnValue(statusQuery([
-          [],
-          [projectServer, connector('Claude Docs', 'pending'), connector('Gmail', 'needs-auth')],
-          [projectServer, connector('Claude Docs', 'connected', { tools: [{ name: 'read' }, { name: 'create' }] }), connector('Gmail', 'needs-auth')],
+          [userServer('notes', 'pending')],
+          [projectServer, userServer('notes', 'connected'), connector('Claude Docs', 'pending'), connector('Gmail', 'needs-auth')],
+          [projectServer, userServer('notes', 'connected', { tools: [{ name: 'find' }] }),
+            connector('Claude Docs', 'connected', { tools: [{ name: 'read' }, { name: 'create' }] }), connector('Gmail', 'needs-auth')],
         ]));
 
-        expect(await service.getClaudeAiConnectors(PROJECT)).toEqual([
-          { name: 'claude.ai Claude Docs', status: 'connected', toolCount: 2 },
-          { name: 'claude.ai Gmail', status: 'needs-auth' },
+        expect(await service.getGlobalToolStatuses()).toEqual([
+          { name: 'notes', kind: 'user', status: 'connected', toolCount: 1 },
+          { name: 'claude.ai Claude Docs', kind: 'connector', status: 'connected', toolCount: 2 },
+          { name: 'claude.ai Gmail', kind: 'connector', status: 'needs-auth' },
+        ]);
+        expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({
+          options: expect.objectContaining({ cwd: TOOLS_CHECK }),
+        }));
+      });
+
+      it('waits for no connector without a claude.ai sign-in: an API key has none', async () => {
+        await configService.setApiKey('sk-ant-api03-' + 'x'.repeat(90));
+        await configService.setConfig({ authMethod: 'api-key' });
+        const query = statusQuery([[userServer('notes', 'connected')]]);
+        mockQuery.mockReturnValue(query);
+
+        expect(await service.getGlobalToolStatuses()).toEqual([{ name: 'notes', kind: 'user', status: 'connected' }]);
+        // Settled at the first answer, rather than after waiting for connectors.
+        expect(query.mcpServerStatus).toHaveBeenCalledTimes(1);
+      });
+
+      it('reads a project as a session in it has them', async () => {
+        mockQuery.mockReturnValue(statusQuery([[userServer('notes', 'disabled'), connector('Gmail', 'needs-auth')]]));
+
+        expect(await service.getProjectToolStatuses(PROJECT)).toEqual([
+          { name: 'notes', kind: 'user', status: 'disabled' },
+          { name: 'claude.ai Gmail', kind: 'connector', status: 'needs-auth' },
         ]);
         expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({
           options: expect.objectContaining({ cwd: PROJECT }),
         }));
       });
 
-      it('reconnects one authorised since in the open conversations still waiting on it', async () => {
+      it('reconnects a connector authorised since in the open conversations still waiting on it', async () => {
         const session = openSession();
         const reconnectMcpServer = vi.fn().mockResolvedValue(undefined);
         Object.assign(session.iterator, {
@@ -3341,7 +3378,7 @@ describe('ClaudeCodeService', () => {
         await sendAndSettle(session, TEST_CONV_ID, 'hello');
 
         mockQuery.mockReturnValue(statusQuery([[connector('Gmail', 'connected'), connector('Drive', 'needs-auth')]]));
-        await service.getClaudeAiConnectors(PROJECT);
+        await service.getGlobalToolStatuses();
 
         expect(reconnectMcpServer.mock.calls).toEqual([['claude.ai Gmail']]);
         session.close();
@@ -3354,14 +3391,14 @@ describe('ClaudeCodeService', () => {
         });
         mockQuery.mockReturnValue(statusQuery([[connector('Gmail', 'needs-auth')]], { mcpAuthenticate }));
 
-        expect(await service.getClaudeAiConnectorAuthPage(PROJECT, 'claude.ai Gmail'))
+        expect(await service.getConnectorAuthPage('claude.ai Gmail'))
           .toBe('https://claude.ai/api/organizations/org-1/mcp/start-auth/mcpsrv_1?product_surface=x');
         expect(mcpAuthenticate).toHaveBeenCalledWith('claude.ai Gmail');
 
         mockQuery.mockReturnValue(statusQuery([[connector('Gmail', 'needs-auth')]], {
           mcpAuthenticate: vi.fn().mockResolvedValue({ authUrl: 'https://claude.ai.example.com/start' }),
         }));
-        await expect(service.getClaudeAiConnectorAuthPage(PROJECT, 'claude.ai Gmail'))
+        await expect(service.getConnectorAuthPage('claude.ai Gmail'))
           .rejects.toThrow('Claude Code gave no claude.ai page to authorise claude.ai Gmail.');
       });
 
@@ -3384,12 +3421,15 @@ describe('ClaudeCodeService', () => {
         const toggleMcpServer = vi.fn().mockResolvedValue(undefined);
         mockQuery.mockReturnValue(statusQuery(
           // Read before the toggle, which needs the server listed, and after it.
-          [[connector('Gmail', 'needs-auth')], [connector('Gmail', 'disabled')]],
+          [[connector('Gmail', 'needs-auth'), userServer('notes', 'connected')],
+            [connector('Gmail', 'disabled'), userServer('notes', 'connected')]],
           { toggleMcpServer },
         ));
 
-        expect(await service.setClaudeAiConnectorEnabled(PROJECT, 'claude.ai Gmail', false))
-          .toEqual([{ name: 'claude.ai Gmail', status: 'disabled' }]);
+        expect(await service.setToolEnabledInProject(PROJECT, 'claude.ai Gmail', false)).toEqual([
+          { name: 'claude.ai Gmail', kind: 'connector', status: 'disabled' },
+          { name: 'notes', kind: 'user', status: 'connected' },
+        ]);
         expect(toggleMcpServer).toHaveBeenCalledWith('claude.ai Gmail', false);
         expect(toggleHere).toHaveBeenCalledWith('claude.ai Gmail', false);
         expect(toggleElsewhere).not.toHaveBeenCalled();
@@ -3397,19 +3437,41 @@ describe('ClaudeCodeService', () => {
         elsewhere.close();
       });
 
-      it("says why an action failed, rather than that nothing could start", async () => {
-        mockQuery.mockReturnValue(statusQuery([[connector('Gmail', 'needs-auth')]], {
-          toggleMcpServer: vi.fn().mockRejectedValue(new Error('Server not found: claude.ai Gmail')),
+      it('says why an action failed, rather than that nothing could start', async () => {
+        mockQuery.mockReturnValue(statusQuery([[userServer('notes', 'connected'), connector('Gmail', 'needs-auth')]], {
+          toggleMcpServer: vi.fn().mockRejectedValue(new Error('Server not found: notes')),
         }));
 
-        await expect(service.setClaudeAiConnectorEnabled(PROJECT, 'claude.ai Gmail', false))
-          .rejects.toThrow('Server not found: claude.ai Gmail');
+        await expect(service.setToolEnabledInProject(PROJECT, 'notes', false))
+          .rejects.toThrow('Server not found: notes');
+      });
+
+      // The SDK takes `env` as the child's whole environment: given only the
+      // sign-in, the CLI ran without PATH, HOME or the user's
+      // CLAUDE_CONFIG_DIR — another config than its sessions read (found by
+      // running the app on a scratch config folder).
+      it('checks them with the whole environment, as a conversation runs with it, plus the sign-in', async () => {
+        const saved = process.env.CLAUDE_CONFIG_DIR;
+        process.env.CLAUDE_CONFIG_DIR = '/scratch/claude';
+        try {
+          mockQuery.mockReturnValue(statusQuery([[userServer('notes', 'connected'), connector('Gmail', 'needs-auth')]]));
+          await service.getGlobalToolStatuses();
+
+          const env = mockQuery.mock.calls[0]![0].options.env as Record<string, string>;
+          expect(env.CLAUDE_CONFIG_DIR).toBe('/scratch/claude');
+          expect(env.PATH).toBe(process.env.PATH);
+          expect(env.CLAUDE_CODE_OAUTH_TOKEN).toMatch(/^sk-ant-oat01-/);
+        } finally {
+          if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+          else process.env.CLAUDE_CONFIG_DIR = saved;
+        }
       });
 
       it('answers null without starting anything when there is no login', async () => {
         await configService.logout();
 
-        expect(await service.getClaudeAiConnectors(PROJECT)).toBeNull();
+        expect(await service.getGlobalToolStatuses()).toBeNull();
+        expect(await service.getProjectToolStatuses(PROJECT)).toBeNull();
         expect(mockQuery).not.toHaveBeenCalled();
       });
     });

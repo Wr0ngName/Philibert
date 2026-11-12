@@ -26,6 +26,7 @@ import { MAIN_CONSTANTS } from '../../constants/app';
 import { stripAnsi } from '../../utils/ansi';
 import logger from '../../utils/logger';
 import { getChannelSessionsDir, WindowsPaths } from '../../utils/resourcePaths';
+import { globalConfigFile } from '../claude/claude-files';
 import { findSessionTranscript } from '../claude/transcript-files';
 
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
@@ -695,23 +696,11 @@ export class ChannelSession {
       fs.chmodSync(settingsPath, 0o600);
     }
 
-    // Claude Code's getGlobalClaudeFile() resolves the config file as:
-    //   1. If CLAUDE_CONFIG_DIR is set: join(CLAUDE_CONFIG_DIR, '.claude.json')
-    //   2. Legacy: if ~/.claude/.config.json exists, use that
-    //   3. Default: join(homedir(), '.claude.json')   ← NOT ~/.claude/.claude.json
-    // Ref: src/utils/env.ts in https://github.com/codeaashu/claude-code
     const claudeConfigDir = this.authEnv.CLAUDE_CONFIG_DIR || CLAUDE_HOME;
     fs.mkdirSync(claudeConfigDir, { recursive: true });
 
-    const legacyConfigPath = path.join(CLAUDE_HOME, '.config.json');
-    let claudeJsonPath: string;
-    if (this.authEnv.CLAUDE_CONFIG_DIR) {
-      claudeJsonPath = path.join(this.authEnv.CLAUDE_CONFIG_DIR, '.claude.json');
-    } else if (fs.existsSync(legacyConfigPath)) {
-      claudeJsonPath = legacyConfigPath;
-    } else {
-      claudeJsonPath = path.join(os.homedir(), '.claude.json');
-    }
+    // Found as Claude Code finds it: see globalConfigFile.
+    const claudeJsonPath = globalConfigFile({ CLAUDE_CONFIG_DIR: this.authEnv.CLAUDE_CONFIG_DIR });
 
     let claudeJson: Record<string, unknown> = {};
     try {

@@ -126,7 +126,7 @@ async function main(): Promise<void> {
     const { GitCredentialBroker } = await import('./services/git/GitCredentialBroker');
     const { getUserDataPath } = await import('./utils/paths');
     gitService = new GitService(new GitCredentialBroker(getUserDataPath()));
-    mcpService = new McpConfigService();
+    mcpService = new McpConfigService((args) => authService.runCli(args));
     projectPermissionService = new ProjectPermissionService();
     updateService = new UpdateService(getMainWindow, configService);
 

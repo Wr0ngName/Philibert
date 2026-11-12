@@ -1,44 +1,53 @@
 /**
- * claude.ai connectors, read and acted on through a CLI session.
+ * The tools every project has, read and acted on through a CLI session: the
+ * claude.ai connectors and the user-wide MCP servers.
  *
  * Connectors are the MCP servers set up on the claude.ai account the CLI is
  * logged in with. The CLI fetches them by itself in every session, with no
  * configuration of ours: `mcpServerStatus()` lists them with `source`
- * 'claudeai' and a `claudeai-proxy` config. Measured on CLI 2.1.280, in a
- * session that runs no turn:
+ * 'claudeai', named `claude.ai <name>` (CLAUDE_AI_CONNECTOR_PREFIX). Measured
+ * on CLI 2.1.280, in a session that runs no turn:
  *
  *   0.6s  []                                   — not fetched yet
  *   1.1s  Claude Docs pending, Gmail needs-auth, …
  *   2.6s  Claude Docs connected, Gmail needs-auth, …
  *
  * so a read waits for the list to settle rather than taking the first answer.
+ * User-wide servers (`claude mcp add --scope user`) are listed with `source`
+ * 'user' in the first answer, pending until connected (measured the same way:
+ * pending, then connected a quarter of a second later).
  *
- * Authorising one is done on claude.ai: for a claudeai-proxy server the CLI's
- * `mcp_authenticate` answers with a claude.ai page to open, and expects no
- * callback. Turning one off is per project — the CLI's `mcp_toggle` writes
- * `disabledMcpServers` in that project's entry of ~/.claude.json, as
- * `/mcp disable` does.
+ * Authorising a connector is done on claude.ai: for a claudeai-proxy server
+ * the CLI's `mcp_authenticate` answers with a claude.ai page to open, and
+ * expects no callback. Turning a tool off in a project is the CLI's
+ * `mcp_toggle`, which writes `disabledMcpServers` in that project's entry of
+ * its global config file, as `/mcp disable` does. One turned off everywhere
+ * (mcp-global-off) is not listed at all.
  */
 
 import type { McpServerStatus, Query } from '@anthropic-ai/claude-agent-sdk';
 
-import type { ClaudeAiConnector } from '../../../shared/types';
+import type { GlobalToolStatus } from '../../../shared/types';
 
 /** How long a read waits for the list to settle: listed, and none pending. */
 export const CONNECTORS_SETTLE_MS = 8000;
 /** How often it asks in the meantime. */
 export const CONNECTORS_POLL_MS = 300;
 
-/** Whether a server is one of the account's claude.ai connectors. */
-function isClaudeAiConnector(server: McpServerStatus): boolean {
+/** Which of the tools every project has a server is, if one. */
+function kindOf(server: McpServerStatus): GlobalToolStatus['kind'] | null {
   // `source` is the field to key trust on; `scope` is what CLIs that predate
   // it report.
-  return (server.source ?? server.scope) === 'claudeai';
+  const source = server.source ?? server.scope;
+  if (source === 'claudeai') return 'connector';
+  if (source === 'user') return 'user';
+  return null;
 }
 
-function toClaudeAiConnector(server: McpServerStatus): ClaudeAiConnector {
+function toStatus(server: McpServerStatus, kind: GlobalToolStatus['kind']): GlobalToolStatus {
   return {
     name: server.name,
+    kind,
     status: server.status,
     ...(server.error ? { error: server.error } : {}),
     ...(server.tools ? { toolCount: server.tools.length } : {}),
@@ -46,16 +55,23 @@ function toClaudeAiConnector(server: McpServerStatus): ClaudeAiConnector {
 }
 
 /**
- * The connectors as the session sees them, once settled — or as they stand
- * when CONNECTORS_SETTLE_MS has passed, which is also how an account with no
- * connectors reads: an empty list.
+ * The connectors and user-wide servers as the session sees them, once
+ * settled — or as they stand when CONNECTORS_SETTLE_MS has passed.
+ *
+ * @param expectConnectors whether the account has claude.ai connectors to
+ *   wait for: only a claude.ai sign-in has them, so without one there is
+ *   nothing to wait for once the rest are settled.
  */
-export async function readClaudeAiConnectors(session: Query): Promise<ClaudeAiConnector[]> {
+export async function readGlobalToolStatuses(session: Query, expectConnectors: boolean): Promise<GlobalToolStatus[]> {
   const deadline = Date.now() + CONNECTORS_SETTLE_MS;
   for (;;) {
-    const connectors = (await session.mcpServerStatus()).filter(isClaudeAiConnector).map(toClaudeAiConnector);
-    const settled = connectors.length > 0 && connectors.every((c) => c.status !== 'pending');
-    if (settled || Date.now() >= deadline) return connectors;
+    const tools = (await session.mcpServerStatus()).flatMap((server) => {
+      const kind = kindOf(server);
+      return kind ? [toStatus(server, kind)] : [];
+    });
+    const connectorsIn = !expectConnectors || tools.some((tool) => tool.kind === 'connector');
+    const settled = connectorsIn && tools.every((tool) => tool.status !== 'pending');
+    if (settled || Date.now() >= deadline) return tools;
     await new Promise((resolve) => setTimeout(resolve, CONNECTORS_POLL_MS));
   }
 }

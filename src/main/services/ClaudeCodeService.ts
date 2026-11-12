@@ -24,6 +24,7 @@
 import * as fs from 'fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import * as path from 'node:path';
 
 import { getSubagentMessages, query } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -55,7 +56,7 @@ import {
 } from '../../shared/model-id';
 import {
   AgentInfo,
-  ClaudeAiConnector,
+  GlobalToolStatus,
   IPC_CHANNELS,
   PendingAction,
   ActionResponse,
@@ -83,6 +84,7 @@ import {
 import { AsyncChannel } from '../utils/AsyncChannel';
 import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
+import { getUserDataPath } from '../utils/paths';
 import { ClaudeCliPaths, WindowsPaths } from '../utils/resourcePaths';
 
 import ConfigService from './ConfigService';
@@ -101,7 +103,7 @@ import type { HandledToolResult, ModelReportSource, ModelSubstitutionEvent, Suba
 import { SessionSchedules } from './claude/SessionSchedules';
 import { AgentTranscripts } from './claude/agent-transcripts';
 import { observeCanUseToolRequests, type CanUseToolRequest } from './claude/can-use-tool-requests';
-import { claudeAiConnectorAuthPage, readClaudeAiConnectors } from './claude/connectors';
+import { claudeAiConnectorAuthPage, readGlobalToolStatuses } from './claude/connectors';
 import { attachTranscriptImages, cliTempRoot, locateTaskOutput, readTaskOutput } from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
 import { findAgentTranscript, findSessionTranscript } from './claude/transcript-files';
@@ -2969,7 +2971,12 @@ export class ClaudeCodeService {
         prompt: inputChannel,
         options: {
           abortController,
-          env: authEnv,
+          // The whole environment, as a conversation's session has it
+          // (spawnClaudeCodeProcess): the SDK takes `env` as all of it, not
+          // as additions, so the sign-in variables alone left the CLI without
+          // PATH, HOME or a CLAUDE_CONFIG_DIR the user set — reading another
+          // config than its sessions do, with servers it could not start.
+          env: { ...process.env, ...authEnv },
           pathToClaudeCodeExecutable: ClaudeCliPaths.findBundledCli() || undefined,
           ...(cwd ? { cwd } : {}),
         },
@@ -3017,25 +3024,52 @@ export class ClaudeCodeService {
   }
 
   /**
-   * The claude.ai connectors as a session in this project sees them.
+   * Where the tools every project has are read when no project is in
+   * question: a folder of the app's own, so what the user turned off in any
+   * project of theirs plays no part — and so the list does not depend on a
+   * discussion being open. Claude Code keeps an entry for it, like any folder
+   * it runs in.
+   */
+  private toolsCheckFolder(): string {
+    const folder = path.join(getUserDataPath(), 'tools-check');
+    fs.mkdirSync(folder, { recursive: true });
+    return folder;
+  }
+
+  /** Whether the sign-in comes with claude.ai connectors: only a claude.ai one does. */
+  private async expectsConnectors(): Promise<boolean> {
+    return (await this.configService.getConfig()).authMethod === 'oauth';
+  }
+
+  /**
+   * The tools every project has — claude.ai connectors and user-wide servers
+   * — as they stand, read where no project of the user's turns any off.
    *
    * Open conversations are brought up to date on the way: a session fetched
    * its connectors when it started, and keeps one it found waiting for
    * authorisation that way until it is reconnected — so one authorised since
    * is reconnected wherever it still waits.
    */
-  async getClaudeAiConnectors(workingDirectory: string): Promise<ClaudeAiConnector[] | null> {
-    const connectors = await this.withProjectQuery('claudeAiConnectors', workingDirectory, readClaudeAiConnectors);
-    logger.info('claude.ai connectors as Claude Code lists them', {
-      workingDirectory,
-      connectors: connectors?.map((c) => `${c.name}: ${c.status}`) ?? null,
+  async getGlobalToolStatuses(): Promise<GlobalToolStatus[] | null> {
+    const expectConnectors = await this.expectsConnectors();
+    const statuses = await this.withProjectQuery('globalTools', this.toolsCheckFolder(),
+      (session) => readGlobalToolStatuses(session, expectConnectors));
+    logger.info('Tools every project has, as Claude Code lists them', {
+      tools: statuses?.map((t) => `${t.name}: ${t.status}`) ?? null,
     });
-    if (connectors) await this.reconnectAuthorisedConnectors(connectors);
-    return connectors;
+    if (statuses) await this.reconnectAuthorisedConnectors(statuses);
+    return statuses;
   }
 
-  private async reconnectAuthorisedConnectors(connectors: ClaudeAiConnector[]): Promise<void> {
-    const connected = new Set(connectors.filter((c) => c.status === 'connected').map((c) => c.name));
+  /** The tools every project has, as a session in this project reports them. */
+  async getProjectToolStatuses(workingDirectory: string): Promise<GlobalToolStatus[] | null> {
+    const expectConnectors = await this.expectsConnectors();
+    return this.withProjectQuery('projectTools', workingDirectory,
+      (session) => readGlobalToolStatuses(session, expectConnectors));
+  }
+
+  private async reconnectAuthorisedConnectors(statuses: GlobalToolStatus[]): Promise<void> {
+    const connected = new Set(statuses.filter((t) => t.kind === 'connector' && t.status === 'connected').map((t) => t.name));
     if (connected.size === 0) return;
     for (const session of this.activeSessions.values()) {
       try {
@@ -3058,10 +3092,12 @@ export class ClaudeCodeService {
   }
 
   /** The claude.ai page that authorises a connector; see claudeAiConnectorAuthPage. */
-  async getClaudeAiConnectorAuthPage(workingDirectory: string, name: string): Promise<string> {
-    const page = await this.withProjectQuery('authoriseConnector', workingDirectory, async (tempQuery) => {
-      await readClaudeAiConnectors(tempQuery);
-      return claudeAiConnectorAuthPage(tempQuery, name);
+  async getConnectorAuthPage(name: string): Promise<string> {
+    const expectConnectors = await this.expectsConnectors();
+    const page = await this.withProjectQuery('authoriseConnector', this.toolsCheckFolder(), async (session) => {
+      // The CLI authorises only a server it has listed.
+      await readGlobalToolStatuses(session, expectConnectors);
+      return claudeAiConnectorAuthPage(session, name);
     });
     if (!page) throw new Error('Claude Code could not start: sign in first.');
     logger.info('Opening the claude.ai page that authorises a connector', { connector: name });
@@ -3069,39 +3105,41 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Turn a connector on or off for a project, as `/mcp disable` does: the CLI
-   * keeps it with the project, so sessions started there after follow it.
-   * Open conversations in the project are switched too, rather than at their
-   * next start.
+   * Turn one of the tools every project has on or off in a project, as
+   * `/mcp disable` does: the CLI keeps it with the project, so sessions
+   * started there after follow it. Open conversations in the project are
+   * switched too, rather than at their next start. One off everywhere cannot
+   * be switched on here: Claude Code does not list it.
    *
-   * @returns the connectors as they now stand, or null when no session can start.
+   * @returns the tools as the project now has them, or null when no session can start.
    */
-  async setClaudeAiConnectorEnabled(
+  async setToolEnabledInProject(
     workingDirectory: string,
     name: string,
     enabled: boolean,
-  ): Promise<ClaudeAiConnector[] | null> {
-    const connectors = await this.withProjectQuery('toggleConnector', workingDirectory, async (tempQuery) => {
+  ): Promise<GlobalToolStatus[] | null> {
+    const expectConnectors = await this.expectsConnectors();
+    const statuses = await this.withProjectQuery('toggleTool', workingDirectory, async (session) => {
       // The CLI toggles only a server it has listed.
-      await readClaudeAiConnectors(tempQuery);
-      await tempQuery.toggleMcpServer(name, enabled);
-      return readClaudeAiConnectors(tempQuery);
+      await readGlobalToolStatuses(session, expectConnectors);
+      await session.toggleMcpServer(name, enabled);
+      return readGlobalToolStatuses(session, expectConnectors);
     });
-    logger.info('Connector turned ' + (enabled ? 'on' : 'off'), { connector: name, workingDirectory });
+    logger.info(`Tool turned ${enabled ? 'on' : 'off'} in a project`, { name, workingDirectory });
 
     for (const session of this.activeSessions.values()) {
       if (session.workingDirectory !== workingDirectory) continue;
       try {
         await session.query.toggleMcpServer(name, enabled);
       } catch (error) {
-        logger.warn('Could not switch a connector in an open conversation', {
+        logger.warn('Could not switch a tool in an open conversation', {
           conversationId: session.conversationId,
-          connector: name,
+          name,
           error,
         });
       }
     }
-    return connectors;
+    return statuses;
   }
 
   /**

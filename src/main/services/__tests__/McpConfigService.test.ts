@@ -444,19 +444,178 @@ describe('checkCommand', () => {
 });
 
 describe('getRuntimeInfo', () => {
-  it('reports the paths of the two files it edits', () => {
-    const info = service.getRuntimeInfo(projectDir);
-
-    expect(info.configPath).toBe(path.join(projectDir, '.mcp.json'));
-    expect(info.approvalsPath).toBe(
-      path.join(projectDir, '.claude', 'settings.local.json')
-    );
-    expect(info.platform).toBe(process.platform);
+  it('reports the platform, with no project needed', () => {
+    expect(service.getRuntimeInfo().platform).toBe(process.platform);
   });
 
   it('offers no bundled Node when the platform does not ship one', () => {
     // The resourcePaths mock reports no bundled Node, matching macOS and Linux
     // where Philibert bundles none at all.
-    expect(service.getRuntimeInfo(projectDir).bundledNodePath).toBeNull();
+    expect(service.getRuntimeInfo().bundledNodePath).toBeNull();
+  });
+});
+
+/**
+ * User-wide servers: read from Claude Code's global config file, written by
+ * its own `claude mcp` commands. The CLI is the process boundary, so it is
+ * faked here, doing what CLI 2.1.280 was measured to do: `add-json --scope
+ * user` writes the server into the top-level `mcpServers` and refuses a name
+ * there already; `remove --scope user` refuses one that is not; each exits 1
+ * with a sentence on stderr when it refuses.
+ */
+describe('user-wide servers', () => {
+  let root: string;
+  let globalFile: string;
+  let configDir: string;
+  let calls: string[][];
+  /** A command made to fail, by its first two words after `mcp`. */
+  let failing: { command: string; name: string } | null;
+
+  function readGlobal(): Record<string, unknown> {
+    return JSON.parse(fs.readFileSync(globalFile, 'utf-8'));
+  }
+
+  function writeGlobal(value: unknown): void {
+    fs.writeFileSync(globalFile, JSON.stringify(value, null, 2));
+  }
+
+  function readDenied(): unknown {
+    const file = path.join(configDir, 'settings.json');
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf-8')).deniedMcpServers : undefined;
+  }
+
+  async function fakeCli(args: readonly string[]): Promise<{ ok: boolean; stderr: string }> {
+    calls.push([...args]);
+    const [, command, name, json] = args;
+    if (failing && failing.command === command && failing.name === name) {
+      return { ok: false, stderr: 'Something went wrong' };
+    }
+    const config = fs.existsSync(globalFile) ? readGlobal() : {};
+    const servers = { ...((config.mcpServers ?? {}) as Record<string, unknown>) };
+    if (command === 'add-json') {
+      if (name in servers) return { ok: false, stderr: `MCP server ${name} already exists in user config` };
+      servers[name] = JSON.parse(json);
+    } else if (command === 'remove') {
+      if (!(name in servers)) return { ok: false, stderr: `No MCP server named "${name}" in user scope` };
+      delete servers[name];
+    }
+    writeGlobal({ ...config, mcpServers: servers });
+    return { ok: true, stderr: '' };
+  }
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'philibert-user-mcp-'));
+    globalFile = path.join(root, '.claude.json');
+    configDir = path.join(root, 'claude');
+    calls = [];
+    failing = null;
+    service = new McpConfigService(fakeCli, () => globalFile, () => configDir);
+    // What Claude Code keeps beside them, which nothing here may lose.
+    writeGlobal({ numStartups: 7, projects: { '/p': { disabledMcpServers: ['x'] } } });
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const stdio = { name: 'notes', transport: 'stdio' as const, command: realProgram, args: ['--serve'] };
+
+  it('lists none when Claude Code has no global config file yet', async () => {
+    fs.rmSync(globalFile);
+    expect(await service.listUser()).toEqual([]);
+  });
+
+  it('adds one through `claude mcp add-json --scope user`, in the shape Claude Code stores', async () => {
+    const list = await service.saveUser(null, stdio);
+
+    expect(calls).toEqual([['mcp', 'add-json', 'notes', JSON.stringify({ type: 'stdio', command: realProgram, args: ['--serve'] }), '--scope', 'user']]);
+    expect(list).toEqual([expect.objectContaining({ name: 'notes', transport: 'stdio', enabled: true, args: ['--serve'] })]);
+    expect(readGlobal().numStartups).toBe(7);
+  });
+
+  it('is off when turned off everywhere', async () => {
+    await service.saveUser(null, stdio);
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({ deniedMcpServers: [{ serverName: 'notes' }] }));
+
+    expect((await service.listUser())[0]?.enabled).toBe(false);
+  });
+
+  it('refuses a name already there, an unknown one to edit, and a bad name — before running anything', async () => {
+    await service.saveUser(null, stdio);
+    calls = [];
+
+    await expect(service.saveUser(null, stdio)).rejects.toThrow('A server named "notes" already exists in your tools.');
+    await expect(service.saveUser('nosuch', stdio)).rejects.toThrow('There is no server named "nosuch" in your tools.');
+    await expect(service.saveUser(null, { ...stdio, name: 'bad name!' })).rejects.toThrow('The name must start with');
+    await expect(service.removeUser('nosuch')).rejects.toThrow('There is no server named "nosuch" in your tools.');
+    expect(calls).toEqual([]);
+  });
+
+  it('updates one as Claude Code allows: removes it, then adds it again', async () => {
+    await service.saveUser(null, stdio);
+    calls = [];
+
+    await service.saveUser('notes', { ...stdio, args: ['--other'] });
+
+    expect(calls.map((c) => c.slice(0, 3))).toEqual([['mcp', 'remove', 'notes'], ['mcp', 'add-json', 'notes']]);
+    expect((readGlobal().mcpServers as Record<string, { args: string[] }>).notes.args).toEqual(['--other']);
+  });
+
+  it('puts it back as it was when adding the new one fails, so an update never loses it', async () => {
+    await service.saveUser(null, stdio);
+    failing = { command: 'add-json', name: 'notes' };
+    let tries = 0;
+    const realFake = fakeCli;
+    service = new McpConfigService(async (args) => {
+      // The new definition fails; putting the old one back does not.
+      if (args[1] === 'add-json' && tries++ === 0) return { ok: false, stderr: 'Something went wrong' };
+      failing = null;
+      return realFake(args);
+    }, () => globalFile, () => configDir);
+
+    await expect(service.saveUser('notes', { ...stdio, args: ['--other'] })).rejects.toThrow('Something went wrong');
+
+    expect((readGlobal().mcpServers as Record<string, { args: string[] }>).notes.args).toEqual(['--serve']);
+  });
+
+  it('renames: adds the new name first, then removes the old — and keeps it off everywhere if it was', async () => {
+    await service.saveUser(null, stdio);
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({
+      deniedMcpServers: [{ serverName: 'notes' }, { serverUrl: 'https://kept.example/*' }],
+    }));
+    calls = [];
+
+    const list = await service.saveUser('notes', { ...stdio, name: 'jotter' });
+
+    expect(calls.map((c) => c.slice(0, 3))).toEqual([['mcp', 'add-json', 'jotter'], ['mcp', 'remove', 'notes']]);
+    expect(list.map((s) => [s.name, s.enabled])).toEqual([['jotter', false]]);
+    expect(readDenied()).toEqual([{ serverUrl: 'https://kept.example/*' }, { serverName: 'jotter' }]);
+  });
+
+  it('takes the new name back off when removing the old one fails while renaming', async () => {
+    await service.saveUser(null, stdio);
+    failing = { command: 'remove', name: 'notes' };
+
+    await expect(service.saveUser('notes', { ...stdio, name: 'jotter' })).rejects.toThrow('Something went wrong');
+
+    expect(Object.keys(readGlobal().mcpServers as object)).toEqual(['notes']);
+  });
+
+  it('removes one, and what turned it off everywhere, so a later one of that name is not off by it', async () => {
+    await service.saveUser(null, stdio);
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({ deniedMcpServers: [{ serverName: 'notes' }] }));
+
+    expect(await service.removeUser('notes')).toEqual([]);
+    expect(readDenied()).toBeUndefined();
+    expect(readGlobal().projects).toEqual({ '/p': { disabledMcpServers: ['x'] } });
+  });
+
+  it("says what Claude Code said when it refuses, and writes nothing more", async () => {
+    failing = { command: 'add-json', name: 'notes' };
+    await expect(service.saveUser(null, stdio)).rejects.toThrow('Something went wrong');
+    expect(readGlobal().mcpServers).toBeUndefined();
   });
 });

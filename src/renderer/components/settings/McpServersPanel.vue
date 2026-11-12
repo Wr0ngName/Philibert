@@ -1,10 +1,13 @@
 <script setup lang="ts">
 /**
- * Manage the tool servers (MCP servers) declared by the active project.
+ * Manage tool servers (MCP servers): a project's own, or the user-wide ones
+ * every project has (`scope`).
  *
- * Writes `<project>/.mcp.json` and the matching approval in
- * `<project>/.claude/settings.local.json` as one operation — see
+ * A project's are written to `<project>/.mcp.json` with the matching approval
+ * in `<project>/.claude/settings.local.json`, as one operation — see
  * McpConfigService and docs/mcp-servers.md for why both files are required.
+ * User-wide ones are written by Claude Code's own `claude mcp … --scope
+ * user`, and turned off everywhere rather than per project.
  *
  * The wording here deliberately avoids "MCP", "stdio" and "transport" in the
  * places a first-time user reads first; the technical names appear only where
@@ -16,10 +19,14 @@ import { storeToRefs } from 'pinia';
 
 import type { McpCommandCheck, McpServerEntry, McpTransport } from '@shared/types';
 
-import { useMcpStore } from '../../stores/mcp';
+import { useMcpStore, type McpScope } from '../../stores/mcp';
 import Button from '../shared/Button.vue';
 import Icon from '../shared/Icon.vue';
-import ClaudeAiConnectors from './ClaudeAiConnectors.vue';
+
+const props = defineProps<{
+  /** The project's own servers, or the user-wide ones. */
+  scope: McpScope;
+}>();
 
 /** One editable environment variable or header row. */
 interface Pair {
@@ -28,7 +35,36 @@ interface Pair {
 }
 
 const mcpStore = useMcpStore();
-const { servers, runtimeInfo, isLoading, isSaving, error, hasProject } = storeToRefs(mcpStore);
+const {
+  projectServers, projectLoading, projectSaving, projectError,
+  userServers, userSaving, userError, isCheckingGlobal, globalTools,
+  runtimeInfo, hasProject,
+} = storeToRefs(mcpStore);
+
+const isUser = computed(() => props.scope === 'user');
+const servers = computed(() => (isUser.value ? userServers.value : projectServers.value));
+/** User-wide ones come with the tools check, which is slow the first time only. */
+const isLoading = computed(() => (isUser.value ? isCheckingGlobal.value && globalTools.value === null : projectLoading.value));
+const isSaving = computed(() => (isUser.value ? userSaving.value : projectSaving.value));
+const error = computed(() => (isUser.value ? userError.value : projectError.value));
+/** A project's servers need a project; user-wide ones are there regardless. */
+const available = computed(() => isUser.value || hasProject.value);
+
+const TEXT = {
+  project: {
+    title: 'Tool Servers',
+    intro: 'Servers set up in this project only. Claude uses them in its discussions.',
+    empty: 'No tool servers in this project. Add one to give Claude access to another service here.',
+    removeQuestion: (name: string) => `Remove “${name}” from this project?`,
+  },
+  user: {
+    title: 'Your tool servers',
+    intro: 'Servers available in every project — also to Claude Code in a terminal. A project can still turn one off for itself.',
+    empty: 'No tool servers of your own yet. Add one to give Claude access to another service in every project.',
+    removeQuestion: (name: string) => `Remove “${name}” from every project?`,
+  },
+} as const;
+const text = computed(() => TEXT[props.scope]);
 
 const showForm = ref(false);
 /** Name being edited, or null when the form is creating a new server. */
@@ -63,12 +99,12 @@ const canSubmit = computed(() => {
 });
 
 onMounted(() => {
-  void mcpStore.load();
+  if (!isUser.value) void mcpStore.loadProject();
 });
 
-// Re-read when the user switches project while Settings is open.
-watch(hasProject, () => {
-  void mcpStore.load();
+// Re-read when the project changes while Settings is open.
+watch(() => mcpStore.projectDir, () => {
+  if (!isUser.value) void mcpStore.loadProject();
 });
 
 // Validate the program path as it is typed, so a bad path is caught before
@@ -93,7 +129,7 @@ function resetForm(): void {
   formUrl.value = '';
   formPairs.value = [];
   commandCheck.value = null;
-  mcpStore.clearError();
+  mcpStore.clearError(props.scope);
 }
 
 function startAdd(): void {
@@ -166,7 +202,7 @@ async function submitForm(): Promise<void> {
     .filter((line) => line.length > 0);
 
   const pairs = collectPairs();
-  const ok = await mcpStore.save(editingName.value, {
+  const ok = await mcpStore.save(props.scope, editingName.value, {
     name: formName.value.trim(),
     transport: formTransport.value,
     ...(isRemote.value
@@ -181,7 +217,7 @@ async function submitForm(): Promise<void> {
 }
 
 async function confirmRemove(name: string): Promise<void> {
-  const ok = await mcpStore.remove(name);
+  const ok = await mcpStore.remove(props.scope, name);
   if (ok) confirmingDelete.value = null;
 }
 
@@ -198,15 +234,14 @@ function summaryOf(server: McpServerEntry): string {
     <div class="flex items-start justify-between gap-3 mb-2">
       <div>
         <h3 class="text-sm font-medium text-surface-700 dark:text-surface-300">
-          Tool Servers
+          {{ text.title }}
         </h3>
         <p class="text-xs text-surface-500 dark:text-surface-400 mt-0.5">
-          Connect Claude to other services — search data, databases, issue trackers.
-          Servers belong to the current project.
+          {{ text.intro }}
         </p>
       </div>
       <Button
-        v-if="hasProject && !showForm"
+        v-if="available && !showForm"
         variant="secondary"
         size="sm"
         @click="startAdd"
@@ -222,7 +257,7 @@ function summaryOf(server: McpServerEntry): string {
 
     <!-- No project selected -->
     <div
-      v-if="!hasProject"
+      v-if="!available"
       class="p-3 rounded-lg border border-surface-300 dark:border-surface-600 text-xs text-surface-500 dark:text-surface-400"
     >
       Choose a project folder first — tool servers are set up per project.
@@ -254,7 +289,7 @@ function summaryOf(server: McpServerEntry): string {
         v-else-if="servers.length === 0 && !showForm"
         class="p-3 rounded-lg border border-dashed border-surface-300 dark:border-surface-600 text-xs text-surface-500 dark:text-surface-400"
       >
-        No tool servers yet. Add one to give Claude access to another service.
+        {{ text.empty }}
       </div>
 
       <!-- Server list -->
@@ -279,7 +314,7 @@ function summaryOf(server: McpServerEntry): string {
                     ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
                     : 'bg-surface-200 dark:bg-surface-700 text-surface-500 dark:text-surface-400'"
                 >
-                  {{ server.enabled ? 'On' : 'Off' }}
+                  {{ server.enabled ? 'On' : isUser ? 'Off everywhere' : 'Off' }}
                 </span>
               </div>
               <p class="text-xs text-surface-500 dark:text-surface-400 mt-1 break-all">
@@ -302,11 +337,11 @@ function summaryOf(server: McpServerEntry): string {
               <Button
                 variant="ghost"
                 size="sm"
-                :disabled="isSaving"
-                :title="server.enabled ? 'Turn off' : 'Turn on'"
-                @click="mcpStore.setEnabled(server.name, !server.enabled)"
+                :disabled="isSaving || mcpStore.toolBusy === server.name"
+                :title="server.enabled ? (isUser ? 'Turn off in every project' : 'Turn off') : 'Turn on'"
+                @click="mcpStore.setEnabled(scope, server.name, !server.enabled)"
               >
-                {{ server.enabled ? 'Turn off' : 'Turn on' }}
+                {{ server.enabled ? (isUser ? 'Turn off everywhere' : 'Turn off') : 'Turn on' }}
               </Button>
               <Button
                 variant="ghost"
@@ -339,7 +374,7 @@ function summaryOf(server: McpServerEntry): string {
             class="mt-2 p-2 rounded bg-surface-100 dark:bg-surface-700/50 flex items-center justify-between gap-2"
           >
             <span class="text-xs text-surface-700 dark:text-surface-300">
-              Remove “{{ server.name }}” from this project?
+              {{ text.removeQuestion(server.name) }}
             </span>
             <div class="flex gap-1 shrink-0">
               <Button
@@ -375,13 +410,13 @@ function summaryOf(server: McpServerEntry): string {
         <!-- Name -->
         <div>
           <label
-            for="mcp-name"
+            :for="`mcp-${scope}-name`"
             class="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1"
           >
             Name
           </label>
           <input
-            id="mcp-name"
+            :id="`mcp-${scope}-name`"
             v-model="formName"
             type="text"
             placeholder="gsc"
@@ -432,14 +467,14 @@ function summaryOf(server: McpServerEntry): string {
         <template v-if="!isRemote">
           <div>
             <label
-              for="mcp-command"
+              :for="`mcp-${scope}-command`"
               class="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1"
             >
               Program
             </label>
             <div class="flex gap-2">
               <input
-                id="mcp-command"
+                :id="`mcp-${scope}-command`"
                 v-model="formCommand"
                 type="text"
                 placeholder="Full path to the program file"
@@ -492,13 +527,13 @@ function summaryOf(server: McpServerEntry): string {
 
           <div>
             <label
-              for="mcp-args"
+              :for="`mcp-${scope}-args`"
               class="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1"
             >
               Arguments <span class="font-normal opacity-75">(optional, one per line)</span>
             </label>
             <textarea
-              id="mcp-args"
+              :id="`mcp-${scope}-args`"
               v-model="formArgs"
               rows="2"
               placeholder="--port&#10;8080"
@@ -511,13 +546,13 @@ function summaryOf(server: McpServerEntry): string {
         <template v-else>
           <div>
             <label
-              for="mcp-url"
+              :for="`mcp-${scope}-url`"
               class="block text-xs font-medium text-surface-600 dark:text-surface-400 mb-1"
             >
               Web address
             </label>
             <input
-              id="mcp-url"
+              :id="`mcp-${scope}-url`"
               v-model="formUrl"
               type="text"
               placeholder="https://example.com/mcp"
@@ -613,8 +648,6 @@ function summaryOf(server: McpServerEntry): string {
         Changes apply to new conversations — existing ones keep the servers they
         started with.
       </p>
-
-      <ClaudeAiConnectors />
     </template>
   </div>
 </template>

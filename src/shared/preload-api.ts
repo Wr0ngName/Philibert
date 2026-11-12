@@ -28,7 +28,8 @@ import type {
   GitCredentialRequest,
   GitRemoteResult,
   GitStatus,
-  ClaudeAiConnector,
+  GlobalTools,
+  ProjectTools,
   McpCommandCheck,
   McpRuntimeInfo,
   McpServerEntry,
@@ -338,26 +339,30 @@ export interface ElectronAPI {
     ) => Promise<McpServerEntry[]>;
     /** Whether a stdio command can be launched from the packaged app. */
     checkCommand: (command: string) => Promise<McpCommandCheck>;
-    /** Bundled Node path, platform, and the paths of the two files edited. */
-    getRuntimeInfo: (workingDirectory: string) => Promise<McpRuntimeInfo>;
+    /** Bundled Node path and platform. */
+    getRuntimeInfo: () => Promise<McpRuntimeInfo>;
     /** Native picker for a server executable. Null when cancelled. */
     pickExecutable: () => Promise<string | null>;
     /** Native picker for a credentials or data file. Null when cancelled. */
     pickFile: () => Promise<string | null>;
     /**
-     * The claude.ai connectors as a session in this project sees them, and
-     * open conversations brought up to date with any authorised since. Null
-     * when no session can start (not signed in).
+     * The tools every project has (claude.ai connectors, user-wide servers)
+     * and how each stands; open conversations are brought up to date with
+     * connectors authorised since.
      */
-    connectors: (workingDirectory: string) => Promise<ClaudeAiConnector[] | null>;
+    globalTools: () => Promise<GlobalTools>;
+    /** Turn one of them off everywhere, or back on. Resolves with them as they now stand. */
+    setOffEverywhere: (name: string, off: boolean) => Promise<GlobalTools>;
+    /** Create or update a user-wide server. Pass null as `previousName` to create. */
+    saveUserServer: (previousName: string | null, server: McpServerInput) => Promise<McpServerEntry[]>;
+    /** Remove a user-wide server. */
+    removeUserServer: (name: string) => Promise<McpServerEntry[]>;
+    /** The tools every project has, as this project has them. */
+    projectTools: (workingDirectory: string) => Promise<ProjectTools>;
+    /** Turn one of them on or off in this project. Resolves with the project's tools as they now stand. */
+    setEnabledInProject: (workingDirectory: string, name: string, enabled: boolean) => Promise<ProjectTools>;
     /** Open, in the browser, the claude.ai page that authorises a connector. */
-    authorizeConnector: (workingDirectory: string, name: string) => Promise<void>;
-    /** Turn a connector on or off for this project. Resolves with the new list. */
-    setConnectorEnabled: (
-      workingDirectory: string,
-      name: string,
-      enabled: boolean
-    ) => Promise<ClaudeAiConnector[] | null>;
+    authorizeConnector: (name: string) => Promise<void>;
   };
 
   // Config operations

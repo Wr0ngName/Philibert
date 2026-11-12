@@ -42,6 +42,10 @@ import logger from '../utils/logger';
 import { getLocalSettingsPath, readJsonFile, writeJsonFile } from '../utils/projectSettings';
 import { WindowsPaths } from '../utils/resourcePaths';
 
+import { globalConfigFile, readJsonObject } from './claude/claude-files';
+import { cliConfigDir } from './claude/cliCredentials';
+import { readGloballyOff, setGloballyOff } from './claude/mcp-global-off';
+
 /** Server names are used verbatim in `mcp__<name>__<tool>` tool identifiers. */
 const SERVER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
@@ -68,7 +72,23 @@ interface RawMcpConfig {
   [key: string]: unknown;
 }
 
+/** Runs a `claude` command to its end: see AuthService.runCli. */
+export type CliRunner = (args: readonly string[]) => Promise<{ ok: boolean; stderr: string }>;
+
 export class McpConfigService {
+  /**
+   * @param runCli runs Claude Code's own `claude mcp` commands, which are how
+   *   user-wide servers are written: the file they live in is Claude Code's
+   *   state, rewritten by it all the time, so it is never written here.
+   * @param globalFile Claude Code's global config file, where they are read.
+   * @param configDir its config folder, whose user settings hold what is off everywhere.
+   */
+  constructor(
+    private readonly runCli: CliRunner | null = null,
+    private readonly globalFile: () => string = () => globalConfigFile(),
+    private readonly configDir: () => string = cliConfigDir,
+  ) {}
+
   /** Absolute path of the project's `.mcp.json`. */
   getConfigPath(workingDirectory: string): string {
     return path.join(workingDirectory, '.mcp.json');
@@ -83,7 +103,7 @@ export class McpConfigService {
    * Host facts the settings UI needs. Kept in the main process so the renderer
    * never has to guess at paths or touch the filesystem.
    */
-  getRuntimeInfo(workingDirectory: string): McpRuntimeInfo {
+  getRuntimeInfo(): McpRuntimeInfo {
     let bundledNodePath: string | null = null;
     if (process.platform === 'win32' && WindowsPaths.hasBundledNode()) {
       bundledNodePath = WindowsPaths.getBundledNodeExe();
@@ -92,8 +112,6 @@ export class McpConfigService {
     return {
       platform: process.platform,
       bundledNodePath,
-      configPath: this.getConfigPath(workingDirectory),
-      approvalsPath: this.getApprovalsPath(workingDirectory),
     };
   }
 
@@ -110,7 +128,7 @@ export class McpConfigService {
     const servers = config.mcpServers ?? {};
 
     return Object.entries(servers).map(([name, raw]) =>
-      this.toEntry(name, raw, settings)
+      this.toEntry(name, raw, this.isEnabled(name, settings))
     );
   }
 
@@ -232,6 +250,103 @@ export class McpConfigService {
 
     logger.info('Changed MCP server approval', { name, enabled });
     return this.list(workingDirectory);
+  }
+
+  // ------------------------------------------------------------ user-wide
+
+  /**
+   * The user-wide servers — Claude Code's `--scope user`, available in every
+   * project — each `enabled` unless turned off everywhere (mcp-global-off).
+   * Read from Claude Code's global config file, top-level `mcpServers`.
+   */
+  async listUser(): Promise<McpServerEntry[]> {
+    const config = await readJsonObject(this.globalFile());
+    const servers = (config?.mcpServers ?? {}) as Record<string, Record<string, unknown>>;
+    const off = await readGloballyOff(this.configDir());
+    return Object.entries(servers)
+      .filter(([, raw]) => raw !== null && typeof raw === 'object')
+      .map(([name, raw]) => this.toEntry(name, raw, !off.has(name)));
+  }
+
+  /**
+   * Create a user-wide server, or update one, through `claude mcp`.
+   *
+   * Claude Code adds a name only once, so an update removes the old one and
+   * adds the new: added first when renaming, and put back as it was when
+   * adding the new one fails, so an update never loses the server. One
+   * turned off everywhere stays so under its new name.
+   */
+  async saveUser(previousName: string | null, input: McpServerInput): Promise<McpServerEntry[]> {
+    const server = this.validateInput(input);
+    const existing = await this.userServers();
+    const renaming = previousName !== null && previousName !== server.name;
+    if (previousName !== null && !(previousName in existing)) {
+      throw new ValidationError(`There is no server named "${previousName}" in your tools.`, 'previousName', ERROR_CODES.VALIDATION_REQUIRED);
+    }
+    if ((previousName === null || renaming) && server.name in existing) {
+      throw new ValidationError(`A server named "${server.name}" already exists in your tools.`, 'name', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+    }
+    const raw = this.toRawServer(server);
+
+    if (previousName === null) {
+      await this.cli(['mcp', 'add-json', server.name, JSON.stringify(raw), '--scope', 'user']);
+    } else if (renaming) {
+      await this.cli(['mcp', 'add-json', server.name, JSON.stringify(raw), '--scope', 'user']);
+      try {
+        await this.cli(['mcp', 'remove', previousName, '--scope', 'user']);
+      } catch (error) {
+        await this.cli(['mcp', 'remove', server.name, '--scope', 'user']);
+        throw error;
+      }
+      const off = await readGloballyOff(this.configDir());
+      if (off.has(previousName)) {
+        await setGloballyOff(server.name, true, this.configDir());
+        await setGloballyOff(previousName, false, this.configDir());
+      }
+    } else {
+      await this.cli(['mcp', 'remove', previousName, '--scope', 'user']);
+      try {
+        await this.cli(['mcp', 'add-json', server.name, JSON.stringify(raw), '--scope', 'user']);
+      } catch (error) {
+        await this.cli(['mcp', 'add-json', previousName, JSON.stringify(existing[previousName]), '--scope', 'user']);
+        throw error;
+      }
+    }
+    logger.info('Saved user-wide MCP server', {
+      name: server.name,
+      transport: server.transport,
+      renamedFrom: renaming ? previousName : undefined,
+    });
+    return this.listUser();
+  }
+
+  /**
+   * Remove a user-wide server through `claude mcp`, and its entry among
+   * those off everywhere, so a later server of that name is not off by it.
+   */
+  async removeUser(name: string): Promise<McpServerEntry[]> {
+    if (!(name in (await this.userServers()))) {
+      throw new ValidationError(`There is no server named "${name}" in your tools.`, 'name', ERROR_CODES.VALIDATION_REQUIRED);
+    }
+    await this.cli(['mcp', 'remove', name, '--scope', 'user']);
+    if ((await readGloballyOff(this.configDir())).has(name)) await setGloballyOff(name, false, this.configDir());
+    logger.info('Removed user-wide MCP server', { name });
+    return this.listUser();
+  }
+
+  private async userServers(): Promise<Record<string, Record<string, unknown>>> {
+    const config = await readJsonObject(this.globalFile());
+    return (config?.mcpServers ?? {}) as Record<string, Record<string, unknown>>;
+  }
+
+  /** Run a `claude` command; a failure throws with what it said, for the user. */
+  private async cli(args: readonly string[]): Promise<void> {
+    if (!this.runCli) throw new Error('Claude Code cannot be run from here.');
+    const { ok, stderr } = await this.runCli(args);
+    if (!ok) {
+      logger.warn('claude command failed', { command: args.slice(0, 3).join(' '), stderr: stderr.slice(0, 500) });
+      throw new Error(stderr || `claude ${args.slice(0, 2).join(' ')} failed`);
+    }
   }
 
   /**
@@ -458,17 +573,17 @@ export class McpConfigService {
     };
   }
 
-  /** Build a UI entry from a stored definition plus the approval settings. */
+  /** Build a UI entry from a stored definition and whether it is on. */
   private toEntry(
     name: string,
     raw: Record<string, unknown>,
-    settings: RawSettings
+    enabled: boolean
   ): McpServerEntry {
     const transport = this.readTransport(raw);
     const entry: McpServerEntry = {
       name,
       transport,
-      enabled: this.isEnabled(name, settings),
+      enabled,
     };
 
     if (transport === 'stdio') {

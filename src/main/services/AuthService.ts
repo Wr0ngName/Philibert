@@ -302,16 +302,25 @@ export class AuthService {
    * account it records. Resolves whether the CLI reported success.
    */
   async logoutCli(): Promise<boolean> {
-    const { file, args, extraEnv } = this.cliCommand(LOGOUT_ARGS);
+    const { ok, stderr } = await this.runCli(LOGOUT_ARGS);
+    if (!ok) {
+      logger.warn('claude auth logout failed', { stderr: stderr.slice(0, 500) });
+      return false;
+    }
+    logger.info('Logged the Claude CLI out');
+    return true;
+  }
+
+  /**
+   * Run a `claude` command to its end — the bundled CLI, as cliCommand
+   * finds and launches it on each platform. `ok` is its exit status; what
+   * it wrote to stderr is kept to show the user, never read for meaning.
+   */
+  runCli(cliArgs: readonly string[]): Promise<{ ok: boolean; stderr: string }> {
+    const { file, args, extraEnv } = this.cliCommand(cliArgs);
     return new Promise((resolve) => {
-      execFile(file, args, { env: { ...process.env, ...extraEnv }, timeout: MAIN_CONSTANTS.AUTH.OAUTH_URL_DETECTION_TIMEOUT_MS }, (error, _stdout, stderr) => {
-        if (error) {
-          logger.warn('claude auth logout failed', { error: error.message, stderr: String(stderr).slice(0, 500) });
-          resolve(false);
-          return;
-        }
-        logger.info('Logged the Claude CLI out');
-        resolve(true);
+      execFile(file, args, { env: { ...process.env, ...extraEnv }, timeout: MAIN_CONSTANTS.AUTH.CLI_COMMAND_TIMEOUT_MS }, (error, _stdout, stderr) => {
+        resolve({ ok: !error, stderr: String(stderr ?? '').trim() });
       });
     });
   }

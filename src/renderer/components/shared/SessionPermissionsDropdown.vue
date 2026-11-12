@@ -18,8 +18,10 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { useSettingsStore } from '../../stores/settings';
+import { useUiStore } from '../../stores/ui';
 import { formatTime } from '../../utils/date';
 import { logger } from '../../utils/logger';
+import { projectEntryDetail, projectEntrySourceLabel, projectEntryTitle } from '../../utils/project-permissions';
 import TransitionFade from './TransitionFade.vue';
 
 /** Project settings files whose changes can alter the project permissions. */
@@ -40,24 +42,10 @@ const hasProjectPermissions = computed(() => projectPermissions.value.length > 0
 const permissionCount = computed(() => chatStore.sessionPermissionCount + projectPermissions.value.length);
 const hasPermissions = computed(() => permissionCount.value > 0);
 
-/**
- * Format timestamp for display
- */
-/** Main line for a project entry: the tool, or "Directory". */
-function projectEntryTitle(entry: ProjectPermissionEntry): string {
-  return entry.kind === 'directory' ? 'Directory' : entry.toolName ?? entry.value;
-}
-
-/** Second line for a project entry: what the rule or directory covers. */
-function projectEntryDetail(entry: ProjectPermissionEntry): string {
-  if (entry.kind === 'directory') return entry.value;
-  return entry.ruleContent ?? 'Any use of this tool';
-}
-
-function projectEntrySourceLabel(entry: ProjectPermissionEntry): string {
-  return entry.source === 'local'
-    ? '.claude/settings.local.json'
-    : '.claude/settings.json (shared, read-only)';
+/** Settings → Project: this project's tools and what it allows without asking. */
+function openProjectSettings(): void {
+  isOpen.value = false;
+  useUiStore().openSettings('project');
 }
 
 /**
@@ -348,6 +336,16 @@ onUnmounted(() => {
             </div>
           </template>
         </div>
+
+        <!-- Everything this project has of its own, in one place -->
+        <button
+          type="button"
+          data-testid="open-project-settings"
+          class="w-full px-3 py-2 border-t border-surface-200 dark:border-surface-700 text-left text-xs text-primary-600 dark:text-primary-400 hover:bg-surface-50 dark:hover:bg-surface-700"
+          @click="openProjectSettings"
+        >
+          Open Project settings
+        </button>
       </div>
     </TransitionFade>
   </div>
