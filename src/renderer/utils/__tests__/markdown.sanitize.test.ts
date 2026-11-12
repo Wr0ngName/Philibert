@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Markdown rendering is sanitised.
  *
@@ -16,18 +17,15 @@
  *     remain present as text — so asserting the payload string is absent would
  *     be wrong for this one.
  *
- * ── A limitation of the test environment, not of the sanitiser ──
- * Each input below contains at most ONE disallowed construct. happy-dom's
- * NodeIterator does not adjust when a node is removed mid-walk (verified:
- * iterating <a><b><i> while removing visits only DIV,A, where a conformant
- * DOM visits DIV,A,B,I). DOMPurify removes nodes as it walks, so under
- * happy-dom only the first disallowed sibling is stripped and the rest come
- * through. That is the test DOM, not the product: Electron runs real
- * Chromium, where NodeIterator is spec-conformant.
- *
- * If a future test here appears to show a sanitiser bypass, check whether the
- * input has two disallowed siblings before concluding anything — and do not
- * "fix" it by loosening the sanitiser.
+ * ── Run under jsdom, not the suite's happy-dom ──
+ * DOMPurify 3.4.17 (its cross-realm fixes) no longer sanitises inside
+ * happy-dom's emulated DOM: there it keeps a <script> and empties a harmless
+ * <img> — while in Chromium, which Electron runs, and in jsdom it sanitises
+ * as it should, several disallowed siblings included (measured 2026-11-12).
+ * jsdom is DOMPurify's own test DOM, and it keeps these tests in the suite CI
+ * runs. Should they ever pass under happy-dom again, do not move them back
+ * without checking that it sanitises: a DOM that does not would turn this
+ * file into a green suite over an XSS hole.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -77,6 +75,15 @@ describe('renderMarkdown removes disallowed HTML', () => {
     // sanitiser is what has to catch it.
     const html = renderMarkdown('[click me](javascript:globalThis.pwned=true)');
     expect(html).not.toMatch(/href\s*=\s*["']?javascript:/i);
+  });
+});
+
+describe('renderMarkdown removes several disallowed constructs at once', () => {
+  it('strips each of them, not only the first', () => {
+    const html = renderMarkdown('<p>a</p><script>1</script><object data="x"></object><img src="x" onerror="1"><iframe src="x"></iframe>');
+    expect(html).toContain('<p>a</p>');
+    expect(html).not.toMatch(/<script|<object|<iframe|onerror/i);
+    expect(html).toMatch(/<img[^>]*src="x"/);
   });
 });
 
