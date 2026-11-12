@@ -762,7 +762,63 @@ describe('ClaudeCodeService', () => {
       // finishing after the turn ended starts a turn of the CLI's own —
       // running, its output, a task-notification result, idle. It streamed
       // and ran tools with the conversation shown as not busy.
-      it('marks the conversation busy for the turn the CLI starts by itself, and ends it on its result', async () => {
+      // From a user's log (2026-11-12 11:49-12:50): the user's turn ends on its
+      // result, and the CLI goes straight on to a turn of its own answering a
+      // background task — never idle, so never `running` again. That turn
+      // streamed with the conversation shown as not busy and no Stop.
+      it('marks the conversation busy for a turn the CLI goes on to without going idle', async () => {
+        const sends = () => mockSend.mock.calls.map((call) => call[0]);
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          { type: 'system', subtype: 'session_state_changed', state: 'running' },
+          { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 },
+          // No idle, no running: straight into the CLI's own turn.
+          { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'The build finished.' } }, parent_tool_use_id: null },
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'The build finished.' }] }, parent_tool_use_id: null },
+          { type: 'result', subtype: 'success', origin: { kind: 'task-notification' }, num_turns: 1, duration_ms: 10 },
+          { type: 'system', subtype: 'session_state_changed', state: 'idle' },
+        ]));
+
+        await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+        await vi.waitFor(() => {
+          expect(sends().filter((c) => c === IPC_CHANNELS.CLAUDE_DONE)).toHaveLength(2);
+        });
+        const firstDone = sends().indexOf(IPC_CHANNELS.CLAUDE_DONE);
+        const started = sends().indexOf(IPC_CHANNELS.CLAUDE_TURN_STARTED);
+        const output = sends().lastIndexOf(IPC_CHANNELS.CLAUDE_CHUNK);
+        // Announced after the user's turn ended, and before its text is shown.
+        expect(started).toBeGreaterThan(firstDone);
+        expect(output).toBeGreaterThan(firstDone);
+        expect(started).toBeLessThan(output);
+        const runningSets = mockSend.mock.calls
+          .slice(started, sends().lastIndexOf(IPC_CHANNELS.CLAUDE_DONE))
+          .filter((call) => call[0] === IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES)
+          .map((call) => call[4]);
+        expect(runningSets).toContainEqual([TEST_CONV_ID]);
+        expect(service.getProcessingQueryCount()).toBe(0);
+      });
+
+      it("does not mark the conversation busy for a background agent's output while it is idle", async () => {
+        const sends = () => mockSend.mock.calls.map((call) => call[0]);
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          { type: 'system', subtype: 'session_state_changed', state: 'running' },
+          { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 },
+          { type: 'system', subtype: 'session_state_changed', state: 'idle' },
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'agent at work' }] }, parent_tool_use_id: 'toolu_agent' },
+          { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'more' } }, parent_tool_use_id: 'toolu_agent' },
+        ]));
+
+        await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+
+        await vi.waitFor(() => {
+          expect(sends()).toContain(IPC_CHANNELS.CLAUDE_DONE);
+        });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(sends()).not.toContain(IPC_CHANNELS.CLAUDE_TURN_STARTED);
+        expect(service.getProcessingQueryCount()).toBe(0);
+      });
+
+      it('marks the conversation busy for a turn the CLI starts by itself, and ends it on its result', async () => {
         const sends = () => mockSend.mock.calls.map((call) => call[0]);
         mockQuery.mockReturnValue(createMockQueryIterator([
           { type: 'system', subtype: 'session_state_changed', state: 'running' },

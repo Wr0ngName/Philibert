@@ -264,6 +264,14 @@ export interface MessageHandlerCallbacks {
    */
   onSessionRunning?: () => void;
   /**
+   * Output of the main conversation — an assistant frame or a streamed delta,
+   * not a sub-agent's. A turn is running, whether or not the CLI said so:
+   * `running` is only reported when the session leaves idle, and after a
+   * turn's result the CLI can go straight on to a turn of its own, answering
+   * a background task that finished meanwhile, without ever going idle.
+   */
+  onMainThreadOutput?: () => void;
+  /**
    * A message sent into the session changed state: 'queued', 'started' (the
    * model has it), 'completed' or 'cancelled'.
    */
@@ -500,6 +508,13 @@ export class SDKMessageHandler {
         this.callbacks.onCommandLifecycle?.(lifecycle.command_uuid, lifecycle.state);
       }
       return;
+    }
+
+    // Before the output itself, so the turn it belongs to is known to be
+    // running by the time its first text is forwarded.
+    if ((message.type === 'assistant' || message.type === 'stream_event')
+      && !(message as { parent_tool_use_id?: string | null }).parent_tool_use_id) {
+      this.callbacks.onMainThreadOutput?.();
     }
 
     switch (message.type) {

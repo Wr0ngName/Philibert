@@ -1130,6 +1130,9 @@ export class ClaudeCodeService {
       onSessionRunning: () => {
         this.beginUnpromptedTurn(conversationId);
       },
+      onMainThreadOutput: () => {
+        this.beginUnpromptedTurn(conversationId);
+      },
       onCommandLifecycle: (uuid: string, state: string) => {
         this.trackDelivery(conversationId, uuid, state);
       },
@@ -2306,6 +2309,12 @@ export class ClaudeCodeService {
    *
    * A turn the user sent is already marked busy when sent, which is what
    * leaves this a no-op for it.
+   *
+   * Called when the CLI reports `running`, and on the main conversation's
+   * output: `running` comes only out of idle, and the CLI can go from the
+   * result of the user's turn straight into one of its own without going
+   * idle. Measured in a user's log (2026-11-10 to 12): 52 of these turns, each
+   * streaming with the conversation shown as not busy and no Stop to press.
    */
   private beginUnpromptedTurn(conversationId: string): void {
     const session = this.activeSessions.get(conversationId);
