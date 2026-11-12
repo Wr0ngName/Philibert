@@ -215,6 +215,38 @@ describe('NotificationService', () => {
     });
   });
 
+  describe('showUsageLimitContinuesMissed', () => {
+    it('says a task was not continued while the app was closed, and waits on the user', async () => {
+      await service.showUsageLimitContinuesMissed(['conv-1']);
+
+      expect(MockNotificationClass).toHaveBeenCalledWith({
+        title: 'Task not continued',
+        body: 'A usage limit reset while Philibert was closed, so a task was not continued. It waits for you.',
+      });
+      expect(mockNotificationInstance.show).toHaveBeenCalledTimes(1);
+    });
+
+    it('says how many, in one notification, when there are several', async () => {
+      await service.showUsageLimitContinuesMissed(['conv-1', 'conv-2', 'conv-3']);
+
+      expect(MockNotificationClass).toHaveBeenCalledTimes(1);
+      expect(MockNotificationClass).toHaveBeenCalledWith({
+        title: 'Task not continued',
+        body: 'A usage limit reset while Philibert was closed, so 3 tasks were not continued. They wait for you.',
+      });
+    });
+
+    it('follows the same rules as the others: not while the window is focused, nor when turned off', async () => {
+      mockWindow.isFocused.mockReturnValue(true);
+      await service.showUsageLimitContinuesMissed(['conv-1']);
+      mockWindow.isFocused.mockReturnValue(false);
+      mockConfigService.getConfig.mockResolvedValue({ enableNotifications: false });
+      await service.showUsageLimitContinuesMissed(['conv-1']);
+
+      expect(mockNotificationInstance.show).not.toHaveBeenCalled();
+    });
+  });
+
   describe('showError', () => {
     it('should show notification with error message', async () => {
       service.showError('conv-3', 'Authentication failed');
