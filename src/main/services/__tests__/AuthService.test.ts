@@ -210,6 +210,27 @@ describe('AuthService', () => {
       expect(result.authUrl).toContain('oauth/authorize');
     });
 
+    it.each([1, 7, 64, 4096])('reads the URL a terminal shows from what Claude Code really writes, %i bytes at a time', async (size) => {
+      // Captured from `claude auth login --claudeai` (Claude Code 2.1.280) in a
+      // PTY set up as this one is, then rendered with a terminal emulator
+      // (pyte): the URL below is what the screen showed. A CLI that draws
+      // the URL in pieces with cursor moves — as setup-token draws its token —
+      // would make the bytes in arrival order differ from the screen, and
+      // this test fail. Fed in pieces of every size, as a PTY may deliver
+      // it: a piece that stopped inside the URL used to leave a partial one
+      // ("…&client_id="), taken as the URL.
+      const realFs = await vi.importActual<typeof import('fs')>('fs');
+      const captured = realFs.readFileSync(`${__dirname}/fixtures/auth-login-2.1.280.pty`, 'utf8');
+      const onScreen = 'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge=qY6WpXmNfu4ILTWRfEALz3Izqsozis_YcUetPYWTqY8&code_challenge_method=S256&state=rerTSeAvfz4jvdDb-pGLYYCfj_pjVingDMO8dE5NwCk';
+
+      const flowPromise = service.startOAuthFlow();
+      await vi.advanceTimersByTimeAsync(50);
+      for (let i = 0; i < captured.length; i += size) mockPty.emitData(captured.slice(i, i + size));
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect((await flowPromise).authUrl).toBe(onScreen);
+    });
+
     it('should fall back to npx when CLI not found', async () => {
       mockFsExistsSync.mockReturnValue(false);
       mockExecSync.mockImplementation(() => {

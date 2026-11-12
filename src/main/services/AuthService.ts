@@ -461,7 +461,13 @@ export class AuthService {
           const clean = stripAnsi(output);
 
           // Look for the OAuth URL (domain-agnostic to handle claude.ai, claude.com/cai/, etc.)
-          const urlMatch = clean.match(/(https:\/\/\S+\/oauth\/authorize\S*)/);
+          //
+          // Only a URL something follows: the output arrives in pieces, and
+          // the CLI writes the URL inside a hyperlink sequence first
+          // (ESC ] 8 ;; URL BEL), then as text ended by a line break. A read
+          // that stopped inside either one left a partial URL that matched —
+          // "…&client_id=" — and the first match was the one kept.
+          const urlMatch = clean.match(/(https:\/\/\S+\/oauth\/authorize\S*)\s/);
           if (urlMatch && !authUrl) {
             authUrl = urlMatch[1];
             logger.info(`Found OAuth URL (length=${authUrl.length})`);
@@ -797,8 +803,8 @@ export class AuthService {
     // The token's format is not judged: it is the CLI's own login, in the
     // CLI's own file, and the CLI is what uses it. Whether it is valid is
     // Claude's answer to a request — a 401 logs Philibert out
-    // (handleAuthInvalidated). Judging it here only refused real logins
-    // whenever the format moved on (sk-ant-oat01- → oat02-).
+    // (handleAuthInvalidated). Judging it here would refuse a real login
+    // the day the format changes.
     return accessTokenOf(credentialsJson) || null;
   }
 
