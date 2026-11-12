@@ -99,6 +99,17 @@ export function formatRelativeDate(timestamp: number): string {
 }
 
 /**
+ * A moment as people read it: the time alone when it is today, with the date
+ * when it is not — a usage limit's reset, a schedule's next run, when
+ * something last arrived in a discussion.
+ */
+export function formatMoment(at: number, now: number): string {
+  const time: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
+  const sameDay = new Date(at).toDateString() === new Date(now).toDateString();
+  return formatterFor(sameDay ? time : { month: 'short', day: 'numeric', ...time }).format(at);
+}
+
+/**
  * Format a timestamp as a full datetime string
  *
  * @param timestamp - Unix timestamp in milliseconds

@@ -16,6 +16,8 @@ import { DAY_MS } from '@shared/conversation-list';
 import { USAGE_LIMIT_WAIT_DAYS } from '@shared/types';
 import type { AutoArchiveDays, UsageLimitStop, UsageLimitWait, UsageLimitWaitDays, UsageWarning } from '@shared/types';
 
+import { formatMoment } from './date';
+
 /** What the CLI sends when it continues a task after the limit resets. */
 export const USAGE_LIMIT_CONTINUE_PROMPT =
   'Your claude.ai usage limit has reset. Continue the task you were working on when the limit ' +
@@ -107,18 +109,6 @@ export function dueWaits(
 }
 
 /**
- * A reset time as the user wants to read it: the time alone when it is today,
- * with the date when it is not.
- */
-export function formatResetTime(at: number, now: number): string {
-  const time: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
-  const sameDay = new Date(at).toDateString() === new Date(now).toDateString();
-  return sameDay
-    ? new Date(at).toLocaleTimeString([], time)
-    : new Date(at).toLocaleString([], { month: 'short', day: 'numeric', ...time });
-}
-
-/**
  * What the banner says, and so which actions it offers:
  *
  *  - `waiting`: continue is scheduled and the reset has not come yet;
@@ -136,7 +126,7 @@ export interface UsageLimitBanner {
 }
 
 export function usageLimitBanner(wait: UsageLimitWait, waitDays: UsageLimitWaitDays, now: number): UsageLimitBanner {
-  const resetTime = formatResetTime(wait.resetsAt, now);
+  const resetTime = formatMoment(wait.resetsAt, now);
   const hasReset = wait.resetsAt <= now;
 
   if (wait.missedAt !== undefined) {
@@ -178,7 +168,7 @@ export function usageWarningMessage(warning: UsageWarning, now: number): string 
   const percent = warning.utilization ? Math.floor(warning.utilization * 100) : 0;
   return [
     percent > 0 ? `You've used ${percent}% of your ${limit}` : `Approaching ${limit}`,
-    warning.resetsAt !== undefined && `resets ${formatResetTime(warning.resetsAt, now)}`,
+    warning.resetsAt !== undefined && `resets ${formatMoment(warning.resetsAt, now)}`,
   ].filter(Boolean).join(' · ');
 }
 

@@ -10,10 +10,10 @@ import { describe, it, expect } from 'vitest';
 
 import type { UsageLimitWait } from '@shared/types';
 
+import { formatMoment } from '../date';
 import {
   canWaitFor,
   dueWaits,
-  formatResetTime,
   maxUsageLimitWaitDays,
   resumeTimeFor,
   scheduleWait,
@@ -121,22 +121,8 @@ describe('dueWaits', () => {
   });
 });
 
-describe('formatResetTime', () => {
-  it('gives the time alone for a reset later today', () => {
-    const at = NOW + HOUR;
-    expect(formatResetTime(at, NOW)).toBe(new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
-  });
-
-  it('adds the date for a reset on another day', () => {
-    const at = NOW + 30 * HOUR;
-    const text = formatResetTime(at, NOW);
-    expect(text).not.toBe(new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
-    expect(text).toContain(new Date(at).toLocaleString([], { day: 'numeric' }));
-  });
-});
-
 describe('usageLimitBanner', () => {
-  const resetTime = formatResetTime(NOW + HOUR, NOW);
+  const resetTime = formatMoment(NOW + HOUR, NOW);
 
   it('says when it will continue while a continue is scheduled', () => {
     expect(usageLimitBanner({ resetsAt: NOW + HOUR, resumeAt: NOW + HOUR + 30_000 }, WAIT_DAYS, NOW)).toEqual({
@@ -164,7 +150,7 @@ describe('usageLimitBanner', () => {
     const far = NOW + WAIT_DAYS * DAY + HOUR;
     expect(usageLimitBanner({ resetsAt: far, resumeAt: null }, WAIT_DAYS, NOW)).toEqual({
       kind: 'too-far',
-      message: `Usage limit reached · resets ${formatResetTime(far, NOW)}, too far out to wait for`,
+      message: `Usage limit reached · resets ${formatMoment(far, NOW)}, too far out to wait for`,
     });
     expect(usageLimitBanner({ resetsAt: far, resumeAt: null }, 4, NOW).kind).toBe('offer');
   });
@@ -173,7 +159,7 @@ describe('usageLimitBanner', () => {
     const resetsAt = NOW - 2 * DAY;
     expect(usageLimitBanner({ resetsAt, resumeAt: null, missedAt: NOW }, WAIT_DAYS, NOW)).toEqual({
       kind: 'missed',
-      message: `Not continued: Philibert was closed when the limit reset at ${formatResetTime(resetsAt, NOW)}`,
+      message: `Not continued: Philibert was closed when the limit reset at ${formatMoment(resetsAt, NOW)}`,
     });
   });
 });
@@ -182,7 +168,7 @@ describe('usageWarningMessage', () => {
   it("says it in the CLI's words, with the limit's own name", () => {
     const resetsAt = NOW + 3 * 24 * HOUR;
     expect(usageWarningMessage({ utilization: 0.8, limitType: 'seven_day', resetsAt }, NOW))
-      .toBe(`You've used 80% of your weekly limit · resets ${formatResetTime(resetsAt, NOW)}`);
+      .toBe(`You've used 80% of your weekly limit · resets ${formatMoment(resetsAt, NOW)}`);
     expect(usageWarningMessage({ utilization: 0.919, limitType: 'five_hour' }, NOW))
       .toBe("You've used 91% of your session limit");
   });

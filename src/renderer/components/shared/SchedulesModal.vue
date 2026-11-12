@@ -14,9 +14,8 @@ import { computed } from 'vue';
 import { useNowTicker } from '../../composables/useNowTicker';
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
-import { formatDuration } from '../../utils/date';
+import { formatDuration, formatMoment } from '../../utils/date';
 import { scheduleRows, type ScheduleRow } from '../../utils/schedules';
-import { formatResetTime } from '../../utils/usage-limit';
 
 import Modal from './Modal.vue';
 
@@ -46,8 +45,8 @@ function when(row: ScheduleRow): string {
     return 'Paused — resumes when this discussion runs again';
   }
   if (row.nextRunAt === null) return 'Next run unknown';
-  if (row.due) return `Due since ${formatResetTime(row.nextRunAt, now.value)}`;
-  return `${formatResetTime(row.nextRunAt, now.value)} · in ${formatDuration(row.nextRunAt - now.value)}`;
+  if (row.due) return `Due since ${formatMoment(row.nextRunAt, now.value)}`;
+  return `${formatMoment(row.nextRunAt, now.value)} · in ${formatDuration(row.nextRunAt - now.value)}`;
 }
 
 /** What it will send when it happens. */

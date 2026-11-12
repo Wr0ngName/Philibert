@@ -38,7 +38,8 @@ import { ConversationService } from '../../../main/services/ConversationService'
 import '../../../preload/preload';
 import ChatWindow from '../../components/chat/ChatWindow.vue';
 import { CONSTANTS } from '../../constants/app';
-import { USAGE_LIMIT_CHECK_INTERVAL_MS, USAGE_LIMIT_CONTINUE_PROMPT, formatResetTime } from '../../utils/usage-limit';
+import { formatMoment } from '../../utils/date';
+import { USAGE_LIMIT_CHECK_INTERVAL_MS, USAGE_LIMIT_CONTINUE_PROMPT } from '../../utils/usage-limit';
 import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
@@ -179,7 +180,7 @@ describe('a usage limit waited on across a restart', () => {
     it('is not done, and the user is told it waits on them', async () => {
       expect(sends).toEqual([]);
       expect(app.text()).toContain(
-        `Not continued: Philibert was closed when the limit reset at ${formatResetTime(NOW + HOUR, NOW + 2 * HOUR)}`,
+        `Not continued: Philibert was closed when the limit reset at ${formatMoment(NOW + HOUR, NOW + 2 * HOUR)}`,
       );
       expect(missedContinuesNotified).toEqual([[id]]);
       // What flashes the window and marks it in the list.
