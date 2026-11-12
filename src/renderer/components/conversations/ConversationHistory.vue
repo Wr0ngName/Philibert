@@ -279,9 +279,10 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
       </div>
     </div>
 
-    <!-- Active or archived -->
+    <!-- Active or archived: two equal halves of the row, a line between
+         them. The row's own borders frame it, so the halves have none. -->
     <div
-      class="flex gap-1 px-3 py-1.5 border-b border-surface-200 dark:border-surface-700 text-xs"
+      class="list-views flex divide-x divide-surface-200 dark:divide-surface-700 border-b border-surface-200 dark:border-surface-700 text-xs"
       role="tablist"
       aria-label="Which discussions to list"
     >
@@ -291,7 +292,7 @@ function handleRenameKeydown(event: KeyboardEvent, id: string) {
         role="tab"
         :aria-selected="listView === view"
         :class="[
-          'px-2 py-0.5 rounded-md transition-colors',
+          'flex-1 basis-0 min-w-0 truncate px-2 py-1.5 text-center transition-colors',
           listView === view
             ? 'bg-surface-200 dark:bg-surface-700 text-surface-800 dark:text-surface-100 font-medium'
             : 'text-surface-500 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-800',
