@@ -8,31 +8,54 @@
 
 import { describe, it, expect } from 'vitest';
 
+import type { UsageLimitWait } from '@shared/types';
+
 import {
-  MAX_USAGE_LIMIT_WAIT_MS,
   canWaitFor,
   dueWaits,
   formatResetTime,
+  maxUsageLimitWaitDays,
   resumeTimeFor,
   scheduleWait,
   usageLimitBanner,
   usageWarningKey,
   usageWarningMessage,
   waitForStop,
-  type UsageLimitWait,
 } from '../usage-limit';
 
 const NOW = new Date(2026, 9, 26, 14, 0).getTime();
 const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+/** The setting's default, three days. */
+const WAIT_DAYS = 3;
 
 describe('canWaitFor', () => {
-  it('waits for a reset up to a day out, and not beyond', () => {
-    expect(canWaitFor(NOW + MAX_USAGE_LIMIT_WAIT_MS, NOW)).toBe(true);
-    expect(canWaitFor(NOW + MAX_USAGE_LIMIT_WAIT_MS + 1, NOW)).toBe(false);
+  it('waits for a reset up to the days set, and not beyond', () => {
+    expect(canWaitFor(NOW + 3 * DAY, 3, NOW)).toBe(true);
+    expect(canWaitFor(NOW + 3 * DAY + 1, 3, NOW)).toBe(false);
+    expect(canWaitFor(NOW + 7 * DAY, 7, NOW)).toBe(true);
+    expect(canWaitFor(NOW + DAY + 1, 1, NOW)).toBe(false);
   });
 
   it('waits for a reset that has already passed', () => {
-    expect(canWaitFor(NOW - HOUR, NOW)).toBe(true);
+    expect(canWaitFor(NOW - HOUR, 1, NOW)).toBe(true);
+  });
+});
+
+describe('maxUsageLimitWaitDays', () => {
+  it('lets the wait go as far as the archive delay, and no further', () => {
+    expect(maxUsageLimitWaitDays(7)).toBe(7);
+    expect(maxUsageLimitWaitDays(30)).toBe(7);
+  });
+
+  it('goes to a week when nothing is archived for being inactive', () => {
+    expect(maxUsageLimitWaitDays(0)).toBe(7);
+  });
+
+  it('stops at a shorter archive delay', () => {
+    // No such delay among the setting's choices today: the rule holds for one all the same.
+    expect(maxUsageLimitWaitDays(5 as never)).toBe(5);
+    expect(maxUsageLimitWaitDays(0.5 as never)).toBe(1);
   });
 });
 
@@ -51,7 +74,7 @@ describe('waitForStop', () => {
   const stop = { resetsAt: NOW + HOUR, limitType: 'five_hour' };
 
   it('schedules a continue when automatic continue is on', () => {
-    expect(waitForStop(stop, true, NOW, () => 0)).toEqual({
+    expect(waitForStop(stop, true, WAIT_DAYS, NOW, () => 0)).toEqual({
       resetsAt: NOW + HOUR,
       resumeAt: NOW + HOUR + 30_000,
       limitType: 'five_hour',
@@ -59,12 +82,13 @@ describe('waitForStop', () => {
   });
 
   it('only records the wait when automatic continue is off', () => {
-    expect(waitForStop(stop, false, NOW).resumeAt).toBeNull();
+    expect(waitForStop(stop, false, WAIT_DAYS, NOW).resumeAt).toBeNull();
   });
 
   it('does not schedule a reset too far out to wait for', () => {
-    const far = { resetsAt: NOW + MAX_USAGE_LIMIT_WAIT_MS + HOUR };
-    expect(waitForStop(far, true, NOW).resumeAt).toBeNull();
+    const far = { resetsAt: NOW + WAIT_DAYS * DAY + HOUR };
+    expect(waitForStop(far, true, WAIT_DAYS, NOW).resumeAt).toBeNull();
+    expect(waitForStop(far, true, 4, NOW).resumeAt).not.toBeNull();
   });
 });
 
@@ -72,11 +96,16 @@ describe('scheduleWait', () => {
   const unscheduled: UsageLimitWait = { resetsAt: NOW + HOUR, resumeAt: null };
 
   it('schedules a wait the user asks for', () => {
-    expect(scheduleWait(unscheduled, NOW, () => 0)).toEqual({ resetsAt: NOW + HOUR, resumeAt: NOW + HOUR + 30_000 });
+    expect(scheduleWait(unscheduled, WAIT_DAYS, NOW, () => 0)).toEqual({ resetsAt: NOW + HOUR, resumeAt: NOW + HOUR + 30_000 });
   });
 
   it('refuses one too far out', () => {
-    expect(scheduleWait({ resetsAt: NOW + 2 * MAX_USAGE_LIMIT_WAIT_MS, resumeAt: null }, NOW)).toBeNull();
+    expect(scheduleWait({ resetsAt: NOW + (WAIT_DAYS + 1) * DAY, resumeAt: null }, WAIT_DAYS, NOW)).toBeNull();
+  });
+
+  it('schedules a missed one again, as no longer missed', () => {
+    const missed: UsageLimitWait = { resetsAt: NOW - HOUR, resumeAt: null, missedAt: NOW - HOUR };
+    expect(scheduleWait(missed, WAIT_DAYS, NOW, () => 0)).toEqual({ resetsAt: NOW - HOUR, resumeAt: NOW + 30_000 });
   });
 });
 
@@ -110,32 +139,41 @@ describe('usageLimitBanner', () => {
   const resetTime = formatResetTime(NOW + HOUR, NOW);
 
   it('says when it will continue while a continue is scheduled', () => {
-    expect(usageLimitBanner({ resetsAt: NOW + HOUR, resumeAt: NOW + HOUR + 30_000 }, NOW)).toEqual({
+    expect(usageLimitBanner({ resetsAt: NOW + HOUR, resumeAt: NOW + HOUR + 30_000 }, WAIT_DAYS, NOW)).toEqual({
       kind: 'waiting',
       message: `Usage limit reached · continuing automatically at ${resetTime}`,
     });
   });
 
   it('says it is about to continue once the reset has passed', () => {
-    expect(usageLimitBanner({ resetsAt: NOW - 1, resumeAt: NOW + 30_000 }, NOW).kind).toBe('resuming');
+    expect(usageLimitBanner({ resetsAt: NOW - 1, resumeAt: NOW + 30_000 }, WAIT_DAYS, NOW).kind).toBe('resuming');
   });
 
   it('offers the wait when nothing is scheduled', () => {
-    expect(usageLimitBanner({ resetsAt: NOW + HOUR, resumeAt: null }, NOW)).toEqual({
+    expect(usageLimitBanner({ resetsAt: NOW + HOUR, resumeAt: null }, WAIT_DAYS, NOW)).toEqual({
       kind: 'offer',
       message: `Usage limit reached · resets at ${resetTime}`,
     });
   });
 
   it('offers to continue now once the limit has reset', () => {
-    expect(usageLimitBanner({ resetsAt: NOW - 1, resumeAt: null }, NOW).kind).toBe('ready');
+    expect(usageLimitBanner({ resetsAt: NOW - 1, resumeAt: null }, WAIT_DAYS, NOW).kind).toBe('ready');
   });
 
   it('says when a reset is too far out to wait for', () => {
-    const far = NOW + MAX_USAGE_LIMIT_WAIT_MS + HOUR;
-    expect(usageLimitBanner({ resetsAt: far, resumeAt: null }, NOW)).toEqual({
+    const far = NOW + WAIT_DAYS * DAY + HOUR;
+    expect(usageLimitBanner({ resetsAt: far, resumeAt: null }, WAIT_DAYS, NOW)).toEqual({
       kind: 'too-far',
       message: `Usage limit reached · resets ${formatResetTime(far, NOW)}, too far out to wait for`,
+    });
+    expect(usageLimitBanner({ resetsAt: far, resumeAt: null }, 4, NOW).kind).toBe('offer');
+  });
+
+  it('says a continue was missed while the app was closed, whatever else holds', () => {
+    const resetsAt = NOW - 2 * DAY;
+    expect(usageLimitBanner({ resetsAt, resumeAt: null, missedAt: NOW }, WAIT_DAYS, NOW)).toEqual({
+      kind: 'missed',
+      message: `Not continued: Philibert was closed when the limit reset at ${formatResetTime(resetsAt, NOW)}`,
     });
   });
 });

@@ -192,6 +192,7 @@ async function main(): Promise<void> {
           projectPermissionService,
           conversationService,
           updateService,
+          notificationService,
         },
         getMainWindow
       );

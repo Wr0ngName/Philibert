@@ -486,6 +486,12 @@ const electronAPI: ElectronAPI = {
     setArchived: (id: string, archived: boolean) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_ARCHIVED, id, archived),
 
+    setUsageLimitWait: (id, wait) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_USAGE_LIMIT_WAIT, id, wait),
+
+    restoreUsageLimitWaits: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_RESTORE_USAGE_LIMIT_WAITS),
+
     update: (update) =>
       ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE, update),
 

@@ -9,8 +9,8 @@
  * keeps its state while another tab is looked at.
  */
 
-import type { AutoArchiveDays, CompletionNotifications, ExecutionMode, LogLevel, SessionRetention, SidebarLayout, UpdateChannel, WhisperModelId } from '@shared/types';
-import { AUTO_ARCHIVE_DAYS, CLAUDE_DEFAULT_SESSION_RETENTION_DAYS, DEFAULT_CONFIG, SESSION_RETENTION_STOPS } from '@shared/types';
+import type { AutoArchiveDays, CompletionNotifications, ExecutionMode, LogLevel, SessionRetention, SidebarLayout, UpdateChannel, UsageLimitWaitDays, WhisperModelId } from '@shared/types';
+import { AUTO_ARCHIVE_DAYS, CLAUDE_DEFAULT_SESSION_RETENTION_DAYS, DEFAULT_CONFIG, SESSION_RETENTION_STOPS, USAGE_LIMIT_WAIT_DAYS } from '@shared/types';
 import type { SettingsTab } from '@shared/settings-tabs';
 import { SETTINGS_TABS } from '@shared/settings-tabs';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE, WHISPER_MODELS } from '@shared/speech';
@@ -21,6 +21,7 @@ import { SETTINGS_DIALOG_SIZE } from '../../constants/layout';
 import { useSettingsStore } from '../../stores/settings';
 import { useUiStore } from '../../stores/ui';
 import { logger } from '../../utils/logger';
+import { maxUsageLimitWaitDays } from '../../utils/usage-limit';
 import Button from '../shared/Button.vue';
 import Modal from '../shared/Modal.vue';
 import AuthForm from '../shared/AuthForm.vue';
@@ -114,6 +115,7 @@ const localLogLevel = ref<LogLevel>('info');
 const localEnableNotifications = ref(true);
 const localCompletionNotifications = ref<CompletionNotifications>('all-done');
 const localAutoContinueAtUsageLimit = ref(true);
+const localUsageLimitWaitDays = ref<UsageLimitWaitDays>(DEFAULT_CONFIG.usageLimitWaitDays);
 const localUpdateChannel = ref<UpdateChannel>('stable');
 const localExecutionMode = ref<ExecutionMode>('sdk');
 const localSpeechEnabled = ref(false);
@@ -151,6 +153,7 @@ const sidebarLayoutOptions: { value: SidebarLayout; label: string; sketch: strin
 
 /** A number of days as the sliders say it. */
 const DAY_LABELS: Record<number, string> = {
+  1: '1 day',
   7: '1 week',
   14: '2 weeks',
   30: '1 month',
@@ -272,6 +275,22 @@ async function saveSessionRetention(): Promise<boolean> {
   }
 }
 
+/*
+ * How far ahead a usage limit's reset may be and still be waited for. No
+ * further than the archive delay (maxUsageLimitWaitDays): archiving it
+ * shorter brings the wait down with it.
+ */
+const longestUsageLimitWait = computed(() => maxUsageLimitWaitDays(localAutoArchiveDays.value));
+const usageLimitWaitIndex = computed({
+  get: () => USAGE_LIMIT_WAIT_DAYS.indexOf(localUsageLimitWaitDays.value),
+  set: (index: number) => {
+    localUsageLimitWaitDays.value = USAGE_LIMIT_WAIT_DAYS[Math.min(index, USAGE_LIMIT_WAIT_DAYS.indexOf(longestUsageLimitWait.value))];
+  },
+});
+watch(longestUsageLimitWait, (longest) => {
+  if (localUsageLimitWaitDays.value > longest) localUsageLimitWaitDays.value = longest;
+});
+
 /** Take the archive setting from the config, slider position included. */
 function loadAutoArchive(days: AutoArchiveDays): void {
   localAutoArchiveDays.value = days;
@@ -321,6 +340,7 @@ function loadFromConfig(): void {
   localEnableNotifications.value = saved.enableNotifications;
   localCompletionNotifications.value = saved.completionNotifications;
   localAutoContinueAtUsageLimit.value = saved.autoContinueAtUsageLimit;
+  localUsageLimitWaitDays.value = saved.usageLimitWaitDays;
   localUpdateChannel.value = saved.updateChannel;
   localExecutionMode.value = saved.executionMode;
   localSpeechEnabled.value = saved.speechEnabled;
@@ -364,6 +384,7 @@ async function saveSettings() {
   await settingsStore.setEnableNotifications(localEnableNotifications.value);
   await settingsStore.setCompletionNotifications(localCompletionNotifications.value);
   await settingsStore.setAutoContinueAtUsageLimit(localAutoContinueAtUsageLimit.value);
+  await settingsStore.setUsageLimitWaitDays(localUsageLimitWaitDays.value);
   await settingsStore.setUpdateChannel(localUpdateChannel.value);
   const effectiveMode = config.value.authMethod === 'oauth' ? localExecutionMode.value : 'sdk';
   await settingsStore.setExecutionMode(effectiveMode);
@@ -460,6 +481,39 @@ function cancel() {
                 v-model="localAutoContinueAtUsageLimit"
                 label="Toggle continuing automatically at usage limit"
               />
+            </div>
+            <div class="usage-limit-wait mt-3 p-3 rounded-lg border border-surface-300 dark:border-surface-600">
+              <label
+                for="usage-limit-wait"
+                class="block text-sm text-surface-700 dark:text-surface-300 mb-2"
+              >
+                Wait for a reset up to {{ daysLabel(localUsageLimitWaitDays) }} ahead
+              </label>
+              <input
+                id="usage-limit-wait"
+                v-model.number="usageLimitWaitIndex"
+                type="range"
+                min="0"
+                :max="USAGE_LIMIT_WAIT_DAYS.length - 1"
+                step="1"
+                :aria-valuetext="daysLabel(localUsageLimitWaitDays)"
+                class="w-full h-2 bg-surface-200 dark:bg-surface-700 rounded-lg appearance-none cursor-pointer"
+              >
+              <div class="flex justify-between text-xs text-surface-400 mt-1">
+                <span>{{ daysLabel(USAGE_LIMIT_WAIT_DAYS[0]) }}</span>
+                <span>{{ daysLabel(USAGE_LIMIT_WAIT_DAYS[USAGE_LIMIT_WAIT_DAYS.length - 1]) }}</span>
+              </div>
+              <div class="text-xs text-surface-500 dark:text-surface-400 mt-2">
+                A limit resetting later is not waited for. Philibert has to be running when the limit
+                resets: a continue that comes due while it is closed is not done, and you are told so
+                at the next start.
+                <span
+                  v-if="longestUsageLimitWait < USAGE_LIMIT_WAIT_DAYS[USAGE_LIMIT_WAIT_DAYS.length - 1]"
+                  class="usage-limit-wait-capped"
+                >
+                  No longer than discussions are kept out of the archive: {{ daysLabel(longestUsageLimitWait) }}.
+                </span>
+              </div>
             </div>
           </div>
         </div>

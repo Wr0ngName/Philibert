@@ -26,7 +26,8 @@ import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
 
-import type { AutoArchiveDays, Conversation, ConversationListRequest, ConversationUpdate } from '@shared/types';
+import { DEFAULT_CONFIG } from '@shared/types';
+import type { AutoArchiveDays, Conversation, ConversationListRequest, ConversationUpdate, UsageLimitWait } from '@shared/types';
 
 import { cliConfigDir } from '../../../../main/services/claude/cliCredentials';
 import { replay } from '../../../../main/services/conversation-log';
@@ -428,6 +429,8 @@ let conversationService: {
   archivedCount: (days: AutoArchiveDays) => Promise<number>;
   summary: (id: string) => Promise<unknown>;
   setArchived: (id: string, archived: boolean) => Promise<unknown>;
+  setUsageLimitWait: (id: string, wait: UsageLimitWait | null) => Promise<void>;
+  restoreUsageLimitWaits: (days: AutoArchiveDays) => Promise<unknown>;
   delete: (id: string) => Promise<void>;
 } | null = null;
 
@@ -439,6 +442,14 @@ export function realConversationService(): never {
 
 /** Conversations whose Claude Code session the main process was asked to end. */
 export const sessionsEnded: string[] = [];
+
+/** Each notification of continues missed while the app was closed: the discussions it named. */
+export const missedContinuesNotified: string[][] = [];
+
+/** The archive delay as the main process reads it from the config. */
+function savedAutoArchiveDays(): AutoArchiveDays {
+  return (storedConfig.autoArchiveDays as AutoArchiveDays | undefined) ?? DEFAULT_CONFIG.autoArchiveDays;
+}
 
 /** Config the renderer reads at startup, as the main process would supply it. */
 export let storedConfig: Record<string, unknown> = {};
@@ -474,6 +485,10 @@ export async function route(channel: string, args: unknown[]): Promise<unknown> 
         return service.summary(args[0] as string);
       case 'conversation:set-archived':
         return service.setArchived(args[0] as string, args[1] as boolean);
+      case 'conversation:set-usage-limit-wait':
+        return service.setUsageLimitWait(args[0] as string, args[1] as UsageLimitWait | null);
+      case 'conversation:restore-usage-limit-waits':
+        return service.restoreUsageLimitWaits(savedAutoArchiveDays());
       case 'conversation:delete':
         return service.delete(args[0] as string);
       default:
@@ -567,7 +582,7 @@ export async function startRealStack(options: {
    * this module stays free of main-process imports that each test file mocks
    * differently; when given, requests go through the real handlers.
    */
-  setupConversationIPC?: (service: never, sessions: never) => void;
+  setupConversationIPC?: (service: never, sessions: never, notifier: never, config: never) => void;
   workingDirectory?: string;
 }): Promise<void> {
   setActivePinia(createPinia());
@@ -589,13 +604,10 @@ export async function startRealStack(options: {
 
   mainHandlers.clear();
   mainListeners.clear();
-  conversationService = new options.ConversationService() as unknown as typeof conversationService;
-  // Register the real conversation handlers against it, when the caller
-  // supplied them. No Claude Code session runs here: ending one is recorded.
   sessionsEnded.length = 0;
-  options.setupConversationIPC?.(conversationService as never, {
-    endConversation: async (id: string) => { sessionsEnded.push(id); return true; },
-  } as never);
+  missedContinuesNotified.length = 0;
+  mainOptions = options;
+  startMain();
 
   storedConfig = {
     workingDirectory: options.workingDirectory ?? '/home/user/project',
@@ -603,6 +615,38 @@ export async function startRealStack(options: {
     recentProjects: [],
     theme: 'system',
   };
+}
+
+/** What startRealStack was given, for starting the main process again. */
+let mainOptions: Parameters<typeof startRealStack>[0] | null = null;
+
+/**
+ * Start the main process's conversation side: the real service, and the
+ * real conversation handlers against it when the caller supplied them. No
+ * Claude Code session runs here: ending one is recorded, and so is telling
+ * the user of continues missed.
+ */
+function startMain(): void {
+  const options = mainOptions!;
+  conversationService = new options.ConversationService() as unknown as typeof conversationService;
+  options.setupConversationIPC?.(
+    conversationService as never,
+    { endConversation: async (id: string) => { sessionsEnded.push(id); return true; } } as never,
+    { showUsageLimitContinuesMissed: async (ids: string[]) => { missedContinuesNotified.push(ids); } } as never,
+    { getConfig: async () => ({ ...DEFAULT_CONFIG, ...storedConfig }) } as never,
+  );
+}
+
+/**
+ * The app closed and started again on the same disk: the main process
+ * afresh — nothing held in memory, its index read back — and the renderer's
+ * stores afresh. The caller mounts and initializes what it needs again.
+ */
+export function restartApp(): void {
+  unmountApp();
+  document.body.innerHTML = '';
+  startMain();
+  setActivePinia(createPinia());
 }
 
 let mounted: ReturnType<typeof mount> | null = null;

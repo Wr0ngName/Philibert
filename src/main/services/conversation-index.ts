@@ -17,7 +17,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import type { ConversationSummary } from '../../shared/types';
+import type { ConversationSummary, UsageLimitWait } from '../../shared/types';
 import { replaceFile } from '../utils/durable-file';
 import logger from '../utils/logger';
 
@@ -57,9 +57,10 @@ interface SavedIndex {
 /**
  * Bumped when an entry's shape or content changes, so an older index is
  * rebuilt. 2: titles listed whole, where 1 kept them as saved, cut at 50.
- * 3: each entry's session id. 4: whether one with none lost it.
+ * 3: each entry's session id. 4: whether one with none lost it. 5: the
+ * usage-limit wait in each summary.
  */
-const INDEX_VERSION = 4;
+const INDEX_VERSION = 5;
 /** Files looked at together during a refresh. */
 const STAT_BATCH = 64;
 /** Saving waits for writes to settle: a turn saves its conversation often. */
@@ -106,6 +107,13 @@ export class ConversationIndex {
       ...(entry?.sessionId ? { sessionId: entry.sessionId } : {}),
       ...(entry?.sessionLost ? { sessionLost: true as const } : {}),
     };
+  }
+
+  /** The listed discussions with a usage-limit wait on record, each with it. */
+  usageLimitWaits(): Array<{ summary: ConversationSummary; wait: UsageLimitWait }> {
+    return [...this.entries.values()].flatMap(({ summary }) =>
+      summary.usageLimitWait ? [{ summary, wait: summary.usageLimitWait }] : [],
+    );
   }
 
   /** The listed discussions continuing one of these Claude Code sessions. */

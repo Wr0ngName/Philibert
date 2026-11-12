@@ -29,6 +29,7 @@ import ConversationService from '../services/ConversationService';
 import FileWatcherService from '../services/FileWatcherService';
 import GitService from '../services/GitService';
 import McpConfigService from '../services/McpConfigService';
+import NotificationService from '../services/NotificationService';
 import ProjectPermissionService from '../services/ProjectPermissionService';
 import UpdateService from '../services/UpdateService';
 import logger from '../utils/logger';
@@ -107,6 +108,8 @@ const REGISTERED_CHANNELS = {
     IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT,
     IPC_CHANNELS.CONVERSATION_SUMMARY,
     IPC_CHANNELS.CONVERSATION_SET_ARCHIVED,
+    IPC_CHANNELS.CONVERSATION_SET_USAGE_LIMIT_WAIT,
+    IPC_CHANNELS.CONVERSATION_RESTORE_USAGE_LIMIT_WAITS,
     IPC_CHANNELS.CONVERSATION_DELETE,
     IPC_CHANNELS.CONVERSATION_UPDATE,
     IPC_CHANNELS.CONVERSATION_RENAME,
@@ -180,6 +183,8 @@ interface Services {
   conversationService: ConversationService;
   /** Auto-update functionality */
   updateService: UpdateService;
+  /** Native OS notifications */
+  notificationService: NotificationService;
 }
 
 /**
@@ -219,6 +224,7 @@ export function setupIPC(
       projectPermissionService,
       conversationService,
       updateService,
+      notificationService,
     } = services;
 
     if (!authService) {
@@ -248,6 +254,9 @@ export function setupIPC(
     if (!updateService) {
       throw new ValidationError('UpdateService is required', 'updateService', ERROR_CODES.VALIDATION_REQUIRED);
     }
+    if (!notificationService) {
+      throw new ValidationError('NotificationService is required', 'notificationService', ERROR_CODES.VALIDATION_REQUIRED);
+    }
     if (typeof getMainWindow !== 'function') {
       throw new ValidationError('getMainWindow must be a function', 'getMainWindow', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
     }
@@ -260,7 +269,7 @@ export function setupIPC(
     setupMcpIPC(mcpService, claudeService, getMainWindow);
     setupProjectPermissionsIPC(projectPermissionService);
     const stopSessionsWatch = setupClaudeSessionsIPC(getMainWindow, conversationService);
-    setupConversationIPC(conversationService, claudeService);
+    setupConversationIPC(conversationService, claudeService, notificationService, configService);
     setupUpdateIPC(updateService);
     setupSpeechIPC(getMainWindow);
     setupAboutIPC();

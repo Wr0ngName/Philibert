@@ -335,3 +335,139 @@ describe('archiving', () => {
     expect(await service.summary('missing')).toBeNull();
   });
 });
+
+describe('usage-limit waits', () => {
+  const HOUR = 60 * 60 * 1000;
+
+  async function stored(id: string): Promise<Conversation> {
+    const window_ = await service.getWindow(id, 10);
+    expect(window_, `expected ${id} stored`).not.toBeNull();
+    return window_!.conversation;
+  }
+
+  it('saves a wait with the discussion, without counting it as activity', async () => {
+    const at = Date.now() - HOUR;
+    await store(conversation('a', at));
+    const wait = { resetsAt: at + 2 * HOUR, resumeAt: at + 2 * HOUR + 30_000, limitType: 'five_hour' };
+
+    await service.setUsageLimitWait('a', wait);
+    expect((await stored('a')).usageLimitWait).toEqual(wait);
+    expect((await stored('a')).updatedAt).toBe(at);
+    expect((await service.summary('a'))?.usageLimitWait).toEqual(wait);
+
+    await service.setUsageLimitWait('a', null);
+    expect((await stored('a')).usageLimitWait).toBeUndefined();
+    expect((await service.summary('a'))?.usageLimitWait).toBeUndefined();
+  });
+
+  it('keeps a wait set before the discussion was first saved, and saves it with it', async () => {
+    const now = Date.now();
+    const wait = { resetsAt: now + HOUR, resumeAt: now + HOUR + 30_000 };
+    // The first turn stopped by a limit before the save at its end.
+    await service.setUsageLimitWait('new', wait);
+    expect(await service.summary('new')).toBeNull();
+
+    await store(conversation('new', now));
+    expect((await stored('new')).usageLimitWait).toEqual(wait);
+  });
+
+  it('forgets a wait set before the first save when the discussion is deleted meanwhile', async () => {
+    const now = Date.now();
+    await service.setUsageLimitWait('gone', { resetsAt: now + HOUR, resumeAt: null });
+    await service.delete('gone');
+
+    await store(conversation('gone', now));
+    expect((await stored('gone')).usageLimitWait).toBeUndefined();
+  });
+
+  it('a later save keeps the wait: only setUsageLimitWait changes it', async () => {
+    const at = Date.now() - HOUR;
+    await store(conversation('a', at));
+    const wait = { resetsAt: at + 2 * HOUR, resumeAt: null };
+    await service.setUsageLimitWait('a', wait);
+
+    await service.update({ id: 'a', workingDirectory: '/project', updatedAt: at + 1, upsert: [] });
+    expect((await stored('a')).usageLimitWait).toEqual(wait);
+  });
+
+  describe('taken up at launch', () => {
+    const NOW = Date.now();
+
+    async function relaunch(autoArchiveDays: AutoArchiveDays = 7, now = NOW) {
+      await service.flushIndex();
+      service = new ConversationService(() => claudeDir);
+      return service.restoreUsageLimitWaits(autoArchiveDays, now);
+    }
+
+    it('keeps a continue still to come as it was, and tells of nothing', async () => {
+      await store(conversation('a', NOW - HOUR));
+      const wait = { resetsAt: NOW + HOUR, resumeAt: NOW + HOUR + 30_000 };
+      await service.setUsageLimitWait('a', wait);
+
+      const restored = await relaunch();
+      expect(restored.missed).toEqual([]);
+      expect(restored.conversations.map((c) => [c.id, c.usageLimitWait])).toEqual([['a', wait]]);
+    });
+
+    it('marks a continue that came due while closed as missed from now, once', async () => {
+      await store(conversation('a', NOW - 2 * DAY_MS));
+      await service.setUsageLimitWait('a', { resetsAt: NOW - DAY_MS, resumeAt: NOW - DAY_MS + 30_000 });
+
+      const first = await relaunch();
+      const missed = { resetsAt: NOW - DAY_MS, resumeAt: null, missedAt: NOW };
+      expect(first.missed).toEqual(['a']);
+      expect(first.conversations[0]?.usageLimitWait).toEqual(missed);
+      expect((await stored('a')).usageLimitWait).toEqual(missed);
+
+      // The next launch finds it missed already: the user is not told again,
+      // and the archive delay still counts from the first time.
+      const second = await relaunch(7, NOW + DAY_MS);
+      expect(second.missed).toEqual([]);
+      expect(second.conversations[0]?.usageLimitWait).toEqual(missed);
+    });
+
+    it('keeps a missed one out of the archive for the archive delay, though it was inactive for longer', async () => {
+      await store(conversation('a', NOW - 30 * DAY_MS));
+      await service.setUsageLimitWait('a', { resetsAt: NOW - 29 * DAY_MS, resumeAt: NOW - 29 * DAY_MS + 30_000 });
+
+      const restored = await relaunch(7);
+      expect(restored.missed).toEqual(['a']);
+      expect(await ids(false, 7)).toEqual(['a']);
+
+      // A week after the user was told: archived, and its wait dropped there.
+      const later = await relaunch(7, NOW + 7 * DAY_MS + 1);
+      expect(later.conversations).toEqual([]);
+      expect((await stored('a')).usageLimitWait).toBeUndefined();
+    });
+
+    it('drops the wait of one archived by hand, and tells of nothing', async () => {
+      await store(conversation('a', NOW - HOUR));
+      await service.setUsageLimitWait('a', { resetsAt: NOW - 1000, resumeAt: NOW - 500 });
+      await service.setArchived('a', true);
+
+      const restored = await relaunch();
+      expect(restored).toEqual({ conversations: [], missed: [] });
+      expect((await stored('a')).usageLimitWait).toBeUndefined();
+    });
+
+    it('drops the wait of one whose session is gone, and tells of nothing', async () => {
+      await store(conversation('a', NOW - HOUR));
+      await service.setUsageLimitWait('a', { resetsAt: NOW - 1000, resumeAt: NOW - 500 });
+      sessionCleanedUp('session-a');
+
+      const restored = await relaunch();
+      expect(restored).toEqual({ conversations: [], missed: [] });
+      expect((await stored('a')).usageLimitWait).toBeUndefined();
+    });
+
+    it('drops an offered wait left past the archive delay', async () => {
+      await store(conversation('a', NOW - 20 * DAY_MS));
+      await service.setUsageLimitWait('a', { resetsAt: NOW - 19 * DAY_MS, resumeAt: null });
+
+      expect(await relaunch(7)).toEqual({ conversations: [], missed: [] });
+      // When nothing is archived for being inactive, it stays on offer.
+      await service.setUsageLimitWait('a', { resetsAt: NOW - 19 * DAY_MS, resumeAt: null });
+      expect((await relaunch(0)).conversations.map((c) => c.id)).toEqual(['a']);
+    });
+  });
+});

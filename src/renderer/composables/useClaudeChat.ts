@@ -23,6 +23,7 @@ import { nextFlush } from '../utils/prompt-queue';
 import {
   USAGE_LIMIT_CHECK_INTERVAL_MS,
   USAGE_LIMIT_CONTINUE_PROMPT,
+  canWaitFor,
   scheduleWait,
   waitForStop,
 } from '../utils/usage-limit';
@@ -256,8 +257,11 @@ export function useClaudeChat() {
     chatStore.beginMessageBuffer(conversationId);
 
     // Any turn ends a wait for a usage limit to reset: it is either the
-    // continue itself, or the user taking over from it.
-    chatStore.setUsageLimitWait(conversationId, null);
+    // continue itself, or the user taking over from it. Its message is
+    // activity from now, ahead of the save at the turn's end, or the wait,
+    // which held off archiving, would leave it archived for the turn.
+    conversationsStore.noteActivity(conversationId, userMessage.timestamp);
+    conversationsStore.setUsageLimitWait(conversationId, null);
 
     try {
       // Get SDK session ID for this conversation (for resume support)
@@ -327,7 +331,7 @@ export function useClaudeChat() {
 
       if (chatStore.isConversationLoading(conversationId)) {
         // A turn is already running, so there is nothing left to continue.
-        chatStore.setUsageLimitWait(conversationId, null);
+        conversationsStore.setUsageLimitWait(conversationId, null);
         return;
       }
 
@@ -335,12 +339,12 @@ export function useClaudeChat() {
         // Archived while it waited: put aside, so not continued behind the
         // user's back — and a continue would bring it back by itself.
         logger.info('Continue after usage limit dropped: the discussion is archived', { conversationId });
-        chatStore.setUsageLimitWait(conversationId, null);
+        conversationsStore.setUsageLimitWait(conversationId, null);
         return;
       }
 
       if (await refuseSessionGone(conversationId)) {
-        chatStore.setUsageLimitWait(conversationId, null);
+        conversationsStore.setUsageLimitWait(conversationId, null);
         return;
       }
 
@@ -351,7 +355,7 @@ export function useClaudeChat() {
       }
 
       if (!settingsStore.hasAuth) {
-        chatStore.setUsageLimitWait(conversationId, null);
+        conversationsStore.setUsageLimitWait(conversationId, null);
         chatStore.setError(conversationId, 'Could not continue after the usage limit reset: please log in or configure your API key in Settings');
         return;
       }
@@ -360,7 +364,7 @@ export function useClaudeChat() {
         const window_ = await conversationsStore.readWindow(conversationId);
         if (!window_) {
           logger.warn('Conversation to continue after usage limit no longer exists', { conversationId });
-          chatStore.setUsageLimitWait(conversationId, null);
+          conversationsStore.setUsageLimitWait(conversationId, null);
           return;
         }
         chatStore.seedBackgroundWindow(conversationId, window_.conversation.messages, window_.olderCount);
@@ -382,6 +386,18 @@ export function useClaudeChat() {
     }
   }
 
+  /** One look at the waits on record: see the poll set up in setupListeners. */
+  function checkUsageLimitWaits(): void {
+    for (const [id] of chatStore.usageLimitWaits()) {
+      if (!conversationsStore.isConversationArchived(id)) continue;
+      logger.info('Usage-limit wait dropped: the discussion is archived', { conversationId: id });
+      conversationsStore.setUsageLimitWait(id, null);
+    }
+    for (const id of chatStore.dueUsageLimitWaits(Date.now())) {
+      void continueAfterUsageLimit(id);
+    }
+  }
+
   /** Continue the current conversation's stopped task now, without waiting. */
   async function continueUsageLimitNow(): Promise<void> {
     const conversationId = conversationsStore.currentConversationId;
@@ -393,8 +409,8 @@ export function useClaudeChat() {
     const conversationId = conversationsStore.currentConversationId;
     const wait = chatStore.usageLimitWait;
     if (!conversationId || !wait) return;
-    const scheduled = scheduleWait(wait, Date.now());
-    if (scheduled) chatStore.setUsageLimitWait(conversationId, scheduled);
+    const scheduled = scheduleWait(wait, settingsStore.usageLimitWaitDays, Date.now());
+    if (scheduled) conversationsStore.setUsageLimitWait(conversationId, scheduled);
   }
 
   /** Unschedule the current conversation's continue, keeping the wait on offer. */
@@ -402,13 +418,13 @@ export function useClaudeChat() {
     const conversationId = conversationsStore.currentConversationId;
     const wait = chatStore.usageLimitWait;
     if (!conversationId || !wait) return;
-    chatStore.setUsageLimitWait(conversationId, { ...wait, resumeAt: null });
+    conversationsStore.setUsageLimitWait(conversationId, { ...wait, resumeAt: null });
   }
 
   /** Forget the current conversation's usage-limit stop altogether. */
   function dismissUsageLimit(): void {
     const conversationId = conversationsStore.currentConversationId;
-    if (conversationId) chatStore.setUsageLimitWait(conversationId, null);
+    if (conversationId) conversationsStore.setUsageLimitWait(conversationId, null);
   }
 
   /**
@@ -789,17 +805,16 @@ export function useClaudeChat() {
         },
       );
 
-      // Poll for due continues only while one is scheduled.
+      // Poll while a wait is on record: for continues come due, and for
+      // discussions archived meanwhile — by hand, or for being inactive past
+      // what their wait allowed — whose wait goes: nothing will continue
+      // them, and nothing should call the user to them.
       watch(
-        () => chatStore.hasScheduledUsageLimitWait,
-        (scheduled) => {
-          if (scheduled && !usageLimitTimer) {
-            usageLimitTimer = setInterval(() => {
-              for (const id of chatStore.dueUsageLimitWaits(Date.now())) {
-                void continueAfterUsageLimit(id);
-              }
-            }, USAGE_LIMIT_CHECK_INTERVAL_MS);
-          } else if (!scheduled && usageLimitTimer) {
+        () => chatStore.hasUsageLimitWait,
+        (waiting) => {
+          if (waiting && !usageLimitTimer) {
+            usageLimitTimer = setInterval(checkUsageLimitWaits, USAGE_LIMIT_CHECK_INTERVAL_MS);
+          } else if (!waiting && usageLimitTimer) {
             clearInterval(usageLimitTimer);
             usageLimitTimer = null;
           }
@@ -808,11 +823,16 @@ export function useClaudeChat() {
       );
 
       // Turning automatic continue off stops the continues already scheduled,
-      // as it does in the CLI; each stays on offer in its conversation.
+      // as it does in the CLI, and waiting less far ahead stops those now too
+      // far out; each stays on offer in its conversation.
       watch(
-        () => settingsStore.autoContinueAtUsageLimit,
-        (enabled) => {
-          if (!enabled) chatStore.unscheduleUsageLimitWaits();
+        () => [settingsStore.autoContinueAtUsageLimit, settingsStore.usageLimitWaitDays] as const,
+        ([enabled, waitDays]) => {
+          const now = Date.now();
+          for (const [id, wait] of chatStore.usageLimitWaits()) {
+            if (wait.resumeAt === null || (enabled && canWaitFor(wait.resetsAt, waitDays, now))) continue;
+            conversationsStore.setUsageLimitWait(id, { ...wait, resumeAt: null });
+          }
         },
       );
     });
@@ -821,14 +841,14 @@ export function useClaudeChat() {
     // so the queue is already held when done decides whether to flush it:
     // a queued prompt sent now would only hit the same limit.
     cleanupUsageLimit = window.electron.claude.onUsageLimit((conversationId, stop) => {
-      const wait = waitForStop(stop, settingsStore.autoContinueAtUsageLimit, Date.now());
+      const wait = waitForStop(stop, settingsStore.autoContinueAtUsageLimit, settingsStore.usageLimitWaitDays, Date.now());
       logger.info('Turn stopped by a usage limit', {
         conversationId,
         resetsAt: new Date(wait.resetsAt).toISOString(),
         limitType: wait.limitType,
         resumeAt: wait.resumeAt === null ? null : new Date(wait.resumeAt).toISOString(),
       });
-      chatStore.setUsageLimitWait(conversationId, wait);
+      conversationsStore.setUsageLimitWait(conversationId, wait);
       chatStore.holdQueuedPrompts(conversationId);
     });
 

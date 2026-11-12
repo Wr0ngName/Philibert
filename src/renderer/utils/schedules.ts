@@ -14,9 +14,7 @@
  * day of week are restricted, a day matching either matches.
  */
 
-import type { SessionSchedule } from '@shared/types';
-
-import type { UsageLimitWait } from './usage-limit';
+import type { SessionSchedule, UsageLimitWait } from '@shared/types';
 
 interface Field {
   min: number;

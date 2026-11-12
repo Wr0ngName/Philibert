@@ -13,8 +13,10 @@ import {
   ConversationListRequest,
   ConversationUpdate,
   IPC_CHANNELS,
+  UsageLimitWait,
 } from '../../shared/types';
 import { ConfigurationError, ValidationError, ERROR_CODES } from '../errors';
+import type ConfigService from '../services/ConfigService';
 import ConversationService from '../services/ConversationService';
 import { ImageStore } from '../services/ImageStore';
 import { deleteToolResults } from '../services/claude/session-records';
@@ -51,7 +53,44 @@ export interface ConversationSessions {
   endConversation(conversationId: string): void;
 }
 
-export function setupConversationIPC(conversationService: ConversationService, sessions: ConversationSessions): void {
+/** Telling the user about continues missed while the app was closed; see NotificationService. */
+export interface MissedContinueNotifier {
+  showUsageLimitContinuesMissed(conversationIds: string[]): Promise<void>;
+}
+
+/** A usage-limit wait as the renderer sends it: times in epoch milliseconds. */
+function validateUsageLimitWait(value: unknown): UsageLimitWait | null {
+  if (value === null) return null;
+  validateObject(value as object, 'Usage-limit wait');
+  const wait = value as Record<string, unknown>;
+  const isTime = (time: unknown) => typeof time === 'number' && Number.isFinite(time);
+  if (!isTime(wait.resetsAt)) {
+    throw new ValidationError('resetsAt must be a number', 'resetsAt', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+  }
+  if (wait.resumeAt !== null && !isTime(wait.resumeAt)) {
+    throw new ValidationError('resumeAt must be a number or null', 'resumeAt', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+  }
+  if (wait.limitType !== undefined && typeof wait.limitType !== 'string') {
+    throw new ValidationError('limitType must be a string', 'limitType', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+  }
+  if (wait.missedAt !== undefined && !isTime(wait.missedAt)) {
+    throw new ValidationError('missedAt must be a number when given', 'missedAt', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+  }
+  // Only the fields a wait has: nothing else reaches the file.
+  return {
+    resetsAt: wait.resetsAt as number,
+    resumeAt: wait.resumeAt as number | null,
+    ...(wait.limitType !== undefined ? { limitType: wait.limitType as string } : {}),
+    ...(wait.missedAt !== undefined ? { missedAt: wait.missedAt as number } : {}),
+  };
+}
+
+export function setupConversationIPC(
+  conversationService: ConversationService,
+  sessions: ConversationSessions,
+  notifier: MissedContinueNotifier,
+  config: Pick<ConfigService, 'getConfig'>,
+): void {
   // Images belong to a conversation and are deleted with it, so they are
   // registered here rather than beside the Claude handlers.
   const imageStore = new ImageStore();
@@ -126,6 +165,33 @@ export function setupConversationIPC(conversationService: ConversationService, s
     } catch (error) {
       logger.error('Failed to list conversations', { error });
       throw new ConfigurationError(formatErrorMessage('Failed to list conversations', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
+    }
+  });
+
+  // What is to happen about the usage limit that stopped a discussion's last turn.
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_USAGE_LIMIT_WAIT, async (_event, id: string, wait: unknown) => {
+    try {
+      ensureService(conversationService, 'ConversationService');
+      validateString(id, 'Conversation ID');
+      await conversationService.setUsageLimitWait(id, validateUsageLimitWait(wait));
+    } catch (error) {
+      logger.error('Failed to save a usage-limit wait', { id, error });
+      throw new ConfigurationError(formatErrorMessage('Failed to save the usage-limit wait', error), ERROR_CODES.CONVERSATION_SAVE_FAILED, error);
+    }
+  });
+
+  // The waits saved, taken up at launch; the user is told of the continues missed meanwhile.
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_RESTORE_USAGE_LIMIT_WAITS, async () => {
+    try {
+      ensureService(conversationService, 'ConversationService');
+      // From the config rather than the renderer, which may not have read it yet at launch.
+      const { autoArchiveDays } = await config.getConfig();
+      const restored = await conversationService.restoreUsageLimitWaits(autoArchiveDays);
+      if (restored.missed.length > 0) await notifier.showUsageLimitContinuesMissed(restored.missed);
+      return restored;
+    } catch (error) {
+      logger.error('Failed to take up the usage-limit waits', { error });
+      throw new ConfigurationError(formatErrorMessage('Failed to take up the usage-limit waits', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
     }
   });
 

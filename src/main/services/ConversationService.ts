@@ -22,6 +22,8 @@ import {
   ConversationSummary,
   ConversationUpdate,
   ConversationWindow,
+  RestoredUsageLimitWaits,
+  UsageLimitWait,
 } from '../../shared/types';
 import { MAIN_CONSTANTS } from '../constants/app';
 import { appendToFile, replaceFile, replaceFileWith } from '../utils/durable-file';
@@ -132,6 +134,12 @@ export class ConversationService {
    * the file the state describes.
    */
   private writesDone = new Map<string, number>();
+  /**
+   * Usage-limit waits set on a discussion not saved yet: a new discussion's
+   * first turn can be stopped by a limit before the save at its end. Put in
+   * the details when that save writes them (applyUpdate).
+   */
+  private pendingUsageLimitWaits = new Map<string, UsageLimitWait | null>();
 
   /**
    * @param claudeConfigDir where Claude Code keeps its sessions, asked each
@@ -617,10 +625,16 @@ export class ConversationService {
   private changeDetails(
     id: string,
     change: (details: ConversationDetails) => Promise<boolean> | boolean,
+    ifMissing: () => void = () => {
+      throw new Error(`Conversation not found: ${id}`);
+    },
   ): Promise<ConversationDetails | null> {
     return this.serialized(id, async () => {
       const details = await this.detailsForWriting(id);
-      if (!details) throw new Error(`Conversation not found: ${id}`);
+      if (!details) {
+        ifMissing();
+        return null;
+      }
       if (!(await change(details))) return null;
       await this.withRetries(id, () => this.writeDetails(id, details));
       await this.index.noteWritten(this.fileNameOf(id), details);
@@ -737,6 +751,78 @@ export class ConversationService {
     if (!details) throw new Error(`Conversation not found: ${id}`);
     const summary = summaryOf({ ...details, messages: [] });
     return sessionGone ? { ...summary, sessionGone: true } : summary;
+  }
+
+  /**
+   * Save what is to happen about the usage limit that stopped a discussion's
+   * last turn, or that nothing is (null). Not activity: its updatedAt stays.
+   * For a discussion not saved yet, kept until its first save.
+   */
+  async setUsageLimitWait(id: string, wait: UsageLimitWait | null): Promise<void> {
+    await this.writeUsageLimitWait(id, wait, () => {
+      this.pendingUsageLimitWaits.set(id, wait);
+    });
+  }
+
+  /** Save a discussion's usage-limit wait; `ifMissing` when it is not stored (changeDetails). */
+  private async writeUsageLimitWait(id: string, wait: UsageLimitWait | null, ifMissing?: () => void): Promise<void> {
+    await this.changeDetails(
+      id,
+      (stored) => {
+        if (wait) {
+          stored.usageLimitWait = wait;
+          return true;
+        }
+        if (!stored.usageLimitWait) return false;
+        delete stored.usageLimitWait;
+        return true;
+      },
+      ifMissing,
+    );
+  }
+
+  /**
+   * The usage-limit waits saved, for the app to take up again at launch.
+   *
+   * A continue that came due while the app was closed was not done: its wait
+   * is saved as missed from now (`missedAt`), so the user is told the task
+   * waits on them — once: the next launch finds it missed already — and has
+   * the archive delay from now to pick it up (isArchived). A wait in a
+   * discussion archived — by hand, for its session being gone, or for being
+   * inactive past what its wait allowed — is dropped: nothing will continue
+   * it, and nothing should call the user to it.
+   */
+  async restoreUsageLimitWaits(autoArchiveDays: AutoArchiveDays, now = Date.now()): Promise<RestoredUsageLimitWaits> {
+    await this.index.refresh();
+    const saved = this.index.usageLimitWaits();
+    const summaries = await this.withSessionState(saved.map((entry) => entry.summary));
+    const restored: RestoredUsageLimitWaits = { conversations: [], missed: [] };
+    for (const [i, { summary, wait }] of saved.entries()) {
+      const conversationId = summary.id;
+      try {
+        const missedNow = wait.resumeAt !== null && wait.resumeAt <= now;
+        const taken: UsageLimitWait = missedNow ? { ...wait, resumeAt: null, missedAt: now } : wait;
+        const entry: ConversationSummary = { ...summaries[i]!, usageLimitWait: taken };
+        if (isArchived(entry, autoArchiveDays, now)) {
+          logger.info('Usage-limit wait dropped: the discussion is archived', { conversationId });
+          await this.writeUsageLimitWait(conversationId, null);
+          continue;
+        }
+        if (missedNow) {
+          logger.warn('Continue after usage limit missed: it came due while the app was closed', {
+            conversationId,
+            resumeAt: new Date(wait.resumeAt!).toISOString(),
+          });
+          await this.writeUsageLimitWait(conversationId, taken);
+          restored.missed.push(conversationId);
+        }
+        restored.conversations.push(entry);
+      } catch (error) {
+        // Deleted meanwhile, say: the others are still taken up.
+        logger.warn('Could not take up a usage-limit wait', { conversationId, error });
+      }
+    }
+    return restored;
   }
 
   /** Save the index now; for quitting. */
@@ -911,12 +997,16 @@ export class ConversationService {
     }
 
     const customTitle = update.customTitle ?? stored?.customTitle;
+    // A wait set before this discussion's first save (setUsageLimitWait);
+    // forgotten once that save is written.
+    const pendingWait = stored ? undefined : this.pendingUsageLimitWaits.get(id);
     const base: ConversationDetails = stored ?? {
       id,
       title: '',
       workingDirectory: update.workingDirectory,
       createdAt: update.createdAt ?? Date.now(),
       updatedAt: update.updatedAt,
+      ...(pendingWait ? { usageLimitWait: pendingWait } : {}),
     };
     const details: ConversationDetails = {
       ...base,
@@ -963,6 +1053,7 @@ export class ConversationService {
       }
       await this.writeDetails(id, details);
     });
+    this.pendingUsageLimitWaits.delete(id);
     batch.forEach((entry, i) => {
       if (entry.putId) state.locate(entry.putId, locations[i]);
     });
@@ -1216,6 +1307,7 @@ export class ConversationService {
       }
       this.messagesFileReplaced(id);
       this.indexOutdated.delete(id);
+      this.pendingUsageLimitWaits.delete(id);
       this.index.noteDeleted(path.basename(filePath));
 
       for (const file of [messagesFileOf(filePath), messagesIndexFileOf(filePath)]) {

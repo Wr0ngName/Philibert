@@ -5,21 +5,32 @@
  * continuing automatically at 7:50pm · esc to cancel" and carries on once the
  * limit resets. That wait only exists in the CLI's interactive mode: an SDK
  * session like ours just ends the turn, so the waiting happens here. The
- * timing and the prompt are the CLI's own.
+ * timing and the prompt are the CLI's own; how far ahead a reset may be is
+ * the user's setting (usageLimitWaitDays), where the CLI caps it at a day.
  *
  * Kept as pure functions, apart from the store and the composable that act on
  * them, because this is the part with rules in it.
  */
 
-import type { UsageLimitStop, UsageWarning } from '@shared/types';
+import { DAY_MS } from '@shared/conversation-list';
+import { USAGE_LIMIT_WAIT_DAYS } from '@shared/types';
+import type { AutoArchiveDays, UsageLimitStop, UsageLimitWait, UsageLimitWaitDays, UsageWarning } from '@shared/types';
 
 /** What the CLI sends when it continues a task after the limit resets. */
 export const USAGE_LIMIT_CONTINUE_PROMPT =
   'Your claude.ai usage limit has reset. Continue the task you were working on when the limit ' +
   'was reached; do not repeat work that is already complete.';
 
-/** How far ahead a reset may be and still be waited for — the CLI's own cap. */
-export const MAX_USAGE_LIMIT_WAIT_MS = 24 * 60 * 60 * 1000;
+/**
+ * The longest wait the setting can be given: none longer than the archive
+ * delay, or a discussion would be archived before it continued — archiving
+ * counts from its last message, which is when the limit stopped it.
+ */
+export function maxUsageLimitWaitDays(autoArchiveDays: AutoArchiveDays): UsageLimitWaitDays {
+  const allowed = USAGE_LIMIT_WAIT_DAYS.filter((days) => autoArchiveDays === 0 || days <= autoArchiveDays);
+  // The shortest wait even when the archive delay is shorter still: a day.
+  return allowed[allowed.length - 1] ?? USAGE_LIMIT_WAIT_DAYS[0];
+}
 
 /**
  * How long after the reset to continue. The CLI waits between 30 and 90
@@ -36,23 +47,9 @@ const RESUME_DELAY_MAX_MS = 90_000;
  */
 export const USAGE_LIMIT_CHECK_INTERVAL_MS = 15_000;
 
-/** A conversation whose last turn a usage limit stopped. */
-export interface UsageLimitWait {
-  /** When the limit resets, in epoch milliseconds. */
-  resetsAt: number;
-  /**
-   * When to continue, in epoch milliseconds — or null when nothing is
-   * scheduled: automatic continue is off, the user cancelled it, or the reset
-   * is too far out to wait for.
-   */
-  resumeAt: number | null;
-  /** Which limit was hit, when the CLI said. */
-  limitType?: string;
-}
-
-/** Whether a reset is near enough to wait for. */
-export function canWaitFor(resetsAt: number, now: number): boolean {
-  return resetsAt - now <= MAX_USAGE_LIMIT_WAIT_MS;
+/** Whether a reset is near enough to wait for, `waitDays` ahead at most. */
+export function canWaitFor(resetsAt: number, waitDays: UsageLimitWaitDays, now: number): boolean {
+  return resetsAt - now <= waitDays * DAY_MS;
 }
 
 /** When to continue after a reset, jittered as the CLI does. */
@@ -69,10 +66,11 @@ export function resumeTimeFor(resetsAt: number, now: number, random: () => numbe
 export function waitForStop(
   stop: UsageLimitStop,
   autoContinue: boolean,
+  waitDays: UsageLimitWaitDays,
   now: number,
   random: () => number = Math.random,
 ): UsageLimitWait {
-  const scheduled = autoContinue && canWaitFor(stop.resetsAt, now);
+  const scheduled = autoContinue && canWaitFor(stop.resetsAt, waitDays, now);
   return {
     resetsAt: stop.resetsAt,
     resumeAt: scheduled ? resumeTimeFor(stop.resetsAt, now, random) : null,
@@ -80,14 +78,20 @@ export function waitForStop(
   };
 }
 
-/** The same wait with a continue scheduled, or null when it cannot be. */
+/**
+ * The same wait with a continue scheduled, or null when it cannot be. One
+ * that was missed is no longer: it is scheduled again.
+ */
 export function scheduleWait(
   wait: UsageLimitWait,
+  waitDays: UsageLimitWaitDays,
   now: number,
   random: () => number = Math.random,
 ): UsageLimitWait | null {
-  if (!canWaitFor(wait.resetsAt, now)) return null;
-  return { ...wait, resumeAt: resumeTimeFor(wait.resetsAt, now, random) };
+  if (!canWaitFor(wait.resetsAt, waitDays, now)) return null;
+  const scheduled: UsageLimitWait = { ...wait, resumeAt: resumeTimeFor(wait.resetsAt, now, random) };
+  delete scheduled.missedAt;
+  return scheduled;
 }
 
 /** Conversations whose scheduled continue is due. */
@@ -121,19 +125,26 @@ export function formatResetTime(at: number, now: number): string {
  *  - `resuming`: continue is scheduled and the reset has passed;
  *  - `offer`: nothing scheduled, the reset is ahead and near enough to wait for;
  *  - `ready`: nothing scheduled and the limit has already reset;
- *  - `too-far`: nothing scheduled, and the reset is too far out to wait for.
+ *  - `too-far`: nothing scheduled, and the reset is too far out to wait for;
+ *  - `missed`: the continue came due while the app was closed, and was not done.
  */
-export type UsageLimitBannerKind = 'waiting' | 'resuming' | 'offer' | 'ready' | 'too-far';
+export type UsageLimitBannerKind = 'waiting' | 'resuming' | 'offer' | 'ready' | 'too-far' | 'missed';
 
 export interface UsageLimitBanner {
   kind: UsageLimitBannerKind;
   message: string;
 }
 
-export function usageLimitBanner(wait: UsageLimitWait, now: number): UsageLimitBanner {
+export function usageLimitBanner(wait: UsageLimitWait, waitDays: UsageLimitWaitDays, now: number): UsageLimitBanner {
   const resetTime = formatResetTime(wait.resetsAt, now);
   const hasReset = wait.resetsAt <= now;
 
+  if (wait.missedAt !== undefined) {
+    return {
+      kind: 'missed',
+      message: `Not continued: Philibert was closed when the limit reset at ${resetTime}`,
+    };
+  }
   if (wait.resumeAt != null) {
     return hasReset
       ? { kind: 'resuming', message: 'Usage limit reset · continuing shortly' }
@@ -142,7 +153,7 @@ export function usageLimitBanner(wait: UsageLimitWait, now: number): UsageLimitB
   if (hasReset) {
     return { kind: 'ready', message: 'Usage limit has reset · continue the task where it stopped?' };
   }
-  if (!canWaitFor(wait.resetsAt, now)) {
+  if (!canWaitFor(wait.resetsAt, waitDays, now)) {
     return { kind: 'too-far', message: `Usage limit reached · resets ${resetTime}, too far out to wait for` };
   }
   return { kind: 'offer', message: `Usage limit reached · resets at ${resetTime}` };

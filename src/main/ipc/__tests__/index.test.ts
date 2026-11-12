@@ -81,6 +81,7 @@ describe('IPC teardown', () => {
       projectPermissionService: standIn(),
       conversationService: standIn(),
       updateService: standIn(),
+      notificationService: standIn(),
     }, () => null);
 
     // Guards the premise: an empty registration set would pass vacuously.

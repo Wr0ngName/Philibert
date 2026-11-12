@@ -1022,6 +1022,12 @@ export interface AppConfig {
    */
   autoContinueAtUsageLimit: boolean;
   /**
+   * How far ahead, in days, a usage limit's reset may be and still be waited
+   * for (USAGE_LIMIT_WAIT_DAYS). No longer than the archive delay, which a
+   * wait pushes back as well (isArchived in @shared/conversation-list).
+   */
+  usageLimitWaitDays: UsageLimitWaitDays;
+  /**
    * Days without a message after which a discussion is listed as archived;
    * 0 never archives one by itself. See isArchived in @shared/conversation-list.
    */
@@ -1067,6 +1073,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   switchModelsOnFlag: true,
   strictModelEnforcement: false,
   autoContinueAtUsageLimit: true,
+  usageLimitWaitDays: 3,
   autoArchiveDays: 30,
 };
 
@@ -1154,6 +1161,8 @@ export interface Conversation {
    * one archived for being inactive is not archived again straight away.
    */
   restoredAt?: number;
+  /** A usage limit stopped its last turn, and this is what is to happen about it. */
+  usageLimitWait?: UsageLimitWait;
   /**
    * The Claude Code session it continues (`sdkSessionId`) is no longer on
    * disk — Claude Code cleaned it up after its retention period, say — or it
@@ -1253,6 +1262,7 @@ export type ConversationSummary = Pick<
   | 'executionMode'
   | 'archivedAt'
   | 'restoredAt'
+  | 'usageLimitWait'
   | 'sessionGone'
 >;
 
@@ -1743,6 +1753,46 @@ export interface UsageLimitStop {
   /** Which limit was hit, e.g. 'five_hour' or 'seven_day', when the CLI said. */
   limitType?: string;
 }
+
+/**
+ * A discussion whose last turn a usage limit stopped (UsageLimitStop), and
+ * what is to happen about it. Saved with the discussion (Conversation.
+ * usageLimitWait), so a wait outlives the app being closed.
+ */
+export interface UsageLimitWait {
+  /** When the limit resets, in epoch milliseconds. */
+  resetsAt: number;
+  /**
+   * When to continue, in epoch milliseconds — or null when nothing is
+   * scheduled: automatic continue is off, the user cancelled it, the reset is
+   * too far out to wait for, or the continue was missed.
+   */
+  resumeAt: number | null;
+  /** Which limit was hit, when the CLI said. */
+  limitType?: string;
+  /**
+   * When the user was told the continue was missed: it came due while the
+   * app was closed, so it was not done, and the task waits on the user
+   * (ConversationService.restoreUsageLimitWaits). Absent unless missed.
+   */
+  missedAt?: number;
+}
+
+/**
+ * The choices of how far ahead a usage limit's reset may be and still be
+ * waited for, in days (AppConfig.usageLimitWaitDays). Interactive Claude Code
+ * waits a day at most; here the waiting is the app's own, so it can be longer.
+ */
+export const USAGE_LIMIT_WAIT_DAYS = [1, 2, 3, 4, 5, 6, 7] as const;
+
+/** The usage-limit waits found saved at launch (ConversationService.restoreUsageLimitWaits). */
+export interface RestoredUsageLimitWaits {
+  /** The list entries of the discussions with one still to be handled, each with it (`usageLimitWait`). */
+  conversations: ConversationSummary[];
+  /** The discussions among them whose continue was missed just now, while the app was closed. */
+  missed: string[];
+}
+export type UsageLimitWaitDays = (typeof USAGE_LIMIT_WAIT_DAYS)[number];
 
 /**
  * A claude.ai usage limit getting close: what interactive Claude Code shows as
@@ -2299,6 +2349,8 @@ export const IPC_CHANNELS = {
   CONVERSATION_SUMMARY: 'conversation:summary',
   /** Archive a discussion, or bring it back. */
   CONVERSATION_SET_ARCHIVED: 'conversation:set-archived',
+  CONVERSATION_SET_USAGE_LIMIT_WAIT: 'conversation:set-usage-limit-wait',
+  CONVERSATION_RESTORE_USAGE_LIMIT_WAITS: 'conversation:restore-usage-limit-waits',
   /** Apply a ConversationUpdate — the renderer's only way to write. */
   CONVERSATION_UPDATE: 'conversation:update',
   /** Read a conversation's tail plus how much is older. */

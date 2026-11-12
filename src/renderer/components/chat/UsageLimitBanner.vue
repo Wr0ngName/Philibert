@@ -10,8 +10,11 @@
 
 import { computed } from 'vue';
 
+import type { UsageLimitWait } from '@shared/types';
+
 import { useNowTicker } from '../../composables/useNowTicker';
-import { usageLimitBanner, type UsageLimitWait } from '../../utils/usage-limit';
+import { useSettingsStore } from '../../stores/settings';
+import { usageLimitBanner } from '../../utils/usage-limit';
 import NoticeBanner from '../shared/NoticeBanner.vue';
 
 interface Props {
@@ -30,7 +33,9 @@ const emit = defineEmits<{
 /** A live clock, so the wording follows the reset as it passes. */
 const now = useNowTicker(() => true);
 
-const banner = computed(() => usageLimitBanner(props.wait, now.value));
+const settingsStore = useSettingsStore();
+
+const banner = computed(() => usageLimitBanner(props.wait, settingsStore.usageLimitWaitDays, now.value));
 const scheduled = computed(() => banner.value.kind === 'waiting' || banner.value.kind === 'resuming');
 </script>
 
@@ -47,7 +52,7 @@ const scheduled = computed(() => banner.value.kind === 'waiting' || banner.value
         Continue automatically
       </button>
       <button
-        v-if="scheduled || banner.kind === 'ready'"
+        v-if="scheduled || banner.kind === 'ready' || banner.kind === 'missed'"
         type="button"
         class="btn-sm btn-amber"
         @click="emit('continue-now')"

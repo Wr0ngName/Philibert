@@ -77,6 +77,17 @@ export class NotificationService {
   }
 
   /**
+   * Continues after a usage limit came due while the app was closed, so were
+   * not done: those tasks wait on the user.
+   */
+  async showUsageLimitContinuesMissed(conversationIds: string[]): Promise<void> {
+    const body = conversationIds.length === 1
+      ? 'A usage limit reset while Philibert was closed, so a task was not continued. It waits for you.'
+      : `A usage limit reset while Philibert was closed, so ${conversationIds.length} tasks were not continued. They wait for you.`;
+    await this.showNotification('Task not continued', body, conversationIds.join(','));
+  }
+
+  /**
    * Show notification when an error occurs
    */
   showError(conversationId: string, error: string): void {

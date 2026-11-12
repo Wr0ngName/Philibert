@@ -54,11 +54,15 @@ const mockConversationService = {
   archivedCount: vi.fn(),
   summary: vi.fn(),
   setArchived: vi.fn(),
+  setUsageLimitWait: vi.fn(),
+  restoreUsageLimitWaits: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
 };
 
 const mockSessions = { endConversation: vi.fn() };
+const mockNotifier = { showUsageLimitContinuesMissed: vi.fn() };
+const mockConfig = { getConfig: vi.fn() };
 
 // Import after mocks
 import { IPC_CHANNELS, Conversation, type ConversationUpdate } from '../../../shared/types';
@@ -109,7 +113,7 @@ describe('Conversations IPC handlers', () => {
     deleteToolResults.mockResolvedValue(0);
 
     // Register handlers
-    setupConversationIPC(mockConversationService as any, mockSessions);
+    setupConversationIPC(mockConversationService as any, mockSessions, mockNotifier, mockConfig);
   });
 
   afterEach(() => {
@@ -163,7 +167,7 @@ describe('Conversations IPC handlers', () => {
 
     it('should throw when conversation service is not initialized', async () => {
       handlers.clear();
-      setupConversationIPC(null as any, mockSessions);
+      setupConversationIPC(null as any, mockSessions, mockNotifier, mockConfig);
       const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_LIST_PAGE)!;
 
       await expect(nullHandler({}, request)).rejects.toThrow(ConfigurationError);
@@ -255,7 +259,7 @@ describe('Conversations IPC handlers', () => {
 
     it('should throw when conversation service is not initialized', async () => {
       handlers.clear();
-      setupConversationIPC(null as any, mockSessions);
+      setupConversationIPC(null as any, mockSessions, mockNotifier, mockConfig);
       const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_UPDATE)!;
 
       await expect(nullHandler({}, sampleUpdate)).rejects.toThrow(ConfigurationError);
@@ -302,7 +306,7 @@ describe('Conversations IPC handlers', () => {
 
     it('should throw when conversation service is not initialized', async () => {
       handlers.clear();
-      setupConversationIPC(null as any, mockSessions);
+      setupConversationIPC(null as any, mockSessions, mockNotifier, mockConfig);
       const nullHandler = handlers.get(IPC_CHANNELS.CONVERSATION_DELETE)!;
 
       await expect(nullHandler({}, 'conv_123')).rejects.toThrow(ConfigurationError);
@@ -349,6 +353,64 @@ describe('Conversations IPC handlers', () => {
       await expect(handler({}, 'conv_123')).rejects.toThrow(ConfigurationError);
       expect(mockSessions.endConversation).not.toHaveBeenCalled();
       expect(deleteToolResults).not.toHaveBeenCalled();
+    });
+  });
+
+  // ===========================================================================
+  // Usage-limit waits
+  // ===========================================================================
+  describe('set usage-limit wait', () => {
+    let handler: (...args: unknown[]) => Promise<unknown>;
+    beforeEach(() => {
+      handler = handlers.get(IPC_CHANNELS.CONVERSATION_SET_USAGE_LIMIT_WAIT) as typeof handler;
+      mockConversationService.setUsageLimitWait.mockResolvedValue(undefined);
+    });
+
+    it('saves a wait with only the fields a wait has', async () => {
+      await handler({}, 'conv_123', { resetsAt: 10, resumeAt: 20, limitType: 'five_hour', missedAt: 30, extra: 'dropped' });
+      expect(mockConversationService.setUsageLimitWait)
+        .toHaveBeenCalledWith('conv_123', { resetsAt: 10, resumeAt: 20, limitType: 'five_hour', missedAt: 30 });
+    });
+
+    it('saves that nothing is to happen', async () => {
+      await handler({}, 'conv_123', null);
+      expect(mockConversationService.setUsageLimitWait).toHaveBeenCalledWith('conv_123', null);
+    });
+
+    it.each([
+      ['no reset time', { resumeAt: null }],
+      ['a reset time that is not a number', { resetsAt: '10', resumeAt: null }],
+      ['a continue time that is not a number', { resetsAt: 10, resumeAt: Number.NaN }],
+      ['a missed time that is not a number', { resetsAt: 10, resumeAt: null, missedAt: true }],
+      ['a limit type that is not text', { resetsAt: 10, resumeAt: null, limitType: 5 }],
+      ['no wait at all', undefined],
+    ])('refuses %s', async (_label, wait) => {
+      await expect(handler({}, 'conv_123', wait)).rejects.toThrow(ConfigurationError);
+      expect(mockConversationService.setUsageLimitWait).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('restore usage-limit waits', () => {
+    let handler: (...args: unknown[]) => Promise<unknown>;
+    beforeEach(() => {
+      handler = handlers.get(IPC_CHANNELS.CONVERSATION_RESTORE_USAGE_LIMIT_WAITS) as typeof handler;
+      mockConfig.getConfig.mockResolvedValue({ autoArchiveDays: 14 });
+    });
+
+    it('takes them up with the archive delay saved, and tells the user of those missed', async () => {
+      const restored = { conversations: [{ id: 'conv_a' }, { id: 'conv_b' }], missed: ['conv_b'] };
+      mockConversationService.restoreUsageLimitWaits.mockResolvedValue(restored);
+
+      await expect(handler({})).resolves.toBe(restored);
+
+      expect(mockConversationService.restoreUsageLimitWaits).toHaveBeenCalledWith(14);
+      expect(mockNotifier.showUsageLimitContinuesMissed).toHaveBeenCalledWith(['conv_b']);
+    });
+
+    it('tells the user nothing when none was missed', async () => {
+      mockConversationService.restoreUsageLimitWaits.mockResolvedValue({ conversations: [{ id: 'conv_a' }], missed: [] });
+      await handler({});
+      expect(mockNotifier.showUsageLimitContinuesMissed).not.toHaveBeenCalled();
     });
   });
 });

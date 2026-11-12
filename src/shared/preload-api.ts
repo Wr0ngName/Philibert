@@ -16,6 +16,8 @@ import type {
   ConversationListPage,
   ConversationListRequest,
   ConversationSummary,
+  RestoredUsageLimitWaits,
+  UsageLimitWait,
   ConversationSearchResult,
   ConversationSearchScope,
   FileChange,
@@ -388,6 +390,10 @@ export interface ElectronAPI {
     summary: (id: string) => Promise<ConversationSummary | null>;
     /** Archive a discussion, or bring it back; returns its entry as it now stands. */
     setArchived: (id: string, archived: boolean) => Promise<ConversationSummary>;
+    /** Save what is to happen about the usage limit that stopped its last turn, or null for nothing. */
+    setUsageLimitWait: (id: string, wait: UsageLimitWait | null) => Promise<void>;
+    /** The usage-limit waits saved, taken up at launch; see ConversationService.restoreUsageLimitWaits. */
+    restoreUsageLimitWaits: () => Promise<RestoredUsageLimitWaits>;
     /**
      * Apply a change — add or replace messages by id, and metadata. The only
      * write: it cannot shorten a stored conversation except where it says so.

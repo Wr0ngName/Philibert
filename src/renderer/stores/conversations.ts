@@ -17,6 +17,7 @@ import type {
   ConversationUpdate,
   ConversationWindow,
   DiscussionSettings,
+  UsageLimitWait,
 } from '@shared/types';
 
 import { getInMemoryMessages } from '../composables/useClaudeChat';
@@ -185,8 +186,10 @@ export const useConversationsStore = defineStore('conversations', () => {
     return conversations.value
       .filter((c) => inArchive(c, now) === archived)
       // The open one is listed in its place even when its page is not loaded
-      // yet — opened from search, or at start — so it is always in sight.
-      .filter((c) => !listHasMore.value || !cursor || !isAfter(c, cursor) || c.id === currentConversationId.value)
+      // yet — opened from search, or at start — so it is always in sight; so
+      // is one waiting on the user, so it is found without looking for it.
+      .filter((c) => !listHasMore.value || !cursor || !isAfter(c, cursor)
+        || c.id === currentConversationId.value || chatStore.conversationAwaitsUser(c.id))
       .sort(newestFirst);
   });
 
@@ -277,7 +280,8 @@ export const useConversationsStore = defineStore('conversations', () => {
         delete kept.archivedAt;
         delete kept.restoredAt;
         delete kept.sessionGone;
-        conversations.value[at] = { ...kept, ...summary, executionMode: summary.executionMode ?? kept.executionMode };
+        delete kept.usageLimitWait;
+        conversations.value[at] = withHeldWait({ ...kept, ...summary, executionMode: summary.executionMode ?? kept.executionMode });
       } else {
         indexById.set(summary.id, conversations.value.length);
         conversations.value.push({
@@ -287,6 +291,20 @@ export const useConversationsStore = defineStore('conversations', () => {
         });
       }
     }
+  }
+
+  /**
+   * An entry read back from disk over one held, with the usage-limit wait
+   * held for it, when one is held: what is held is newer than what the disk
+   * said, its save may still be on its way.
+   */
+  function withHeldWait(entry: Conversation): Conversation {
+    const held = chatStore.heldUsageLimitWait(entry.id);
+    if (held === undefined) return entry;
+    const merged: Conversation = { ...entry };
+    if (held) merged.usageLimitWait = held;
+    else delete merged.usageLimitWait;
+    return merged;
   }
 
   /** Ask again how many discussions are archived. */
@@ -315,13 +333,16 @@ export const useConversationsStore = defineStore('conversations', () => {
       if (generation !== listGeneration) return;
       // Read afresh: what is not on this page comes back with its own page,
       // and what is gone from the disk goes from the list. Only what is held
-      // stays regardless — the conversation on screen, and those still at
-      // work in the background, which their turns read from here.
+      // stays regardless — the conversation on screen, those still at work
+      // in the background, which their turns read from here, and those
+      // waiting on the user or on a usage limit, whose entries say when they
+      // are archived (the poll in useClaudeChat drops their wait then).
       conversations.value = conversations.value.filter(
         (c) =>
           c.id === currentConversationId.value ||
           chatStore.isConversationLoading(c.id) ||
-          chatStore.conversationHasPendingActions(c.id),
+          chatStore.conversationAwaitsUser(c.id) ||
+          !!chatStore.heldUsageLimitWait(c.id),
       );
       mergeSummaries(page.conversations);
       listCursor.value = page.conversations.at(-1) ?? null;
@@ -385,12 +406,74 @@ export const useConversationsStore = defineStore('conversations', () => {
         return false;
       }
       logger.info(archived ? 'Archived conversation' : 'Brought a conversation back from the archive', { id });
+      // Put aside: nothing continues it, nor calls the user to it.
+      if (archived) setUsageLimitWait(id, null);
       await refreshArchivedCount();
       return true;
     } catch (err) {
       logger.error('Failed to archive or restore conversation', { id, archived, error: err });
       error.value = archived ? 'Failed to archive the conversation' : 'Failed to bring the conversation back';
       return false;
+    }
+  }
+
+  /**
+   * Record what is to happen about the usage limit that stopped a discussion's
+   * last turn, or that nothing is (null) — held for the banner and the
+   * continue, on its list entry, whose archiving it puts back (isArchived),
+   * and saved, so it outlives the app being closed.
+   */
+  function setUsageLimitWait(id: string, wait: UsageLimitWait | null): void {
+    // Nothing held, nothing to clear: every saved wait was taken up at launch.
+    if (!wait && !chatStore.heldUsageLimitWait(id)) return;
+    chatStore.setUsageLimitWait(id, wait);
+    const entry = conversations.value.find((c) => c.id === id);
+    let archiveChanged = false;
+    if (entry) {
+      const wasArchived = inArchive(entry);
+      if (wait) entry.usageLimitWait = wait;
+      else delete entry.usageLimitWait;
+      archiveChanged = inArchive(entry) !== wasArchived;
+    }
+    // A plain copy: a reactive one cannot cross to the main process. The
+    // count of archived ones is asked again once saved: asked before, it is
+    // counted from what the disk said until then.
+    window.electron.conversation.setUsageLimitWait(id, wait ? { ...wait } : null)
+      .then(() => {
+        if (archiveChanged) void refreshArchivedCount();
+      })
+      .catch((err: unknown) => {
+        logger.error('Failed to save a usage-limit wait', { id, error: err });
+      });
+  }
+
+  /**
+   * Something happened in a discussion at `at` — a turn started with a
+   * message of that time — ahead of the save that stores it: its list entry
+   * counts it already, as the save will (updatedAt is its last message).
+   */
+  function noteActivity(id: string, at: number): void {
+    const entry = conversations.value.find((c) => c.id === id);
+    if (entry && entry.updatedAt < at) entry.updatedAt = at;
+  }
+
+  /**
+   * Take up the usage-limit waits saved, at launch. The main process has
+   * already marked those that came due while the app was closed as missed,
+   * and told the user so; each is held now as the others are, its entry with
+   * it — listed whatever page it is on (listedConversations), so the user
+   * finds it without looking for it.
+   */
+  async function restoreUsageLimitWaits(): Promise<void> {
+    try {
+      const restored = await window.electron.conversation.restoreUsageLimitWaits();
+      for (const summary of restored.conversations) {
+        if (summary.usageLimitWait) chatStore.setUsageLimitWait(summary.id, summary.usageLimitWait);
+      }
+      mergeSummaries(restored.conversations);
+      logger.info('Usage-limit waits taken up', { count: restored.conversations.length, missed: restored.missed.length });
+    } catch (err) {
+      logger.error('Failed to take up the usage-limit waits', { error: err });
     }
   }
 
@@ -424,7 +507,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       // Update in list with full data
       const index = conversations.value.findIndex((c: Conversation) => c.id === id);
       if (index !== -1) {
-        conversations.value[index] = conversation;
+        conversations.value[index] = withHeldWait(conversation);
       } else {
         conversations.value.push(conversation);
       }
@@ -1776,6 +1859,11 @@ export const useConversationsStore = defineStore('conversations', () => {
   async function initialize(): Promise<void> {
     logger.info('Initializing conversations store');
 
+    // The waits first: taking them up marks those missed while the app was
+    // closed, which keeps them out of the archive (isArchived) — the list and
+    // its count of archived ones are read after, so they say so. Before the
+    // last discussion opens, too, so its banner is there with it.
+    await restoreUsageLimitWaits();
     // Wait for conversation list to load before proceeding
     await loadConversationList();
 
@@ -1877,6 +1965,9 @@ export const useConversationsStore = defineStore('conversations', () => {
     loadMoreConversations,
     showListView,
     setConversationArchived,
+    setUsageLimitWait,
+    restoreUsageLimitWaits,
+    noteActivity,
     loadConversation,
     readWindow,
     writtenRecordCount,

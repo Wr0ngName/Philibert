@@ -130,7 +130,7 @@ const activityText = computed(() =>
 );
 
 function needsAttention(conversationId: string): boolean {
-  return chatStore.conversationHasPendingActions(conversationId);
+  return chatStore.conversationAwaitsUser(conversationId);
 }
 
 function isConversationActive(conversationId: string): boolean {

@@ -32,6 +32,65 @@ describe('isArchived', () => {
     // A message after it was archived brings it back.
     expect(isArchived({ updatedAt: NOW + 1, archivedAt: NOW }, 30, NOW)).toBe(false);
   });
+
+  describe('with a usage limit waited on', () => {
+    // The turn the limit stopped: its last message.
+    const STOPPED = NOW - 10 * DAY_MS;
+
+    it('continues before archiving even when the wait is as long as the archive delay', () => {
+      // Stopped, reset a week later, continued 90 seconds after that: the
+      // last moment a week-long wait allows, with a week's archive delay.
+      const resumeAt = STOPPED + 7 * DAY_MS + 90_000;
+      const wait = { resetsAt: STOPPED + 7 * DAY_MS, resumeAt };
+      const conversation = { updatedAt: STOPPED, usageLimitWait: wait };
+      // Without the wait, archived before the continue comes due.
+      expect(isArchived({ updatedAt: STOPPED }, 7, resumeAt)).toBe(true);
+      expect(isArchived(conversation, 7, resumeAt)).toBe(false);
+      expect(isArchived(conversation, 7, resumeAt + 7 * DAY_MS - 1)).toBe(false);
+    });
+
+    it('counts an offered wait from the reset, when the user can continue it', () => {
+      const wait = { resetsAt: STOPPED + 2 * DAY_MS, resumeAt: null };
+      expect(isArchived({ updatedAt: STOPPED, usageLimitWait: wait }, 7, STOPPED + 9 * DAY_MS - 1)).toBe(false);
+      expect(isArchived({ updatedAt: STOPPED, usageLimitWait: wait }, 7, STOPPED + 9 * DAY_MS + 1)).toBe(true);
+    });
+
+    it('leaves a missed continue the archive delay from when the user was told, and no longer', () => {
+      const missedAt = STOPPED + 20 * DAY_MS;
+      const wait = { resetsAt: STOPPED + DAY_MS, resumeAt: null, missedAt };
+      const conversation = { updatedAt: STOPPED, usageLimitWait: wait };
+      expect(isArchived(conversation, 7, missedAt + 7 * DAY_MS - 1)).toBe(false);
+      expect(isArchived(conversation, 7, missedAt + 7 * DAY_MS + 1)).toBe(true);
+    });
+
+    it('never keeps a discussion out of the archive for good: a wait only moves where the days count from', () => {
+      const waits = [
+        { resetsAt: STOPPED + DAY_MS, resumeAt: STOPPED + DAY_MS + 30_000 },
+        { resetsAt: STOPPED + DAY_MS, resumeAt: null },
+        { resetsAt: STOPPED + DAY_MS, resumeAt: null, missedAt: STOPPED + 3 * DAY_MS },
+      ];
+      for (const usageLimitWait of waits) {
+        expect(isArchived({ updatedAt: STOPPED, usageLimitWait }, 7, STOPPED + 365 * DAY_MS)).toBe(true);
+      }
+    });
+
+    it('does not bring back one with older activity than its last message', () => {
+      // A wait that counts from before the last message changes nothing.
+      const wait = { resetsAt: STOPPED - DAY_MS, resumeAt: null };
+      expect(isArchived({ updatedAt: STOPPED, usageLimitWait: wait }, 7, STOPPED + 7 * DAY_MS + 1)).toBe(true);
+    });
+
+    it('does not keep out of the archive one archived by hand, or whose session is gone', () => {
+      const wait = { resetsAt: NOW + DAY_MS, resumeAt: NOW + DAY_MS + 30_000 };
+      expect(isArchived({ updatedAt: STOPPED, archivedAt: NOW, usageLimitWait: wait }, 7, NOW)).toBe(true);
+      expect(isArchived({ updatedAt: NOW, sessionGone: true, usageLimitWait: wait }, 7, NOW)).toBe(true);
+    });
+
+    it('archives nothing when the setting is Never, wait or not', () => {
+      const wait = { resetsAt: STOPPED, resumeAt: null, missedAt: STOPPED };
+      expect(isArchived({ updatedAt: STOPPED, usageLimitWait: wait }, 0, NOW + 1000 * DAY_MS)).toBe(false);
+    });
+  });
 });
 
 describe('newestFirst and isAfter', () => {

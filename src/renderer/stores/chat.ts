@@ -8,14 +8,14 @@ import { ref, computed } from 'vue';
 
 import { modifiedPathsForTool } from '@shared/file-modifications';
 import { primaryModelUsage } from '@shared/model-usage';
-import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionSchedule, SessionUsage, ToolCaptureData, TaskListItem, TaskListSnapshotItem, ToolUseInfo, ToolResultData, MessageImage, UsageWarning } from '@shared/types';
+import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionSchedule, SessionUsage, ToolCaptureData, TaskListItem, TaskListSnapshotItem, ToolUseInfo, ToolResultData, MessageImage, UsageLimitWait, UsageWarning } from '@shared/types';
 
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
 import { toolUseIdForTask } from '../utils/message-tree';
 import type { DeliveringPrompt, QueuedPrompt } from '../utils/prompt-queue';
 import type { ScheduleSource } from '../utils/schedules';
-import { dueWaits, type UsageLimitWait } from '../utils/usage-limit';
+import { dueWaits } from '../utils/usage-limit';
 
 /**
  * Per-conversation state tracked for multi-instance support
@@ -477,10 +477,10 @@ export const useChatStore = defineStore('chat', () => {
     })).filter((source) => source.sessionSchedules.length > 0 || source.usageLimitWait?.resumeAt != null),
   );
 
-  /** Whether any conversation has a continue scheduled after a usage limit. */
-  const hasScheduledUsageLimitWait = computed(() => {
+  /** Whether any conversation has a usage limit's wait on record, scheduled or not. */
+  const hasUsageLimitWait = computed(() => {
     for (const state of conversationStates.value.values()) {
-      if (state.usageLimitWait?.resumeAt != null) return true;
+      if (state.usageLimitWait) return true;
     }
     return false;
   });
@@ -626,11 +626,21 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
-   * Whether any discussion waits on the user — a permission ask or a
-   * question, on screen or not: what makes the window flash in the taskbar.
+   * Whether a discussion waits on the user: a permission ask or a question,
+   * or a task a usage limit stopped whose continue was missed while the app
+   * was closed. Marked in the discussions list.
+   */
+  function conversationAwaitsUser(conversationId: string): boolean {
+    return conversationHasPendingActions(conversationId)
+      || conversationStates.value.get(conversationId)?.usageLimitWait?.missedAt !== undefined;
+  }
+
+  /**
+   * Whether any discussion waits on the user, on screen or not: what makes
+   * the window flash in the taskbar.
    */
   const anyConversationAwaitsUser = computed(() =>
-    [...conversationStates.value.keys()].some(conversationHasPendingActions),
+    [...conversationStates.value.keys()].some(conversationAwaitsUser),
   );
 
   /**
@@ -2986,7 +2996,10 @@ export const useChatStore = defineStore('chat', () => {
     usageWarning.value = warning;
   }
 
-  /** Record, replace or clear the usage-limit reset a conversation waits on. */
+  /**
+   * Hold, replace or clear the usage-limit reset a conversation waits on.
+   * Only what is held: conversationsStore.setUsageLimitWait also saves it.
+   */
   function setUsageLimitWait(conversationId: string, wait: UsageLimitWait | null): void {
     // Clearing a conversation that has no state must not create one.
     if (!wait && !conversationStates.value.has(conversationId)) return;
@@ -3008,16 +3021,16 @@ export const useChatStore = defineStore('chat', () => {
     );
   }
 
-  /**
-   * Unschedule every continue, keeping the waits on record so each one can
-   * still be offered. For automatic continue being turned off.
-   */
-  function unscheduleUsageLimitWaits(): void {
-    for (const state of conversationStates.value.values()) {
-      if (state.usageLimitWait?.resumeAt != null) {
-        state.usageLimitWait = { ...state.usageLimitWait, resumeAt: null };
-      }
-    }
+  /** The usage-limit wait held for a conversation: null for none, undefined when nothing is held for it. */
+  function heldUsageLimitWait(conversationId: string): UsageLimitWait | null | undefined {
+    return conversationStates.value.get(conversationId)?.usageLimitWait;
+  }
+
+  /** Each usage limit's wait on record, by conversation. */
+  function usageLimitWaits(): Array<[string, UsageLimitWait]> {
+    return [...conversationStates.value].flatMap(([id, state]) =>
+      state.usageLimitWait ? [[id, state.usageLimitWait] as [string, UsageLimitWait]] : [],
+    );
   }
 
   // ============================================
@@ -3109,6 +3122,7 @@ export const useChatStore = defineStore('chat', () => {
     setCurrentConversation,
     isConversationLoading,
     conversationHasPendingActions,
+    conversationAwaitsUser,
     anyConversationAwaitsUser,
     getConversationState,
     getStreamingContent,
@@ -3221,12 +3235,13 @@ export const useChatStore = defineStore('chat', () => {
     usageWarning,
     setUsageWarning,
     usageLimitWait,
-    hasScheduledUsageLimitWait,
+    hasUsageLimitWait,
     setUsageLimitWait,
     scheduleSources,
     setSessionSchedules,
     dueUsageLimitWaits,
-    unscheduleUsageLimitWaits,
+    usageLimitWaits,
+    heldUsageLimitWait,
     hasMessageSink,
     seedBackgroundWindow,
 

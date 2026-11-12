@@ -10,8 +10,14 @@
  *   discussion since — a message after it, a background task reporting say,
  *   brings it back by itself (the user cannot write in an archived one: it
  *   is brought back first);
- * - otherwise, archived when its last activity — its last message, or being
- *   brought back from the archive — is older than the setting's days;
+ * - otherwise, archived when its last activity is older than the setting's
+ *   days. Activity is its last message, being brought back from the archive,
+ *   and a usage limit's wait on record (`usageLimitWait`, see waitActivity):
+ *   the task it stopped is to go on, so the days count from when it is to.
+ *   A continue as far out as the archive delay comes before archiving, and
+ *   one missed while the app was closed leaves the user the archive delay to
+ *   pick it up from the list — and no longer: a wait only moves the point
+ *   the days count from, it never stops them;
  * - and archived for good, whatever the above, once the Claude Code session
  *   it continues is gone (`sessionGone`): there is nothing left to continue,
  *   and writing in it would start over with a Claude that remembers none of
@@ -19,7 +25,7 @@
  */
 
 import { titleFromMessages } from './conversation-title';
-import type { AutoArchiveDays, Conversation, ConversationListCursor, ConversationSummary } from './types';
+import type { AutoArchiveDays, Conversation, ConversationListCursor, ConversationSummary, UsageLimitWait } from './types';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -28,14 +34,29 @@ export const SESSION_GONE_NOTICE =
   "Claude's session for this discussion no longer exists — Claude Code deleted it — " +
   'so the discussion was moved to the archive. Its history is kept.';
 
-type ArchiveFields = Pick<ConversationSummary, 'updatedAt' | 'archivedAt' | 'restoredAt' | 'sessionGone'>;
+type ArchiveFields = Pick<ConversationSummary, 'updatedAt' | 'archivedAt' | 'restoredAt' | 'sessionGone' | 'usageLimitWait'>;
 
 export function isArchived(conversation: ArchiveFields, autoArchiveDays: AutoArchiveDays, now: number): boolean {
   if (conversation.sessionGone) return true;
   if (conversation.archivedAt !== undefined) return conversation.archivedAt >= conversation.updatedAt;
   if (autoArchiveDays === 0) return false;
-  const lastActivity = Math.max(conversation.updatedAt, conversation.restoredAt ?? 0);
+  const lastActivity = Math.max(
+    conversation.updatedAt,
+    conversation.restoredAt ?? 0,
+    waitActivity(conversation.usageLimitWait),
+  );
   return lastActivity < now - autoArchiveDays * DAY_MS;
+}
+
+/**
+ * When a usage limit's wait counts as activity: when the user was told its
+ * continue was missed; else when it is to continue; else, nothing being
+ * scheduled, when the limit resets and the user can continue it. A time
+ * that is set once, so archiving is put back, never put off for good.
+ */
+export function waitActivity(wait: UsageLimitWait | undefined): number {
+  if (!wait) return 0;
+  return wait.missedAt ?? wait.resumeAt ?? wait.resetsAt;
 }
 
 /** Newest first; the id settles a tie, so the order — and a cursor in it — is total. */
@@ -65,5 +86,6 @@ export function summaryOf(conversation: Conversation): ConversationSummary {
     ...(conversation.executionMode !== undefined ? { executionMode: conversation.executionMode } : {}),
     ...(conversation.archivedAt !== undefined ? { archivedAt: conversation.archivedAt } : {}),
     ...(conversation.restoredAt !== undefined ? { restoredAt: conversation.restoredAt } : {}),
+    ...(conversation.usageLimitWait !== undefined ? { usageLimitWait: conversation.usageLimitWait } : {}),
   };
 }

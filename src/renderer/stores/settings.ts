@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, toRaw } from 'vue';
 
-import type { AppConfig, AutoArchiveDays, CompletionNotifications, EffortLevel, ExecutionMode, LogLevel, ModalSize, SidebarLayout, ThinkingMode, UpdateChannel, WhisperModelId } from '@shared/types';
+import type { AppConfig, AutoArchiveDays, CompletionNotifications, EffortLevel, ExecutionMode, LogLevel, ModalSize, SidebarLayout, ThinkingMode, UpdateChannel, UsageLimitWaitDays, WhisperModelId } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 
 import { useEventCleanup } from '../composables/useEventCleanup';
@@ -43,6 +43,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const switchModelsOnFlag = computed(() => config.value.switchModelsOnFlag);
   const strictModelEnforcement = computed(() => config.value.strictModelEnforcement);
   const autoContinueAtUsageLimit = computed(() => config.value.autoContinueAtUsageLimit);
+  const usageLimitWaitDays = computed(() => config.value.usageLimitWaitDays);
   const needsSetup = computed(() => !workingDirectory.value || !hasAuth.value);
   const isDarkMode = computed(() => {
     if (config.value.theme === 'system') {
@@ -199,6 +200,10 @@ export const useSettingsStore = defineStore('settings', () => {
     await saveConfig({ autoContinueAtUsageLimit: enabled });
   }
 
+  async function setUsageLimitWaitDays(days: UsageLimitWaitDays): Promise<void> {
+    await saveConfig({ usageLimitWaitDays: days });
+  }
+
   function applyFontSize(size: number): void {
     if (typeof document !== 'undefined' && document.documentElement?.style) {
       document.documentElement.style.setProperty('--chat-font-size', `${size}px`);
@@ -294,6 +299,7 @@ export const useSettingsStore = defineStore('settings', () => {
     switchModelsOnFlag,
     strictModelEnforcement,
     autoContinueAtUsageLimit,
+    usageLimitWaitDays,
     isDarkMode,
     needsSetup,
 
@@ -312,6 +318,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setShowFilesSidebar,
     setSidebarLayout,
     setAutoArchiveDays,
+    setUsageLimitWaitDays,
     setHistorySidebarWidth,
     setFilesSidebarWidth,
     setModalSize,
