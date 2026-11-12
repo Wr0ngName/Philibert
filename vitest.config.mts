@@ -49,7 +49,7 @@ export default defineConfig({
     environment: 'happy-dom',
     include: ['src/**/*.{test,spec}.ts'],
     // `*.browser.test.ts` needs a real layout engine and runs under
-    // vitest.browser.config.ts (`npm run test:browser`). Here it would match
+    // vitest.browser.config.mts (`npm run test:browser`). Here it would match
     // the include pattern and fail on happy-dom's zero heights, which is
     // exactly the false signal those tests exist to replace.
     exclude: ['node_modules', 'dist', 'src/**/*.browser.test.ts'],
@@ -63,8 +63,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src/renderer'),
-      '@shared': resolve(__dirname, 'src/shared'),
+      '@': resolve(import.meta.dirname, 'src/renderer'),
+      '@shared': resolve(import.meta.dirname, 'src/shared'),
     },
   },
 });

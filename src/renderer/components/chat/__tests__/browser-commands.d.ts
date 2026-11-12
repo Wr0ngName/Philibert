@@ -1,5 +1,5 @@
 /**
- * Types for the custom browser commands defined in vitest.browser.config.ts.
+ * Types for the custom browser commands defined in vitest.browser.config.mts.
  *
  * Commands are implemented in the Vitest server process and called from the
  * test in the browser, so the two sides share nothing but this declaration.

@@ -87,8 +87,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src/renderer'),
-      '@shared': resolve(__dirname, 'src/shared'),
+      '@': resolve(import.meta.dirname, 'src/renderer'),
+      '@shared': resolve(import.meta.dirname, 'src/shared'),
     },
   },
 });

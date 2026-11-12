@@ -119,10 +119,18 @@ describe("an agent's transcript in its view", () => {
       props: { open: true, task: TASK, conversationId: 'conv-1' },
       attachTo: document.body,
     });
-    await frames(5);
+    // The app's layout, as the list always has it. Left with none, the list
+    // had no height to measure its rows against, and ResizeObserver reported
+    // a loop — a state of this test, which the app's stylesheet never allows
+    // (0 in the logs of two days' use).
+    await frames(2);
+    layOut();
+    await frames(3);
 
     expect(document.body.querySelector('.agent-transcript')?.textContent).not.toContain('Nothing yet');
     release();
+    await frames(2);
+    layOut();
     await frames(30);
     expect(document.body.querySelectorAll('.agent-transcript .chat-row').length).toBeGreaterThan(0);
     wrapper.unmount();

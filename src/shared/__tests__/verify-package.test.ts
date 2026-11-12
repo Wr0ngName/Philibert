@@ -86,7 +86,7 @@ function makePackage(packageDir: string, modules: string[], layout = 'unpacked',
       writeFileSync(path, native ? MAGIC[EXECUTABLE_FORMAT[platform]] : JSON.stringify({ name }));
     }
   }
-  writeAsar(join(packageDir, 'resources', 'app.asar'), ['package.json', '.vite/build/index.js']);
+  writeAsar(join(packageDir, 'resources', 'app.asar'), ['package.json', '.vite/build/index.cjs']);
 }
 
 function writeManifest(platform: string, modules: string[]): void {

@@ -14,6 +14,7 @@
     // *.config.ts. A silent-failure bug in its packaging hook shipped as a
     // result, surfacing only as a misleading electron-builder error. It is
     // plain TypeScript running on node, so it belongs in this project.
-    "forge.config.ts"
+    "forge.config.ts",
+    "forge.installer-redhat.d.ts"
   ]
 }

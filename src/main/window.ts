@@ -35,7 +35,8 @@ export async function createWindow(options: WindowOptions = {}): Promise<Browser
   debugLog('createWindow() called');
   logger.info('Creating main window');
 
-  const preloadPath = path.join(__dirname, 'preload.js');
+  // Emitted as .cjs (Electron Forge 8's Vite plugin), as the main bundle is.
+  const preloadPath = path.join(__dirname, 'preload.cjs');
   debugLog(`Preload path: ${preloadPath}`);
   debugLog(`Preload exists: ${fs.existsSync(preloadPath)}`);
 

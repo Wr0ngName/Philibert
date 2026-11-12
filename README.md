@@ -130,7 +130,7 @@ npm run test:browser
 
 - `npm test` leaves out every `*.browser.test.ts`: happy-dom has no layout, so
   anything about heights, offsets or scrolling lives in the browser suite
-  (`vitest.browser.config.ts`). A green `npm test` says nothing about those.
+  (`vitest.browser.config.mts`). A green `npm test` says nothing about those.
 - `npm run test:browser` first installs the Chromium build that the project's
   Playwright version expects (`pretest:browser`). It downloads nothing when
   that build is already in Playwright's cache (`~/.cache/ms-playwright` on

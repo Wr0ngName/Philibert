@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerRpm } from '@electron-forge/maker-rpm';
-import type { MakerRpmConfigOptions } from '@electron-forge/maker-rpm/dist/Config';
+import type { MakerRpmConfigOptions } from '@electron-forge/maker-rpm';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
@@ -36,12 +36,6 @@ const hasGitBashArchive = fs.existsSync(gitBashArchive) && fs.existsSync(gitBash
 // Bundle type marker file path
 const bundleTypeFile = './resources/bundle-type.txt';
 
-/** The part of electron-installer-redhat's installer this config reaches into. */
-interface RedhatInstallerPrototype {
-  specPath: string;
-  createSpec(): Promise<void>;
-}
-
 /**
  * The RPM maker, with nothing in the package stripped.
  *
@@ -59,10 +53,12 @@ interface RedhatInstallerPrototype {
  */
 class MakerRpmUnstripped extends MakerRpm {
   async make(...args: Parameters<MakerRpm['make']>): ReturnType<MakerRpm['make']> {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Installer } = require('electron-installer-redhat') as { Installer: { prototype: RedhatInstallerPrototype } };
+    // The module the maker imports, so the same installer it creates: ESM
+    // from installer v4 (Forge 8), where createContents still calls each step
+    // by name on the instance, createSpec among them.
+    const { Installer } = await import('electron-installer-redhat');
     const createSpec = Installer.prototype.createSpec;
-    Installer.prototype.createSpec = async function (this: RedhatInstallerPrototype) {
+    Installer.prototype.createSpec = async function (this: typeof Installer.prototype) {
       await createSpec.call(this);
       const spec = await fs.promises.readFile(this.specPath, 'utf8');
       await fs.promises.writeFile(this.specPath, `%global __strip /bin/true\n${spec}`);
@@ -163,7 +159,9 @@ const config: ForgeConfig = {
         const npm = spawn('npm', args, {
           cwd: buildPath,
           stdio: 'inherit',
-          shell: true,
+          // Only Windows needs a shell, to run npm.cmd; elsewhere the arguments
+          // are passed as they are, unconcatenated (Node's DEP0190).
+          shell: process.platform === 'win32',
         });
         npm.on('close', (code, signal) => {
           if (code === 0) return resolve();
