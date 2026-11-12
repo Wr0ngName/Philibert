@@ -100,6 +100,11 @@ export interface ConversationState {
   /** Session usage (token counts, cost) */
   sessionUsage: SessionUsage | null;
   /**
+   * When something last arrived from Claude in this conversation
+   * (Conversation.lastReceivedAt), null when nothing has yet.
+   */
+  lastReceivedAt: number | null;
+  /**
    * The main-loop model the CLI reports for this conversation. This is the
    * model of record for the discussion — Claude Code itself displays
    * getMainLoopModel(), never a model inferred from token accounting, because
@@ -319,6 +324,7 @@ function createConversationState(): ConversationState {
     backgroundTasks: new Map(),
     taskListItems: new Map(),
     sessionUsage: null,
+    lastReceivedAt: null,
     activeModel: null,
     error: null,
     sessionPermissions: [],
@@ -654,6 +660,23 @@ export const useChatStore = defineStore('chat', () => {
       if (isRunningInBackground(task)) count += 1;
     }
     return count;
+  }
+
+  /**
+   * Something arrived from Claude in a conversation, at `at`.
+   *
+   * Only ever moves forward, so restoring the saved time when a discussion is
+   * opened cannot hide something that arrived while it was off screen, and an
+   * event handled late cannot wind the time back.
+   */
+  function noteReceived(conversationId: string, at: number = Date.now()): void {
+    const state = getConversationState(conversationId);
+    if (state.lastReceivedAt === null || at > state.lastReceivedAt) state.lastReceivedAt = at;
+  }
+
+  /** When something last arrived from Claude in a conversation; null if nothing has. */
+  function lastReceivedFor(conversationId: string): number | null {
+    return conversationStates.value.get(conversationId)?.lastReceivedAt ?? null;
   }
 
   // ============================================
@@ -3087,6 +3110,8 @@ export const useChatStore = defineStore('chat', () => {
     backgroundTasksList,
     runningBackgroundTasksList,
     runningBackgroundTaskCount,
+    noteReceived,
+    lastReceivedFor,
     hasRunningBackgroundTasks,
     taskListItems,
     hasTaskListItems,

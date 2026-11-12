@@ -237,6 +237,14 @@ describe('Conversations IPC handlers', () => {
       expect(mockConversationService.update).toHaveBeenCalledWith(detailsOnly);
     });
 
+    it('applies an update saying when Claude was last heard from', async () => {
+      const update = { ...sampleUpdate, lastReceivedAt: Date.now() };
+
+      await handler({}, update);
+
+      expect(mockConversationService.update).toHaveBeenCalledWith(update);
+    });
+
     it.each([
       ['not an object', 'not-an-object'],
       ['null', null],
@@ -251,6 +259,8 @@ describe('Conversations IPC handlers', () => {
       ['with updatedAt zero', { ...sampleUpdate, updatedAt: 0 }],
       ['with updatedAt negative', { ...sampleUpdate, updatedAt: -1 }],
       ['with updatedAt not a number', { ...sampleUpdate, updatedAt: 'invalid' }],
+      ['with lastReceivedAt zero', { ...sampleUpdate, lastReceivedAt: 0 }],
+      ['with lastReceivedAt not a number', { ...sampleUpdate, lastReceivedAt: '18:58' }],
     ])('refuses an update %s, writing nothing', async (_name, invalid) => {
       // ValidationError is caught and wrapped in ConfigurationError by the handler
       await expect(handler({}, invalid)).rejects.toThrow(ConfigurationError);

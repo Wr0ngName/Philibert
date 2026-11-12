@@ -1126,6 +1126,14 @@ export interface Conversation {
    */
   lastSessionUsage?: SessionUsage;
   /**
+   * When something last arrived from Claude in this discussion — streamed
+   * text, a tool call or its result, a background task's outcome, the end of
+   * a turn. Saved so the discussion still says when it last heard from Claude
+   * after a restart, rather than when it was opened. Absent on a discussion
+   * nothing has arrived in since it existed.
+   */
+  lastReceivedAt?: number;
+  /**
    * Session-scoped permissions granted in this discussion ("Always allow for
    * this session"). Persisted per-conversation so grants survive app restarts
    * — otherwise the user has to re-approve everything after every relaunch.
@@ -1242,6 +1250,7 @@ export interface ConversationUpdate {
   thinkingMode?: ThinkingMode;
   executionMode?: ExecutionMode;
   lastSessionUsage?: SessionUsage;
+  lastReceivedAt?: number;
   sessionPermissions?: SessionPermissionEntry[];
   taskList?: TaskListItem[];
 }

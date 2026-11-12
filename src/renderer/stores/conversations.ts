@@ -544,6 +544,10 @@ export const useConversationsStore = defineStore('conversations', () => {
         chatStore.updateSessionUsage(id, conversation.lastSessionUsage);
       }
 
+      // When Claude was last heard from, as saved — never later than what
+      // this run already knows (noteReceived only moves forward).
+      if (conversation.lastReceivedAt) chatStore.noteReceived(id, conversation.lastReceivedAt);
+
       // Restore persisted session permissions ("Always allow for this session")
       // so grants survive across app restarts. Seed both the renderer store
       // and the main-process cache — the latter is what actually short-circuits
@@ -871,6 +875,12 @@ export const useConversationsStore = defineStore('conversations', () => {
       ? (JSON.parse(JSON.stringify(inMemoryUsage)) as typeof inMemoryUsage)
       : existingConv?.lastSessionUsage;
 
+    // When Claude was last heard from, so the discussion still says so after
+    // a restart. Left out when this run has heard nothing in it: the stored
+    // value is then kept as it is (ConversationService only writes the
+    // fields an update carries).
+    const lastReceivedAt = chatStore.lastReceivedFor(conversationId);
+
     // Persist session-scoped permissions per-conversation so grants survive
     // app restarts. Fall back to whatever was previously persisted for a
     // conversation the user hasn't opened yet in this session.
@@ -912,6 +922,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       ...(discussionSettings.value.get(conversationId) ?? {}),
       executionMode,
       ...(lastSessionUsage ? { lastSessionUsage } : {}),
+      ...(lastReceivedAt ? { lastReceivedAt } : {}),
       ...(sessionPermissions && sessionPermissions.length > 0 ? { sessionPermissions } : {}),
       ...(taskList && taskList.length > 0 ? { taskList } : {}),
     };
@@ -949,6 +960,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       ...(update.sdkSessionId !== undefined ? { sdkSessionId: update.sdkSessionId } : {}),
       ...(update.executionMode !== undefined ? { executionMode: update.executionMode } : {}),
       ...(update.lastSessionUsage !== undefined ? { lastSessionUsage: update.lastSessionUsage } : {}),
+      ...(update.lastReceivedAt !== undefined ? { lastReceivedAt: update.lastReceivedAt } : {}),
       ...(update.sessionPermissions !== undefined ? { sessionPermissions: update.sessionPermissions } : {}),
       ...(update.taskList !== undefined ? { taskList: update.taskList } : {}),
     };

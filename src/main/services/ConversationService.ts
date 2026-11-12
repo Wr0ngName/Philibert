@@ -1023,6 +1023,7 @@ export class ConversationService {
       ...(update.thinkingMode !== undefined ? { thinkingMode: update.thinkingMode } : {}),
       ...(update.executionMode !== undefined ? { executionMode: update.executionMode } : {}),
       ...(update.lastSessionUsage !== undefined ? { lastSessionUsage: update.lastSessionUsage } : {}),
+      ...(update.lastReceivedAt !== undefined ? { lastReceivedAt: update.lastReceivedAt } : {}),
       ...(update.sessionPermissions !== undefined ? { sessionPermissions: update.sessionPermissions } : {}),
       ...(update.taskList !== undefined ? { taskList: update.taskList } : {}),
     };

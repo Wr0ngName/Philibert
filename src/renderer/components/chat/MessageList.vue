@@ -17,8 +17,10 @@ import type { ChatMessage } from '@shared/types';
 
 import { CONSTANTS } from '../../constants/app';
 
+import { useMidnightClock } from '../../composables/useMidnightClock';
 import { useVirtualList } from '../../composables/useVirtualList';
 import { formatTime } from '../../utils/date';
+import { lastReceivedLine } from '../../utils/last-received';
 import {
   childrenByParent as buildChildrenByParent,
   descendantCounts,
@@ -286,7 +288,7 @@ function getVisibleTurnItems(group: MessageGroup): VisibleItem[] {
  */
 interface Row {
   key: string;
-  kind: 'standalone' | 'turn-header' | 'turn-item' | 'turn-spinner' | 'thinking';
+  kind: 'standalone' | 'turn-header' | 'turn-item' | 'turn-spinner' | 'thinking' | 'received';
   msg?: ChatMessage;
   depth: number;
   childCount: number;
@@ -297,6 +299,8 @@ interface Row {
   bubbleLast: boolean;
   /** Header timestamp. */
   timestamp?: number;
+  /** What a `received` row says. */
+  text?: string;
   /** Starts a new visual block, so it carries the gap above it. */
   startsBlock: boolean;
 }
@@ -362,6 +366,13 @@ const rows = computed((): Row[] => {
     out.push(row);
   }
 
+  if (showLastReceived.value) {
+    // Keyed by the message it follows, for the reason given above.
+    const row = blankRow(`${messages.value[messages.value.length - 1].id}:received`, 'received');
+    row.text = lastReceivedLine(source.lastReceivedAt ?? 0, today.value, source.runningTaskCount);
+    out.push(row);
+  }
+
   return out;
 });
 
@@ -411,7 +422,8 @@ function bindRow(key: string, el: unknown): void {
 
 /** Classes drawing a turn bubble as a slice of itself. */
 function sliceClass(row: Row): string[] {
-  if (row.kind === 'standalone') return [];
+  // Outside every bubble: it says when, it is not part of what was said.
+  if (row.kind === 'standalone' || row.kind === 'received') return [];
   if (row.kind === 'thinking') {
     return ['rounded-lg', 'animate-fade-in', 'message-bubble', 'message-assistant'];
   }
@@ -469,6 +481,23 @@ const showThinkingPlaceholder = computed(() => {
   const last = messages.value[messages.value.length - 1];
   return last.role !== 'assistant';
 });
+
+/** Moves on at midnight, so the line adds the date once it is not today. */
+const today = useMidnightClock();
+
+/**
+ * Whether to end the list with when Claude was last heard from.
+ *
+ * Only once nothing is running: the spinner already says something is
+ * arriving. Only at the true end of the discussion: with newer messages
+ * unloaded, the end of the list is the middle of it.
+ */
+const showLastReceived = computed(() =>
+  !isLoading.value
+  && source.lastReceivedAt !== null
+  && messages.value.length > 0
+  && newerMessageCount.value === 0,
+);
 
 
 // Track if user is at/near bottom of scroll (within threshold)
@@ -1054,6 +1083,16 @@ onUnmounted(() => {
                   size="sm"
                   class="text-primary-500"
                 />
+              </div>
+
+              <!-- When Claude was last heard from. On the right, small and
+                   outside the bubbles, as a chat app says when a message was
+                   delivered, so it is never read as part of the answer. -->
+              <div
+                v-else-if="row.kind === 'received'"
+                class="last-received pt-1 pr-1 text-right text-xs text-surface-400 dark:text-surface-500"
+              >
+                {{ row.text }}
               </div>
 
               <!-- Thinking placeholder: loading but no assistant output yet -->

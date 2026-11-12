@@ -864,6 +864,7 @@ export function useClaudeChat() {
       // appended to a separate tracked copy, which only ever updated the last
       // assistant message and was then overwritten wholesale at save time.
       chatStore.appendChunk(conversationId, chunk);
+      chatStore.noteReceived(conversationId);
     });
 
     // Handle tool use requests - route to correct conversation
@@ -871,11 +872,13 @@ export function useClaudeChat() {
     cleanupToolUse = window.electron.claude.onToolUse((conversationId, action) => {
       chatStore.addPendingAction(conversationId, action);
       chatStore.enrichToolUseFromPermission(conversationId, action);
+      chatStore.noteReceived(conversationId);
     });
 
     // Handle errors - route to correct conversation
     cleanupError = window.electron.claude.onError((conversationId, error) => {
       chatStore.setError(conversationId, error);
+      chatStore.noteReceived(conversationId);
       chatStore.setLoading(conversationId, false);
       chatStore.finishStreaming(conversationId);
       chatStore.completeToolUseMessages(conversationId);
@@ -917,6 +920,8 @@ export function useClaudeChat() {
         streamingMessageId: before?.streamingMessageId ?? null,
       });
 
+      // Before the save below, which writes it.
+      chatStore.noteReceived(conversationId);
       chatStore.setLoading(conversationId, false);
       chatStore.finishStreaming(conversationId);
       chatStore.completeToolUseMessages(conversationId);
@@ -1014,6 +1019,7 @@ export function useClaudeChat() {
         description: notification.description,
       });
       chatStore.handleTaskNotification(conversationId, notification);
+      chatStore.noteReceived(conversationId);
       if (notification.status !== 'running') storeTaskOutcome(conversationId);
     });
 
@@ -1094,6 +1100,7 @@ export function useClaudeChat() {
     // Handle system notes (compaction, status changes) — rendered as separators
     cleanupSystemNote = window.electron.claude.onSystemNote((conversationId, note) => {
       logger.info('System note received', { conversationId, note });
+      chatStore.noteReceived(conversationId);
       if (conversationId === conversationsStore.currentConversationId) {
         chatStore.addSystemMessage(note);
       }
@@ -1103,12 +1110,14 @@ export function useClaudeChat() {
     cleanupToolCapture = window.electron.claude.onToolCapture((conversationId, capture) => {
       logger.debug('Tool capture received', { conversationId, toolName: capture.toolName, blockId: capture.toolUseBlockId });
       chatStore.addAutoToolUseMessage(conversationId, capture);
+      chatStore.noteReceived(conversationId);
     });
 
     // Handle tool result (output file written to disk)
     cleanupToolResult = window.electron.claude.onToolResult((conversationId, result) => {
       logger.debug('Tool result received', { conversationId, blockId: result.toolUseBlockId });
       chatStore.updateToolUseResult(conversationId, result);
+      chatStore.noteReceived(conversationId);
     });
 
     // Handle auth invalidation (401 from API) - refresh config so UI reacts

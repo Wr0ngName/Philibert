@@ -34,6 +34,13 @@ export interface MessageListSource {
    * says so rather than showing an empty or a previous list meanwhile.
    */
   readonly opening: boolean;
+  /**
+   * When something last arrived from Claude in what is listed, said under it
+   * once nothing is streaming; null when nothing has, or nothing to say.
+   */
+  readonly lastReceivedAt: number | null;
+  /** Background tasks still running for what is listed, said with that time. */
+  readonly runningTaskCount: number;
   /** The text streaming into the running turn, so the list can follow it. */
   readonly streamingContent: string;
   /**
@@ -71,6 +78,8 @@ export function conversationListSource(): MessageListSource {
     get messages() { return chatStore.messages; },
     get isLoading() { return chatStore.isLoading; },
     get opening() { return conversationsStore.openingConversationId !== null; },
+    get lastReceivedAt() { return chatStore.lastReceivedFor(currentId()); },
+    get runningTaskCount() { return chatStore.runningBackgroundTaskCount(currentId()); },
     get streamingContent() { return chatStore.currentStreamingContent; },
     get arrivals() { return chatStore.arrivalCount(currentId()); },
     get olderCount() { return chatStore.olderMessageCount; },
@@ -122,6 +131,10 @@ export function heldListSource(read: () => HeldList): MessageListSource {
     // size when the messages arrive: mounted with them, it had none yet, and
     // the virtual list rendered every row of a long transcript at once.
     get opening() { return read().opening ?? false; },
+    // An agent's transcript is read once it is written: its view says how the
+    // agent is doing, so the list has no arrival time of its own to give.
+    lastReceivedAt: null,
+    runningTaskCount: 0,
     streamingContent: '',
     // Held in full, so it only ever grows by what arrived.
     get arrivals() { return read().messages.length; },

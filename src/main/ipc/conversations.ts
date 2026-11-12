@@ -254,6 +254,9 @@ export function setupConversationIPC(
       if (typeof update.updatedAt !== 'number' || update.updatedAt <= 0) {
         throw new ValidationError('Conversation updatedAt must be a positive timestamp', 'updatedAt', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
       }
+      if (update.lastReceivedAt !== undefined && (typeof update.lastReceivedAt !== 'number' || update.lastReceivedAt <= 0)) {
+        throw new ValidationError('Conversation lastReceivedAt must be a positive timestamp', 'lastReceivedAt', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+      }
 
       logger.info('IPC: conversation:update called', {
         id: update.id,
