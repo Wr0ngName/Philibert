@@ -149,12 +149,6 @@ export function setupAuthHandlers(
         }
 
         if (result.success && result.token) {
-          // Validate token format before saving
-          if (!result.token.startsWith('sk-ant-')) {
-            logger.error('OAuth token has invalid format', { prefix: result.token.slice(0, 10) });
-            return { success: false, error: 'Invalid token format received. Please try logging in again.' };
-          }
-
           // Save the OAuth token
           const configUpdate = {
             oauthToken: result.token,

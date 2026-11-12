@@ -222,28 +222,15 @@ describe('ClaudeCodeService', () => {
       expect(mockQuery).not.toHaveBeenCalled();
     });
 
-    it('should validate OAuth token format', async () => {
-      await configService.setOAuthToken('short');
+    it('sends with a stored token whatever its format: Claude decides whether it is valid', async () => {
+      const token = 'sk-ant-oat02-' + 'N'.repeat(95);
+      await configService.setOAuthToken(token);
+      mockQuery.mockReturnValue(createMockQueryIterator([]));
 
       await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
 
-      expect(mockSend).toHaveBeenCalledWith(
-        IPC_CHANNELS.CLAUDE_ERROR,
-        TEST_CONV_ID,
-        expect.stringContaining('Invalid OAuth token')
-      );
-    });
-
-    it('should validate OAuth token prefix', async () => {
-      await configService.setOAuthToken('invalid-token-without-proper-prefix');
-
-      await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
-
-      expect(mockSend).toHaveBeenCalledWith(
-        IPC_CHANNELS.CLAUDE_ERROR,
-        TEST_CONV_ID,
-        expect.stringContaining('Invalid OAuth token')
-      );
+      expect(mockSend).not.toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_ERROR, TEST_CONV_ID, expect.anything());
+      expect(mockQuery.mock.calls[0]![0].options.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(token);
     });
 
     it('should validate API key format', async () => {

@@ -37,25 +37,6 @@ export const MAIN_CONSTANTS = {
     OAUTH_CODE_MAX_LENGTH: 500,
     /** Minimum API key length for validation */
     API_KEY_MIN_LENGTH: 40,
-    /**
-     * Minimum length for an OAuth token. Real access tokens are ~108 chars
-     * (sk-ant-oat01- + ~95 base64url chars), from `claude auth login` as from
-     * the `setup-token` logins made before it. Below 40 is always corruption.
-     */
-    OAUTH_TOKEN_MIN_LENGTH: 40,
-    /**
-     * Hard cap on OAuth token length. Defends storage against pathological
-     * extraction that captures the entire CLI output as the "token". Real
-     * tokens never exceed ~300 chars.
-     */
-    OAUTH_TOKEN_MAX_LENGTH: 512,
-    /**
-     * Recognised OAuth token type prefixes. The full prefix `sk-ant-` is
-     * followed by a type segment then `-` then the base64url body.
-     * - `oat01-` : OAuth access token (`auth login`, and older `setup-token` logins)
-     * - `api03-` : API key (some users paste these into the OAuth flow)
-     */
-    KNOWN_TOKEN_TYPE_PREFIXES: ['sk-ant-oat01-', 'sk-ant-api03-'] as const,
   },
   CLAUDE: {
     /** Delay when interrupting Claude operations - 1 second */

@@ -27,7 +27,6 @@ import logger from '../utils/logger';
 import { getResourcesPath, WindowsPaths, ClaudeCliPaths } from '../utils/resourcePaths';
 import { sanitizeForLog } from '../utils/stringUtils';
 
-import { validateOAuthTokenFormat } from './claude/AuthValidator';
 import { accessTokenOf, cliConfigDir, readCliCredentials } from './claude/cliCredentials';
 
 /** The CLI command that logs in with a Claude subscription. */
@@ -795,18 +794,12 @@ export class AuthService {
   private readNewLogin(baseline: string | null): string | null {
     const credentialsJson = readCliCredentials();
     if (!credentialsJson || credentialsJson === baseline) return null;
-    const token = accessTokenOf(credentialsJson);
-    // Strict-validate even though the file is the CLI's own: storing a token
-    // that will 401 is how users used to get logged out on every request.
-    const validation = token ? validateOAuthTokenFormat(token) : { valid: false, error: 'no access token' };
-    if (!token || !validation.valid) {
-      logger.warn('Credentials file token failed format validation — ignoring', {
-        reason: validation.error,
-        tokenLength: token?.length ?? 0,
-      });
-      return null;
-    }
-    return token;
+    // The token's format is not judged: it is the CLI's own login, in the
+    // CLI's own file, and the CLI is what uses it. Whether it is valid is
+    // Claude's answer to a request — a 401 logs Philibert out
+    // (handleAuthInvalidated). Judging it here only refused real logins
+    // whenever the format moved on (sk-ant-oat01- → oat02-).
+    return accessTokenOf(credentialsJson) || null;
   }
 
   /**

@@ -562,17 +562,31 @@ describe('AuthService', () => {
       expect(await promise).toEqual({ success: true, token: LOGIN_TOKEN });
     });
 
-    it('refuses a credentials file whose token is malformed, rather than store a token that will 401', async () => {
+    it.each([
+      ['the next version of the prefix', 'sk-ant-oat02-' + 'A'.repeat(95)],
+      ['a format never seen', 'tok_' + 'B'.repeat(30)],
+    ])('takes the login whatever its token looks like: %s', async (_what, token) => {
+      // The CLI's own login in its own file: whether the token is valid is
+      // Claude's answer, not a format Philibert expects.
       const promise = service.completeOAuthFlow(CODE);
       await vi.advanceTimersByTimeAsync(200);
 
-      writeLogin('sk-ant-at01-' + 'A'.repeat(95));
+      writeLogin(token);
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(await promise).toEqual({ success: true, token });
+    });
+
+    it('does not take a credentials file with an empty access token as a login', async () => {
+      const promise = service.completeOAuthFlow(CODE);
+      await vi.advanceTimersByTimeAsync(200);
+
+      writeLogin('');
       await vi.advanceTimersByTimeAsync(600);
       mockPty.emitExit(0);
       await vi.advanceTimersByTimeAsync(1500);
 
-      const result = await promise;
-      expect(result.success).toBe(false);
+      expect((await promise).success).toBe(false);
     });
 
     it('does not take a token printed in the output: only the credentials file is the login', async () => {

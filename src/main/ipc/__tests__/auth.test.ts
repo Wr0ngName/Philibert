@@ -342,15 +342,14 @@ describe('Auth IPC handlers', () => {
       expect(result).toEqual({ success: true });
     });
 
-    it('should reject tokens that do not start with sk-ant-', async () => {
-      mockAuthService.completeOAuthFlow.mockResolvedValue({ success: true, token: 'bad-prefix-token' });
+    it('saves a login whatever its token looks like: Claude decides whether it is valid', async () => {
+      const token = 'sk-ant-oat02-' + 'N'.repeat(95);
+      mockAuthService.completeOAuthFlow.mockResolvedValue({ success: true, token });
 
       const result = await handler({}, 'valid_oauth_code_12345');
 
-      expect(result).toEqual({
-        success: false,
-        error: expect.stringContaining('Invalid token format'),
-      });
+      expect(result).toEqual({ success: true });
+      expect(await configService.getOAuthToken()).toBe(token);
     });
 
     it('should detect storage round-trip failure', async () => {
@@ -574,19 +573,6 @@ describe('Auth IPC handlers', () => {
       mockAuthService.completeOAuthFlow.mockResolvedValue({
         success: false,
         error: 'bad code',
-      });
-      const handler = handlers.get(IPC_CHANNELS.AUTH_COMPLETE_OAUTH)!;
-
-      await handler({}, 'valid_oauth_code_12345');
-
-      expect(mockClaudeService.invalidateSessionAuth).not.toHaveBeenCalled();
-    });
-
-    it('does not invalidate sessions when the token has the wrong format', async () => {
-      // Nothing was stored, so nothing about the live sessions is wrong yet.
-      mockAuthService.completeOAuthFlow.mockResolvedValue({
-        success: true,
-        token: 'bad-prefix-token',
       });
       const handler = handlers.get(IPC_CHANNELS.AUTH_COMPLETE_OAUTH)!;
 
