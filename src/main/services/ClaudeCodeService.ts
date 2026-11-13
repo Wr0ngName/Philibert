@@ -1517,6 +1517,12 @@ export class ClaudeCodeService {
 
           if (session && !endsUserTurn && session.unpromptedTurn) {
             session.unpromptedTurn = false;
+            // A turn the CLI started by itself — a background agent reporting
+            // back — is refused by a usage limit like any other, and is often
+            // the one that meets it, the user being away while agents work.
+            // Skipping this left the refusal unreported: no wait, no continue,
+            // nothing on screen, until the user's own next turn was refused.
+            this.reportUsageLimitStop(conversationId, messageHandler);
             if (endsUnpromptedTurn) this.emitDone(conversationId, true);
             continue;
           }
@@ -1536,18 +1542,7 @@ export class ClaudeCodeService {
             session.unpromptedTurn = false;
           }
 
-          // Sent before done, so the renderer knows the turn is waiting on a
-          // usage limit by the time it decides what to do with the queue.
-          const usageLimit = messageHandler.takeUsageLimitStop();
-          if (usageLimit) {
-            logger.info('Turn stopped by a usage limit', {
-              conversationId,
-              resetsAt: new Date(usageLimit.resetsAt).toISOString(),
-              limitType: usageLimit.limitType,
-            });
-            this.send(IPC_CHANNELS.CLAUDE_USAGE_LIMIT, conversationId, usageLimit);
-          }
-
+          this.reportUsageLimitStop(conversationId, messageHandler);
           this.emitDone(conversationId);
         }
       }
@@ -2225,6 +2220,26 @@ export class ClaudeCodeService {
   private emitToolUse(conversationId: string, action: PendingAction): void {
     this.send(IPC_CHANNELS.CLAUDE_TOOL_USE, conversationId, action);
     this.notificationService.showPermissionRequest(conversationId, action.toolName, action.description);
+  }
+
+  /**
+   * Tell the window when the turn that just ended was stopped by a usage
+   * limit, so it waits for the reset (and continues then, when set to).
+   *
+   * Called before the turn's done, so the window knows the conversation is
+   * waiting on a limit by the time it decides what to do with the queue. The
+   * stop is taken, not peeked: a turn's refusal is reported once, by the turn
+   * it ended, whoever started that turn.
+   */
+  private reportUsageLimitStop(conversationId: string, messageHandler: SDKMessageHandler): void {
+    const usageLimit = messageHandler.takeUsageLimitStop();
+    if (!usageLimit) return;
+    logger.info('Turn stopped by a usage limit', {
+      conversationId,
+      resetsAt: new Date(usageLimit.resetsAt).toISOString(),
+      limitType: usageLimit.limitType,
+    });
+    this.send(IPC_CHANNELS.CLAUDE_USAGE_LIMIT, conversationId, usageLimit);
   }
 
   /**

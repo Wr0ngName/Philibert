@@ -137,6 +137,30 @@ describe('a task stopped by a usage limit', () => {
     expect(diskContents(id)).toEqual(['build the feature', REFUSAL, USAGE_LIMIT_CONTINUE_PROMPT, 'carried on']);
   });
 
+  // Reported: background agents reporting back overnight met the weekly
+  // limit in a turn the CLI started by itself; nothing waited or continued.
+  // The main process now reports that turn's stop like any other, and the
+  // window treats it like any other.
+  it('waits and continues when the turn the limit stopped was started by the CLI itself', async () => {
+    store.createNewConversation();
+    const id = store.currentConversationId!;
+    await send(app, 'run the agents');
+    emitIpc('claude:chunk', id, 'Started them.');
+    emitIpc('claude:done', id);
+    await settle(20);
+
+    // An agent reports back: the CLI starts a turn, which the limit refuses.
+    emitIpc('claude:turn-started', id);
+    emitIpc('claude:chunk', id, REFUSAL);
+    emitIpc('claude:usage-limit', id, { resetsAt: NOW + HOUR, limitType: 'seven_day' });
+    emitIpc('claude:done', id);
+    await settle(20);
+
+    expect(app.text()).toContain('Usage limit reached · continuing automatically at');
+    await clockTo(resumeAt(id));
+    expect(sends).toEqual([[id, 'run the agents'], [id, USAGE_LIMIT_CONTINUE_PROMPT]]);
+  });
+
   it('continues a conversation the user has left, in that conversation', async () => {
     const stopped = await stoppedConversation();
     const at = resumeAt(stopped);

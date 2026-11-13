@@ -1106,6 +1106,83 @@ describe('ClaudeCodeService', () => {
       expect(limitAt).toBeLessThan(channels.lastIndexOf(IPC_CHANNELS.CLAUDE_DONE));
     });
 
+    // Reported: the limit was met overnight by a turn the CLI started by
+    // itself (background agents reporting back), refused four times in a
+    // row, and nothing was waited for or continued: the stop was only taken
+    // for the user's turns, so it surfaced when the user wrote next morning.
+    // The sequence below is the one the log recorded.
+    describe('a turn the CLI started by itself, refused by a usage limit', () => {
+      const refusal = [
+        {
+          type: 'rate_limit_event',
+          rate_limit_info: { status: 'rejected', resetsAt: 1_794_949_200, rateLimitType: 'seven_day' },
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: "You've hit your weekly limit · resets Nov 17, 10pm" }] },
+          parent_tool_use_id: null,
+          error: 'rate_limit',
+        },
+        { type: 'result', subtype: 'success', origin: { kind: 'task-notification' }, num_turns: 1, duration_ms: 10 },
+      ];
+
+      it('reports the stop before that turn is done', async () => {
+        mockQuery.mockReturnValue(createMockQueryIterator([
+          { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 },
+          { type: 'system', subtype: 'session_state_changed', state: 'running' },
+          ...refusal,
+        ]));
+
+        await service.sendMessage(TEST_CONV_ID, 'Run the agents', '/home/user');
+
+        await vi.waitFor(() => {
+          expect(mockSend.mock.calls.filter((call) => call[0] === IPC_CHANNELS.CLAUDE_DONE)).toHaveLength(2);
+        });
+        const channels = mockSend.mock.calls.map((call) => call[0]);
+        const limitAt = channels.indexOf(IPC_CHANNELS.CLAUDE_USAGE_LIMIT);
+        expect(mockSend.mock.calls[limitAt]).toEqual([
+          IPC_CHANNELS.CLAUDE_USAGE_LIMIT,
+          TEST_CONV_ID,
+          { resetsAt: 1_794_949_200_000, limitType: 'seven_day' },
+        ]);
+        // After the user's turn ended, before the refused turn did.
+        expect(limitAt).toBeGreaterThan(channels.indexOf(IPC_CHANNELS.CLAUDE_DONE));
+        expect(limitAt).toBeLessThan(channels.lastIndexOf(IPC_CHANNELS.CLAUDE_DONE));
+      });
+
+      it('reports it once: the next turn, not refused, reports none', async () => {
+        const gates: (() => void)[] = [];
+        const gate = () => new Promise<void>((resolve) => { gates.push(resolve); });
+        mockQuery.mockReturnValue({
+          ...createMockQueryIterator([]),
+          [Symbol.asyncIterator]: async function* () {
+            yield { type: 'system', subtype: 'init', slash_commands: [], model: 'claude-3', session_id: 'sess-limit' };
+            yield { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 };
+            yield { type: 'system', subtype: 'session_state_changed', state: 'running' };
+            for (const message of refusal) yield message;
+            await gate();
+            yield {
+              type: 'rate_limit_event',
+              rate_limit_info: { status: 'allowed', resetsAt: 1_795_000_000, rateLimitType: 'seven_day' },
+            };
+            yield { type: 'result', subtype: 'success', origin: { kind: 'human' }, num_turns: 1, duration_ms: 10 };
+            await gate();
+          },
+        });
+        const limits = () => mockSend.mock.calls.filter((call) => call[0] === IPC_CHANNELS.CLAUDE_USAGE_LIMIT).length;
+
+        await service.sendMessage(TEST_CONV_ID, 'Run the agents', '/home/user');
+        await vi.waitFor(() => expect(gates).toHaveLength(1));
+        expect(limits()).toBe(1);
+
+        await service.sendMessage(TEST_CONV_ID, 'Carry on', '/home/user');
+        gates[0]();
+        await vi.waitFor(() => expect(gates).toHaveLength(2));
+        expect(limits()).toBe(1);
+        gates[1]();
+      });
+    });
+
     it('reports no usage-limit stop for a turn that was not refused', async () => {
       const mockIterator = createMockQueryIterator([
         {
