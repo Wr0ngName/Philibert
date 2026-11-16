@@ -33,7 +33,7 @@ What the hook checks, and why each exists:
   out-of-sync lockfile and fails *every* job — see Lockfile Integrity below.
   This guard runs on manifest-only commits, which nothing else covers.
 - **Release notes** whenever `package.json` is staged: its version must have
-  a section in `CHANGELOG.md` (see Release Notes below). CI refuses a tag
+  a section in `RELEASE_NOTES.md` (see Release Notes below). CI refuses a tag
   without one, and a pushed tag cannot be deleted, so this stops the bump
   before there is a tag at all.
 - **eslint** on staged `.ts`/`.vue`/`.js` files.
@@ -74,15 +74,23 @@ from scratch, which drifts hundreds of packages. Confirm with
 Each release tells its users what it changes, so they can plan the update,
 and lists every change it is made of, as open source projects do.
 
-- **What's new** is written by hand in `CHANGELOG.md`: one `## X.Y.Z`
-  section per version, newest first, a few plain-words bullets for the
-  people who use the app — what they will notice, not how it was done. A
-  release candidate shows the section of the version it leads to
-  (`v0.32.0-rc.2` shows `## 0.32.0`), so the section is written before the
-  first candidate and completed as candidates follow.
-- **The changes** are listed from git: every commit since the release
-  before (the previous stable release for a stable one, the previous tag
-  for a candidate), version bumps left out, with a link comparing the two.
+- **What's new** is written by hand in `RELEASE_NOTES.md`, for the release
+  being prepared only, under its `## X.Y.Z` heading: a few plain-words
+  bullets for the people who use the app, what they will notice rather than
+  how it was done, each on one line. Starting the next version means
+  replacing the section; earlier notes stay in the file at their tag
+  (`git show v0.31.0:RELEASE_NOTES.md`). A release candidate shows the
+  section of the version it leads to (`v0.32.0-rc.2` shows `## 0.32.0`), so
+  it is written before the first candidate and completed as candidates
+  follow. The heading is checked against the version, so a release cannot
+  go out with the notes of the one before.
+- **The changes** are listed by [git-cliff](https://git-cliff.org)
+  (`cliff.toml`), grouped by conventional-commit type (Features, Fixes, …),
+  version bumps left out: for a stable release, every commit since the
+  stable release before, its candidates included; for a candidate, those
+  since the tag just before it. A link compares the two tags. git-cliff is a
+  pinned devDependency, run through `npx` at that version, so the release
+  job, which installs nothing, runs the same one.
 
 `scripts/release-notes.mjs` produces both. Where they go:
 
@@ -111,7 +119,7 @@ that step 7 pulls in the opposite direction and must give way.
    print `.husky/_`. See Git Hooks above. Everything below assumes the
    pre-commit guards actually run.
 1. **Make all code changes** and commit them.
-   **Write what's new** in `CHANGELOG.md` (see Release Notes above) and
+   **Write what's new** in `RELEASE_NOTES.md` (see Release Notes above) and
    commit it with them: the bump below is refused without it.
 2. **Bump version** in `package.json` and `package-lock.json` (direct edit,
    see above). Commit.
@@ -250,7 +258,7 @@ pipeline (`.gitlab-ci.yml`):
   container after a single `npm ci`. All three run even if an earlier one
   fails, so one pipeline reports every problem; the job fails if any of them
   failed. None of them is allowed to fail. On a tag it also checks that
-  `CHANGELOG.md` has the release's notes, so a tag without them fails in
+  `RELEASE_NOTES.md` has the release's notes, so a tag without them fails in
   minutes rather than at the release step.
 
   It is one job because `npm ci` is the memory peak on this runner and
@@ -270,10 +278,11 @@ pipeline (`.gitlab-ci.yml`):
 1. `publish:packages` — uploads all artifacts to the GitLab Package Registry
    at `${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/releases/<version>/`.
    Generates `latest.yml` (SHA-512 hash + metadata) for electron-updater,
-   with what's new from `CHANGELOG.md` as its `releaseNotes`.
-2. `create:release` — creates a GitLab Release: what's new, every change
-   since the release before (it clones the whole history, `GIT_DEPTH: 0`, to
-   find it), then download links for all platforms and variants.
+   with what's new from `RELEASE_NOTES.md` as its `releaseNotes`.
+2. `create:release` — creates a GitLab Release: what's new, the changes
+   since the release before by git-cliff (it clones the whole history,
+   `GIT_DEPTH: 0`, to find them), then download links for all platforms and
+   variants.
 
 ### Cleanup Stage
 - `cleanup:old` — runs `scripts/cleanup-old-releases.sh` inside an alpine

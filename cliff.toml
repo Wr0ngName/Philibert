@@ -1,0 +1,42 @@
+# git-cliff (https://git-cliff.org): the list of changes on a release's page,
+# grouped by the conventional-commit type of each subject. Run by
+# scripts/release-notes.mjs on the range since the release before; what's new
+# for users is RELEASE_NOTES.md, written by hand.
+
+[changelog]
+body = """
+{% set project = get_env(name="CI_PROJECT_URL", default="") -%}
+{% for group, commits in commits | group_by(attribute="group") %}
+#### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | split(pat="\n") | first | trim }} \
+  ({% if project %}[{{ commit.id | truncate(length=7, end="") }}]({{ project }}/-/commit/{{ commit.id }}){% else %}{{ commit.id | truncate(length=7, end="") }}{% endif %})
+{%- endfor %}
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+# A subject that is not conventional is still a change: listed under Other.
+filter_unconventional = false
+filter_commits = false
+# Stable releases only: a stable release's changes are its whole cycle, its
+# candidates included, as one list. A candidate's range ends at its own tag
+# and holds no other, so it is one list as well.
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+sort_commits = "newest"
+# The HTML comments order the groups and are stripped from the headings.
+commit_parsers = [
+  { message = "^chore: bump version to ", skip = true },
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+  { message = "^style", group = "<!-- 4 -->Style" },
+  { message = "^docs", group = "<!-- 5 -->Documentation" },
+  { message = "^test", group = "<!-- 6 -->Tests" },
+  { message = "^chore\\(deps\\)", group = "<!-- 7 -->Dependencies" },
+  { message = "^(chore|build|ci)", group = "<!-- 8 -->Maintenance" },
+  { message = ".*", group = "<!-- 9 -->Other" },
+]

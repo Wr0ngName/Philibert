@@ -1,12 +1,15 @@
 # What's new in Philibert
 
-What each release changes for the people who use it, in plain words, so an
-update can be planned. Shown in the app when an update is offered, and at the
-top of each release's page, which also lists every change it is made of.
+What the release being prepared changes for the people who use it, in plain
+words, so an update can be planned. Shown in the app when the update is
+offered, and at the top of the release's page, which also lists every change
+it is made of (git-cliff, cliff.toml).
 
-One section per version, newest first. A release candidate shows the notes of
-the version it leads to, so they are written before its first candidate. Each
-bullet on one line: the app shows a line break inside a bullet as one.
+The release being prepared only, under its version's heading: replace the
+section when starting the next version, before its first candidate, which
+shows it too. Earlier notes are in this file at their tag
+(`git show v0.31.0:RELEASE_NOTES.md`). Each bullet on one line: the app shows
+a line break inside a bullet as one.
 
 ## 0.31.0
 

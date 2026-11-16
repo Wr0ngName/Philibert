@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * What an update changes, shown in the banner that offers it, so it can be
- * planned: the release's CHANGELOG.md section, carried by the update feed
+ * planned: the release's RELEASE_NOTES.md, carried by the update feed
  * as electron-updater's releaseNotes. `window.electron` is the process
  * boundary, so it is what is stubbed.
  *

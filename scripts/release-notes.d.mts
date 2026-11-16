@@ -5,9 +5,8 @@
 
 export function baseVersion(tag: string): string;
 export function isStable(tag: string): boolean;
-export function whatsNew(changelog: string, version: string): string | null;
+export function whatsNew(notes: string, version: string): string | null;
 export function previousTag(tags: string[], tag: string): string | null;
-export function changesList(log: string): string;
 export function feedNotes(notes: string): string;
 export function releasePage(release: {
   notes: string;

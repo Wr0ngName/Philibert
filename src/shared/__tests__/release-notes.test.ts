@@ -1,7 +1,7 @@
 /**
- * A release's notes (scripts/release-notes.mjs): the section of CHANGELOG.md
- * shown to users, the changes listed on the release page, and the update
- * feed's releaseNotes, read back by electron-updater's own parser.
+ * A release's notes (scripts/release-notes.mjs): RELEASE_NOTES.md's section
+ * shown to users, the changes git-cliff lists on the release page, and the
+ * update feed's releaseNotes, read back by electron-updater's own parser.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -14,7 +14,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   baseVersion,
-  changesList,
   feedNotes,
   previousTag,
   releasePage,
@@ -23,7 +22,7 @@ import {
 
 const SCRIPT = resolve(__dirname, '../../../scripts/release-notes.mjs');
 
-const CHANGELOG = `# What's new in Philibert
+const NOTES = `# What's new in Philibert
 
 Intro.
 
@@ -33,10 +32,6 @@ Intro.
 - Fixed: "quotes", colons: and # hashes.
 
   A paragraph after a blank line.
-
-## 1.0.0
-
-- First release.
 `;
 
 describe('baseVersion', () => {
@@ -53,14 +48,14 @@ describe('baseVersion', () => {
 
 describe('whatsNew', () => {
   it("is the version's section, up to the next one", () => {
-    expect(whatsNew(CHANGELOG, '1.1.0')).toBe(
+    expect(whatsNew(NOTES, '1.1.0')).toBe(
       '- **New**: something users notice.\n- Fixed: "quotes", colons: and # hashes.\n\n  A paragraph after a blank line.',
     );
-    expect(whatsNew(CHANGELOG, '1.0.0')).toBe('- First release.');
+    expect(whatsNew(`${NOTES}\n## 1.0.0\n\n- First release.\n`, '1.1.0')).toBe(whatsNew(NOTES, '1.1.0'));
   });
 
-  it('is null for a version with no section, or an empty one', () => {
-    expect(whatsNew(CHANGELOG, '1.2.0')).toBeNull();
+  it("is null for a version with no section, or an empty one: never the notes of the release before", () => {
+    expect(whatsNew(NOTES, '1.2.0')).toBeNull();
     expect(whatsNew('## 1.2.0\n\n## 1.1.0\n- x\n', '1.2.0')).toBeNull();
   });
 
@@ -91,20 +86,13 @@ describe('previousTag', () => {
   });
 });
 
-describe('changesList', () => {
-  it('lists each change with its commit, version bumps left out', () => {
-    const log = 'abc1234\tfeat(x): a feature\ndef5678\tchore: bump version to 1.1.0\n9876fed\tfix(y): a fix\n';
-    expect(changesList(log)).toBe('- feat(x): a feature (abc1234)\n- fix(y): a fix (9876fed)');
-  });
-});
-
 describe('releasePage', () => {
   it("is what's new, then the changes, then the comparison", () => {
     expect(releasePage({
-      notes: '- New.', previous: 'v1.0.0', tag: 'v1.1.0', changes: '- a (abc1234)',
+      notes: '- New.', previous: 'v1.0.0', tag: 'v1.1.0', changes: '\n#### Fixes\n\n- a (abc1234)\n',
       projectUrl: 'https://example.test/group/app',
     })).toBe(
-      "### What's new\n\n- New.\n\n### Changes since v1.0.0\n\n- a (abc1234)\n\n"
+      "### What's new\n\n- New.\n\n### Changes since v1.0.0\n\n#### Fixes\n\n- a (abc1234)\n\n"
       + '[Compare v1.0.0...v1.1.0](https://example.test/group/app/-/compare/v1.0.0...v1.1.0)\n',
     );
   });
@@ -117,7 +105,7 @@ describe('releasePage', () => {
 
 describe('feedNotes', () => {
   it('reads back, through electron-updater, as the notes exactly as written', () => {
-    const notes = whatsNew(CHANGELOG, '1.1.0') as string;
+    const notes = whatsNew(NOTES, '1.1.0') as string;
     // The Windows feed as the release job writes it, then the notes.
     const feed = 'version: 1.1.0\npath: Philibert-Setup-1.1.0.exe\nsha512: abc\nreleaseDate: 2026-11-16T10:00:00Z\n'
       + feedNotes(notes);
@@ -142,18 +130,29 @@ describe('the command, in a repository', () => {
   }
 
   function run(command: string, tag: string): string {
-    return execFileSync('node', [SCRIPT, command, tag], { cwd: repo, encoding: 'utf8', env: { ...process.env, CI_PROJECT_URL: '' } });
+    return execFileSync('node', [SCRIPT, command, tag], {
+      cwd: repo, encoding: 'utf8', env: { ...process.env, CI_PROJECT_URL: '' },
+    });
+  }
+
+  /** The release page's changes: each group's heading and its entries, the commit ids left out. */
+  function changes(page: string): string[] {
+    const list = page.slice(page.indexOf('### Changes'));
+    return list.split('\n')
+      .filter((line) => line.startsWith('#### ') || line.startsWith('- '))
+      .map((line) => line.replace(/ \([0-9a-f]{7}\)$/, ''));
   }
 
   beforeEach(() => {
     repo = mkdtempSync(join(tmpdir(), 'release-notes-'));
     git('init', '-q');
-    writeFileSync(join(repo, 'CHANGELOG.md'), CHANGELOG);
-    git('add', 'CHANGELOG.md');
+    writeFileSync(join(repo, 'RELEASE_NOTES.md'), NOTES);
+    git('add', 'RELEASE_NOTES.md');
     commitAndTag('feat: first', 'v1.0.0');
-    commitAndTag('feat: second');
+    commitAndTag('feat(chat): second');
     commitAndTag('chore: bump version to 1.1.0-rc.1', 'v1.1.0-rc.1');
     commitAndTag('fix: third');
+    commitAndTag('Not conventional');
     commitAndTag('chore: bump version to 1.1.0', 'v1.1.0');
   });
 
@@ -161,29 +160,36 @@ describe('the command, in a repository', () => {
     rmSync(repo, { recursive: true, force: true });
   });
 
-  function subjects(page: string): string[] {
-    return page.split('\n').filter((line) => line.startsWith('- ') && /\([0-9a-f]+\)$/.test(line))
-      .map((line) => line.replace(/ \([0-9a-f]+\)$/, ''));
-  }
-
-  it("pages a stable release with every change since the stable one before", () => {
+  it('pages a stable release with its whole cycle since the stable one before, grouped by type', () => {
     const page = run('page', 'v1.1.0');
     expect(page).toContain("### What's new\n\n- **New**: something users notice.");
     expect(page).toContain('### Changes since v1.0.0');
-    expect(subjects(page)).toEqual(['- fix: third', '- feat: second']);
+    expect(changes(page)).toEqual([
+      '#### Features', '- **chat**: second',
+      '#### Fixes', '- third',
+      '#### Other', '- Not conventional',
+    ]);
   });
 
   it('pages a candidate with the notes of the version it leads to, and its own changes', () => {
     const page = run('page', 'v1.1.0-rc.1');
     expect(page).toContain('- **New**: something users notice.');
     expect(page).toContain('### Changes since v1.0.0');
-    expect(subjects(page)).toEqual(['- feat: second']);
+    expect(changes(page)).toEqual(['#### Features', '- **chat**: second']);
   });
 
-  it('fails, saying what to write, for a version CHANGELOG.md has no notes for', () => {
+  it('pages the first release with everything before it', () => {
+    git('checkout', '-q', 'v1.0.0');
+    writeFileSync(join(repo, 'RELEASE_NOTES.md'), '## 1.0.0\n\n- First release.\n');
+    const page = run('page', 'v1.0.0');
+    expect(page).toContain('### Changes\n');
+    expect(changes(page)).toEqual(['#### Features', '- first']);
+  });
+
+  it('fails, saying what to write, for a version RELEASE_NOTES.md has no notes for', () => {
     commitAndTag('feat: fourth', 'v1.2.0');
     expect(() => execFileSync('node', [SCRIPT, 'check', 'v1.2.0'], { cwd: repo, stdio: 'pipe' }))
-      .toThrow('CHANGELOG.md has no "## 1.2.0" section');
+      .toThrow('RELEASE_NOTES.md has no "## 1.2.0" section');
     expect(run('check', 'v1.1.0')).toBe('');
   });
 });

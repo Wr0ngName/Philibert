@@ -1,17 +1,25 @@
 /**
- * A release's notes: what's new for the people who use it, from CHANGELOG.md,
- * and the list of changes it is made of, from git.
+ * A release's notes: what's new for the people who use it, from
+ * RELEASE_NOTES.md, and the changes it is made of, listed by git-cliff.
  *
- *   node scripts/release-notes.mjs check <tag>  fails when CHANGELOG.md has no section for it
+ *   node scripts/release-notes.mjs check <tag>  fails when RELEASE_NOTES.md has no notes for it
  *   node scripts/release-notes.mjs feed <tag>   the update feed's releaseNotes, as YAML
  *   node scripts/release-notes.mjs page <tag>   the release page's notes, as Markdown
  *
- * A release candidate shows the section of the version it leads to: the
- * notes of 0.31.0 for v0.31.0-rc.3. Its changes are those since the tag
- * before it; a stable release's, those since the stable release before it,
- * all its candidates included.
+ * RELEASE_NOTES.md holds the release being prepared only, under its version's
+ * heading: an earlier release's notes are in the file at its tag
+ * (`git show v0.31.0:RELEASE_NOTES.md`). A release candidate shows the notes
+ * of the version it leads to: those of 0.31.0 for v0.31.0-rc.3. The heading
+ * is what stops a release going out with the notes of the one before.
  *
- * Run from the repository's root: CHANGELOG.md and the tags are read there.
+ * The changes are git-cliff's (cliff.toml), grouped by conventional-commit
+ * type: for a stable release, those since the stable release before, its
+ * candidates included; for a candidate, those since the tag just before it.
+ *
+ * Run from the root of the repository released: the notes and the tags are
+ * read there. git-cliff is the version package.json pins, run by npx: the
+ * installed one in a checkout, downloaded where nothing is installed (the
+ * release job).
  *
  * Plain JavaScript, like the other scripts here: CI runs it with a bare
  * `node` and no build step.
@@ -19,9 +27,13 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const TAG = /^v(\d+\.\d+\.\d+)(-rc\.\d+)?$/;
+const NOTES_FILE = 'RELEASE_NOTES.md';
+/** This tool's own checkout: its cliff.toml, and the git-cliff version it pins. */
+const TOOL_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** The version a tag leads to: 0.31.0 for v0.31.0 and for v0.31.0-rc.3. */
 export function baseVersion(tag) {
@@ -36,9 +48,9 @@ export function isStable(tag) {
   return !tag.includes('-rc.');
 }
 
-/** A version's section of CHANGELOG.md, without its heading; null when it has none. */
-export function whatsNew(changelog, version) {
-  const lines = changelog.split('\n');
+/** A version's section of the notes, without its heading; null when it has none. */
+export function whatsNew(notes, version) {
+  const lines = notes.split('\n');
   const start = lines.findIndex((line) => line.trim() === `## ${version}`);
   if (start === -1) return null;
   const length = lines.slice(start + 1).findIndex((line) => line.startsWith('## '));
@@ -60,48 +72,42 @@ export function previousTag(tags, tag) {
   return candidates.at(-1) ?? null;
 }
 
-/**
- * The changes as a Markdown list, from `git log --format=%h%x09%s` lines.
- * Version bumps are left out: they change nothing but the number.
- */
-export function changesList(log) {
-  return log
-    .split('\n')
-    .filter((line) => line.includes('\t'))
-    .map((line) => line.split('\t'))
-    .filter(([, subject]) => !subject.startsWith('chore: bump version to '))
-    .map(([sha, subject]) => `- ${subject} (${sha})`)
-    .join('\n');
-}
-
 /** The update feed's releaseNotes field: a YAML literal block, kept as written. */
 export function feedNotes(notes) {
   const body = notes.split('\n').map((line) => (line === '' ? '' : `  ${line}`));
   return `releaseNotes: |-\n${body.join('\n')}\n`;
 }
 
-/** The release page's notes: what's new, then every change since the release before. */
+/** The release page's notes: what's new, then the changes since the release before. */
 export function releasePage({ notes, previous, tag, changes, projectUrl }) {
   const since = previous === null ? 'Changes' : `Changes since ${previous}`;
   const compare = previous !== null && projectUrl
     ? `\n\n[Compare ${previous}...${tag}](${projectUrl}/-/compare/${previous}...${tag})`
     : '';
-  return `### What's new\n\n${notes}\n\n### ${since}\n\n${changes || '- (none)'}${compare}\n`;
-}
-
-function git(...args) {
-  return execFileSync('git', args, { encoding: 'utf8' });
+  return `### What's new\n\n${notes}\n\n### ${since}\n\n${changes.trim() || '(none)'}${compare}\n`;
 }
 
 function notesFor(tag) {
   const version = baseVersion(tag);
-  const notes = whatsNew(readFileSync('CHANGELOG.md', 'utf8'), version);
+  const notes = whatsNew(readFileSync(NOTES_FILE, 'utf8'), version);
   if (notes === null) {
     throw new Error(
-      `CHANGELOG.md has no "## ${version}" section, or it is empty: write what ${tag} changes for its users first.`,
+      `${NOTES_FILE} has no "## ${version}" section, or it is empty: write what ${tag} changes for its users first.`,
     );
   }
   return notes;
+}
+
+/** The changes in a range, by git-cliff; the whole history up to HEAD when there is none. */
+function changesIn(range) {
+  const { devDependencies } = JSON.parse(readFileSync(join(TOOL_ROOT, 'package.json'), 'utf8'));
+  return execFileSync('npx', [
+    '--yes', `git-cliff@${devDependencies['git-cliff']}`,
+    '--config', join(TOOL_ROOT, 'cliff.toml'),
+    '--repository', process.cwd(),
+    '--strip', 'all',
+    ...(range ? [range] : []),
+  ], { cwd: TOOL_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 function main([command, tag]) {
@@ -112,11 +118,11 @@ function main([command, tag]) {
   if (command === 'check') return '';
   if (command === 'feed') return feedNotes(notes);
 
-  const tags = git('-c', 'versionsort.suffix=-rc', 'tag', '--list', 'v*', '--sort=v:refname')
-    .split('\n').filter(Boolean);
+  const tags = execFileSync('git', ['-c', 'versionsort.suffix=-rc', 'tag', '--list', 'v*', '--sort=v:refname'], {
+    encoding: 'utf8',
+  }).split('\n').filter(Boolean);
   const previous = previousTag(tags, tag);
-  const range = previous === null ? tag : `${previous}..${tag}`;
-  const changes = changesList(git('log', '--no-merges', '--format=%h%x09%s', range));
+  const changes = changesIn(previous === null ? null : `${previous}..${tag}`);
   return releasePage({ notes, previous, tag, changes, projectUrl: process.env.CI_PROJECT_URL });
 }
 
@@ -124,7 +130,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     process.stdout.write(main(process.argv.slice(2)));
   } catch (error) {
-    process.stderr.write(`release-notes: ${error.message}\n`);
+    process.stderr.write(`release-notes: ${error.stderr || error.message}\n`);
     process.exit(1);
   }
 }

@@ -30,7 +30,7 @@ const isDownloaded = ref(false);
 const dismissed = ref(false);
 
 /**
- * What the update changes, from the release's CHANGELOG.md section, so it
+ * What the update changes, from the release's RELEASE_NOTES.md, so it
  * can be planned: shown on asking, under the banner. Sanitized by
  * renderMarkdown, as a message is.
  */
