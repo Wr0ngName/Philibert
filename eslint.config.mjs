@@ -131,6 +131,7 @@ export default [
     files: [
       'src/renderer/components/chat/MessageItem.vue',
       'src/renderer/components/files/MarkdownViewerModal.vue',
+      'src/renderer/components/shared/UpdateBanner.vue',
     ],
     rules: {
       'vue/no-v-html': 'off',

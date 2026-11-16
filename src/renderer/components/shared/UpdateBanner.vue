@@ -4,9 +4,11 @@
  * Shows when updates are available, downloading, or ready to install
  */
 
-import { ref, onMounted, onUnmounted } from 'vue';
+import { computed, ref, onMounted, onUnmounted } from 'vue';
 
 import type { UpdateInstallResult } from '@shared/types';
+
+import { renderMarkdown } from '../../utils/markdown';
 
 interface UpdateInfo {
   version: string;
@@ -27,6 +29,17 @@ const downloadProgress = ref<UpdateProgress | null>(null);
 const isDownloaded = ref(false);
 const dismissed = ref(false);
 
+/**
+ * What the update changes, from the release's CHANGELOG.md section, so it
+ * can be planned: shown on asking, under the banner. Sanitized by
+ * renderMarkdown, as a message is.
+ */
+const showNotes = ref(false);
+const notesHtml = computed(() => {
+  const notes = updateAvailable.value?.releaseNotes;
+  return notes ? renderMarkdown(notes) : null;
+});
+
 let cleanupAvailable: (() => void) | null = null;
 let cleanupProgress: (() => void) | null = null;
 let cleanupDownloaded: (() => void) | null = null;
@@ -36,6 +49,7 @@ onMounted(() => {
   cleanupAvailable = window.electron?.update.onAvailable((info: UpdateInfo) => {
     updateAvailable.value = info;
     dismissed.value = false;
+    showNotes.value = false;
   });
 
   cleanupProgress = window.electron?.update.onProgress((progress: UpdateProgress) => {
@@ -126,6 +140,14 @@ function formatBytes(bytes: number): string {
           </span>
         </div>
         <div class="flex items-center gap-2">
+          <button
+            v-if="notesHtml"
+            class="btn-sm btn-ghost update-notes-toggle"
+            :aria-expanded="showNotes"
+            @click="showNotes = !showNotes"
+          >
+            {{ showNotes ? "Hide what's new" : "What's new" }}
+          </button>
           <button
             class="btn-sm btn-primary"
             @click="downloadUpdate"
@@ -244,6 +266,14 @@ function formatBytes(bytes: number): string {
         </div>
         <div class="flex items-center gap-2">
           <button
+            v-if="notesHtml"
+            class="btn-sm btn-ghost update-notes-toggle"
+            :aria-expanded="showNotes"
+            @click="showNotes = !showNotes"
+          >
+            {{ showNotes ? "Hide what's new" : "What's new" }}
+          </button>
+          <button
             class="btn-sm btn-primary"
             @click="installUpdate"
           >
@@ -257,6 +287,12 @@ function formatBytes(bytes: number): string {
           </button>
         </div>
       </template>
+
+      <div
+        v-if="showNotes && notesHtml"
+        class="update-notes basis-full prose prose-sm dark:prose-invert max-w-full max-h-64 overflow-y-auto text-surface-700 dark:text-surface-200"
+        v-html="notesHtml"
+      />
     </div>
   </Transition>
 </template>
@@ -264,7 +300,7 @@ function formatBytes(bytes: number): string {
 <style scoped>
 @reference "../../assets/styles/main.css";
 .update-banner {
-  @apply flex items-center justify-between gap-4 px-4 py-2;
+  @apply flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2;
   @apply bg-primary-50 dark:bg-primary-900/30;
   @apply border-b border-primary-200 dark:border-primary-800;
   @apply text-sm text-surface-700 dark:text-surface-200;

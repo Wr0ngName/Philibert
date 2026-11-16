@@ -98,10 +98,17 @@ verify:
       docker run --rm \
         -v "$CI_PROJECT_DIR:/app" \
         -w /app \
+        -e CI_COMMIT_TAG \
         node:${NODE_VERSION} \
         sh -c 'set -u
           npm ci --prefer-offline || exit 1
           rc=0
+          # A release says what it changes for its users: a tag whose version
+          # CHANGELOG.md has no notes for fails here, in minutes, not at the
+          # release step an hour of builds later.
+          if [ -n "${CI_COMMIT_TAG:-}" ]; then
+            node scripts/release-notes.mjs check "$CI_COMMIT_TAG" || rc=1
+          fi
           npm run lint || rc=1
           npm run typecheck || rc=1
           npm run test || rc=1
@@ -626,6 +633,15 @@ publish:packages:
         fi
       done
 
+      # What's new, from CHANGELOG.md, for both feeds: the app shows it when
+      # it offers the update (electron-updater's releaseNotes).
+      docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        -v "$CI_PROJECT_DIR:/app:ro" \
+        -w /app \
+        node:${NODE_VERSION} \
+        node scripts/release-notes.mjs feed "${CI_COMMIT_TAG}" > release-notes.yml
+
       # Generate latest.yml for electron-updater auto-updates
       echo "Creating latest.yml..."
       WIN_EXE=$(ls out/make/nsis/*.exe 2>/dev/null | head -1)
@@ -634,6 +650,7 @@ publish:packages:
       RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       printf 'version: %s\npath: %s\nsha512: %s\nreleaseDate: %s\n' \
         "${VERSION}" "${WIN_FILENAME}" "${WIN_SHA512}" "${RELEASE_DATE}" > latest.yml
+      cat release-notes.yml >> latest.yml
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file latest.yml \
            "${PACKAGE_REGISTRY_URL}/releases/${VERSION}/latest.yml"
@@ -644,6 +661,7 @@ publish:packages:
       scripts/write-linux-update-feed.sh "${VERSION}" \
         "$(ls out/make/deb/x64/*.deb | head -1)" \
         "$(ls out/make/rpm/x64/*.rpm | head -1)" > latest-linux.yml
+      cat release-notes.yml >> latest-linux.yml
       cat latest-linux.yml
       curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file latest-linux.yml \
@@ -667,6 +685,10 @@ create:release:
   needs:
     - job: publish:packages
       artifacts: true
+  variables:
+    # The whole history and every tag: the page lists the changes since the
+    # release before, which a shallow clone of the tag alone does not hold.
+    GIT_DEPTH: "0"
   script:
     - |
       TAG=${CI_COMMIT_TAG}
@@ -680,6 +702,17 @@ create:release:
       # Load URLs from publish:packages artifact
       source release-info/urls.env
 
+      # What's new (CHANGELOG.md) and every change since the release before.
+      git fetch --quiet --force --tags origin
+      RELEASE_NOTES=$(docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        -e HOME=/tmp \
+        -e CI_PROJECT_URL \
+        -v "$CI_PROJECT_DIR:/app:ro" \
+        -w /app \
+        node:${NODE_VERSION} \
+        node scripts/release-notes.mjs page "${TAG}")
+
       # Determine if this is an RC release
       IS_RC=false
       RC_NOTICE=""
@@ -692,6 +725,8 @@ create:release:
       cat > "${RELEASE_DESC}" << DESCEOF
       ## Philibert ${TAG}
       ${RC_NOTICE}
+      ${RELEASE_NOTES}
+
       ### Downloads
 
       #### Linux

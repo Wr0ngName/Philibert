@@ -28,6 +28,22 @@ if [ -n "$STAGED_MANIFEST" ]; then
   fi
 fi
 
+# Release notes guard.
+#
+# Every version says what it changes for its users (CHANGELOG.md, shown in
+# the app's update banner and on the release page). CI refuses a tag with no
+# notes, but a release tag cannot be deleted once pushed, so a version bump
+# without them is stopped here, before there is a tag at all.
+if echo "$STAGED_MANIFEST" | grep -qx 'package.json'; then
+  STAGED_VERSION=$(git show :package.json | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).version)')
+  if ! node scripts/release-notes.mjs check "v${STAGED_VERSION}"; then
+    echo ""
+    echo "ERROR: write the \"## ${STAGED_VERSION%%-rc.*}\" section of CHANGELOG.md, in plain words"
+    echo "       for the people who use the app, before bumping to ${STAGED_VERSION}."
+    exit 1
+  fi
+fi
+
 # Get list of staged .ts, .vue, .js files
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|vue|js)$' || true)
 
