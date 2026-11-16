@@ -13,5 +13,5 @@ a line break inside a bullet as one.
 
 ## 0.31.1
 
-- **Updates say what's new**: when an update is offered, "What's new" shows what it changes, so you can pick a good moment to install it, before downloading and again before restarting.
+- **Updates say what's new**: when an update is offered, "See what's new" next to its version opens what it changes, so you can pick a good moment to install it, before downloading and again before restarting.
 - **The release page lists what changed**: what's new first, then every change grouped by kind, for those who want the detail.
