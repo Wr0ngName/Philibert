@@ -10,6 +10,8 @@ import type { UpdateInstallResult } from '@shared/types';
 
 import { renderMarkdown } from '../../utils/markdown';
 
+import Modal from './Modal.vue';
+
 interface UpdateInfo {
   version: string;
   releaseNotes?: string;
@@ -31,8 +33,9 @@ const dismissed = ref(false);
 
 /**
  * What the update changes, from the release's RELEASE_NOTES.md, so it
- * can be planned: shown on asking, under the banner. Sanitized by
- * renderMarkdown, as a message is.
+ * can be planned: shown on asking, in a dialog of its own, so notes of any
+ * length leave the banner one row. Sanitized by renderMarkdown, as a
+ * message is.
  */
 const showNotes = ref(false);
 const notesHtml = computed(() => {
@@ -142,11 +145,11 @@ function formatBytes(bytes: number): string {
         <div class="flex items-center gap-2">
           <button
             v-if="notesHtml"
-            class="btn-sm btn-ghost update-notes-toggle"
-            :aria-expanded="showNotes"
-            @click="showNotes = !showNotes"
+            class="btn-sm btn-ghost update-notes-open"
+            aria-haspopup="dialog"
+            @click="showNotes = true"
           >
-            {{ showNotes ? "Hide what's new" : "What's new" }}
+            What's new
           </button>
           <button
             class="btn-sm btn-primary"
@@ -267,11 +270,11 @@ function formatBytes(bytes: number): string {
         <div class="flex items-center gap-2">
           <button
             v-if="notesHtml"
-            class="btn-sm btn-ghost update-notes-toggle"
-            :aria-expanded="showNotes"
-            @click="showNotes = !showNotes"
+            class="btn-sm btn-ghost update-notes-open"
+            aria-haspopup="dialog"
+            @click="showNotes = true"
           >
-            {{ showNotes ? "Hide what's new" : "What's new" }}
+            What's new
           </button>
           <button
             class="btn-sm btn-primary"
@@ -288,11 +291,40 @@ function formatBytes(bytes: number): string {
         </div>
       </template>
 
-      <div
-        v-if="showNotes && notesHtml"
-        class="update-notes basis-full prose prose-sm dark:prose-invert max-w-full max-h-64 overflow-y-auto text-surface-700 dark:text-surface-200"
-        v-html="notesHtml"
-      />
+      <Modal
+        :open="showNotes && notesHtml !== null"
+        :title="`What's new in v${updateAvailable.version}`"
+        size="lg"
+        resize-key="update-notes"
+        @close="showNotes = false"
+      >
+        <div
+          class="update-notes prose prose-sm dark:prose-invert max-w-full text-surface-800 dark:text-surface-200"
+          v-html="notesHtml"
+        />
+        <template #footer>
+          <button
+            class="btn-sm btn-ghost"
+            @click="showNotes = false"
+          >
+            Close
+          </button>
+          <button
+            v-if="!isDownloading && !isDownloaded"
+            class="btn-sm btn-primary"
+            @click="showNotes = false; downloadUpdate()"
+          >
+            Download
+          </button>
+          <button
+            v-else-if="isDownloaded && !installFailure"
+            class="btn-sm btn-primary"
+            @click="showNotes = false; installUpdate()"
+          >
+            Restart Now
+          </button>
+        </template>
+      </Modal>
     </div>
   </Transition>
 </template>
@@ -300,7 +332,7 @@ function formatBytes(bytes: number): string {
 <style scoped>
 @reference "../../assets/styles/main.css";
 .update-banner {
-  @apply flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2;
+  @apply flex items-center justify-between gap-4 px-4 py-2;
   @apply bg-primary-50 dark:bg-primary-900/30;
   @apply border-b border-primary-200 dark:border-primary-800;
   @apply text-sm text-surface-700 dark:text-surface-200;

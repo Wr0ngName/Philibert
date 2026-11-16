@@ -349,6 +349,40 @@ export function fakeFsModule(): Record<string, unknown> {
 }
 
 /** The electron surface the real preload and main services use. */
+/** What was written to the system clipboard, oldest first. */
+export const clipboardWrites: string[] = [];
+
+/** URL → what Electron's `net` answers it with; anything else is a 404. */
+export const netResponses = new Map<string, { statusCode: number; body: string }>();
+
+/**
+ * Electron's `net.request`: answers from netResponses once ended, with the
+ * request's and the response's events in Electron's order.
+ */
+function fakeNetRequest({ url }: { url: string }): Record<string, unknown> {
+  const listeners = new Map<string, ((...args: unknown[]) => void)[]>();
+  const on = (target: Map<string, ((...args: unknown[]) => void)[]>) =>
+    (event: string, listener: (...args: unknown[]) => void) => {
+      target.set(event, [...(target.get(event) ?? []), listener]);
+    };
+  const emit = (target: Map<string, ((...args: unknown[]) => void)[]>, event: string, ...args: unknown[]) => {
+    for (const listener of target.get(event) ?? []) listener(...args);
+  };
+  return {
+    setHeader: () => undefined,
+    on: on(listeners),
+    end: () => {
+      queueMicrotask(() => {
+        const answer = netResponses.get(url) ?? { statusCode: 404, body: '' };
+        const responseListeners = new Map<string, ((...args: unknown[]) => void)[]>();
+        emit(listeners, 'response', { statusCode: answer.statusCode, on: on(responseListeners) });
+        emit(responseListeners, 'data', Buffer.from(answer.body));
+        emit(responseListeners, 'end');
+      });
+    },
+  };
+}
+
 export function fakeElectronModule(): Record<string, unknown> {
   return {
     contextBridge: {
@@ -410,6 +444,8 @@ export function fakeElectronModule(): Record<string, unknown> {
     },
     dialog: { showMessageBox: async () => ({ response: 0 }) },
     shell: { openExternal: async () => {} },
+    clipboard: { writeText: (text: string) => { clipboardWrites.push(text); } },
+    net: { request: fakeNetRequest },
   };
 }
 
@@ -604,6 +640,8 @@ export async function startRealStack(options: {
 
   mainHandlers.clear();
   mainListeners.clear();
+  clipboardWrites.length = 0;
+  netResponses.clear();
   sessionsEnded.length = 0;
   missedContinuesNotified.length = 0;
   mainOptions = options;
