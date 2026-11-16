@@ -141,16 +141,16 @@ function formatBytes(bytes: number): string {
           <span class="font-medium">
             Update available: v{{ updateAvailable.version }}
           </span>
-        </div>
-        <div class="flex items-center gap-2">
           <button
             v-if="notesHtml"
-            class="btn-sm btn-ghost update-notes-open"
+            class="update-notes-open"
             aria-haspopup="dialog"
             @click="showNotes = true"
           >
-            What's new
+            See what's new
           </button>
+        </div>
+        <div class="flex items-center gap-2">
           <button
             class="btn-sm btn-primary"
             @click="downloadUpdate"
@@ -266,16 +266,16 @@ function formatBytes(bytes: number): string {
           <span class="font-medium">
             Update v{{ updateAvailable.version }} ready to install
           </span>
-        </div>
-        <div class="flex items-center gap-2">
           <button
             v-if="notesHtml"
-            class="btn-sm btn-ghost update-notes-open"
+            class="update-notes-open"
             aria-haspopup="dialog"
             @click="showNotes = true"
           >
-            What's new
+            See what's new
           </button>
+        </div>
+        <div class="flex items-center gap-2">
           <button
             class="btn-sm btn-primary"
             @click="installUpdate"
@@ -336,6 +336,13 @@ function formatBytes(bytes: number): string {
   @apply bg-primary-50 dark:bg-primary-900/30;
   @apply border-b border-primary-200 dark:border-primary-800;
   @apply text-sm text-surface-700 dark:text-surface-200;
+}
+
+/* A quiet link after the version: the notes are there to read, not a step. */
+.update-notes-open {
+  @apply text-sm text-primary-700 dark:text-primary-300 underline decoration-dotted underline-offset-2;
+  @apply hover:decoration-solid hover:text-primary-800 dark:hover:text-primary-200;
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 rounded-sm;
 }
 
 .btn-sm {

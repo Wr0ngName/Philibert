@@ -142,6 +142,10 @@ describe("an update's what's new, from its feed to the dialog", () => {
     await offer('0.31.1', whatsNew(RELEASE_NOTES, '0.31.1'));
     expect(banner!.text()).toContain('Update available: v0.31.1');
     expect(dialog()).toBeNull();
+    // Right after the version, not among the actions.
+    const link = banner!.find('.update-notes-open');
+    expect(link.text()).toBe("See what's new");
+    expect(link.element.parentElement!.textContent).toContain('Update available: v0.31.1');
 
     await openWhatsNew();
     expect(dialog()!.textContent).toContain("What's new in v0.31.1");
