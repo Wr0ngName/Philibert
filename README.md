@@ -140,6 +140,28 @@ npm run test:browser
   browser alongside the build. Run it locally before pushing a change to
   anything it covers.
 
+### Seeing a change in the app
+Tests are not the last word: drive the changed screen in the real app.
+`scripts/dev/` holds the development toolbox, which is not part of the app or
+its packages.
+
+```bash
+npm run app -- start             # headless; --watch to see it on the desktop
+npm run app -- page "document.title"                     # evaluate in the window
+npm run app -- main "process.mainModule.require('electron').app.getVersion()"
+npm run app -- screenshot /tmp/shot.png
+npm run app -- stop              # stops it and deletes its profile
+```
+
+- `start` runs `electron-forge start` on a throwaway profile (a folder of its
+  own as `XDG_CONFIG_HOME`, never `~/.config/Philibert`) with a fake API key,
+  and returns once the window shows the app. Nothing reaches Claude.
+- `main` evaluates in the main process, through its inspector: the way to
+  inject what main would send the window, e.g. an update offer with
+  `webContents.send('update:available', { version, releaseNotes })`.
+  Expressions can `await`; their value is printed as JSON.
+- The renderer hot-reloads; a main-process change needs `stop` and `start`.
+
 ## Architecture
 
 ```
