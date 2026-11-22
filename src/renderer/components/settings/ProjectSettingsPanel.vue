@@ -67,7 +67,7 @@ const projectName = computed(() => (projectDir.value ? baseName(projectDir.value
           for="project-settings-folder"
           class="text-xs font-medium text-surface-600 dark:text-surface-300 shrink-0"
         >
-          Another project
+          Switch project
         </label>
         <select
           id="project-settings-folder"

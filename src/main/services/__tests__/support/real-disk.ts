@@ -12,7 +12,13 @@
  * time it is given is the disk's: set once per such file with
  * `vi.setConfig({ testTimeout: REAL_DISK_TEST_TIMEOUT_MS })`.
  *
+ * The same holds for a test that runs real processes: release-notes.test.ts
+ * runs the release-notes command — git, then git-cliff through npx — in a
+ * temporary repository, about a second alone; in the full suite one took
+ * over six seconds and failed on the default timeout. Each such file sets it
+ * on the tests that run them.
+ *
  * Not a cover for a slow test: one that takes long alone is still slow, and
- * every test here stays sub-second on its own.
+ * every test here stays at a second or less on its own.
  */
 export const REAL_DISK_TEST_TIMEOUT_MS = 30_000;

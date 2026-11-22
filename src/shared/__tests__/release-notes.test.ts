@@ -19,6 +19,7 @@ import {
   releasePage,
   whatsNew,
 } from '../../../scripts/release-notes.mjs';
+import { REAL_DISK_TEST_TIMEOUT_MS } from '../../main/services/__tests__/support/real-disk';
 
 const SCRIPT = resolve(__dirname, '../../../scripts/release-notes.mjs');
 
@@ -117,7 +118,8 @@ describe('feedNotes', () => {
   });
 });
 
-describe('the command, in a repository', () => {
+// Real processes, git and git-cliff, each test about a second alone: given the machine's time (see real-disk).
+describe('the command, in a repository', { timeout: REAL_DISK_TEST_TIMEOUT_MS }, () => {
   let repo: string;
 
   function git(...args: string[]): void {
