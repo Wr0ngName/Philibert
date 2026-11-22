@@ -86,9 +86,11 @@ and lists every change it is made of, as open source projects do.
   go out with the notes of the one before.
 - **The changes** are listed by [git-cliff](https://git-cliff.org)
   (`cliff.toml`), grouped by conventional-commit type (Features, Fixes, …),
-  version bumps left out: for a stable release, every commit since the
-  stable release before, its candidates included; for a candidate, those
-  since the tag just before it. A link compares the two tags. git-cliff is a
+  version bumps left out: every commit since the stable release before,
+  the candidates between included, for a candidate as for a stable release.
+  A candidate before it may never have been released, and those released
+  are removed once another is, so a list counted from one would hide the
+  rest of the cycle. A link compares the two tags. git-cliff is a
   pinned devDependency, run through `npx` at that version, so the release
   job, which installs nothing, runs the same one.
 

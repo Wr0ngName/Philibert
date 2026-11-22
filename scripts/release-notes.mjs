@@ -13,8 +13,11 @@
  * is what stops a release going out with the notes of the one before.
  *
  * The changes are git-cliff's (cliff.toml), grouped by conventional-commit
- * type: for a stable release, those since the stable release before, its
- * candidates included; for a candidate, those since the tag just before it.
+ * type: those since the stable release before, the candidates between
+ * included — for a candidate too. A candidate before it may never have been
+ * released (its pipeline failed), and those released are removed once
+ * another is, so changes counted from one would leave out the rest of the
+ * cycle, with nothing left to look them up in.
  *
  * Run from the root of the repository released: the notes and the tags are
  * read there. git-cliff is the version package.json pins, run by npx: the
@@ -60,16 +63,15 @@ export function whatsNew(notes, version) {
 }
 
 /**
- * The tag a release's changes are counted from: the stable release before a
- * stable one, the tag just before a candidate. `tags` are in version order,
- * oldest first, as `git -c versionsort.suffix=-rc tag --sort=v:refname`
- * lists them. Null for the first release.
+ * The tag a release's changes are counted from: the stable release before
+ * it, a stable one or a candidate. `tags` are in version order, oldest first,
+ * as `git -c versionsort.suffix=-rc tag --sort=v:refname` lists them. Null
+ * for the first release.
  */
 export function previousTag(tags, tag) {
   if (!tags.includes(tag)) throw new Error(`No such tag: "${tag}"`);
-  const before = tags.slice(0, tags.indexOf(tag)).filter((t) => TAG.test(t));
-  const candidates = isStable(tag) ? before.filter(isStable) : before;
-  return candidates.at(-1) ?? null;
+  baseVersion(tag);
+  return tags.slice(0, tags.indexOf(tag)).filter((t) => TAG.test(t) && isStable(t)).at(-1) ?? null;
 }
 
 /** The update feed's releaseNotes field: a YAML literal block, kept as written. */

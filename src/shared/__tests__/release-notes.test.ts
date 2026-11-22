@@ -72,9 +72,9 @@ describe('previousTag', () => {
     expect(previousTag(TAGS, 'v1.1.0')).toBe('v1.0.0');
   });
 
-  it('is the tag just before a candidate', () => {
-    expect(previousTag(TAGS, 'v1.1.0-rc.2')).toBe('v1.1.0-rc.1');
-    expect(previousTag(TAGS, 'v1.1.0-rc.1')).toBe('v1.0.1-rc.1');
+  it('is the stable release before a candidate too, never a candidate: one may never have been released', () => {
+    expect(previousTag(TAGS, 'v1.1.0-rc.2')).toBe('v1.0.0');
+    expect(previousTag(TAGS, 'v1.1.0-rc.1')).toBe('v1.0.0');
   });
 
   it('is null for the first release', () => {
@@ -178,6 +178,18 @@ describe('the command, in a repository', { timeout: REAL_DISK_TEST_TIMEOUT_MS },
     expect(page).toContain('- **New**: something users notice.');
     expect(page).toContain('### Changes since v1.0.0');
     expect(changes(page)).toEqual(['#### Features', '- **chat**: second']);
+  });
+
+  it("pages a later candidate with the whole cycle since the stable release, the candidates before it included", () => {
+    // The candidate before may never have been released, and is removed once this one is.
+    git('tag', 'v1.1.0-rc.2', 'HEAD~1');
+    const page = run('page', 'v1.1.0-rc.2');
+    expect(page).toContain('### Changes since v1.0.0');
+    expect(changes(page)).toEqual([
+      '#### Features', '- **chat**: second',
+      '#### Fixes', '- third',
+      '#### Other', '- Not conventional',
+    ]);
   });
 
   it('pages the first release with everything before it', () => {
