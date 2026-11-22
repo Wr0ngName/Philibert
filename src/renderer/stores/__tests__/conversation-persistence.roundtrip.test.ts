@@ -201,8 +201,7 @@ describe('a conversation through the real persistence stack', () => {
     storedConfig = {
       workingDirectory: '/home/user/project',
       apiKey: 'test-key',
-      recentProjects: [],
-      theme: 'system',
+        theme: 'system',
     };
 
     conversations = useConversationsStore();

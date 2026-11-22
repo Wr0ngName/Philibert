@@ -71,10 +71,6 @@ export const MAIN_CONSTANTS = {
      */
     REMOTE_OPERATION_TIMEOUT_MS: 10 * 60_000,
   },
-  CONFIG: {
-    /** Maximum number of recent projects to keep */
-    MAX_RECENT_PROJECTS: 10,
-  },
   CONVERSATION: {
     /** Base delay for retry exponential backoff - 100ms */
     RETRY_BASE_DELAY_MS: 100,

@@ -57,9 +57,29 @@ export const useMcpStore = defineStore('mcp', () => {
   const projectDir = computed(() => pickedProject.value ?? (settingsStore.workingDirectory || null));
   const hasProject = computed(() => !!projectDir.value);
 
-  /** Folders to pick from: the working folder and the recent ones, each once. */
+  /**
+   * The folders of the discussions not archived, the most recently active
+   * first, as last read (loadProjects): a folder whose discussions are all
+   * archived has nothing to set up for.
+   */
+  const activeProjects = ref<string[]>([]);
+
+  /** Read the projects of the discussions not archived; on failure the list keeps what it had. */
+  async function loadProjects(): Promise<void> {
+    try {
+      activeProjects.value = await window.electron.conversation.activeProjects(settingsStore.config.autoArchiveDays);
+    } catch (err) {
+      logger.error('Reading the projects of the active discussions failed', err);
+    }
+  }
+
+  /**
+   * The projects Settings lists: the working folder first, then those of the
+   * discussions not archived, and the one picked if it has dropped out of them
+   * since — each once.
+   */
   const projectChoices = computed(() => {
-    const choices = [settingsStore.workingDirectory, ...settingsStore.config.recentProjects, pickedProject.value];
+    const choices = [settingsStore.workingDirectory, ...activeProjects.value, pickedProject.value];
     return [...new Set(choices.filter((dir): dir is string => !!dir))];
   });
 
@@ -324,6 +344,7 @@ export const useMcpStore = defineStore('mcp', () => {
     projectDir,
     hasProject,
     projectChoices,
+    loadProjects,
     pickProject,
     projectServers,
     projectLoading,

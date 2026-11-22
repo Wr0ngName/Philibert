@@ -206,6 +206,17 @@ export function setupConversationIPC(
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_ACTIVE_PROJECTS, async (_event, autoArchiveDays: AutoArchiveDays) => {
+    try {
+      ensureService(conversationService, 'ConversationService');
+      validateAutoArchiveDays(autoArchiveDays);
+      return await conversationService.activeProjects(autoArchiveDays);
+    } catch (error) {
+      logger.error('Failed to list the projects of active conversations', { error });
+      throw new ConfigurationError(formatErrorMessage('Failed to list the projects of active conversations', error), ERROR_CODES.CONVERSATION_LOAD_FAILED, error);
+    }
+  });
+
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_SUMMARY, async (_event, id: string) => {
     try {
       ensureService(conversationService, 'ConversationService');

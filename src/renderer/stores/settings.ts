@@ -26,7 +26,6 @@ export const useSettingsStore = defineStore('settings', () => {
   const hasOAuthToken = computed(() => !!config.value.oauthToken);
   const hasAuth = computed(() => hasApiKey.value || hasOAuthToken.value);
   const workingDirectory = computed(() => config.value.workingDirectory);
-  const recentProjects = computed(() => config.value.recentProjects);
   const theme = computed(() => config.value.theme);
   const selectedModel = computed(() => config.value.selectedModel);
   const hasCompletedInitialSetup = computed(() => config.value.hasCompletedInitialSetup);
@@ -282,7 +281,6 @@ export const useSettingsStore = defineStore('settings', () => {
     hasOAuthToken,
     hasAuth,
     workingDirectory,
-    recentProjects,
     theme,
     selectedModel,
     hasCompletedInitialSetup,

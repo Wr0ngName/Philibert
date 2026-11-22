@@ -180,18 +180,6 @@ describe('useSettingsStore', () => {
       expect(store.workingDirectory).toBe('/home/user/project');
     });
 
-    it('recentProjects should return recent projects list', async () => {
-      mockElectron.config.get.mockResolvedValue({
-        ...DEFAULT_CONFIG,
-        recentProjects: ['/project1', '/project2'],
-      });
-
-      const store = useSettingsStore();
-      await store.loadConfig();
-
-      expect(store.recentProjects).toEqual(['/project1', '/project2']);
-    });
-
     it('needsSetup should be true when no working directory', () => {
       const store = useSettingsStore();
       expect(store.needsSetup).toBe(true);

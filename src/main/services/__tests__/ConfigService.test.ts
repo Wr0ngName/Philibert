@@ -5,7 +5,7 @@
  * - Configuration loading and saving
  * - Encryption/decryption of sensitive data (API keys, OAuth tokens)
  * - Working directory management
- * - Recent projects tracking
+ * - The recent projects 0.31.1 and before kept, forgotten on start
  * - Race condition handling during initialization
  * - Error handling for encryption unavailable
  * - Edge cases and error paths
@@ -220,7 +220,6 @@ describe('ConfigService', () => {
       expect(config).toHaveProperty('oauthToken');
       expect(config).toHaveProperty('authMethod');
       expect(config).toHaveProperty('workingDirectory');
-      expect(config).toHaveProperty('recentProjects');
       expect(config).toHaveProperty('theme');
       expect(config).toHaveProperty('fontSize');
       expect(config).toHaveProperty('autoApproveReads');
@@ -295,51 +294,17 @@ describe('ConfigService', () => {
       expect(dir).toBe('/new/project/path');
     });
 
-    it('should add to recent projects when setting working directory', async () => {
+    it('forgets the recent projects 0.31.1 and before kept, on start, and keeps none after', async () => {
+      mockStoreData.set('recentProjects', ['/project1', '/project2']);
+      mockStoreData.set('workingDirectory', '/project1');
+
       await service.ensureInitialized();
+      expect(mockStoreData.has('recentProjects')).toBe(false);
+      expect((await service.getConfig()) as unknown as Record<string, unknown>).not.toHaveProperty('recentProjects');
+      expect(await service.getWorkingDirectory()).toBe('/project1');
 
-      await service.setWorkingDirectory('/project1');
-      await service.setWorkingDirectory('/project2');
-
-      const config = await service.getConfig();
-      expect(config.recentProjects).toContain('/project1');
-      expect(config.recentProjects).toContain('/project2');
-    });
-
-    it('should not duplicate in recent projects', async () => {
-      await service.ensureInitialized();
-
-      await service.setWorkingDirectory('/project1');
-      await service.setWorkingDirectory('/project2');
-      await service.setWorkingDirectory('/project1'); // Duplicate
-
-      const config = await service.getConfig();
-      const count = config.recentProjects.filter((p) => p === '/project1').length;
-      expect(count).toBe(1);
-    });
-
-    it('should limit recent projects to max count', async () => {
-      await service.ensureInitialized();
-
-      // Add more than the limit
-      for (let i = 0; i < 15; i++) {
-        await service.setWorkingDirectory(`/project${i}`);
-      }
-
-      const config = await service.getConfig();
-      expect(config.recentProjects.length).toBeLessThanOrEqual(10);
-    });
-
-    it('should move recently used project to front', async () => {
-      await service.ensureInitialized();
-
-      await service.setWorkingDirectory('/project1');
-      await service.setWorkingDirectory('/project2');
       await service.setWorkingDirectory('/project3');
-      await service.setWorkingDirectory('/project1'); // Use again
-
-      const config = await service.getConfig();
-      expect(config.recentProjects[0]).toBe('/project1');
+      expect(mockStoreData.has('recentProjects')).toBe(false);
     });
   });
 

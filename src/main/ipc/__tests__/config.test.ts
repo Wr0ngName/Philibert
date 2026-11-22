@@ -66,7 +66,6 @@ describe('Config IPC handlers', () => {
     oauthToken: '',
     authMethod: 'none' as const,
     workingDirectory: '/home/user/project',
-    recentProjects: ['/home/user/project1', '/home/user/project2'],
     theme: 'system' as const,
     fontSize: 14,
     autoApproveReads: true,
@@ -187,16 +186,6 @@ describe('Config IPC handlers', () => {
       const result = await handler({}) as AppConfig;
       expect(result.fontSize).toBe(18);
     });
-
-    it('should return config with empty recent projects', async () => {
-      mockConfigService.getConfig.mockResolvedValue({
-        ...defaultConfig,
-        recentProjects: [],
-      });
-
-      const result = await handler({}) as AppConfig;
-      expect(result.recentProjects).toEqual([]);
-    });
   });
 
   // ===========================================================================
@@ -242,16 +231,6 @@ describe('Config IPC handlers', () => {
 
     it('should update working directory', async () => {
       const update = { workingDirectory: '/new/directory' };
-
-      await handler({}, update);
-
-      expect(mockConfigService.setConfig).toHaveBeenCalledWith(update);
-    });
-
-    it('should update recent projects', async () => {
-      const update = {
-        recentProjects: ['/project1', '/project2', '/project3'],
-      };
 
       await handler({}, update);
 

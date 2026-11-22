@@ -8,7 +8,6 @@ import { safeStorage, dialog } from 'electron';
 import { DEFAULT_EFFORT, isEffortLevel } from '../../shared/effort';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE } from '../../shared/speech';
 import { AppConfig, AuthMethod, CompletionNotifications, DEFAULT_CONFIG, EffortLevel, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel, WhisperModelId } from '../../shared/types';
-import { MAIN_CONSTANTS } from '../constants/app';
 import { ConfigurationError, ERROR_CODES } from '../errors';
 import logger, { setLogLevel } from '../utils/logger';
 
@@ -23,9 +22,14 @@ interface StoredConfig {
   encryptedOAuthCredentials?: string;
   /** See usesCliLogin. */
   oauthViaCliLogin?: boolean;
+  /**
+   * The last folders worked in, kept by 0.31.1 and before; removed on start.
+   * Settings lists the projects of the discussions not archived instead
+   * (ConversationService.activeProjects), and nothing else read it.
+   */
+  recentProjects?: string[];
   authMethod: AuthMethod;
   workingDirectory: string;
-  recentProjects: string[];
   theme: 'light' | 'dark' | 'system';
   fontSize: number;
   lineHeight: number;
@@ -104,7 +108,6 @@ export class ConfigService {
         defaults: {
           authMethod: 'none',
           workingDirectory: '',
-          recentProjects: [],
           theme: 'system',
           fontSize: 14,
           lineHeight: 1.6,
@@ -126,6 +129,7 @@ export class ConfigService {
           autoContinueAtUsageLimit: true,
         },
       }) as unknown as TypedStore;
+      this.store.delete('recentProjects');
       this.isInitialized = true;
       // Note: Don't clear initPromise here - keep it so concurrent callers can await it
 
@@ -482,7 +486,7 @@ export class ConfigService {
   }
 
   /**
-   * Set working directory and add to recent projects
+   * Set the working directory, telling those listening when it changed.
    */
   async setWorkingDirectory(directory: string): Promise<void> {
     await this.ensureInitialized();
@@ -491,26 +495,11 @@ export class ConfigService {
     const previous = this.store.get('workingDirectory', '') as string;
     this.store.set('workingDirectory', directory);
 
-    // Update recent projects
-    const recent = this.store.get('recentProjects', []) as string[];
-    const filtered = recent.filter((p: string) => p !== directory);
-    const updated = [directory, ...filtered].slice(0, MAIN_CONSTANTS.CONFIG.MAX_RECENT_PROJECTS);
-    this.store.set('recentProjects', updated);
-
     if (directory !== previous) {
       this.emitWorkingDirectoryChange(directory);
     }
 
     logger.info('Working directory updated', { directory });
-  }
-
-  /**
-   * Get recent projects
-   */
-  async getRecentProjects(): Promise<string[]> {
-    await this.ensureInitialized();
-    if (!this.store) return [];
-    return this.store.get('recentProjects', []);
   }
 
   /**

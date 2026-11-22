@@ -943,8 +943,6 @@ export interface AppConfig {
   authMethod: AuthMethod;
   /** Current working directory for file operations */
   workingDirectory: string;
-  /** List of recently opened project paths */
-  recentProjects: string[];
   /** UI theme mode */
   theme: ThemeMode;
   /** Font size for the chat interface */
@@ -1042,7 +1040,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   oauthToken: '',
   authMethod: 'none',
   workingDirectory: '',
-  recentProjects: [],
   theme: 'system',
   fontSize: 14,
   lineHeight: 1.6,
@@ -2390,6 +2387,7 @@ export const IPC_CHANNELS = {
   CONVERSATION_LIST_PAGE: 'conversation:list-page',
   /** How many discussions are archived, by hand or for being inactive. */
   CONVERSATION_ARCHIVED_COUNT: 'conversation:archived-count',
+  CONVERSATION_ACTIVE_PROJECTS: 'conversation:active-projects',
   /** One discussion's list entry, or null when there is no such discussion. */
   CONVERSATION_SUMMARY: 'conversation:summary',
   /** Archive a discussion, or bring it back. */

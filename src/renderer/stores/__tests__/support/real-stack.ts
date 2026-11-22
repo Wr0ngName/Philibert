@@ -650,7 +650,6 @@ export async function startRealStack(options: {
   storedConfig = {
     workingDirectory: options.workingDirectory ?? '/home/user/project',
     apiKey: 'test-key',
-    recentProjects: [],
     theme: 'system',
   };
 }

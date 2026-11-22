@@ -336,6 +336,38 @@ describe('archiving', () => {
   });
 });
 
+describe('activeProjects', () => {
+  it("is the folders of the discussions not archived, the most recently active first, each once", async () => {
+    const now = Date.now();
+    await store(conversation('web-new', now, { workingDirectory: '/work/web' }));
+    await store(conversation('api', now - 1000, { workingDirectory: '/work/api' }));
+    await store(conversation('web-old', now - 2000, { workingDirectory: '/work/web' }));
+
+    expect(await service.activeProjects(0)).toEqual(['/work/web', '/work/api']);
+  });
+
+  it('leaves out a folder whose discussions are all archived — by hand, by inactivity, or their session gone — until one is restored', async () => {
+    const now = Date.now();
+    await store(conversation('active', now, { workingDirectory: '/work/active' }));
+    await store(conversation('by-hand', now - 1000, { workingDirectory: '/work/by-hand' }));
+    await store(conversation('inactive', now - 40 * DAY_MS, { workingDirectory: '/work/inactive' }));
+    await store(conversation('cleaned', now - 2000, { workingDirectory: '/work/cleaned' }));
+    // Of two discussions in one folder, one archived: the folder stays.
+    await store(conversation('mixed-active', now - 3000, { workingDirectory: '/work/mixed' }));
+    await store(conversation('mixed-archived', now - 4000, { workingDirectory: '/work/mixed' }));
+    await service.setArchived('by-hand', true);
+    await service.setArchived('mixed-archived', true);
+    sessionCleanedUp('session-cleaned');
+
+    expect(await service.activeProjects(30)).toEqual(['/work/active', '/work/mixed']);
+
+    await service.setArchived('by-hand', false);
+    expect(await service.activeProjects(30)).toEqual(['/work/active', '/work/by-hand', '/work/mixed']);
+    // Archiving off, the inactive one is active again; the one whose session is gone never is.
+    expect(await service.activeProjects(0)).toEqual(['/work/active', '/work/by-hand', '/work/mixed', '/work/inactive']);
+  });
+});
+
 describe('usage-limit waits', () => {
   const HOUR = 60 * 60 * 1000;
 

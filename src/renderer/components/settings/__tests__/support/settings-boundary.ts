@@ -59,6 +59,8 @@ function defaults(): Api {
       getProjectPermissions: vi.fn().mockResolvedValue([]),
       revokeProjectPermission: vi.fn().mockResolvedValue([]),
     },
+    // The projects of the discussions not archived: none by default.
+    conversation: { activeProjects: vi.fn().mockResolvedValue([]) },
     mcp: {
       list: vi.fn().mockResolvedValue([]),
       save: vi.fn(),

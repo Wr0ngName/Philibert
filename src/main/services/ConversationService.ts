@@ -700,6 +700,21 @@ export class ConversationService {
       .filter((summary) => isArchived(summary, autoArchiveDays, now)).length;
   }
 
+  /**
+   * The folders of the discussions not archived, the most recently active
+   * first, each once: the projects Settings lists. A folder whose discussions
+   * are all archived — its sessions gone among them — is left out until one
+   * is restored.
+   */
+  async activeProjects(autoArchiveDays: AutoArchiveDays): Promise<string[]> {
+    if (!this.index.isLoaded) await this.index.refresh();
+    const now = Date.now();
+    const active = (await this.withSessionState(this.index.summaries()))
+      .filter((summary) => !isArchived(summary, autoArchiveDays, now))
+      .sort(newestFirst);
+    return [...new Set(active.map((summary) => summary.workingDirectory).filter(Boolean))];
+  }
+
   /** The discussions continuing one of these Claude Code sessions: what deleting them took. */
   async conversationsContinuing(sessionIds: readonly string[]): Promise<string[]> {
     // Brought in line with the folder first, as the first page of the list

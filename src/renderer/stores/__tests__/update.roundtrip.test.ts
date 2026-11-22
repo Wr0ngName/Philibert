@@ -43,6 +43,7 @@ vi.mock('electron-store', () => ({
     constructor(options: { defaults?: Record<string, unknown> }) { this.values = { ...options.defaults }; }
     get(key: string, fallback?: unknown) { return key in this.values ? this.values[key] : fallback; }
     set(key: string, value: unknown) { this.values[key] = value; }
+    delete(key: string) { delete this.values[key]; }
   },
 }));
 

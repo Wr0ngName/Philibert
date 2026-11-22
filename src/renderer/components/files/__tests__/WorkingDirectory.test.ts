@@ -54,8 +54,8 @@ beforeEach(() => {
     list: vi.fn().mockResolvedValue([]),
     projectTools: vi.fn().mockResolvedValue({ statuses: [], userServers: [], offEverywhere: [] }),
   };
-  fakeElectron({ files, mcp });
-  useSettingsStore().config = { ...DEFAULT_CONFIG, workingDirectory: HERE, recentProjects: [THERE] };
+  fakeElectron({ files, mcp, conversation: { activeProjects: vi.fn().mockResolvedValue([THERE]) } });
+  useSettingsStore().config = { ...DEFAULT_CONFIG, workingDirectory: HERE };
 });
 
 afterEach(() => {
@@ -96,7 +96,7 @@ describe('the working folder', () => {
   });
 
   it('offers no project settings without a folder', async () => {
-    useSettingsStore().config = { ...DEFAULT_CONFIG, workingDirectory: '', recentProjects: [] };
+    useSettingsStore().config = { ...DEFAULT_CONFIG, workingDirectory: '' };
     const shell = await mountShell();
 
     expect(shell.find('.working-directory-settings').exists()).toBe(false);

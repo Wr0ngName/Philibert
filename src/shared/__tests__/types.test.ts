@@ -22,7 +22,6 @@ describe('DEFAULT_CONFIG', () => {
     expect(DEFAULT_CONFIG.oauthToken).toBe('');
     expect(DEFAULT_CONFIG.authMethod).toBe('none');
     expect(DEFAULT_CONFIG.workingDirectory).toBe('');
-    expect(DEFAULT_CONFIG.recentProjects).toEqual([]);
     expect(DEFAULT_CONFIG.theme).toBe('system');
     expect(DEFAULT_CONFIG.fontSize).toBe(14);
     expect(DEFAULT_CONFIG.autoApproveReads).toBe(true);

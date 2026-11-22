@@ -3,9 +3,9 @@
  * Settings, one dialog in tabs, listed in two groups: the general ones, the
  * same in every project (the account, how the app looks, the discussions,
  * the tools every project has, the advanced settings and what this
- * installation is made of), then, apart, every project the app knows of —
- * the open discussion's first, marked current, then the recent ones — each
- * an entry of its own, for what that project has of its own.
+ * installation is made of), then, apart, the projects — the open
+ * discussion's first, marked current, then those of the discussions not
+ * archived — each an entry of its own, for what that project has of its own.
  *
  * Every tab stays mounted, hidden when not shown, so Save writes what was
  * changed on any of them, Cancel forgets all of it, and the sign-in form
@@ -460,6 +460,15 @@ watch(
   () => props.open,
   (isOpen) => {
     if (isOpen) void loadSessionRetention();
+  },
+  { immediate: true },
+);
+
+// The projects, read at each opening too: discussions are archived and restored in between.
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) void mcpStore.loadProjects();
   },
   { immediate: true },
 );
