@@ -37,6 +37,7 @@ import { setupConversationIPC } from '../../../main/ipc/conversations';
 import { ConversationService } from '../../../main/services/ConversationService';
 import { cliConfigDir } from '../../../main/services/claude/cliCredentials';
 import '../../../preload/preload';
+import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useMcpStore } from '../mcp';
 import { useSettingsStore } from '../settings';
@@ -95,6 +96,31 @@ describe('the projects Settings lists', () => {
     await settle();
     expect(mcp.currentProjectListed).toBe(true);
     expect(mcp.projectChoices).toEqual(['/work/old', '/work/live']);
+  });
+
+  it('take back the folder of an archived discussion once a new discussion is started there, before it is first saved', async () => {
+    seed('old', '/work/old', { archivedAt: Date.now() });
+    const conversations = useConversationsStore();
+    await conversations.loadConversationList();
+    const mcp = useMcpStore();
+    await conversations.loadConversation('old');
+    await settle();
+    expect(mcp.currentProjectListed).toBe(false);
+
+    conversations.createNewConversation();
+    await settle();
+
+    expect(files.has('/conversations/' + conversations.currentConversationId + '.json')).toBe(false);
+    expect(mcp.currentProjectListed).toBe(true);
+    expect(mcp.projectChoices).toEqual(['/work/old']);
+
+    // Its first message saved: on disk now, the folder is listed from there on.
+    useChatStore().messages.push({ id: 'first', role: 'user', content: 'a new start', timestamp: Date.now() });
+    expect(await conversations.saveCurrentConversation()).toBe(true);
+    await settle();
+    expect(files.has('/conversations/' + conversations.currentConversationId + '.json')).toBe(true);
+    expect(mcp.currentProjectListed).toBe(true);
+    expect(mcp.projectChoices).toEqual(['/work/old']);
   });
 
   it('keep a working folder with no discussion yet, to be set up before the first', async () => {

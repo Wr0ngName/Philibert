@@ -65,8 +65,8 @@ export const useMcpStore = defineStore('mcp', () => {
 
   /**
    * Whether the working folder is a project Settings lists: it has a
-   * discussion not archived — the one open, even before it is first saved —
-   * or none at all, a folder being set up. Not one whose discussions are all
+   * discussion not archived — a new one open counts before it is first saved
+   * — or none at all, a folder being set up. Not one whose discussions are all
    * archived, as when an archived one was opened: it is the open one's folder,
    * with nothing to set up for until a discussion is brought back.
    */
@@ -74,8 +74,10 @@ export const useMcpStore = defineStore('mcp', () => {
     const dir = settingsStore.workingDirectory;
     if (!dir) return false;
     if (folders.value.active.includes(dir)) return true;
+    // One open and not saved yet is a new discussion, started in the working
+    // folder: not on disk, so the main process cannot count it.
     const conversations = useConversationsStore();
-    if (conversations.currentConversation?.workingDirectory === dir) return !conversations.currentArchived;
+    if (conversations.currentConversationId && !conversations.currentConversation) return true;
     return !folders.value.archived.includes(dir);
   });
 
@@ -108,9 +110,15 @@ export const useMcpStore = defineStore('mcp', () => {
 
   // Read again whenever they may have changed: another working folder, a
   // discussion archived, brought back or deleted (the archived count follows
-  // each), another archiving delay.
+  // each), a new one first saved (the open one is held from then on), another
+  // archiving delay.
   watch(
-    [() => settingsStore.workingDirectory, () => useConversationsStore().archivedCount, () => settingsStore.config.autoArchiveDays],
+    [
+      () => settingsStore.workingDirectory,
+      () => useConversationsStore().archivedCount,
+      () => useConversationsStore().currentConversation?.id,
+      () => settingsStore.config.autoArchiveDays,
+    ],
     () => void loadProjects(),
     { immediate: true },
   );
