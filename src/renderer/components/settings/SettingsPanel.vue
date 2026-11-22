@@ -1,8 +1,10 @@
 <script setup lang="ts">
 /**
- * Settings, one dialog in tabs: the account, how the app looks, the
- * discussions, the tool servers, the advanced settings and what this
- * installation is made of.
+ * Settings, one dialog in tabs, listed in two groups: the general ones, the
+ * same in every project (the account, how the app looks, the discussions,
+ * the tools every project has, the advanced settings and what this
+ * installation is made of), then, apart and under the project's name, what
+ * one project has of its own.
  *
  * Every tab stays mounted, hidden when not shown, so Save writes what was
  * changed on any of them, Cancel forgets all of it, and the sign-in form
@@ -12,17 +14,20 @@
 import type { AutoArchiveDays, CompletionNotifications, ExecutionMode, LogLevel, SessionRetention, SidebarLayout, UpdateChannel, UsageLimitWaitDays, WhisperModelId } from '@shared/types';
 import { AUTO_ARCHIVE_DAYS, CLAUDE_DEFAULT_SESSION_RETENTION_DAYS, DEFAULT_CONFIG, SESSION_RETENTION_STOPS, USAGE_LIMIT_WAIT_DAYS } from '@shared/types';
 import type { SettingsTab } from '@shared/settings-tabs';
-import { SETTINGS_TABS } from '@shared/settings-tabs';
+import { GENERAL_SETTINGS_TABS, SETTINGS_TABS } from '@shared/settings-tabs';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE, WHISPER_MODELS } from '@shared/speech';
 import { ref, computed, nextTick, watch, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import { SETTINGS_DIALOG_SIZE } from '../../constants/layout';
+import { useMcpStore } from '../../stores/mcp';
 import { useSettingsStore } from '../../stores/settings';
 import { useUiStore } from '../../stores/ui';
 import { logger } from '../../utils/logger';
+import { baseName } from '../../utils/path';
 import { maxUsageLimitWaitDays } from '../../utils/usage-limit';
 import Button from '../shared/Button.vue';
+import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
 import AuthForm from '../shared/AuthForm.vue';
 import ToggleSwitch from '../shared/ToggleSwitch.vue';
@@ -53,6 +58,10 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   advanced: 'Advanced',
   about: 'About',
 };
+
+/** The project the Project tab is about, by its folder's name; the tab names it. */
+const { projectDir } = storeToRefs(useMcpStore());
+const projectName = computed(() => (projectDir.value ? baseName(projectDir.value) : 'No folder'));
 
 /** The tab shown; kept between opens, so settings reopens where it was left. */
 const activeTab = ref<SettingsTab>(SETTINGS_TABS[0]);
@@ -116,6 +125,16 @@ watch(
   },
   { immediate: true },
 );
+
+/** A tab's classes, shown or not. */
+function tabClasses(tab: SettingsTab): string[] {
+  return [
+    'px-3 py-2 rounded-lg text-left text-sm transition-colors',
+    activeTab.value === tab
+      ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 font-medium'
+      : 'text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
+  ];
+}
 
 /** The classes of a choice among several, chosen or not. */
 function choiceClasses(chosen: boolean): string {
@@ -440,10 +459,16 @@ function cancel() {
         role="tablist"
         aria-label="Settings"
         aria-orientation="vertical"
-        class="w-40 shrink-0 flex flex-col gap-1"
+        class="settings-nav w-44 shrink-0 flex flex-col gap-1"
       >
+        <div
+          class="settings-nav-heading"
+          aria-hidden="true"
+        >
+          General
+        </div>
         <button
-          v-for="tab in SETTINGS_TABS"
+          v-for="tab in GENERAL_SETTINGS_TABS"
           :id="tabId(tab)"
           :key="tab"
           type="button"
@@ -451,16 +476,43 @@ function cancel() {
           :aria-selected="activeTab === tab"
           :aria-controls="pageId(tab)"
           :tabindex="activeTab === tab ? 0 : -1"
-          :class="[
-            'px-3 py-2 rounded-lg text-left text-sm transition-colors',
-            activeTab === tab
-              ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 font-medium'
-              : 'text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
-          ]"
+          :class="tabClasses(tab)"
           @click="showTab(tab)"
           @keydown="onTabKeydown"
         >
           {{ TAB_LABELS[tab] }}
+        </button>
+
+        <!-- Apart, under its own heading: settings of one project, not of the app. -->
+        <div
+          class="settings-nav-separator"
+          aria-hidden="true"
+        />
+        <div
+          class="settings-nav-heading"
+          aria-hidden="true"
+        >
+          Project
+        </div>
+        <button
+          :id="tabId('project')"
+          type="button"
+          role="tab"
+          :aria-label="`Project: ${projectName}`"
+          :aria-selected="activeTab === 'project'"
+          :aria-controls="pageId('project')"
+          :tabindex="activeTab === 'project' ? 0 : -1"
+          :title="projectDir ?? undefined"
+          :class="[tabClasses('project'), 'flex items-center gap-2']"
+          @click="showTab('project')"
+          @keydown="onTabKeydown"
+        >
+          <Icon
+            name="folder"
+            size="sm"
+            class="shrink-0"
+          />
+          <span class="settings-project-tab-name truncate">{{ projectName }}</span>
         </button>
       </div>
 
@@ -991,3 +1043,15 @@ function cancel() {
     </template>
   </Modal>
 </template>
+
+<style scoped>
+@reference "../../assets/styles/main.css";
+.settings-nav-heading {
+  @apply px-3 pt-1 pb-1 text-xs font-semibold uppercase tracking-wide text-surface-400 dark:text-surface-500;
+}
+
+/* The project's group starts apart: the line says what follows is not the app's. */
+.settings-nav-separator {
+  @apply my-3 mx-3 border-t border-surface-200 dark:border-surface-700;
+}
+</style>

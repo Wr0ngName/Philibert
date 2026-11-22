@@ -16,6 +16,8 @@ import { ref } from 'vue';
 
 import type { SettingsTab } from '@shared/settings-tabs';
 
+import { useMcpStore } from './mcp';
+
 export const useUiStore = defineStore('ui', () => {
   const showSettings = ref(false);
   const showSearch = ref(false);
@@ -33,6 +35,15 @@ export const useUiStore = defineStore('ui', () => {
   function openSettings(tab: SettingsTab | null = null): void {
     pendingSettingsTab.value = tab;
     showSettings.value = true;
+  }
+
+  /**
+   * Open settings at the project's own, about the working folder: a folder
+   * picked there before is not the one the button or the menu was next to.
+   */
+  function openProjectSettings(): void {
+    useMcpStore().pickProject(null);
+    openSettings('project');
   }
 
   function closeSettings(): void {
@@ -89,6 +100,7 @@ export const useUiStore = defineStore('ui', () => {
     markdownViewerPath,
     showRewind,
     openSettings,
+    openProjectSettings,
     closeSettings,
     takeSettingsTab,
     openSearch,

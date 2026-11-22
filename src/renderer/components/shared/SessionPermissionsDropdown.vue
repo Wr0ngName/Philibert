@@ -45,7 +45,7 @@ const hasPermissions = computed(() => permissionCount.value > 0);
 /** Settings → Project: this project's tools and what it allows without asking. */
 function openProjectSettings(): void {
   isOpen.value = false;
-  useUiStore().openSettings('project');
+  useUiStore().openProjectSettings();
 }
 
 /**

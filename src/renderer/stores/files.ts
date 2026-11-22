@@ -19,6 +19,7 @@ import type { FileNode, FileChange } from '@shared/types';
 import { useEventCleanup } from '../composables/useEventCleanup';
 import { CONSTANTS } from '../constants/app';
 import { logger } from '../utils/logger';
+import { baseName } from '../utils/path';
 
 import { useChatStore } from './chat';
 import { useSettingsStore } from './settings';
@@ -407,11 +408,6 @@ export const useFilesStore = defineStore('files', () => {
     cleanup: cleanupStore,
   };
 });
-
-/** A path's last segment, for either separator. */
-function baseName(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-}
 
 /** The directory holding `path`, or null for a root. */
 function parentPath(path: string): string | null {

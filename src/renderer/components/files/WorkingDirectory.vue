@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /**
- * Working directory selector component
+ * The working folder, atop the files panel: the path is what changes it, and
+ * the gear beside it opens the project's own settings.
  */
 
 import { computed } from 'vue';
@@ -8,11 +9,13 @@ import { storeToRefs } from 'pinia';
 
 import { useConversationsStore } from '../../stores/conversations';
 import { useFilesStore } from '../../stores/files';
+import { useUiStore } from '../../stores/ui';
 import Button from '../shared/Button.vue';
 import Icon from '../shared/Icon.vue';
 
 const filesStore = useFilesStore();
 const conversationsStore = useConversationsStore();
+const uiStore = useUiStore();
 const { workingDirectory, hasWorkingDirectory, isLoading } = storeToRefs(filesStore);
 const { currentConversationId } = storeToRefs(conversationsStore);
 
@@ -67,14 +70,18 @@ function startConversationHere(): void {
 <template>
   <div class="px-3 py-3 border-b border-surface-200 dark:border-surface-700">
     <div class="flex items-center gap-2">
-      <div
-        class="flex-1 flex items-center gap-2 px-3 py-2 bg-surface-100 dark:bg-surface-700 rounded-lg cursor-pointer hover:bg-surface-200 dark:hover:bg-surface-600 transition-colors"
+      <button
+        type="button"
+        class="working-directory-change flex-1 min-w-0 flex items-center gap-2 px-3 py-2 bg-surface-100 dark:bg-surface-700 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-600 transition-colors disabled:opacity-60"
+        :title="workingDirectory ? `${workingDirectory}\nClick to change folder` : 'Choose a folder'"
+        :aria-label="workingDirectory ? `Change folder: ${workingDirectory}` : 'Choose a folder'"
+        :disabled="isLoading"
         @click="selectDirectory"
       >
         <Icon
-          name="folder"
+          :name="isLoading ? 'loading' : 'folder'"
           size="sm"
-          class="text-surface-400 shrink-0"
+          :class="isLoading ? 'text-surface-400 shrink-0 animate-spin' : 'text-surface-400 shrink-0'"
         />
         <span
           :class="[
@@ -83,23 +90,24 @@ function startConversationHere(): void {
               ? 'text-surface-700 dark:text-surface-300'
               : 'text-surface-400 dark:text-surface-500 italic',
           ]"
-          :title="workingDirectory"
         >
           {{ displayPath }}
         </span>
-      </div>
+      </button>
 
-      <Button
-        variant="secondary"
-        size="sm"
-        :loading="isLoading"
-        @click="selectDirectory"
+      <button
+        v-if="hasWorkingDirectory"
+        type="button"
+        class="working-directory-settings btn-icon shrink-0"
+        title="Project settings"
+        aria-label="Project settings"
+        @click="uiStore.openProjectSettings()"
       >
         <Icon
-          name="upload"
+          name="settings"
           size="sm"
         />
-      </Button>
+      </button>
     </div>
 
     <!-- Say so when the selection no longer matches where this discussion
