@@ -29,6 +29,11 @@ vi.mock('../../utils/logger', () => ({
 
 import { GitService, isIdentityError } from '../GitService';
 
+import { REAL_DISK_TEST_TIMEOUT_MS } from './support/real-disk';
+
+// Real git, in a temporary repository: given the machine's time (see real-disk).
+vi.setConfig({ testTimeout: REAL_DISK_TEST_TIMEOUT_MS });
+
 const execFileAsync = promisify(execFile);
 
 describe('isIdentityError', () => {

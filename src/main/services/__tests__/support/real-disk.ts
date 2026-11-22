@@ -15,8 +15,10 @@
  * The same holds for a test that runs real processes: release-notes.test.ts
  * runs the release-notes command — git, then git-cliff through npx — in a
  * temporary repository, about a second alone; in the full suite one took
- * over six seconds and failed on the default timeout. Each such file sets it
- * on the tests that run them.
+ * over six seconds and failed on the default timeout. So do the GitService
+ * tests that run real git in a temporary repository: one of
+ * GitService.credentials.test.ts, 150 ms alone, took 5.9 s in a release's
+ * verify job. Each such file sets it on the tests that run them.
  *
  * Not a cover for a slow test: one that takes long alone is still slow, and
  * every test here stays at a second or less on its own.

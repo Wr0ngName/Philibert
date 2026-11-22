@@ -28,6 +28,11 @@ vi.mock('../../utils/logger', () => ({
 import type { FileChanges, FileChangeView } from '../../../shared/types';
 import { GitService } from '../GitService';
 
+import { REAL_DISK_TEST_TIMEOUT_MS } from './support/real-disk';
+
+// Real git, in a temporary repository: given the machine's time (see real-disk).
+vi.setConfig({ testTimeout: REAL_DISK_TEST_TIMEOUT_MS });
+
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, ...args: string[]) => execFileAsync('git', args, { cwd });
 

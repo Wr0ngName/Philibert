@@ -37,6 +37,10 @@ import { GitService } from '../GitService';
 import { GitCredentialBroker, removeStaleSockets } from '../git/GitCredentialBroker';
 
 import { startGitHttpServer, type GitHttpServer } from './support/git-http-server';
+import { REAL_DISK_TEST_TIMEOUT_MS } from './support/real-disk';
+
+// Real git, in a temporary repository: given the machine's time (see real-disk).
+vi.setConfig({ testTimeout: REAL_DISK_TEST_TIMEOUT_MS });
 
 const execFileAsync = promisify(execFile);
 const LOGIN = { username: 'alice', password: 'glpat-right-token' };
