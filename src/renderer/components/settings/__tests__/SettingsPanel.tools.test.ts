@@ -52,7 +52,7 @@ async function open(tab: 'Tools' | 'Project') {
 /** The projects listed, in order: each one's name, and whether it is marked current. */
 function projectEntries(): string[] {
   return wrapper!.findAll('.settings-project-entry').map((entry) =>
-    entry.find('.truncate').text() + (entry.find('.settings-project-current').exists() ? ' (current)' : ''));
+    entry.find('.settings-project-name').text() + (entry.find('.settings-project-current').exists() ? ' (current)' : ''));
 }
 
 function page(name: 'tools' | 'project') {
@@ -311,6 +311,17 @@ describe('Settings → Project', () => {
     expect(current.attributes('aria-label')).toBe('here (current project)');
     expect(current.attributes('title')).toBe(HERE);
     expect(wrapper!.find('#settings-tab-project-1').attributes('aria-label')).toBe('there');
+  });
+
+  it('shows each project\'s name whole, never cut, the current one marked under it', async () => {
+    useSettingsStore().config = { ...DEFAULT_CONFIG, workingDirectory: '/work/a-rather-long-project-folder-name' };
+    conversation.projectFolders!.mockResolvedValue({ active: [], archived: [] });
+    await open('Project');
+
+    const entry = wrapper!.find('#settings-tab-project-0');
+    expect(entry.find('.settings-project-name').text()).toBe('a-rather-long-project-folder-name');
+    expect(entry.find('.settings-project-name').classes()).not.toContain('truncate');
+    expect(entry.find('.settings-project-current').text()).toBe('Current project');
   });
 
   it('tells apart two projects of the same name by their parent folder', async () => {

@@ -569,21 +569,24 @@ function cancel() {
           :aria-controls="pageId('project')"
           :tabindex="isSelected(entry) ? 0 : -1"
           :title="entry.dir ?? undefined"
-          :class="[entryClasses(entry), 'settings-project-entry flex items-center gap-2']"
+          :class="[entryClasses(entry), 'settings-project-entry flex items-start gap-2']"
           @click="showEntry(entry)"
           @keydown="onTabKeydown"
         >
           <Icon
             name="folder"
             size="sm"
-            class="shrink-0"
+            class="shrink-0 mt-0.5"
           />
-          <span class="truncate">{{ entry.label }}</span>
-          <span
-            v-if="isCurrentProject(entry)"
-            class="settings-project-current"
-            aria-hidden="true"
-          >current</span>
+          <!-- The name in full, wrapping rather than cut; the current one says so under it. -->
+          <span class="min-w-0">
+            <span class="settings-project-name">{{ entry.label }}</span>
+            <span
+              v-if="isCurrentProject(entry)"
+              class="settings-project-current"
+              aria-hidden="true"
+            >Current project</span>
+          </span>
         </button>
       </div>
 
@@ -1126,8 +1129,11 @@ function cancel() {
   @apply my-3 mx-3 border-t border-surface-200 dark:border-surface-700;
 }
 
+.settings-project-name {
+  @apply block [overflow-wrap:anywhere];
+}
+
 .settings-project-current {
-  @apply ml-auto shrink-0 px-1.5 rounded text-[10px] font-medium uppercase tracking-wide;
-  @apply bg-surface-200 dark:bg-surface-700 text-surface-500 dark:text-surface-400;
+  @apply block text-xs font-normal text-surface-500 dark:text-surface-400;
 }
 </style>
