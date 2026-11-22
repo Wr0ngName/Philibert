@@ -23,11 +23,13 @@ import type {
   McpRuntimeInfo,
   McpServerEntry,
   McpServerInput,
+  ProjectFolders,
   ProjectTools,
 } from '@shared/types';
 
 import { logger } from '../utils/logger';
 
+import { useConversationsStore } from './conversations';
 import { useSettingsStore } from './settings';
 
 /** Which servers a list or form is about: the project's own, or the user-wide ones. */
@@ -49,44 +51,69 @@ export const useMcpStore = defineStore('mcp', () => {
   // The project being set up
   // ============================================
 
-  /**
-   * The folder Settings → Project is about: one picked there, or else the
-   * app's working folder — the open discussion's.
-   */
-  const pickedProject = ref<string | null>(null);
-  const projectDir = computed(() => pickedProject.value ?? (settingsStore.workingDirectory || null));
-  const hasProject = computed(() => !!projectDir.value);
+  /** The folders of the discussions, as last read (loadProjects). */
+  const folders = ref<ProjectFolders>({ active: [], archived: [] });
 
-  /**
-   * The folders of the discussions not archived, the most recently active
-   * first, as last read (loadProjects): a folder whose discussions are all
-   * archived has nothing to set up for.
-   */
-  const activeProjects = ref<string[]>([]);
-
-  /** Read the projects of the discussions not archived; on failure the list keeps what it had. */
+  /** Read the folders of the discussions; on failure the list keeps what it had. */
   async function loadProjects(): Promise<void> {
     try {
-      activeProjects.value = await window.electron.conversation.activeProjects(settingsStore.config.autoArchiveDays);
+      folders.value = await window.electron.conversation.projectFolders(settingsStore.config.autoArchiveDays);
     } catch (err) {
-      logger.error('Reading the projects of the active discussions failed', err);
+      logger.error('Reading the folders of the discussions failed', err);
     }
   }
 
   /**
-   * The projects Settings lists: the working folder first, then those of the
-   * discussions not archived, and the one picked if it has dropped out of them
-   * since — each once.
+   * Whether the working folder is a project Settings lists: it has a
+   * discussion not archived — the one open, even before it is first saved —
+   * or none at all, a folder being set up. Not one whose discussions are all
+   * archived, as when an archived one was opened: it is the open one's folder,
+   * with nothing to set up for until a discussion is brought back.
+   */
+  const currentProjectListed = computed(() => {
+    const dir = settingsStore.workingDirectory;
+    if (!dir) return false;
+    if (folders.value.active.includes(dir)) return true;
+    const conversations = useConversationsStore();
+    if (conversations.currentConversation?.workingDirectory === dir) return !conversations.currentArchived;
+    return !folders.value.archived.includes(dir);
+  });
+
+  /**
+   * The projects Settings lists: the working folder first when it is one
+   * (currentProjectListed), then the folders of the discussions not
+   * archived, the most recently active first — each once.
    */
   const projectChoices = computed(() => {
-    const choices = [settingsStore.workingDirectory, ...activeProjects.value, pickedProject.value];
+    const choices = [currentProjectListed.value ? settingsStore.workingDirectory : null, ...folders.value.active];
     return [...new Set(choices.filter((dir): dir is string => !!dir))];
   });
 
-  /** Set up another folder; null goes back to the working folder. */
+  /**
+   * The project Settings → Project is about: the one picked there while it is
+   * listed, or else the first listed — the working folder when it is one.
+   */
+  const pickedProject = ref<string | null>(null);
+  const projectDir = computed(() => {
+    const picked = pickedProject.value;
+    if (picked && projectChoices.value.includes(picked)) return picked;
+    return projectChoices.value[0] ?? null;
+  });
+  const hasProject = computed(() => !!projectDir.value);
+
+  /** Set up another listed project; null goes back to the first listed. */
   function pickProject(dir: string | null): void {
     pickedProject.value = dir;
   }
+
+  // Read again whenever they may have changed: another working folder, a
+  // discussion archived, brought back or deleted (the archived count follows
+  // each), another archiving delay.
+  watch(
+    [() => settingsStore.workingDirectory, () => useConversationsStore().archivedCount, () => settingsStore.config.autoArchiveDays],
+    () => void loadProjects(),
+    { immediate: true },
+  );
 
   function requireProject(): string {
     if (!projectDir.value) throw new Error('Choose a project folder first.');
@@ -344,6 +371,7 @@ export const useMcpStore = defineStore('mcp', () => {
     projectDir,
     hasProject,
     projectChoices,
+    currentProjectListed,
     loadProjects,
     pickProject,
     projectServers,

@@ -486,7 +486,7 @@ const electronAPI: ElectronAPI = {
 
     archivedCount: (autoArchiveDays) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_ARCHIVED_COUNT, autoArchiveDays),
 
-    activeProjects: (autoArchiveDays) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_ACTIVE_PROJECTS, autoArchiveDays),
+    projectFolders: (autoArchiveDays) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_PROJECT_FOLDERS, autoArchiveDays),
 
     summary: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SUMMARY, id),
 

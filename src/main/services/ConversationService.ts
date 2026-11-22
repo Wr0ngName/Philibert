@@ -20,6 +20,7 @@ import {
   ConversationListPage,
   ConversationListRequest,
   ConversationSummary,
+  ProjectFolders,
   ConversationUpdate,
   ConversationWindow,
   RestoredUsageLimitWaits,
@@ -701,18 +702,23 @@ export class ConversationService {
   }
 
   /**
-   * The folders of the discussions not archived, the most recently active
-   * first, each once: the projects Settings lists. A folder whose discussions
-   * are all archived — its sessions gone among them — is left out until one
-   * is restored.
+   * The folders of the discussions (ProjectFolders): those with one not
+   * archived, the most recently active first — the projects Settings lists —
+   * and those whose discussions are all archived, by hand, by inactivity or
+   * their session gone, which it leaves out until one is brought back.
    */
-  async activeProjects(autoArchiveDays: AutoArchiveDays): Promise<string[]> {
+  async projectFolders(autoArchiveDays: AutoArchiveDays): Promise<ProjectFolders> {
     if (!this.index.isLoaded) await this.index.refresh();
     const now = Date.now();
-    const active = (await this.withSessionState(this.index.summaries()))
-      .filter((summary) => !isArchived(summary, autoArchiveDays, now))
-      .sort(newestFirst);
-    return [...new Set(active.map((summary) => summary.workingDirectory).filter(Boolean))];
+    const summaries = (await this.withSessionState(this.index.summaries())).sort(newestFirst);
+    const active = new Set<string>();
+    const all = new Set<string>();
+    for (const summary of summaries) {
+      if (!summary.workingDirectory) continue;
+      all.add(summary.workingDirectory);
+      if (!isArchived(summary, autoArchiveDays, now)) active.add(summary.workingDirectory);
+    }
+    return { active: [...active], archived: [...all].filter((dir) => !active.has(dir)) };
   }
 
   /** The discussions continuing one of these Claude Code sessions: what deleting them took. */

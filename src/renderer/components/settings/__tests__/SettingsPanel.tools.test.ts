@@ -81,8 +81,8 @@ beforeEach(() => {
     getProjectPermissions: vi.fn().mockResolvedValue([]),
     revokeProjectPermission: vi.fn(),
   };
-  // The main process lists the projects of the discussions not archived, the working folder's among them.
-  conversation = { activeProjects: vi.fn().mockResolvedValue([THERE, HERE]) };
+  // The main process lists the folders of the discussions, the working folder's among the active ones.
+  conversation = { projectFolders: vi.fn().mockResolvedValue({ active: [THERE, HERE], archived: [] }) };
   fakeElectron({ mcp, claude, conversation });
   useSettingsStore().config = { ...DEFAULT_CONFIG, workingDirectory: HERE };
 });
@@ -257,21 +257,30 @@ describe('Settings → Project', () => {
   it("lists the projects of the discussions not archived, as the main process gives them, read again at each opening", async () => {
     useSettingsStore().config.autoArchiveDays = 14;
     await open('Project');
-    expect(conversation.activeProjects).toHaveBeenCalledWith(14);
+    expect(conversation.projectFolders).toHaveBeenCalledWith(14);
     // The working folder first, each once.
     expect(projectEntries()).toEqual(['here (current)', 'there']);
 
     // Its last discussion archived meanwhile: gone at the next opening.
-    conversation.activeProjects!.mockResolvedValue([HERE]);
+    conversation.projectFolders!.mockResolvedValue({ active: [HERE], archived: [THERE] });
     await wrapper!.setProps({ open: false });
     await wrapper!.setProps({ open: true });
     await flushPromises();
     expect(projectEntries()).toEqual(['here (current)']);
   });
 
+  it('leaves out the working folder when its discussions are all archived, and opens on the first listed', async () => {
+    conversation.projectFolders!.mockResolvedValue({ active: [THERE], archived: [HERE] });
+    await open('Project');
+
+    expect(projectEntries()).toEqual(['there']);
+    expect(page('project').find('.project-settings-path').text()).toBe(THERE);
+    expect(page('project').find('.project-settings-current').exists()).toBe(false);
+  });
+
   it('keeps the list it had when the projects cannot be read', async () => {
     await open('Project');
-    conversation.activeProjects!.mockRejectedValue(new Error('index unreadable'));
+    conversation.projectFolders!.mockRejectedValue(new Error('index unreadable'));
     await wrapper!.setProps({ open: false });
     await wrapper!.setProps({ open: true });
     await flushPromises();
@@ -306,7 +315,7 @@ describe('Settings → Project', () => {
 
   it('tells apart two projects of the same name by their parent folder', async () => {
     useSettingsStore().config = { ...DEFAULT_CONFIG, workingDirectory: '/work/app' };
-    conversation.activeProjects!.mockResolvedValue(['/home/user/app', THERE]);
+    conversation.projectFolders!.mockResolvedValue({ active: ['/home/user/app', THERE], archived: [] });
     await open('Project');
 
     expect(projectEntries()).toEqual(['work/app (current)', 'user/app', 'there']);
@@ -342,12 +351,12 @@ describe('Settings → Project', () => {
     expect(page('project').findAll('.project-permission')).toHaveLength(1);
   });
 
-  it('asks for a project folder when there is none', async () => {
+  it('says there is no project to set up, and how to get one, when none is listed', async () => {
     useSettingsStore().config = { ...DEFAULT_CONFIG, workingDirectory: '' };
-    conversation.activeProjects!.mockResolvedValue([]);
+    conversation.projectFolders!.mockResolvedValue({ active: [], archived: [] });
     await open('Project');
 
-    expect(page('project').text()).toContain('Choose a project folder first');
+    expect(page('project').text()).toContain('No project to set up');
     expect(page('project').find('.project-settings-name').text()).toBe('No project folder');
     expect(projectEntries()).toEqual(['No project yet']);
     expect(mcp.projectTools).not.toHaveBeenCalled();

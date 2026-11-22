@@ -71,7 +71,8 @@ const projectName = computed(() => (projectDir.value ? baseName(projectDir.value
       v-if="!hasProject"
       class="p-3 rounded-lg border border-surface-300 dark:border-surface-600 text-xs text-surface-500 dark:text-surface-400"
     >
-      Choose a project folder first: open a discussion, or pick a folder in the files panel.
+      No project to set up: projects are listed while one of their discussions is not archived. Start a
+      discussion, bring one back from the archive, or pick a folder in the files panel.
     </div>
 
     <template v-else>

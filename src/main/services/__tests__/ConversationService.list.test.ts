@@ -336,35 +336,40 @@ describe('archiving', () => {
   });
 });
 
-describe('activeProjects', () => {
-  it("is the folders of the discussions not archived, the most recently active first, each once", async () => {
+describe('projectFolders', () => {
+  it("lists the folders with a discussion not archived, the most recently active first, each once", async () => {
     const now = Date.now();
     await store(conversation('web-new', now, { workingDirectory: '/work/web' }));
     await store(conversation('api', now - 1000, { workingDirectory: '/work/api' }));
     await store(conversation('web-old', now - 2000, { workingDirectory: '/work/web' }));
 
-    expect(await service.activeProjects(0)).toEqual(['/work/web', '/work/api']);
+    expect(await service.projectFolders(0)).toEqual({ active: ['/work/web', '/work/api'], archived: [] });
   });
 
-  it('leaves out a folder whose discussions are all archived — by hand, by inactivity, or their session gone — until one is restored', async () => {
+  it('puts apart the folders whose discussions are all archived — by hand, by inactivity, or their session gone — until one is brought back', async () => {
     const now = Date.now();
     await store(conversation('active', now, { workingDirectory: '/work/active' }));
     await store(conversation('by-hand', now - 1000, { workingDirectory: '/work/by-hand' }));
-    await store(conversation('inactive', now - 40 * DAY_MS, { workingDirectory: '/work/inactive' }));
     await store(conversation('cleaned', now - 2000, { workingDirectory: '/work/cleaned' }));
-    // Of two discussions in one folder, one archived: the folder stays.
+    // Of two discussions in one folder, one archived: the folder is active.
     await store(conversation('mixed-active', now - 3000, { workingDirectory: '/work/mixed' }));
     await store(conversation('mixed-archived', now - 4000, { workingDirectory: '/work/mixed' }));
+    await store(conversation('inactive', now - 40 * DAY_MS, { workingDirectory: '/work/inactive' }));
     await service.setArchived('by-hand', true);
     await service.setArchived('mixed-archived', true);
     sessionCleanedUp('session-cleaned');
 
-    expect(await service.activeProjects(30)).toEqual(['/work/active', '/work/mixed']);
+    expect(await service.projectFolders(30)).toEqual({
+      active: ['/work/active', '/work/mixed'],
+      archived: ['/work/by-hand', '/work/cleaned', '/work/inactive'],
+    });
 
     await service.setArchived('by-hand', false);
-    expect(await service.activeProjects(30)).toEqual(['/work/active', '/work/by-hand', '/work/mixed']);
     // Archiving off, the inactive one is active again; the one whose session is gone never is.
-    expect(await service.activeProjects(0)).toEqual(['/work/active', '/work/by-hand', '/work/mixed', '/work/inactive']);
+    expect(await service.projectFolders(0)).toEqual({
+      active: ['/work/active', '/work/by-hand', '/work/mixed', '/work/inactive'],
+      archived: ['/work/cleaned'],
+    });
   });
 });
 

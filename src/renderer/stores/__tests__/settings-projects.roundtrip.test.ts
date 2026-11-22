@@ -1,10 +1,12 @@
 /**
  * The projects Settings lists, read through the whole path: the store asks
  * the preload, the real conversation IPC handler, and the real
- * ConversationService reading the discussions on disk. Listed: the working
- * folder, then the folders of the discussions not archived; a folder whose
- * discussions are all archived — by hand, by inactivity, or their Claude Code
- * session gone — is not, until one is brought back.
+ * ConversationService reading the discussions on disk. Listed: the folders
+ * with a discussion not archived, the working folder first — and it too only
+ * while one of its discussions is not archived, or it has none yet. A folder
+ * whose discussions are all archived — by hand, by inactivity, or their Claude
+ * Code session gone — is not, even made the working one by opening one of
+ * them, until one is brought back.
  *
  * Only Electron and the filesystem are faked.
  */
@@ -35,6 +37,7 @@ import { setupConversationIPC } from '../../../main/ipc/conversations';
 import { ConversationService } from '../../../main/services/ConversationService';
 import { cliConfigDir } from '../../../main/services/claude/cliCredentials';
 import '../../../preload/preload';
+import { useConversationsStore } from '../conversations';
 import { useMcpStore } from '../mcp';
 import { useSettingsStore } from '../settings';
 
@@ -73,6 +76,37 @@ beforeEach(async () => {
 });
 
 describe('the projects Settings lists', () => {
+  it('leave out the folder of an archived discussion opened, though it becomes the working folder, and take it back once the discussion is brought back', async () => {
+    seed('live', '/work/live');
+    seed('old', '/work/old', { archivedAt: Date.now() });
+    const conversations = useConversationsStore();
+    await conversations.loadConversationList();
+    const mcp = useMcpStore();
+    await settle();
+
+    await conversations.loadConversation('old');
+    await settle();
+    expect(useSettingsStore().workingDirectory).toBe('/work/old');
+    expect(mcp.currentProjectListed).toBe(false);
+    expect(mcp.projectChoices).toEqual(['/work/live']);
+    expect(mcp.projectDir).toBe('/work/live');
+
+    await conversations.setConversationArchived('old', false);
+    await settle();
+    expect(mcp.currentProjectListed).toBe(true);
+    expect(mcp.projectChoices).toEqual(['/work/old', '/work/live']);
+  });
+
+  it('keep a working folder with no discussion yet, to be set up before the first', async () => {
+    seed('live', '/work/live');
+    const mcp = useMcpStore();
+    await mcp.loadProjects();
+    await settle();
+
+    expect(mcp.currentProjectListed).toBe(true);
+    expect(mcp.projectChoices).toEqual([CURRENT, '/work/live']);
+  });
+
   it('are the working folder, then those with a discussion not archived — none archived by hand, by inactivity, or with its session gone', async () => {
     const now = Date.now();
     seed('recent', '/work/recent', { updatedAt: now - 1000 });

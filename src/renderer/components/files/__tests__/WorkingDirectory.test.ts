@@ -35,6 +35,7 @@ const Shell = defineComponent(() => {
 
 let files: Record<string, ReturnType<typeof vi.fn>>;
 let mcp: Record<string, ReturnType<typeof vi.fn>>;
+let conversation: Record<string, ReturnType<typeof vi.fn>>;
 let wrapper: ReturnType<typeof mount> | null = null;
 
 async function mountShell() {
@@ -54,7 +55,8 @@ beforeEach(() => {
     list: vi.fn().mockResolvedValue([]),
     projectTools: vi.fn().mockResolvedValue({ statuses: [], userServers: [], offEverywhere: [] }),
   };
-  fakeElectron({ files, mcp, conversation: { activeProjects: vi.fn().mockResolvedValue([THERE]) } });
+  conversation = { projectFolders: vi.fn().mockResolvedValue({ active: [THERE], archived: [] }) };
+  fakeElectron({ files, mcp, conversation });
   useSettingsStore().config = { ...DEFAULT_CONFIG, workingDirectory: HERE };
 });
 
@@ -93,6 +95,14 @@ describe('the working folder', () => {
     expect(shell.find('#settings-page-project').isVisible()).toBe(true);
     expect(shell.find('.project-settings-path').text()).toBe(HERE);
     expect(mcp.projectTools).toHaveBeenLastCalledWith(HERE);
+  });
+
+  it('offers no project settings for a folder whose discussions are all archived', async () => {
+    conversation.projectFolders!.mockResolvedValue({ active: [THERE], archived: [HERE] });
+    const shell = await mountShell();
+
+    expect(shell.find('.working-directory-settings').exists()).toBe(false);
+    expect(shell.find('.working-directory-change').exists()).toBe(true);
   });
 
   it('offers no project settings without a folder', async () => {

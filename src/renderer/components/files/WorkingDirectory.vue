@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
  * The working folder, atop the files panel: the path is what changes it, and
- * the gear beside it opens the project's own settings.
+ * the gear beside it opens the project's own settings — not there for a
+ * folder whose discussions are all archived, which Settings does not list.
  */
 
 import { computed } from 'vue';
@@ -9,6 +10,7 @@ import { storeToRefs } from 'pinia';
 
 import { useConversationsStore } from '../../stores/conversations';
 import { useFilesStore } from '../../stores/files';
+import { useMcpStore } from '../../stores/mcp';
 import { useUiStore } from '../../stores/ui';
 import Button from '../shared/Button.vue';
 import Icon from '../shared/Icon.vue';
@@ -16,6 +18,7 @@ import Icon from '../shared/Icon.vue';
 const filesStore = useFilesStore();
 const conversationsStore = useConversationsStore();
 const uiStore = useUiStore();
+const { currentProjectListed } = storeToRefs(useMcpStore());
 const { workingDirectory, hasWorkingDirectory, isLoading } = storeToRefs(filesStore);
 const { currentConversationId } = storeToRefs(conversationsStore);
 
@@ -96,7 +99,7 @@ function startConversationHere(): void {
       </button>
 
       <button
-        v-if="hasWorkingDirectory"
+        v-if="currentProjectListed"
         type="button"
         class="working-directory-settings btn-icon shrink-0"
         title="Project settings"

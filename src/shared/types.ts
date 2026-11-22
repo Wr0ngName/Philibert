@@ -1257,6 +1257,17 @@ export interface ConversationUpdate {
  * messages and session state. Read from an index the main process keeps, so
  * listing does not read every conversation file.
  */
+/**
+ * The folders of the discussions, by whether any can be written in: those
+ * with a discussion not archived, the most recently active first, and those
+ * whose discussions are all archived. A folder with no discussion is in
+ * neither.
+ */
+export interface ProjectFolders {
+  active: string[];
+  archived: string[];
+}
+
 export type ConversationSummary = Pick<
   Conversation,
   | 'id'
@@ -2387,7 +2398,7 @@ export const IPC_CHANNELS = {
   CONVERSATION_LIST_PAGE: 'conversation:list-page',
   /** How many discussions are archived, by hand or for being inactive. */
   CONVERSATION_ARCHIVED_COUNT: 'conversation:archived-count',
-  CONVERSATION_ACTIVE_PROJECTS: 'conversation:active-projects',
+  CONVERSATION_PROJECT_FOLDERS: 'conversation:project-folders',
   /** One discussion's list entry, or null when there is no such discussion. */
   CONVERSATION_SUMMARY: 'conversation:summary',
   /** Archive a discussion, or bring it back. */

@@ -16,6 +16,7 @@ import type {
   ConversationListPage,
   ConversationListRequest,
   ConversationSummary,
+  ProjectFolders,
   RestoredUsageLimitWaits,
   UsageLimitWait,
   ConversationSearchResult,
@@ -391,8 +392,8 @@ export interface ElectronAPI {
     listPage: (request: ConversationListRequest) => Promise<ConversationListPage>;
     /** How many discussions are archived, by hand or for being inactive. */
     archivedCount: (autoArchiveDays: AutoArchiveDays) => Promise<number>;
-    /** The folders of the discussions not archived, the most recently active first. */
-    activeProjects: (autoArchiveDays: AutoArchiveDays) => Promise<string[]>;
+    /** The folders of the discussions, by whether any is not archived. */
+    projectFolders: (autoArchiveDays: AutoArchiveDays) => Promise<ProjectFolders>;
     /** One discussion's list entry, or null when there is no such discussion. */
     summary: (id: string) => Promise<ConversationSummary | null>;
     /** Archive a discussion, or bring it back; returns its entry as it now stands. */

@@ -25,7 +25,7 @@ interface StoredConfig {
   /**
    * The last folders worked in, kept by 0.31.1 and before; removed on start.
    * Settings lists the projects of the discussions not archived instead
-   * (ConversationService.activeProjects), and nothing else read it.
+   * (ConversationService.projectFolders), and nothing else read it.
    */
   recentProjects?: string[];
   authMethod: AuthMethod;

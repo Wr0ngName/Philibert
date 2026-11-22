@@ -17,6 +17,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
+import { useMcpStore } from '../../stores/mcp';
 import { useSettingsStore } from '../../stores/settings';
 import { useUiStore } from '../../stores/ui';
 import { formatTime } from '../../utils/date';
@@ -30,6 +31,7 @@ const PROJECT_SETTINGS_FILE = /[\\/]\.claude[\\/]settings(\.local)?\.json$/;
 const chatStore = useChatStore();
 const conversationsStore = useConversationsStore();
 const settingsStore = useSettingsStore();
+const mcpStore = useMcpStore();
 
 const isOpen = ref(false);
 const dropdownRef = ref<HTMLDivElement | null>(null);
@@ -337,8 +339,9 @@ onUnmounted(() => {
           </template>
         </div>
 
-        <!-- Everything this project has of its own, in one place -->
+        <!-- Everything this project has of its own, in one place: not for one Settings does not list. -->
         <button
+          v-if="mcpStore.currentProjectListed"
           type="button"
           data-testid="open-project-settings"
           class="w-full px-3 py-2 border-t border-surface-200 dark:border-surface-700 text-left text-xs text-primary-600 dark:text-primary-400 hover:bg-surface-50 dark:hover:bg-surface-700"
