@@ -3,8 +3,9 @@
  * Settings, one dialog in tabs, listed in two groups: the general ones, the
  * same in every project (the account, how the app looks, the discussions,
  * the tools every project has, the advanced settings and what this
- * installation is made of), then, apart and under the project's name, what
- * one project has of its own.
+ * installation is made of), then, apart, every project the app knows of —
+ * the open discussion's first, marked current, then the recent ones — each
+ * an entry of its own, for what that project has of its own.
  *
  * Every tab stays mounted, hidden when not shown, so Save writes what was
  * changed on any of them, Cancel forgets all of it, and the sign-in form
@@ -59,9 +60,44 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   about: 'About',
 };
 
-/** The project the Project tab is about, by its folder's name; the tab names it. */
-const { projectDir } = storeToRefs(useMcpStore());
-const projectName = computed(() => (projectDir.value ? baseName(projectDir.value) : 'No folder'));
+const mcpStore = useMcpStore();
+const { projectDir, projectChoices } = storeToRefs(mcpStore);
+
+/**
+ * An entry of the list: a general tab, or one project. Every project has its
+ * own entry, named after its folder and never renamed: which one a page is
+ * about is the entry selected, not a choice made on the page.
+ */
+interface NavEntry {
+  id: string;
+  tab: SettingsTab;
+  /** The project's folder; null for a general tab, or for the project entry when there is none. */
+  dir: string | null;
+  label: string;
+}
+
+/** A folder's name, with its parent's when another project has the same name. */
+function projectLabel(dir: string, dirs: string[]): string {
+  const name = baseName(dir);
+  if (dirs.filter((other) => baseName(other) === name).length < 2) return name;
+  const parent = dir.replace(/[\\/]+$/, '').split(/[\\/]/).slice(-2, -1)[0];
+  return parent ? `${parent}/${name}` : name;
+}
+
+const generalEntries: NavEntry[] = GENERAL_SETTINGS_TABS.map((tab) => ({
+  id: `settings-tab-${tab}`, tab, dir: null, label: TAB_LABELS[tab],
+}));
+
+/** The projects, the working folder's first; with none, one entry saying so. */
+const projectEntries = computed<NavEntry[]>(() => {
+  const dirs = projectChoices.value;
+  if (dirs.length === 0) return [{ id: 'settings-tab-project-0', tab: 'project', dir: null, label: 'No project yet' }];
+  return dirs.map((dir, index) => ({
+    id: `settings-tab-project-${index}`, tab: 'project', dir, label: projectLabel(dir, dirs),
+  }));
+});
+
+const entries = computed(() => [...generalEntries, ...projectEntries.value]);
 
 /** The tab shown; kept between opens, so settings reopens where it was left. */
 const activeTab = ref<SettingsTab>(SETTINGS_TABS[0]);
@@ -70,8 +106,26 @@ const pageScroller = ref<HTMLElement | null>(null);
 const tabId = (tab: SettingsTab) => `settings-tab-${tab}`;
 const pageId = (tab: SettingsTab) => `settings-page-${tab}`;
 
+function isSelected(entry: NavEntry): boolean {
+  if (entry.tab !== activeTab.value) return false;
+  return entry.tab !== 'project' || entry.dir === projectDir.value;
+}
+
+/** The entry selected: what labels the page shown. */
+const selectedEntry = computed(() => entries.value.find(isSelected) ?? entries.value[0]);
+
+/** Whether a project is the open discussion's: the one its folder button opens. */
+function isCurrentProject(entry: NavEntry): boolean {
+  return entry.dir !== null && entry.dir === settingsStore.workingDirectory;
+}
+
 function showTab(tab: SettingsTab): void {
   activeTab.value = tab;
+}
+
+function showEntry(entry: NavEntry): void {
+  if (entry.tab === 'project') mcpStore.pickProject(isCurrentProject(entry) ? null : entry.dir);
+  showTab(entry.tab);
 }
 
 // Each tab is read from its top: one scrolled down is no place to start another.
@@ -96,10 +150,11 @@ watch(
   { immediate: true },
 );
 
-/** Arrow keys, Home and End move between tabs, as a vertical tab list does. */
+/** Arrow keys, Home and End move between entries, as a vertical tab list does. */
 function onTabKeydown(event: KeyboardEvent): void {
-  const index = SETTINGS_TABS.indexOf(activeTab.value);
-  const last = SETTINGS_TABS.length - 1;
+  const list = entries.value;
+  const index = list.indexOf(selectedEntry.value);
+  const last = list.length - 1;
   const targets: Record<string, number> = {
     ArrowDown: index === last ? 0 : index + 1,
     ArrowUp: index === 0 ? last : index - 1,
@@ -109,9 +164,9 @@ function onTabKeydown(event: KeyboardEvent): void {
   const target = targets[event.key];
   if (target === undefined) return;
   event.preventDefault();
-  const tab = SETTINGS_TABS[target];
-  showTab(tab);
-  void nextTick(() => document.getElementById(tabId(tab))?.focus());
+  const entry = list[target];
+  showEntry(entry);
+  void nextTick(() => document.getElementById(entry.id)?.focus());
 }
 
 // A command that opens settings for one of its tabs (`/login`, `/mcp`) turns
@@ -126,11 +181,11 @@ watch(
   { immediate: true },
 );
 
-/** A tab's classes, shown or not. */
-function tabClasses(tab: SettingsTab): string[] {
+/** An entry's classes, selected or not. */
+function entryClasses(entry: NavEntry): string[] {
   return [
     'px-3 py-2 rounded-lg text-left text-sm transition-colors',
-    activeTab.value === tab
+    isSelected(entry)
       ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 font-medium'
       : 'text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700',
   ];
@@ -468,22 +523,22 @@ function cancel() {
           General
         </div>
         <button
-          v-for="tab in GENERAL_SETTINGS_TABS"
-          :id="tabId(tab)"
-          :key="tab"
+          v-for="entry in generalEntries"
+          :id="entry.id"
+          :key="entry.id"
           type="button"
           role="tab"
-          :aria-selected="activeTab === tab"
-          :aria-controls="pageId(tab)"
-          :tabindex="activeTab === tab ? 0 : -1"
-          :class="tabClasses(tab)"
-          @click="showTab(tab)"
+          :aria-selected="isSelected(entry)"
+          :aria-controls="pageId(entry.tab)"
+          :tabindex="isSelected(entry) ? 0 : -1"
+          :class="entryClasses(entry)"
+          @click="showEntry(entry)"
           @keydown="onTabKeydown"
         >
-          {{ TAB_LABELS[tab] }}
+          {{ entry.label }}
         </button>
 
-        <!-- Apart, under its own heading: settings of one project, not of the app. -->
+        <!-- Apart, under their own heading: settings of one project, not of the app. -->
         <div
           class="settings-nav-separator"
           aria-hidden="true"
@@ -492,19 +547,21 @@ function cancel() {
           class="settings-nav-heading"
           aria-hidden="true"
         >
-          Project
+          Projects
         </div>
         <button
-          :id="tabId('project')"
+          v-for="entry in projectEntries"
+          :id="entry.id"
+          :key="entry.id"
           type="button"
           role="tab"
-          :aria-label="`Project: ${projectName}`"
-          :aria-selected="activeTab === 'project'"
+          :aria-label="isCurrentProject(entry) ? `${entry.label} (current project)` : entry.label"
+          :aria-selected="isSelected(entry)"
           :aria-controls="pageId('project')"
-          :tabindex="activeTab === 'project' ? 0 : -1"
-          :title="projectDir ?? undefined"
-          :class="[tabClasses('project'), 'flex items-center gap-2']"
-          @click="showTab('project')"
+          :tabindex="isSelected(entry) ? 0 : -1"
+          :title="entry.dir ?? undefined"
+          :class="[entryClasses(entry), 'settings-project-entry flex items-center gap-2']"
+          @click="showEntry(entry)"
           @keydown="onTabKeydown"
         >
           <Icon
@@ -512,7 +569,12 @@ function cancel() {
             size="sm"
             class="shrink-0"
           />
-          <span class="settings-project-tab-name truncate">{{ projectName }}</span>
+          <span class="truncate">{{ entry.label }}</span>
+          <span
+            v-if="isCurrentProject(entry)"
+            class="settings-project-current"
+            aria-hidden="true"
+          >current</span>
         </button>
       </div>
 
@@ -922,7 +984,7 @@ function cancel() {
           v-show="activeTab === 'project'"
           :id="pageId('project')"
           role="tabpanel"
-          :aria-labelledby="tabId('project')"
+          :aria-labelledby="selectedEntry.id"
         >
           <ProjectSettingsPanel
             v-if="projectOpened"
@@ -1050,8 +1112,13 @@ function cancel() {
   @apply px-3 pt-1 pb-1 text-xs font-semibold uppercase tracking-wide text-surface-400 dark:text-surface-500;
 }
 
-/* The project's group starts apart: the line says what follows is not the app's. */
+/* The projects start apart: the line says what follows is not the app's. */
 .settings-nav-separator {
   @apply my-3 mx-3 border-t border-surface-200 dark:border-surface-700;
+}
+
+.settings-project-current {
+  @apply ml-auto shrink-0 px-1.5 rounded text-[10px] font-medium uppercase tracking-wide;
+  @apply bg-surface-200 dark:bg-surface-700 text-surface-500 dark:text-surface-400;
 }
 </style>

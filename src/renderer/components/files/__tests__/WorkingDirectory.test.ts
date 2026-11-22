@@ -87,7 +87,9 @@ describe('the working folder', () => {
     await flushPromises();
 
     expect(useUiStore().showSettings).toBe(true);
-    expect(shell.find('#settings-tab-project').attributes('aria-selected')).toBe('true');
+    expect(shell.find('#settings-tab-project-0').attributes('aria-selected')).toBe('true');
+    expect(shell.find('#settings-tab-project-0').attributes('title')).toBe(HERE);
+    expect(shell.find('#settings-tab-project-1').attributes('aria-selected')).toBe('false');
     expect(shell.find('#settings-page-project').isVisible()).toBe(true);
     expect(shell.find('.project-settings-path').text()).toBe(HERE);
     expect(mcp.projectTools).toHaveBeenLastCalledWith(HERE);

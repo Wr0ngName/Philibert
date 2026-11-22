@@ -42,9 +42,16 @@ function projectTools(over: Partial<ProjectTools> = {}): ProjectTools {
 async function open(tab: 'Tools' | 'Project') {
   wrapper = mountSettings();
   await flushPromises();
-  await wrapper.find(`#settings-tab-${tab.toLowerCase()}`).trigger('click');
+  // The project's first entry is the working folder's.
+  await wrapper.find(tab === 'Tools' ? '#settings-tab-tools' : '#settings-tab-project-0').trigger('click');
   await flushPromises();
   return wrapper;
+}
+
+/** The projects listed, in order: each one's name, and whether it is marked current. */
+function projectEntries(): string[] {
+  return wrapper!.findAll('.settings-project-entry').map((entry) =>
+    entry.find('.truncate').text() + (entry.find('.settings-project-current').exists() ? ' (current)' : ''));
 }
 
 function page(name: 'tools' | 'project') {
@@ -176,7 +183,7 @@ describe('Settings → Project', () => {
   it("says which folder it is about — the open discussion's — and reads that project", async () => {
     await open('Project');
 
-    expect((page('project').find('#project-settings-folder').element as HTMLSelectElement).value).toBe(HERE);
+    expect(page('project').find('.project-settings-path').text()).toBe(HERE);
     expect(mcp.list).toHaveBeenCalledWith(HERE);
     expect(mcp.projectTools).toHaveBeenCalledWith(HERE);
     expect(claude.getProjectPermissions).toHaveBeenCalledWith(HERE);
@@ -225,54 +232,65 @@ describe('Settings → Project', () => {
     expect(page('project').isVisible()).toBe(false);
   });
 
-  it('reads another project when one is picked', async () => {
+  it('reads another project when its entry is chosen, the header and the list naming it as it is', async () => {
     await open('Project');
     vi.clearAllMocks();
 
-    await page('project').find('#project-settings-folder').setValue(THERE);
+    await wrapper!.find('#settings-tab-project-1').trigger('click');
     await flushPromises();
 
     expect(mcp.list).toHaveBeenCalledWith(THERE);
     expect(mcp.projectTools).toHaveBeenCalledWith(THERE);
     expect(claude.getProjectPermissions).toHaveBeenCalledWith(THERE);
-    // The header and the tab follow: the page never names one folder and edits another.
     expect(page('project').find('.project-settings-name').text()).toBe('there');
-    expect(wrapper!.find('#settings-tab-project').text()).toBe('there');
+    expect(page('project').find('.project-settings-current').exists()).toBe(false);
+    expect(page('project').attributes('aria-labelledby')).toBe('settings-tab-project-1');
+    // The list stays as it was: every project keeps its entry and its name, the current one still marked.
+    expect(projectEntries()).toEqual(['here (current)', 'there']);
+    expect(wrapper!.find('#settings-tab-project-1').attributes('aria-selected')).toBe('true');
+    expect(wrapper!.find('#settings-tab-project-0').attributes('aria-selected')).toBe('false');
   });
 
-  it('is listed apart from the general settings, under the project\'s name', async () => {
+  it('has no project picker on the page: which project is the entry chosen in the list', async () => {
+    await open('Project');
+
+    expect(page('project').find('select').exists()).toBe(false);
+  });
+
+  it('lists every project apart from the general settings, the current one first and marked', async () => {
     await open('Project');
 
     const nav = wrapper!.find('[role="tablist"]');
-    const headings = nav.findAll('.settings-nav-heading').map((h) => h.text());
-    expect(headings).toEqual(['General', 'Project']);
-    // In the order the list shows them: the general tabs, the separator, then the project's.
-    const order = nav.findAll('.settings-nav-heading, .settings-nav-separator, [role="tab"]')
-      .map((e) => e.classes('settings-nav-separator') ? '---' : e.text());
+    expect(nav.findAll('.settings-nav-heading').map((h) => h.text())).toEqual(['General', 'Projects']);
+    // In the order the list shows them: the general tabs, the separator, then the projects.
+    const order = nav.findAll('.settings-nav-heading, .settings-nav-separator, .settings-project-entry, [role="tab"]:not(.settings-project-entry)')
+      .map((e) => e.classes('settings-nav-separator') ? '---' : e.classes('settings-project-entry') ? 'project' : e.text());
     expect(order).toEqual([
       'General', 'Account', 'Appearance', 'Discussions', 'Tools', 'Advanced', 'About',
-      '---', 'Project', 'here',
+      '---', 'Projects', 'project', 'project',
     ]);
-    const tab = wrapper!.find('#settings-tab-project');
-    expect(tab.attributes('aria-label')).toBe('Project: here');
-    expect(tab.attributes('title')).toBe(HERE);
+    expect(projectEntries()).toEqual(['here (current)', 'there']);
+    const current = wrapper!.find('#settings-tab-project-0');
+    expect(current.attributes('aria-label')).toBe('here (current project)');
+    expect(current.attributes('title')).toBe(HERE);
+    expect(wrapper!.find('#settings-tab-project-1').attributes('aria-label')).toBe('there');
   });
 
-  it('opens on a header naming the project, its whole path, and that it is this one\'s only', async () => {
+  it('tells apart two projects of the same name by their parent folder', async () => {
+    useSettingsStore().config = { ...DEFAULT_CONFIG, workingDirectory: '/work/app', recentProjects: ['/home/user/app', THERE] };
+    await open('Project');
+
+    expect(projectEntries()).toEqual(['work/app (current)', 'user/app', 'there']);
+  });
+
+  it('opens on a header naming the project, its whole path, that it is the current one, and this one\'s only', async () => {
     await open('Project');
 
     const header = page('project').find('.project-settings-header');
     expect(header.find('.project-settings-name').text()).toBe('here');
+    expect(header.find('.project-settings-current').text()).toBe('Current project');
     expect(header.find('.project-settings-path').text()).toBe(HERE);
     expect(header.text()).toContain('These settings apply to this project only');
-  });
-
-  it('offers no other project to pick when there is none', async () => {
-    useSettingsStore().config = { ...DEFAULT_CONFIG, workingDirectory: HERE, recentProjects: [] };
-    await open('Project');
-
-    expect(page('project').find('#project-settings-folder').exists()).toBe(false);
-    expect(mcp.projectTools).toHaveBeenCalledWith(HERE);
   });
 
   it("lists what it allows without asking; the local ones can be removed, the shared ones not", async () => {
@@ -301,7 +319,7 @@ describe('Settings → Project', () => {
 
     expect(page('project').text()).toContain('Choose a project folder first');
     expect(page('project').find('.project-settings-name').text()).toBe('No project folder');
-    expect(wrapper!.find('#settings-tab-project').text()).toBe('No folder');
+    expect(projectEntries()).toEqual(['No project yet']);
     expect(mcp.projectTools).not.toHaveBeenCalled();
   });
 });

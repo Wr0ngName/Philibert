@@ -93,9 +93,9 @@ describe('settings tabs', () => {
     wrapper = mountPanel();
     await flushPromises();
 
-    // The general ones, then the project's, named after its folder (none here).
+    // The general ones, then the projects (none here).
     expect(tabs(wrapper).map((t) => t.text())).toEqual([
-      'Account', 'Appearance', 'Discussions', 'Tools', 'Advanced', 'About', 'No folder',
+      'Account', 'Appearance', 'Discussions', 'Tools', 'Advanced', 'About', 'No project yet',
     ]);
     expect(selected(wrapper)).toEqual(['Account']);
     expect(shownPages(wrapper)).toEqual(['Account']);
@@ -120,14 +120,14 @@ describe('settings tabs', () => {
     expect(selected(wrapper)).toEqual(['Appearance']);
     expect(document.activeElement?.textContent?.trim()).toBe('Appearance');
     await key('End');
-    expect(selected(wrapper)).toEqual(['No folder']);
+    expect(selected(wrapper)).toEqual(['No project yet']);
     await key('ArrowUp');
     expect(selected(wrapper)).toEqual(['About']);
     await key('ArrowDown');
     await key('ArrowDown');
     expect(selected(wrapper)).toEqual(['Account']);
     await key('ArrowUp');
-    expect(selected(wrapper)).toEqual(['No folder']);
+    expect(selected(wrapper)).toEqual(['No project yet']);
     await key('Home');
     expect(selected(wrapper)).toEqual(['Account']);
     // Only the selected tab is in the tab order.

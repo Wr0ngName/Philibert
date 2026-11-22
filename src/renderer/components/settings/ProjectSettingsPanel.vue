@@ -4,14 +4,17 @@
  * the global tools it turns off for itself, and what it lets Claude do
  * without asking.
  *
- * About the open discussion's folder unless another is picked: the page opens
- * on a header naming the folder it edits, so "this project" is never a guess.
+ * About the project selected in the settings' list — the open discussion's
+ * folder, unless another of the list was chosen there. Nothing here changes
+ * which: the page opens on a header naming the folder it edits, so "this
+ * project" is never a guess.
  */
 
 import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import { useMcpStore } from '../../stores/mcp';
+import { useSettingsStore } from '../../stores/settings';
 import { baseName } from '../../utils/path';
 import Icon from '../shared/Icon.vue';
 import McpServersPanel from './McpServersPanel.vue';
@@ -22,13 +25,11 @@ const emit = defineEmits<{
   (e: 'open-global'): void;
 }>();
 
-const mcpStore = useMcpStore();
-const { projectDir, projectChoices, hasProject } = storeToRefs(mcpStore);
+const { projectDir, hasProject } = storeToRefs(useMcpStore());
+const settingsStore = useSettingsStore();
 
-const selected = computed({
-  get: () => projectDir.value ?? '',
-  set: (dir: string) => mcpStore.pickProject(dir || null),
-});
+/** Whether it is the open discussion's folder, the app's working one. */
+const isCurrent = computed(() => !!projectDir.value && projectDir.value === settingsStore.workingDirectory);
 
 const projectName = computed(() => (projectDir.value ? baseName(projectDir.value) : null));
 </script>
@@ -44,8 +45,13 @@ const projectName = computed(() => (projectDir.value ? baseName(projectDir.value
           class="shrink-0 text-primary-600 dark:text-primary-400"
         />
         <div class="min-w-0 flex-1">
-          <div class="project-settings-name">
-            {{ projectName ?? 'No project folder' }}
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="project-settings-name">{{ projectName ?? 'No project folder' }}</span>
+            <span
+              v-if="isCurrent"
+              class="project-settings-current"
+              title="The folder of the discussion open now"
+            >Current project</span>
           </div>
           <div
             v-if="projectDir"
@@ -59,30 +65,6 @@ const projectName = computed(() => (projectDir.value ? baseName(projectDir.value
       <p class="text-xs text-surface-600 dark:text-surface-300 mt-2">
         These settings apply to this project only, and take effect as you change them.
       </p>
-      <div
-        v-if="hasProject && projectChoices.length > 1"
-        class="flex items-center gap-2 mt-3"
-      >
-        <label
-          for="project-settings-folder"
-          class="text-xs font-medium text-surface-600 dark:text-surface-300 shrink-0"
-        >
-          Switch project
-        </label>
-        <select
-          id="project-settings-folder"
-          v-model="selected"
-          class="min-w-0 flex-1 px-2 py-1 text-xs rounded border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-800 text-surface-900 dark:text-surface-100"
-        >
-          <option
-            v-for="dir in projectChoices"
-            :key="dir"
-            :value="dir"
-          >
-            {{ dir }}
-          </option>
-        </select>
-      </div>
     </div>
 
     <div
@@ -108,6 +90,11 @@ const projectName = computed(() => (projectDir.value ? baseName(projectDir.value
 
 .project-settings-name {
   @apply text-base font-semibold text-surface-900 dark:text-surface-100 truncate;
+}
+
+.project-settings-current {
+  @apply shrink-0 px-2 py-0.5 rounded-full text-xs font-medium;
+  @apply bg-primary-100 dark:bg-primary-900/40 text-primary-700 dark:text-primary-300;
 }
 
 .project-settings-path {
