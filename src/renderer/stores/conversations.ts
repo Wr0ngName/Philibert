@@ -94,8 +94,16 @@ export const useConversationsStore = defineStore('conversations', () => {
       });
 
       // Save when first message is added (user message)
-      // This makes the conversation appear in history immediately
-      if (oldLength === 0 && newLength > 0 && currentConversationId.value) {
+      // This makes the conversation appear in history immediately.
+      //
+      // Not when a discussion being opened shows its messages: nothing was
+      // added, and that save ran before the app moved to the discussion's
+      // folder, so one with no session yet — which takes the working folder
+      // when saved — was stored in the folder it was opened from.
+      if (
+        oldLength === 0 && newLength > 0 && currentConversationId.value
+        && openingConversationId.value !== currentConversationId.value
+      ) {
         logger.info('First message added, saving conversation to history');
         saveCurrentConversation().catch((err) => {
           logger.error('Failed to save conversation after first message', err);

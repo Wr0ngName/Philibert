@@ -102,6 +102,33 @@ describe('conversation working directory', () => {
     expect(onDisk(CONV)?.workingDirectory).toBe(NEW_DIR);
   });
 
+  it('opening one with no session from another folder moves the app to its folder, and leaves it stored there', async () => {
+    // Its messages arriving on screen are not a first message added: the
+    // save that one gets ran before the app moved to its folder, and stored
+    // it in the folder left — the folder it was opened from.
+    await seedExisting();
+    await store.initialize();
+    await settle();
+
+    await store.switchConversation(CONV);
+    await settle(20);
+
+    expect(useSettingsStore().workingDirectory).toBe(OLD_DIR);
+    expect(onDisk(CONV)?.workingDirectory).toBe(OLD_DIR);
+  });
+
+  it('still saves a new discussion as soon as its first message is added, to show it in the history', async () => {
+    await store.initialize();
+    await settle();
+    const id = store.createNewConversation();
+
+    useChatStore().messages.push(message('first'));
+    await settle(20);
+
+    expect(onDisk(id)?.messages.map((m) => m.content)).toEqual(['first']);
+    expect(onDisk(id)?.workingDirectory).toBe(NEW_DIR);
+  });
+
   it('keeps the pinned directory once a session exists', async () => {
     // Moving it would orphan the session files and silently lose the context.
     await seedExisting();
