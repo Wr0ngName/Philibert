@@ -156,7 +156,7 @@ describe('Channel mode AskUserQuestion routing', () => {
   beforeEach(async () => {
     mockSendFn = vi.fn().mockReturnValue(true);
     const send = mockSendFn as (channel: string, ...args: unknown[]) => boolean;
-    service = new ChannelService(makeConfigService(), send, makeNotificationService(), async () => 'high');
+    service = new ChannelService(makeConfigService(), send, makeNotificationService(), async () => 'high', async () => ({ claudeCodePrompt: true, instructions: '' }));
     const bridge = await service.ensureBridge();
     bridgePort = bridge.getPort();
     bridgeToken = bridge.token;

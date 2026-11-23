@@ -121,11 +121,11 @@ async function main(): Promise<void> {
       updateSplashStatus(`Converting discussions to the new format (${at} of ${of})…`);
     });
     await conversationService.recoverSessionData();
-    claudeService = new ClaudeCodeService(configService, getMainWindow, notificationService);
-    fileWatcher = new FileWatcherService();
     const { GitCredentialBroker } = await import('./services/git/GitCredentialBroker');
     const { getUserDataPath } = await import('./utils/paths');
     gitService = new GitService(new GitCredentialBroker(getUserDataPath()));
+    claudeService = new ClaudeCodeService(configService, getMainWindow, notificationService, gitService);
+    fileWatcher = new FileWatcherService();
     mcpService = new McpConfigService((args) => authService.runCli(args));
     projectPermissionService = new ProjectPermissionService();
     updateService = new UpdateService(getMainWindow, configService);

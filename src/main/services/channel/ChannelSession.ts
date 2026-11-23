@@ -21,12 +21,14 @@ import { ASK_USER_QUESTION_TOOL } from '../../../shared/ask-user-question';
 import { toPersistedEffort } from '../../../shared/effort';
 import type { TokenCounts } from '../../../shared/model-pricing';
 import { costUsdForModel, roundUsd, tokenCountsFromApiUsage } from '../../../shared/model-pricing';
+import type { SystemPromptChoice } from '../../../shared/system-prompt';
 import type { ChannelUsageData, ChannelModelTokens, EffortLevel, ThinkingMode } from '../../../shared/types';
 import { MAIN_CONSTANTS } from '../../constants/app';
 import { stripAnsi } from '../../utils/ansi';
 import logger from '../../utils/logger';
 import { getChannelSessionsDir, WindowsPaths } from '../../utils/resourcePaths';
 import { globalConfigFile } from '../claude/claude-files';
+import { cliSystemPromptArgs, describeSystemPrompt } from '../claude/system-prompt-options';
 import { findSessionTranscript } from '../claude/transcript-files';
 
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
@@ -151,6 +153,8 @@ export interface ChannelSessionOptions {
    * option, since this path drives the CLI through a PTY.
    */
   effortLevel: EffortLevel | null;
+  /** Claude Code's prompt or not, and the instructions after it: see @shared/system-prompt. */
+  systemPrompt: SystemPromptChoice;
   resumeSessionId?: string;
   onFatalError?: ChannelSessionErrorCallback;
   onPtyError?: ChannelSessionErrorCallback;
@@ -169,6 +173,7 @@ export class ChannelSession {
   private authEnv: Record<string, string>;
   private thinkingMode: ThinkingMode;
   private effortLevel: EffortLevel | null;
+  private readonly systemPrompt: SystemPromptChoice;
   private onFatalError?: ChannelSessionErrorCallback;
   private onPtyError?: ChannelSessionErrorCallback;
   private onPermissionRequest?: ChannelSessionPermissionCallback;
@@ -195,6 +200,7 @@ export class ChannelSession {
     this.authEnv = options.authEnv;
     this.thinkingMode = options.thinkingMode;
     this.effortLevel = options.effortLevel;
+    this.systemPrompt = options.systemPrompt;
     this.resumeSessionId = options.resumeSessionId || null;
     this.onFatalError = options.onFatalError;
     this.onPtyError = options.onPtyError;
@@ -265,6 +271,12 @@ export class ChannelSession {
       args.push('--model', this.model);
     }
 
+    const systemPromptArgs = cliSystemPromptArgs(this.systemPrompt, path.join(this.sessionDir, 'system-prompt.md'));
+    if (systemPromptArgs) {
+      fs.writeFileSync(systemPromptArgs[1], this.systemPrompt.instructions);
+      args.push(...systemPromptArgs);
+    }
+
     if (this.resumeSessionId) {
       args.push('--resume', this.resumeSessionId);
     }
@@ -288,6 +300,7 @@ export class ChannelSession {
       claudeCli: this.claudeCliPath,
       model: this.model,
       resumeSessionId: this.resumeSessionId?.slice(0, 20) || null,
+      ...describeSystemPrompt(this.systemPrompt),
     });
 
     this.ptyProcess = pty.spawn(this.claudeCliPath, args, {

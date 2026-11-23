@@ -5,6 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, toRaw } from 'vue';
 
+import type { ClaudeCodePromptMode, ProjectSystemPrompt } from '@shared/system-prompt';
 import type { AppConfig, AutoArchiveDays, CompletionNotifications, EffortLevel, ExecutionMode, LogLevel, ModalSize, SidebarLayout, ThinkingMode, UpdateChannel, UsageLimitWaitDays, WhisperModelId } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
 
@@ -203,6 +204,39 @@ export const useSettingsStore = defineStore('settings', () => {
     await saveConfig({ usageLimitWaitDays: days });
   }
 
+  async function setClaudeCodePrompt(mode: ClaudeCodePromptMode): Promise<void> {
+    await saveConfig({ claudeCodePrompt: mode });
+  }
+
+  async function setCustomInstructions(instructions: string): Promise<void> {
+    await saveConfig({ customInstructions: instructions.trim() });
+  }
+
+  /**
+   * Change a project's own system prompt settings: `claudeCodePrompt` null
+   * follows the general setting again, as empty instructions leave none. A
+   * project left with neither is forgotten.
+   */
+  async function setProjectSystemPrompt(
+    directory: string,
+    change: { claudeCodePrompt?: ProjectSystemPrompt['claudeCodePrompt'] | null; instructions?: string },
+  ): Promise<void> {
+    // Raw: the settings already saved are reactive proxies, which cannot be
+    // sent to the main process.
+    const all = { ...toRaw(config.value.projectSystemPrompts) };
+    const project: ProjectSystemPrompt = { ...toRaw(all[directory]) };
+    if (change.claudeCodePrompt === null) delete project.claudeCodePrompt;
+    else if (change.claudeCodePrompt) project.claudeCodePrompt = change.claudeCodePrompt;
+    if (change.instructions !== undefined) {
+      const instructions = change.instructions.trim();
+      if (instructions) project.instructions = instructions;
+      else delete project.instructions;
+    }
+    if (Object.keys(project).length > 0) all[directory] = project;
+    else delete all[directory];
+    await saveConfig({ projectSystemPrompts: all });
+  }
+
   function applyFontSize(size: number): void {
     if (typeof document !== 'undefined' && document.documentElement?.style) {
       document.documentElement.style.setProperty('--chat-font-size', `${size}px`);
@@ -317,6 +351,9 @@ export const useSettingsStore = defineStore('settings', () => {
     setSidebarLayout,
     setAutoArchiveDays,
     setUsageLimitWaitDays,
+    setClaudeCodePrompt,
+    setCustomInstructions,
+    setProjectSystemPrompt,
     setHistorySidebarWidth,
     setFilesSidebarWidth,
     setModalSize,

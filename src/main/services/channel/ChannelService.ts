@@ -14,6 +14,7 @@
 
 import { ASK_USER_QUESTION_TOOL } from '../../../shared/ask-user-question';
 import type { EffortResolver } from '../../../shared/effort';
+import type { SystemPromptChoice } from '../../../shared/system-prompt';
 import type {
   AskUserQuestionAction,
   AskUserQuestionDetails,
@@ -72,6 +73,8 @@ export class ChannelService {
   private sessions: Map<string, ActiveChannelSession> = new Map();
   private send: (channel: string, ...args: unknown[]) => boolean;
   private resolveEffort: EffortResolver;
+  /** What a discussion in a folder is told before its first message: see @shared/system-prompt. */
+  private resolveSystemPrompt: (workingDirectory: string) => Promise<SystemPromptChoice>;
   private notificationService: NotificationService;
   private authValidator: AuthValidator;
   private onTurnDone: ((conversationId: string) => void) | null = null;
@@ -85,10 +88,12 @@ export class ChannelService {
     send: (channel: string, ...args: unknown[]) => boolean,
     notificationService: NotificationService,
     resolveEffort: EffortResolver,
+    resolveSystemPrompt: (workingDirectory: string) => Promise<SystemPromptChoice>,
   ) {
     this.send = send;
     this.notificationService = notificationService;
     this.resolveEffort = resolveEffort;
+    this.resolveSystemPrompt = resolveSystemPrompt;
     this.authValidator = new AuthValidator(configService);
   }
 
@@ -325,6 +330,7 @@ export class ChannelService {
     const thinkingMode = settings.thinkingMode;
     const effortLevel = await this.resolveEffort(selectedModel, settings.effortLevel);
     const authEnv = await this.authValidator.setupAuthEnv();
+    const systemPrompt = await this.resolveSystemPrompt(workingDirectory);
 
     const session = new ChannelSession({
       conversationId,
@@ -337,6 +343,7 @@ export class ChannelService {
       authEnv,
       thinkingMode,
       effortLevel,
+      systemPrompt,
       resumeSessionId,
       onSessionId: (convId, sessionId) => {
         this.send(IPC_CHANNELS.CLAUDE_SESSION_ID, convId, sessionId);

@@ -11,8 +11,10 @@ shows it too. Earlier notes are in this file at their tag
 (`git show v0.31.0:RELEASE_NOTES.md`). Each bullet on one line: the app shows
 a line break inside a bullet as one.
 
-## 0.31.2
+## 0.32.0
 
+- **Claude works as in Claude Code, in your git repositories**: Philibert used to start Claude with no system prompt beyond one line; in a folder that is a git repository, Claude now gets Claude Code's own, with its guidance on tools, git, tasks and answers. Elsewhere it still does not. Choose "Always" or "Never" in Settings → Discussions → Instructions, or for one project in its settings.
+- **Your own instructions to Claude**: write instructions for every discussion in Settings → Discussions, and for one project in its settings; they are told to Claude after the system prompt. Changes apply to the discussions you start afterwards.
 - **Project settings stand apart**: Settings lists the general settings first, then each of your projects under its own name, so it is always clear whether a setting applies everywhere or to one project only.
 - **One click to a project's settings**: the gear next to the folder at the top of the files panel opens the settings of that project; clicking the folder's path still changes the folder.
 - **Only the projects you work in**: the projects listed are those with a discussion that is not archived, the one you are in first, marked "Current project"; a project whose discussions are all archived comes back once you bring one back.

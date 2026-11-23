@@ -2,6 +2,8 @@
  * Shared types used across main, preload, and renderer processes
  */
 
+import type { ClaudeCodePromptMode, ProjectSystemPrompt } from './system-prompt';
+
 /**
  * Role of a message in the chat conversation
  * - user: Message from the user
@@ -1030,6 +1032,15 @@ export interface AppConfig {
    * 0 never archives one by itself. See isArchived in @shared/conversation-list.
    */
   autoArchiveDays: AutoArchiveDays;
+  /**
+   * Whether discussions start on Claude Code's own system prompt: 'auto' in
+   * git repositories only. See @shared/system-prompt.
+   */
+  claudeCodePrompt: ClaudeCodePromptMode;
+  /** Told to Claude in every discussion, after the system prompt; '' for none. */
+  customInstructions: string;
+  /** Each project's own system prompt settings, by folder; a folder not listed follows the general ones. */
+  projectSystemPrompts: Record<string, ProjectSystemPrompt>;
 }
 
 /**
@@ -1072,6 +1083,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   autoContinueAtUsageLimit: true,
   usageLimitWaitDays: 3,
   autoArchiveDays: 30,
+  claudeCodePrompt: 'auto',
+  customInstructions: '',
+  projectSystemPrompts: {},
 };
 
 // Conversation types

@@ -238,11 +238,17 @@ the allowlist gate for local development.
    Since Philibert provides credentials externally, the setup screens
    (theme picker, login selector) are unnecessary.
 6. Sets workspace trust in the global `settings.json` for the working directory
-7. Spawns Claude Code in a PTY via `node-pty`
-8. Auto-accepts startup dialogs (workspace trust, dev channels warning,
+7. Writes the instructions of Settings to `system-prompt.md` and names it with
+   `--append-system-prompt-file` after Claude Code's own system prompt, or
+   `--system-prompt-file` in its place when that prompt is not used — see
+   `src/shared/system-prompt.ts`. A file rather than the text as an argument:
+   on Windows node-pty joins the arguments into one command line, where text
+   starting and ending with a quote would be split.
+8. Spawns Claude Code in a PTY via `node-pty`
+9. Auto-accepts startup dialogs (workspace trust, dev channels warning,
    and as a fallback: theme picker, login method selector, post-login
    "Press Enter to continue")
-9. Channel server starts, connects to bridge, begins polling
+10. Channel server starts, connects to bridge, begins polling
 
 ### Shutdown
 

@@ -59,6 +59,8 @@ function defaults(): Api {
       getProjectPermissions: vi.fn().mockResolvedValue([]),
       revokeProjectPermission: vi.fn().mockResolvedValue([]),
     },
+    // Whether a project's folder is a git repository: not, by default.
+    git: { status: vi.fn().mockResolvedValue({ isGitRepo: false, branch: '', dirty: 0, ahead: 0, behind: 0 }) },
     // The folders of the discussions: none by default.
     conversation: { projectFolders: vi.fn().mockResolvedValue({ active: [], archived: [] }) },
     mcp: {

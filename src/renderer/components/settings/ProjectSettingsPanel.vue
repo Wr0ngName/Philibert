@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * Settings → Project: what one project has of its own — its tool servers,
- * the global tools it turns off for itself, and what it lets Claude do
- * without asking.
+ * Settings → Project: what one project has of its own — what Claude is
+ * told in it, its tool servers, the global tools it turns off for itself,
+ * and what it lets Claude do without asking.
  *
  * About the project selected in the settings' list — the open discussion's
  * folder, unless another of the list was chosen there. Nothing here changes
@@ -19,6 +19,7 @@ import { baseName } from '../../utils/path';
 import Icon from '../shared/Icon.vue';
 import McpServersPanel from './McpServersPanel.vue';
 import ProjectPermissionsList from './ProjectPermissionsList.vue';
+import ProjectSystemPromptSettings from './ProjectSystemPromptSettings.vue';
 import ProjectToolsList from './ProjectToolsList.vue';
 
 const emit = defineEmits<{
@@ -76,6 +77,7 @@ const projectName = computed(() => (projectDir.value ? baseName(projectDir.value
     </div>
 
     <template v-else>
+      <ProjectSystemPromptSettings />
       <McpServersPanel scope="project" />
       <ProjectToolsList @open-global="emit('open-global')" />
       <ProjectPermissionsList />

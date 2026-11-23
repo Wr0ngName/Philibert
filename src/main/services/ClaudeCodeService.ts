@@ -88,6 +88,7 @@ import { getUserDataPath } from '../utils/paths';
 import { ClaudeCliPaths, WindowsPaths } from '../utils/resourcePaths';
 
 import ConfigService from './ConfigService';
+import GitService from './GitService';
 import { ImageStore } from './ImageStore';
 import NotificationService from './NotificationService';
 import { ChannelService } from './channel';
@@ -104,6 +105,7 @@ import { SessionSchedules } from './claude/SessionSchedules';
 import { AgentTranscripts } from './claude/agent-transcripts';
 import { observeCanUseToolRequests, type CanUseToolRequest } from './claude/can-use-tool-requests';
 import { claudeAiConnectorAuthPage, readGlobalToolStatuses } from './claude/connectors';
+import { describeSystemPrompt, sdkSystemPrompt, systemPromptFor } from './claude/system-prompt-options';
 import { attachTranscriptImages, cliTempRoot, locateTaskOutput, readTaskOutput } from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
 import { findAgentTranscript, findSessionTranscript } from './claude/transcript-files';
@@ -354,6 +356,8 @@ export class ClaudeCodeService {
    */
   private pendingRewindPoints = new Map<string, string>();
   private configService: ConfigService;
+  /** Asked whether a discussion's folder is a git repository: see @shared/system-prompt. */
+  private readonly git: Pick<GitService, 'isRepository'>;
   private notificationService: NotificationService;
   private sessionPermissionCache: SessionPermissionCache;
   /** What each discussion's session will do later: see SessionSchedules. */
@@ -376,11 +380,17 @@ export class ClaudeCodeService {
     return this.imageStoreInstance;
   }
 
-  constructor(configService: ConfigService, getMainWindow: () => BrowserWindow | null, notificationService: NotificationService) {
+  constructor(
+    configService: ConfigService,
+    getMainWindow: () => BrowserWindow | null,
+    notificationService: NotificationService,
+    git: Pick<GitService, 'isRepository'> = new GitService(),
+  ) {
     // Create bound sender using the provided window getter
     this.send = createSender(getMainWindow);
 
     this.configService = configService;
+    this.git = git;
     this.notificationService = notificationService;
 
     // Initialize session permission cache (persists across queries per conversation)
@@ -594,6 +604,11 @@ export class ClaudeCodeService {
     return isSlashCommandText(message) ? null : uuid;
   }
 
+  /** What a discussion in this folder is told before its first message: see @shared/system-prompt. */
+  private async systemPromptFor(workingDirectory: string) {
+    return systemPromptFor(await this.configService.getConfig(), workingDirectory, (cwd) => this.git.isRepository(cwd));
+  }
+
   /** The app's settings: what a new discussion starts with. */
   private async appDiscussionSettings(): Promise<DiscussionSettings> {
     return {
@@ -621,6 +636,7 @@ export class ClaudeCodeService {
           this.send,
           this.notificationService,
           (model, requested) => this.resolveEffortForModel(model, requested),
+          (workingDirectory) => this.systemPromptFor(workingDirectory),
         );
         this.channelService.setOnTurnDone((convId) => {
           this.processingSessions.delete(convId);
@@ -1195,6 +1211,8 @@ export class ClaudeCodeService {
       // session restores the model it was created with.
       const shouldResume = !!resumeSessionId;
       const managedSettings = await this.buildManagedSettings(selectedModel);
+      const systemPromptChoice = await this.systemPromptFor(workingDirectory);
+      const systemPrompt = sdkSystemPrompt(systemPromptChoice);
 
       logger.info('Starting new persistent session', {
         conversationId,
@@ -1208,6 +1226,7 @@ export class ClaudeCodeService {
         hasResumeSessionId: !!resumeSessionId,
         willResume: shouldResume,
         willSetModelAfterResume: shouldResume && !!selectedModel,
+        ...describeSystemPrompt(systemPromptChoice),
       });
 
       // Set up authentication environment, plus any model enforcement that
@@ -1305,6 +1324,9 @@ export class ClaudeCodeService {
           // converge the session onto the selected model and tell the user.
           ...(selectedModel ? { model: selectedModel } : {}),
           ...(managedSettings ? { managedSettings } : {}),
+          // Claude Code's own prompt or not, and the user's instructions: see
+          // @shared/system-prompt. Left out, the SDK asks for none at all.
+          ...(systemPrompt !== undefined ? { systemPrompt } : {}),
           ...(shouldResume ? { resume: resumeSessionId } : {}),
           ...(rewindPoint ? { resumeSessionAt: rewindPoint } : {}),
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {

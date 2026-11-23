@@ -17,6 +17,7 @@ import { AUTO_ARCHIVE_DAYS, CLAUDE_DEFAULT_SESSION_RETENTION_DAYS, DEFAULT_CONFI
 import type { SettingsTab } from '@shared/settings-tabs';
 import { GENERAL_SETTINGS_TABS, SETTINGS_TABS } from '@shared/settings-tabs';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE, WHISPER_MODELS } from '@shared/speech';
+import type { ClaudeCodePromptMode } from '@shared/system-prompt';
 import { ref, computed, nextTick, watch, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
 
@@ -35,6 +36,9 @@ import ToggleSwitch from '../shared/ToggleSwitch.vue';
 import AboutSection from './AboutSection.vue';
 import GlobalToolsPanel from './GlobalToolsPanel.vue';
 import ProjectSettingsPanel from './ProjectSettingsPanel.vue';
+import SystemPromptFields from './SystemPromptFields.vue';
+import { choiceClasses } from './choice-classes';
+import { GENERAL_PROMPT_MODES } from './prompt-modes';
 
 interface Props {
   open: boolean;
@@ -192,12 +196,6 @@ function entryClasses(entry: NavEntry): string[] {
 }
 
 /** The classes of a choice among several, chosen or not. */
-function choiceClasses(chosen: boolean): string {
-  return chosen
-    ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-    : 'border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-700';
-}
-
 // Local form state
 const localTheme = ref<'light' | 'dark' | 'system'>('system');
 const localSidebarLayout = ref<SidebarLayout>(DEFAULT_CONFIG.sidebarLayout);
@@ -206,6 +204,8 @@ const localFontSize = ref(14);
 const localLineHeight = ref(1.6);
 const localLogLevel = ref<LogLevel>('info');
 const localEnableNotifications = ref(true);
+const localClaudeCodePrompt = ref<ClaudeCodePromptMode>(DEFAULT_CONFIG.claudeCodePrompt);
+const localCustomInstructions = ref(DEFAULT_CONFIG.customInstructions);
 const localCompletionNotifications = ref<CompletionNotifications>('all-done');
 const localAutoContinueAtUsageLimit = ref(true);
 const localUsageLimitWaitDays = ref<UsageLimitWaitDays>(DEFAULT_CONFIG.usageLimitWaitDays);
@@ -431,6 +431,8 @@ function loadFromConfig(): void {
   localLineHeight.value = saved.lineHeight;
   localLogLevel.value = saved.logLevel;
   localEnableNotifications.value = saved.enableNotifications;
+  localClaudeCodePrompt.value = saved.claudeCodePrompt;
+  localCustomInstructions.value = saved.customInstructions;
   localCompletionNotifications.value = saved.completionNotifications;
   localAutoContinueAtUsageLimit.value = saved.autoContinueAtUsageLimit;
   localUsageLimitWaitDays.value = saved.usageLimitWaitDays;
@@ -484,6 +486,8 @@ async function saveSettings() {
   await settingsStore.setLineHeight(localLineHeight.value);
   await settingsStore.setLogLevel(localLogLevel.value);
   await settingsStore.setEnableNotifications(localEnableNotifications.value);
+  await settingsStore.setClaudeCodePrompt(localClaudeCodePrompt.value);
+  await settingsStore.setCustomInstructions(localCustomInstructions.value);
   await settingsStore.setCompletionNotifications(localCompletionNotifications.value);
   await settingsStore.setAutoContinueAtUsageLimit(localAutoContinueAtUsageLimit.value);
   await settingsStore.setUsageLimitWaitDays(localUsageLimitWaitDays.value);
@@ -767,6 +771,23 @@ function cancel() {
           :aria-labelledby="tabId('discussions')"
           class="space-y-6"
         >
+          <!-- What Claude is told before the first message -->
+          <div>
+            <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+              Instructions
+            </label>
+            <div class="p-3 rounded-lg border border-surface-300 dark:border-surface-600">
+              <SystemPromptFields
+                v-model:mode="localClaudeCodePrompt"
+                v-model:instructions="localCustomInstructions"
+                id-prefix="general-prompt"
+                :mode-options="GENERAL_PROMPT_MODES"
+                instructions-label="Instructions for every discussion"
+                instructions-hint="Told to Claude after the system prompt, in every project. A project can add its own, in its settings."
+              />
+            </div>
+          </div>
+
           <!-- Archiving inactive discussions -->
           <div>
             <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">

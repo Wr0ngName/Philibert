@@ -111,6 +111,7 @@ describe('channel mode — a turn always ends', () => {
       send as unknown as (channel: string, ...args: unknown[]) => boolean,
       makeNotificationService(),
       async () => 'high',
+      async () => ({ claudeCodePrompt: true, instructions: '' }),
     );
   });
 

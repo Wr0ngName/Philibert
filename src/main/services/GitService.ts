@@ -192,13 +192,19 @@ export class GitService {
   }
 
   /**
+   * Whether a folder is in a git working tree, as git itself says: a folder
+   * that does not exist, or no git installed, is not; nor is a repository's
+   * .git folder, where git answers "false".
+   */
+  async isRepository(cwd: string): Promise<boolean> {
+    return this.runGit(['rev-parse', '--is-inside-work-tree'], cwd).then((answer) => answer === 'true', () => false);
+  }
+
+  /**
    * Get git repository status
    */
   async getStatus(cwd: string): Promise<GitStatus> {
-    // Check if directory is a git repo
-    try {
-      await this.runGit(['rev-parse', '--is-inside-work-tree'], cwd);
-    } catch {
+    if (!(await this.isRepository(cwd))) {
       return { isGitRepo: false, branch: '', dirty: 0, ahead: 0, behind: 0 };
     }
 
@@ -253,11 +259,7 @@ export class GitService {
    * that touched it, with that commit's own change to it.
    */
   async getFileChanges(cwd: string, filePath: string): Promise<FileChanges> {
-    try {
-      await this.runGit(['rev-parse', '--is-inside-work-tree'], cwd);
-    } catch {
-      return { source: 'not-a-repository' };
-    }
+    if (!(await this.isRepository(cwd))) return { source: 'not-a-repository' };
     // A blob's path, relative to cwd as `<rev>:./<path>` reads it.
     const blob = `./${path.relative(cwd, filePath).split(path.sep).join('/')}`;
 
