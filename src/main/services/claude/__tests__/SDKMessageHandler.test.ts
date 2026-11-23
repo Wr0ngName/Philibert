@@ -55,6 +55,15 @@ describe('SDKMessageHandler', () => {
       expect(vi.mocked(callbacks.onSystemNote).mock.calls).toEqual([['compacting'], ['compacting']]);
     });
 
+    it('is noted again for one that follows straight on, as a retry after a failed one would', async () => {
+      for (const frame of [
+        status('compacting'), status(null, { compact_result: 'failed', compact_error: 'too_few_groups' }),
+        status('compacting'),
+      ]) await handler.handleMessage(frame);
+
+      expect(vi.mocked(callbacks.onSystemNote).mock.calls).toEqual([['compacting'], ['compacting']]);
+    });
+
     it('is not noted while requesting, which the reply says', async () => {
       await handler.handleMessage(status('requesting'));
 
