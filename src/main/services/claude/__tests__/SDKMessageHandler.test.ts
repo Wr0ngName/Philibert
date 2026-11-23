@@ -31,6 +31,57 @@ describe('SDKMessageHandler', () => {
     handler = new SDKMessageHandler(callbacks);
   });
 
+  // What the main conversation's SendMessage results say, as CLI 2.1.280
+  // sent them (measured): a message left for a running agent, read at its
+  // next tool round, and one that resumed a finished agent.
+  describe('a SendMessage result', () => {
+    const AGENT = 'af63b7bc536371432';
+    const QUEUED = {
+      success: true,
+      message: `Message queued for delivery to ${AGENT} at its next tool round.`,
+      pin: { id: AGENT, name: AGENT, ref: '535ebe' },
+    };
+    const RESUMED = {
+      success: true,
+      message: 'Resuming agent af63b7b',
+      resumedAgentId: AGENT,
+      pin: { id: AGENT, name: AGENT, ref: '52b108' },
+    };
+
+    async function resultOf(toolName: string, toolUseResult: unknown) {
+      const onToolResult = vi.fn();
+      const h = new SDKMessageHandler({ ...callbacks, onToolResult });
+      await h.handleMessage({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_send', name: toolName, input: { to: AGENT, message: 'Also check X' } }] },
+        parent_tool_use_id: null,
+      } as never);
+      await h.handleMessage({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_send', content: [{ type: 'text', text: JSON.stringify(toolUseResult) }] }] },
+        parent_tool_use_id: null,
+        tool_use_result: toolUseResult,
+      } as never);
+      return onToolResult.mock.calls[0][0];
+    }
+
+    it('names the running agent the message waits for', async () => {
+      expect((await resultOf('SendMessage', QUEUED)).queuedForAgent).toBe(AGENT);
+    });
+
+    it('names none when the message resumed a finished agent, which reads it at once', async () => {
+      expect((await resultOf('SendMessage', RESUMED)).queuedForAgent).toBeUndefined();
+    });
+
+    it('names none when it was not sent', async () => {
+      expect((await resultOf('SendMessage', { ...QUEUED, success: false })).queuedForAgent).toBeUndefined();
+    });
+
+    it('is read only off a SendMessage', async () => {
+      expect((await resultOf('Bash', QUEUED)).queuedForAgent).toBeUndefined();
+    });
+  });
+
   describe('a tool result carrying an image', () => {
     /**
      * The wiring, not the arithmetic: `toolResultParts` is tested on its own,

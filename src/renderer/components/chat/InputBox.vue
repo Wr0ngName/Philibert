@@ -20,6 +20,7 @@ import Button from '../shared/Button.vue';
 import ContextMenu, { type ContextMenuItem } from '../shared/ContextMenu.vue';
 import Icon from '../shared/Icon.vue';
 import CommandAutocomplete from './CommandAutocomplete.vue';
+import DeliveringMessages from './DeliveringMessages.vue';
 
 const emit = defineEmits<{
   (e: 'send', message: string, images?: MessageImage[]): void;
@@ -433,47 +434,31 @@ function handleInput(event: Event) {
       join the discussion when it does, at its next step, so until then this
       is the only sign that Send did something.
     -->
-    <div
-      v-if="deliveringPrompts.length > 0"
-      class="mb-3 rounded-lg border border-primary-200 dark:border-primary-800 bg-primary-50/50 dark:bg-primary-900/10"
+    <DeliveringMessages
+      class="mb-3"
       data-testid="delivering-prompts"
+      :messages="deliveringPrompts.map((prompt) => ({ key: prompt.uuid, content: prompt.content }))"
+      reader="Claude"
     >
-      <div class="flex items-center gap-1.5 px-3 py-2 border-b border-primary-200 dark:border-primary-800 text-xs font-medium text-surface-600 dark:text-surface-300">
-        <Icon
-          name="send"
-          size="xs"
-        />
-        {{ deliveringPrompts.length }} sent
-        <span class="font-normal text-surface-400 dark:text-surface-500">
-          · Claude reads {{ deliveringPrompts.length === 1 ? 'it' : 'them' }} at its next step
-        </span>
-      </div>
-      <ul class="divide-y divide-primary-200 dark:divide-primary-800">
-        <li
-          v-for="prompt in deliveringPrompts"
-          :key="prompt.uuid"
-          class="flex items-start gap-2 px-3 py-2"
+      <template #action="{ index }">
+        <span
+          v-if="deliveringPrompts[index].tooLate"
+          class="shrink-0 text-xs text-surface-400 dark:text-surface-500"
+        >Claude already has it</span>
+        <button
+          v-else
+          type="button"
+          class="shrink-0 p-1 rounded text-surface-400 hover:text-surface-700 dark:hover:text-surface-200 hover:bg-surface-200 dark:hover:bg-surface-700"
+          title="Take this back before Claude reads it"
+          @click="emit('take-back', deliveringPrompts[index].uuid)"
         >
-          <span class="flex-1 min-w-0 text-xs text-surface-700 dark:text-surface-200 whitespace-pre-wrap break-words line-clamp-3">{{ prompt.content }}</span>
-          <span
-            v-if="prompt.tooLate"
-            class="shrink-0 text-xs text-surface-400 dark:text-surface-500"
-          >Claude already has it</span>
-          <button
-            v-else
-            type="button"
-            class="shrink-0 p-1 rounded text-surface-400 hover:text-surface-700 dark:hover:text-surface-200 hover:bg-surface-200 dark:hover:bg-surface-700"
-            title="Take this back before Claude reads it"
-            @click="emit('take-back', prompt.uuid)"
-          >
-            <Icon
-              name="close"
-              size="xs"
-            />
-          </button>
-        </li>
-      </ul>
-    </div>
+          <Icon
+            name="close"
+            size="xs"
+          />
+        </button>
+      </template>
+    </DeliveringMessages>
 
     <div
       v-if="hasQueuedPrompts"

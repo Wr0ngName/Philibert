@@ -37,7 +37,7 @@ vi.mock('../../utils/logger', () => ({
 import { setupConversationIPC } from '../../../main/ipc/conversations';
 import { ConversationService } from '../../../main/services/ConversationService';
 import transcriptFixture from '../../../main/services/claude/__tests__/fixtures/agent-transcript.json';
-import { transcriptToMessages } from '../../../main/services/claude/task-output';
+import { mergeByTime, messagesSentToAgent, transcriptToMessages } from '../../../main/services/claude/task-output';
 import '../../../preload/preload';
 import ChatWindow from '../../components/chat/ChatWindow.vue';
 import { TASK_FEED_INTERVAL_MS } from '../../composables/useTaskDetailFeed';
@@ -60,6 +60,8 @@ describe('background tasks, panel and detail', () => {
   /** The command's output file, as it grows. */
   let commandOutput: string;
   let outputReads: number;
+  /** Transcript lines for messages the agent has read, as the CLI writes them. */
+  let readByAgent: string[];
 
   function notify(notification: TaskNotification): void {
     emitIpc('claude:task-notification', conversationId, notification);
@@ -103,14 +105,17 @@ describe('background tasks, panel and detail', () => {
 
     transcriptLength = 4;
     transcriptReads = 0;
+    readByAgent = [];
     // Where main keeps a call's result for the tool detail, and reads it back.
     const results = new Map<string, string>();
     mainHandlers.set('claude:get-agent-transcript', () => {
       transcriptReads += 1;
-      return transcriptToMessages(transcript.slice(0, transcriptLength), (id, content) => {
+      // As main reads it: the converted records, and the messages the agent
+      // read in between, placed by time.
+      return mergeByTime(transcriptToMessages(transcript.slice(0, transcriptLength), (id, content) => {
         results.set(`/results/${id}.txt`, content);
         return `/results/${id}.txt`;
-      });
+      }), messagesSentToAgent(readByAgent.join('\n')));
     });
     mainHandlers.set('files:read', (_event, file) => results.get(file as string) ?? '');
 
@@ -245,6 +250,88 @@ describe('background tasks, panel and detail', () => {
     expect(transcriptReads).toBe(2);
     expect(modal.querySelectorAll('.tool-use-entry').length).toBeGreaterThan(before);
     expect(modal.textContent).toContain('Task complete');
+  });
+
+  // Asked for: a message the main conversation sends a running agent waits
+  // for the agent's next tool round, as a prompt sent into a busy discussion
+  // waits for Claude's next step — and is shown waiting the same way, in the
+  // agent's view, until the agent reads it.
+  describe('a message the main conversation sends the agent', () => {
+    const MESSAGE = 'Also check the X module';
+
+    function messageBox(modal: HTMLElement): HTMLElement | null {
+      return modal.querySelector<HTMLElement>('[data-testid="messages-to-agent"]');
+    }
+
+    /** The SendMessage call and its result, as main sends them (CLI 2.1.280). */
+    async function sendToAgent(queuedForAgent: string | undefined): Promise<void> {
+      emitIpc('claude:tool-capture', conversationId, {
+        toolUseBlockId: 'toolu_send', toolName: 'SendMessage',
+        input: { to: 'agent-1', message: MESSAGE, summary: 'check X too' }, description: 'check X too',
+      });
+      emitIpc('claude:tool-result', conversationId, {
+        toolUseBlockId: 'toolu_send', outputFile: '/results/toolu_send.txt',
+        ...(queuedForAgent && { queuedForAgent }),
+      });
+      await settle(20);
+    }
+
+    /** The agent reads it: the record the CLI appends to its transcript (2.1.280). */
+    function agentReadsIt(): void {
+      readByAgent.push(JSON.stringify({
+        isSidechain: true, agentId: 'agent-1', type: 'attachment', uuid: 'att-1',
+        timestamp: new Date(Date.now() + 1_000).toISOString(),
+        attachment: { type: 'queued_command', prompt: MESSAGE, source_uuid: 'src-1', origin: { kind: 'coordinator' }, isMeta: true },
+      }));
+    }
+
+    it('is shown waiting under its transcript, as the agent will read it', async () => {
+      await sendToAgent('agent-1');
+      const modal = await openTask('builder');
+
+      const box = messageBox(modal);
+      expect(box, 'expected the messages waiting for the agent').not.toBeNull();
+      expect(box!.textContent).toContain('1 sent');
+      expect(box!.textContent).toContain('builder reads it at its next step');
+      expect(box!.textContent).toContain(MESSAGE);
+      // The discussion's own, for prompts Claude has yet to read, has nothing.
+      expect(app.find('[data-testid="delivering-prompts"]').exists()).toBe(false);
+    });
+
+    it('leaves the waiting list for the transcript once the agent read it', async () => {
+      await sendToAgent('agent-1');
+      const modal = await openTask('builder');
+
+      agentReadsIt();
+      await tick();
+
+      expect(messageBox(modal)).toBeNull();
+      expect(modal.querySelector('.agent-transcript')?.textContent).toContain(MESSAGE);
+    });
+
+    it('is no longer shown once the agent ended without reading it', async () => {
+      await sendToAgent('agent-1');
+      notify({ taskId: 'agent-1', status: 'completed', summary: 'Done', toolUseId: 'toolu_agent' });
+      await settle(20);
+      // Run again, as a message to a finished agent does: what was left is gone.
+      notify({ taskId: 'agent-1', status: 'running', toolUseId: 'toolu_agent', taskType: 'agent', agentType: 'builder' });
+      await settle(20);
+
+      expect(messageBox(await openTask('builder'))).toBeNull();
+    });
+
+    it('is not shown waiting when it resumed a finished agent, which reads it at once', async () => {
+      await sendToAgent(undefined);
+
+      expect(messageBox(await openTask('builder'))).toBeNull();
+    });
+
+    it("is shown only in the agent it was sent to", async () => {
+      notify({ taskId: 'agent-2', status: 'running', description: 'Other agent', toolUseId: 'toolu_agent2', taskType: 'agent', agentType: 'reviewer' });
+      await sendToAgent('agent-1');
+
+      expect(messageBox(await openTask('reviewer'))).toBeNull();
+    });
   });
 
   it("opens one of the agent's calls in the tool detail", async () => {

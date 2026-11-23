@@ -18,8 +18,9 @@ import type { BackgroundTask, ChatMessage, ToolUseInfo } from '@shared/types';
 
 import { useNowTicker } from '../../composables/useNowTicker';
 import { useAgentTranscript, useCommandOutput } from '../../composables/useTaskDetailFeed';
-import { canSendToBackground, namedTaskId } from '../../stores/chat';
+import { canSendToBackground, namedTaskId, useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
+import { unreadMessagesToAgent } from '../../utils/agent-messages';
 import { formatModelId } from '../../utils/model';
 import { formatTaskDuration } from '../../utils/task-duration';
 import { formatTokenCount } from '../../utils/token-count';
@@ -27,6 +28,7 @@ import type { ToolCallOutput } from '../../utils/tool-output';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
+import DeliveringMessages from './DeliveringMessages.vue';
 import { heldListSource } from './message-list-source';
 import MessageList from './MessageList.vue';
 import RunningTaskActions, { type TaskActionPending } from './RunningTaskActions.vue';
@@ -74,6 +76,7 @@ const emit = defineEmits<{
 }>();
 
 const conversationsStore = useConversationsStore();
+const chatStore = useChatStore();
 
 const isAgent = computed(() => props.task?.taskType === 'agent');
 const isRunning = computed(() => props.task?.status === 'running');
@@ -98,6 +101,19 @@ const transcriptSource = heldListSource(() => ({
 
 /** Who the transcript's assistant turns are from. */
 const agentLabel = computed(() => props.task?.agentType ?? 'Agent');
+
+/**
+ * What the main conversation sent the running agent that it has not read
+ * yet, shown under its transcript as prompts sent into a busy discussion are
+ * under it. Only once the transcript is read: before, every message would
+ * look unread.
+ */
+const unreadMessages = computed(() => {
+  const task = props.task;
+  if (!task || !isAgent.value || !isRunning.value || !transcript.loaded.value) return [];
+  return unreadMessagesToAgent(chatStore.messagesToAgent(props.conversationId, task), transcript.messages.value)
+    .map((message) => ({ key: message.id, content: message.content }));
+});
 
 /** A call in the transcript, opened as a call in the discussion is. */
 function openTranscriptTool(toolUseBlockId: string): void {
@@ -350,6 +366,12 @@ const statusDisplay = computed(() => {
           empty-text="The agent's prompt, messages and tool calls appear here as it works."
           @open-tool-detail="openTranscriptTool"
           @open-task-detail="emit('open-task-detail', $event)"
+        />
+        <DeliveringMessages
+          class="mt-3"
+          data-testid="messages-to-agent"
+          :messages="unreadMessages"
+          :reader="agentLabel"
         />
       </div>
 

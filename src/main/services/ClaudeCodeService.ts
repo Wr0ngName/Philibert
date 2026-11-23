@@ -1114,6 +1114,7 @@ export class ClaudeCodeService {
             ...(result.taskListId && { taskListId: result.taskListId }),
             ...(result.taskList && { taskList: result.taskList }),
             ...(result.agent && { agent: result.agent }),
+            ...(result.queuedForAgent && { queuedForAgent: result.queuedForAgent }),
             ...(images && images.length > 0 && { images }),
           });
         };

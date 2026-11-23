@@ -12,6 +12,7 @@ import type {
   SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 
+import { SEND_MESSAGE_TOOL } from '../../../shared/send-message';
 import { describeToolUse } from '../../../shared/tool-description';
 import type { AgentRun, SlashCommandInfo, TaskNotification, BackgroundTaskStatus, LiveBackgroundTask, SessionUsage, TaskListSnapshotItem, ToolCaptureData, UsageLimitStop, UsageWarning } from '../../../shared/types';
 import logger from '../../utils/logger';
@@ -200,6 +201,8 @@ export interface HandledToolResult {
   /** The job a CronCreate made, from its structured result. */
   cronJob?: CreatedCronJob;
   agent?: AgentRun;
+  /** A SendMessage's: the running agent it left a message for. See queuedForAgentOf. */
+  queuedForAgent?: string;
   /**
    * Images the tool produced, as bytes. The handler does not store them —
    * it has no conversation to store them against — so the caller writes
@@ -778,6 +781,9 @@ export class SDKMessageHandler {
           const agent = toolName === 'Agent' || toolName === 'Task'
             ? agentRunOf(userMsg.tool_use_result)
             : undefined;
+          const queuedForAgent = toolName === SEND_MESSAGE_TOOL
+            ? queuedForAgentOf(userMsg.tool_use_result)
+            : undefined;
           this.callbacks.onToolResult?.({
             toolUseBlockId: block.tool_use_id,
             content,
@@ -785,6 +791,7 @@ export class SDKMessageHandler {
             ...(taskList && { taskList }),
             ...(cronJob && { cronJob }),
             ...(agent && { agent }),
+            ...(queuedForAgent && { queuedForAgent }),
             ...(images.length > 0 && { images }),
           });
         }
@@ -1427,6 +1434,25 @@ export function agentRunOf(toolUseResult: unknown): AgentRun | undefined {
   if (status === 'completed') return { id: agentId, background: false };
   if (status === 'async_launched') return { id: agentId, background: true };
   return undefined;
+}
+
+/**
+ * The running agent a SendMessage left its message for, to read at its next
+ * tool round, from the call's structured result; undefined when it left none
+ * waiting.
+ *
+ * Not typed by the SDK; measured on CLI 2.1.280. A message to a running
+ * agent is answered `{ success: true, pin: { id } }`, `id` the agent's (its
+ * task's) id, and waits until the agent's next tool round. One to an agent
+ * that had finished resumes it with the message as its prompt — read at once
+ * — and is answered with `resumedAgentId` as well: nothing waits. Its
+ * `message` is prose, never read.
+ */
+export function queuedForAgentOf(toolUseResult: unknown): string | undefined {
+  if (!toolUseResult || typeof toolUseResult !== 'object') return undefined;
+  const { success, pin, resumedAgentId } = toolUseResult as { success?: unknown; pin?: { id?: unknown }; resumedAgentId?: unknown };
+  if (success !== true || resumedAgentId !== undefined) return undefined;
+  return typeof pin?.id === 'string' && pin.id ? pin.id : undefined;
 }
 
 /**

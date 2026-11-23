@@ -177,6 +177,12 @@ export interface ToolResultData {
    */
   agent?: AgentRun;
   /**
+   * A SendMessage's: the id of the running agent it left its message for,
+   * which the agent reads at its next tool round. Absent when nothing waits —
+   * a message to a finished agent resumes it, the message its prompt.
+   */
+  queuedForAgent?: string;
+  /**
    * Images this tool produced — a Read of an image file, a rendered PDF page.
    * References, not bytes: they were stored in the main process before this
    * was sent, and the renderer fetches the bytes by id when it draws them.

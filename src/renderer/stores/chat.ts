@@ -10,6 +10,7 @@ import { modifiedPathsForTool } from '@shared/file-modifications';
 import { primaryModelUsage } from '@shared/model-usage';
 import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionSchedule, SessionUsage, ToolCaptureData, TaskListItem, TaskListSnapshotItem, ToolUseInfo, ToolResultData, MessageImage, UsageLimitWait, UsageWarning } from '@shared/types';
 
+import type { MessageToAgent } from '../utils/agent-messages';
 import { generateId, ID_PREFIXES } from '../utils/id';
 import { logger } from '../utils/logger';
 import { toolUseIdForTask } from '../utils/message-tree';
@@ -61,6 +62,12 @@ export interface ConversationState {
    * first. Like the queue, not part of the transcript until they are read.
    */
   deliveringPrompts: DeliveringPrompt[];
+  /**
+   * Messages the main conversation left its running agents, for each to
+   * read at its next tool round; kept until the agent ends. Which of them an
+   * agent has read is in its transcript (unreadMessagesToAgent).
+   */
+  messagesToAgents: MessageToAgent[];
   /**
    * The queue is waiting for the user, not for a turn.
    *
@@ -327,6 +334,7 @@ function createConversationState(): ConversationState {
     pendingActions: [],
     queuedPrompts: [],
     deliveringPrompts: [],
+    messagesToAgents: [],
     queueHeld: false,
     usageLimitWait: null,
     sessionSchedules: [],
@@ -2111,6 +2119,15 @@ export const useChatStore = defineStore('chat', () => {
         if (result.images && result.images.length > 0) {
           msg.images = [...(msg.images ?? []), ...result.images];
         }
+        const message = msg.toolUse.input?.message;
+        if (result.queuedForAgent && typeof message === 'string') {
+          getConversationState(conversationId).messagesToAgents.push({
+            id: result.toolUseBlockId,
+            agentId: result.queuedForAgent,
+            content: message,
+            sentAt: msg.timestamp,
+          });
+        }
         if (newStatus === 'executed') {
           trackModificationsFor(conversationId, msg.toolUse);
         }
@@ -2380,6 +2397,17 @@ export const useChatStore = defineStore('chat', () => {
       task = { ...task, formerIds: [...new Set([...(task.formerIds ?? []), previousKey])] };
     }
     state.backgroundTasks.set(task.id, task);
+    // An agent that ended reads nothing more: what it had not read is gone.
+    if (task.status !== 'running' && state.messagesToAgents.length > 0) {
+      const ids = new Set([task.id, ...(task.formerIds ?? [])]);
+      state.messagesToAgents = state.messagesToAgents.filter((message) => !ids.has(message.agentId));
+    }
+  }
+
+  /** The messages left for an agent while it runs, read or not: see unreadMessagesToAgent. */
+  function messagesToAgent(conversationId: string, task: BackgroundTask): MessageToAgent[] {
+    const ids = new Set([task.id, ...(task.formerIds ?? [])]);
+    return conversationStates.value.get(conversationId)?.messagesToAgents.filter((message) => ids.has(message.agentId)) ?? [];
   }
 
   /**
@@ -3283,6 +3311,7 @@ export const useChatStore = defineStore('chat', () => {
     // ...and sent into it, until Claude reads them
     deliveringPrompts,
     addDeliveringPrompt,
+    messagesToAgent,
     deliverPrompt,
     returnUndeliveredPrompt,
     dropDeliveringPrompt,
