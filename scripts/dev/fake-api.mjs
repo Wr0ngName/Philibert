@@ -12,6 +12,10 @@
  * gives the call that timeout, after which Claude Code moves the command to
  * the background (`run 3000: sleep 60`).
  *
+ * `agent: <seconds>` has Claude start a background agent that works that
+ * long, a five-second step at a time; `tell agent: <text>` has Claude send
+ * the latest agent that text (SendMessage), which it reads at its next step.
+ *
  *   node scripts/dev/fake-api.mjs <port> <log file>
  *
  * Nothing reaches Anthropic, and no key is checked. A development tool:
@@ -50,13 +54,45 @@ function replyText(request) {
  * anything else came after, the call is behind.
  */
 function askedCommand(request) {
+  const asked = lastAsked(request, /^run(?: (\d+))?: (.+)$/m);
+  return asked ? { id: `toolu_fake_${Date.now()}`, name: 'Bash', input: { command: asked[2], description: `Run ${asked[2]}`, timeout: Number(asked[1] ?? 600000) } } : null;
+}
+
+/** The text of the message just sent, matched against `pattern`, if it is the user's. */
+function lastAsked(request, pattern) {
   // The CLI may follow it with system messages of its own (its environment).
   const last = request.messages?.filter((m) => m.role !== 'system').at(-1);
   if (last?.role !== 'user') return null;
   const blocks = typeof last.content === 'string' ? [{ type: 'text', text: last.content }] : last.content;
   if (blocks.some((block) => block.type === 'tool_result')) return null;
-  const asked = blocks.filter((block) => block.type === 'text').map((block) => /^run(?: (\d+))?: (.+)$/m.exec(block.text)).find(Boolean);
-  return asked ? { id: `toolu_fake_${Date.now()}`, command: asked[2], timeout: Number(asked[1] ?? 600000) } : null;
+  return blocks.filter((block) => block.type === 'text').map((block) => pattern.exec(block.text)).find(Boolean) ?? null;
+}
+
+/** What only a development agent's own requests carry: its prompt, which says how long it works. */
+const AGENT_MARK = 'DEV-AGENT works for';
+const AGENT_STEP_SECONDS = 5;
+
+/**
+ * The call for `agent: <seconds>` or `tell agent: <text>` in the main
+ * conversation, or the next step of a development agent; null otherwise.
+ */
+function agentCall(request) {
+  const all = JSON.stringify(request.messages ?? []);
+  // The agent's own requests: its prompt, and none of the main conversation's calls.
+  const marked = new RegExp(`${AGENT_MARK} (\\d+) seconds`).exec(all);
+  if (marked && !all.includes('toolu_devagent_')) {
+    const steps = (all.match(/"tool_use_id":"toolu_devstep_/g) ?? []).length;
+    if (steps >= Math.ceil(Number(marked[1]) / AGENT_STEP_SECONDS)) return { done: true };
+    return { id: `toolu_devstep_${Date.now()}`, name: 'Bash', input: { command: `sleep ${AGENT_STEP_SECONDS}`, description: `Step ${steps + 1}` } };
+  }
+  const start = lastAsked(request, /^agent: (\d+)$/m);
+  if (start) {
+    return { id: `toolu_devagent_${Date.now()}`, name: 'Agent', input: { description: `Work for ${start[1]}s`, prompt: `${AGENT_MARK} ${start[1]} seconds.`, subagent_type: 'general-purpose', run_in_background: true } };
+  }
+  const tell = lastAsked(request, /^tell agent: (.+)$/m);
+  const agentId = [...all.matchAll(/agentId: ([a-z0-9]+)/g)].at(-1)?.[1];
+  if (tell && agentId) return { id: `toolu_devsend_${Date.now()}`, name: 'SendMessage', input: { to: agentId, message: tell[1], summary: tell[1].slice(0, 40) } };
+  return null;
 }
 
 function usage(text) {
@@ -76,17 +112,16 @@ function message(request, text) {
   };
 }
 
-/** A streamed reply whose one block is a Bash call running `command`. */
-function streamToolCall(response, request, { id, command, timeout }) {
+/** A streamed reply whose one block is `call`. */
+function streamToolCall(response, request, { id, name, input }) {
   response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   const send = (event, data) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   replies += 1;
-  const input = { command, description: `Run ${command}`, timeout };
   send('message_start', { type: 'message_start', message: { ...message(request, ''), content: [], stop_reason: null, usage: { ...usage(''), output_tokens: 1 } } });
-  send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id, name: 'Bash', input: {} } });
+  send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id, name, input: {} } });
   send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } });
   send('content_block_stop', { type: 'content_block_stop', index: 0 });
-  send('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: usage(command) });
+  send('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: usage(JSON.stringify(input)) });
   send('message_stop', { type: 'message_stop' });
   response.end();
 }
@@ -123,12 +158,12 @@ const server = http.createServer((request, response) => {
     const url = request.url ?? '';
     if (request.method === 'POST' && url.startsWith('/v1/messages') && !url.includes('count_tokens')) {
       // Only Claude's own turns have tools: the CLI's side requests (a title) have none.
-      const command = parsed.tools?.length ? askedCommand(parsed) : null;
-      if (command && parsed.stream) {
-        streamToolCall(response, parsed, command);
+      const call = parsed.tools?.length ? (agentCall(parsed) ?? askedCommand(parsed)) : null;
+      if (call && !call.done && parsed.stream) {
+        streamToolCall(response, parsed, call);
         return;
       }
-      const text = replyText(parsed);
+      const text = call?.done ? 'The agent is done.' : replyText(parsed);
       if (parsed.stream) {
         void stream(response, parsed, text);
       } else {
