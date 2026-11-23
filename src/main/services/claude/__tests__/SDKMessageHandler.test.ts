@@ -31,6 +31,37 @@ describe('SDKMessageHandler', () => {
     handler = new SDKMessageHandler(callbacks);
   });
 
+  // Reported: a long compaction showed "compacting" three times in a row.
+  // The CLI repeats the status every 30 s while it lasts; the frames below
+  // are a user's log of one (CLI 2.1.280, 89 s).
+  describe('a status', () => {
+    const status = (value: string | null, extra: object = {}) => ({ type: 'system', subtype: 'status', status: value, ...extra }) as never;
+
+    it('is noted once for a compaction, however often the CLI repeats it', async () => {
+      for (const frame of [
+        status('requesting'), status('compacting'), status('compacting'), status('compacting'),
+        status(null, { compact_result: 'success' }),
+      ]) await handler.handleMessage(frame);
+
+      expect(vi.mocked(callbacks.onSystemNote).mock.calls).toEqual([['compacting']]);
+    });
+
+    it('is noted again for the next compaction', async () => {
+      for (const frame of [
+        status('compacting'), status(null, { compact_result: 'success' }),
+        status('requesting'), status('compacting'),
+      ]) await handler.handleMessage(frame);
+
+      expect(vi.mocked(callbacks.onSystemNote).mock.calls).toEqual([['compacting'], ['compacting']]);
+    });
+
+    it('is not noted while requesting, which the reply says', async () => {
+      await handler.handleMessage(status('requesting'));
+
+      expect(callbacks.onSystemNote).not.toHaveBeenCalled();
+    });
+  });
+
   // What the main conversation's SendMessage results say, as CLI 2.1.280
   // sent them (measured): a message left for a running agent, read at its
   // next tool round, and one that resumed a finished agent.

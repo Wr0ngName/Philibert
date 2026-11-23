@@ -362,6 +362,8 @@ export class SDKMessageHandler {
   /** Maps tool_use IDs to their tool name so tool_result handlers know which
    *  parser to apply (e.g. TaskCreate → extract task list ID from response). */
   private toolUseIdToName = new Map<string, string>();
+  /** The session's status as the CLI last said it; see the status handling. */
+  private status: string | null = null;
   /** tool_use id → the tool_use id of the agent whose frame made the call. */
   private toolUseParent = new Map<string, string>();
   /** An agent's spawning tool_use id → its task id. */
@@ -1192,11 +1194,19 @@ export class SDKMessageHandler {
       }
     }
 
-    // Handle status messages — emit as system notes (rendered as separators,
-    // not inline text). Skip transient statuses like "requesting" which get
-    // superseded by streaming content.
-    if (systemMsg.subtype === 'status' && systemMsg.status && systemMsg.status !== 'requesting') {
-      this.callbacks.onSystemNote(systemMsg.status);
+    // Status messages: a note (a separator, not inline text) when the
+    // session enters a status worth saying — compacting — and not again while
+    // it stays there. A status is a state the CLI repeats, not an event: it
+    // says "compacting" again every 30 s of a long compaction (a user's log,
+    // CLI 2.1.280: three in 89 s, one note each), and ends it with `null`
+    // and its `compact_result`. "requesting" is not said: the reply that
+    // follows says it.
+    if (systemMsg.subtype === 'status') {
+      const status = systemMsg.status ?? null;
+      if (status && status !== 'requesting' && status !== this.status) {
+        this.callbacks.onSystemNote(status);
+      }
+      this.status = status;
     }
 
     // The CLI swapped models because a safety classifier flagged the turn.
