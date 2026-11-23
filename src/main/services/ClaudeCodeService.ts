@@ -275,8 +275,17 @@ interface SessionInstance {
    * (measured on 2.1.280), which must not read as the session dropping it.
    */
   takingBack: Set<string>;
-  /** The model the user selected when this session was started ('' = CLI default). */
+  /** The model the user selected for this session, last applied to it ('' = CLI default). */
   requestedModel: string;
+  /**
+   * Whether the CLI moved the main thread off that selection — a classifier
+   * swap, or a model reported in its place: the selection is applied again at
+   * the next send. Not `sessionModel` against the selection, which differ for
+   * every selection that is not a full model id: the default and the aliases
+   * run under the concrete id the CLI reports. Compared so, every send set the
+   * model again, and the default's "Model: …" note came back each time.
+   */
+  modelMovedOff: boolean;
   /**
    * `${source}:${modelAlias}` pairs already announced to the user, so a model
    * that differs from the selection is reported once per session instead of
@@ -752,7 +761,7 @@ export class ClaudeCodeService {
     session: SessionInstance,
     settings: DiscussionSettings,
   ): Promise<void> {
-    if (session.sessionModel !== settings.model) {
+    if (session.requestedModel !== settings.model || session.modelMovedOff) {
       // Capture before the assignment below, otherwise the log reports the
       // new model as both the old and the new value.
       const previousModel = session.sessionModel || '(default)';
@@ -760,6 +769,7 @@ export class ClaudeCodeService {
       await session.query.setModel(settings.model || undefined);
       session.sessionModel = settings.model;
       session.requestedModel = settings.model;
+      session.modelMovedOff = false;
       // Let the reconciler speak again if the new model doesn't stick.
       session.announcedModels.clear();
       logger.info('Model changed on existing session via setModel()', {
@@ -1360,6 +1370,7 @@ export class ClaudeCodeService {
         deliveringPrompts: new Map<string, string | null>(),
         takingBack: new Set<string>(),
         requestedModel: selectedModel,
+        modelMovedOff: false,
         announcedModels: new Set<string>(),
         // Recorded now, because `authEnv` above was read now. See
         // invalidateSessionAuth.
@@ -2859,6 +2870,7 @@ export class ClaudeCodeService {
       return;
     }
 
+    session.modelMovedOff = true;
     this.emitSystemNote(
       conversationId,
       `Model mismatch: you selected ${requestedLabel}, but Claude Code is running ${reportedLabel}.`,
@@ -2889,6 +2901,7 @@ export class ClaudeCodeService {
 
     if (session) {
       session.sessionModel = event.fallbackModel;
+      session.modelMovedOff = true;
       // Let reconcileReportedModel speak again if the model moves again later.
       session.announcedModels.clear();
     }

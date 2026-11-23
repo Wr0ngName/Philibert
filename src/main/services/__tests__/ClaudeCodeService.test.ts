@@ -2202,13 +2202,13 @@ describe('ClaudeCodeService', () => {
     describe("a discussion's own settings", () => {
       const HAIKU: DiscussionSettings = { model: 'claude-haiku-4-5-20251001', effortLevel: 'low', thinkingMode: 'disabled' };
 
-      /** A session that stays open after its init, as a persistent one does. */
-      function openSession() {
+      /** A session that stays open after its first frames — its init by default — as a persistent one does. */
+      function openSession(frames: Record<string, unknown>[] = [{ type: 'system', subtype: 'init', session_id: 'session-a', slash_commands: [] }]) {
         let release!: () => void;
         const held = new Promise<void>((resolve) => { release = resolve; });
         const iterator = {
-          [Symbol.asyncIterator]: async function* () {
-            yield { type: 'system', subtype: 'init', session_id: 'session-a', slash_commands: [] };
+          [Symbol.asyncIterator]: async function* (): AsyncGenerator<Record<string, unknown>> {
+            yield* frames;
             await held;
             yield { type: 'result', subtype: 'success' };
           },
@@ -2273,6 +2273,74 @@ describe('ClaudeCodeService', () => {
         expect(iterator.applyFlagSettings).toHaveBeenCalledTimes(1);
         expect(iterator.setModel).not.toHaveBeenCalled();
         release();
+        await first.catch(() => {});
+      });
+
+      /**
+       * A session whose init names the concrete model it runs, as the real
+       * CLI's does (2.1.280: `"model":"claude-opus-5-5"`, also with no model
+       * asked for or an alias), and stays open.
+       */
+      function sessionReporting(model: string, ...then: Record<string, unknown>[]) {
+        return openSession([{ type: 'system', subtype: 'init', session_id: 'session-a', slash_commands: [], model }, ...then]);
+      }
+
+      const modelNotes = () => mockSend.mock.calls.filter((call) => call[0] === IPC_CHANNELS.CLAUDE_SYSTEM_NOTE && String(call[2]).startsWith('Model'));
+
+      it("leave the model alone, and say once which it is, when the default runs under the model Claude Code chose", async () => {
+        const session = sessionReporting('claude-opus-5-5');
+        const first = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, { ...HAIKU, model: '' });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        await service.sendMessage(TEST_CONV_ID, 'Second', '/home/user', undefined, undefined, { ...HAIKU, model: '' });
+        await service.sendMessage(TEST_CONV_ID, 'Third', '/home/user', undefined, undefined, { ...HAIKU, model: '' });
+
+        expect(session.iterator.setModel).not.toHaveBeenCalled();
+        expect(modelNotes().map((call) => call[2])).toEqual(['Model: Opus 5.5 (chosen by Claude Code — no model pinned)']);
+        session.release();
+        await first.catch(() => {});
+      });
+
+      it('leave the model alone when an alias runs under its concrete model', async () => {
+        const session = sessionReporting('claude-opus-5-5');
+        const first = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, { ...HAIKU, model: 'opus' });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        await service.sendMessage(TEST_CONV_ID, 'Second', '/home/user', undefined, undefined, { ...HAIKU, model: 'opus' });
+
+        expect(session.iterator.setModel).not.toHaveBeenCalled();
+        session.release();
+        await first.catch(() => {});
+      });
+
+      it('apply the model again at the next message when Claude Code runs another one than selected', async () => {
+        const session = sessionReporting('claude-opus-5-5');
+        const first = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, HAIKU);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(modelNotes().map((call) => call[2])).toEqual([expect.stringContaining('Model mismatch')]);
+
+        await service.sendMessage(TEST_CONV_ID, 'Second', '/home/user', undefined, undefined, HAIKU);
+        expect(session.iterator.setModel).toHaveBeenCalledWith(HAIKU.model);
+
+        // Applied: the next message leaves it alone.
+        await service.sendMessage(TEST_CONV_ID, 'Third', '/home/user', undefined, undefined, HAIKU);
+        expect(session.iterator.setModel).toHaveBeenCalledTimes(1);
+        session.release();
+        await first.catch(() => {});
+      });
+
+      it('apply the model again at the next message after Claude Code swapped it on a refusal', async () => {
+        const session = sessionReporting(HAIKU.model, {
+          type: 'system', subtype: 'model_refusal_fallback', session_id: 'session-a',
+          original_model: HAIKU.model, fallback_model: 'claude-opus-5-5', api_refusal_category: 'cyber',
+        });
+        const first = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, HAIKU);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        await service.sendMessage(TEST_CONV_ID, 'Second', '/home/user', undefined, undefined, HAIKU);
+
+        expect(session.iterator.setModel).toHaveBeenCalledWith(HAIKU.model);
+        session.release();
         await first.catch(() => {});
       });
 
