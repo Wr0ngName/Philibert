@@ -25,7 +25,7 @@ import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claud
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
-  BUNDLED_CLI, cliEnvironment, startFakeAnthropic, type FakeAnthropic, type ToolCall,
+  allowEveryCall, BUNDLED_CLI, cliEnvironment, startFakeAnthropic, type FakeAnthropic, type ToolCall,
 } from '../../__tests__/support/fake-anthropic';
 
 /** Long enough to still be running when moved; it ends by itself after the test. */
@@ -87,8 +87,7 @@ async function sendToBackground(run: string, script: { main: ToolCall; agent?: T
       cwd: path.join(env.HOME, 'work'),
       env,
       pathToClaudeCodeExecutable: BUNDLED_CLI,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
+      canUseTool: allowEveryCall,
     },
   });
 
