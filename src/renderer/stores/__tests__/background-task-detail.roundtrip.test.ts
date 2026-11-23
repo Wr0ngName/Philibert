@@ -309,6 +309,24 @@ describe('background tasks, panel and detail', () => {
       expect(modal.querySelector('.agent-transcript')?.textContent).toContain(MESSAGE);
     });
 
+    it('is not shown waiting, read already, while the transcript is still being read', async () => {
+      await sendToAgent('agent-1');
+      agentReadsIt();
+      // The first reading of the transcript, not answered yet.
+      const reading = mainHandlers.get('claude:get-agent-transcript')!;
+      let answer!: () => void;
+      mainHandlers.set('claude:get-agent-transcript', (...args) =>
+        new Promise((resolve) => { answer = () => resolve(reading(...args)); }));
+
+      const modal = await openTask('builder');
+      expect(messageBox(modal)).toBeNull();
+
+      answer();
+      await settle(20);
+      expect(messageBox(modal)).toBeNull();
+      expect(modal.querySelector('.agent-transcript')?.textContent).toContain(MESSAGE);
+    });
+
     it('is no longer shown once the agent ended without reading it', async () => {
       await sendToAgent('agent-1');
       notify({ taskId: 'agent-1', status: 'completed', summary: 'Done', toolUseId: 'toolu_agent' });

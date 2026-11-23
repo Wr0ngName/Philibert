@@ -110,7 +110,8 @@ const agentLabel = computed(() => props.task?.agentType ?? 'Agent');
  */
 const unreadMessages = computed(() => {
   const task = props.task;
-  if (!task || !isAgent.value || !isRunning.value || !transcript.loaded.value) return [];
+  // An agent that ended has none: they are dropped as it ends.
+  if (!task || !isAgent.value || !transcript.loaded.value) return [];
   return unreadMessagesToAgent(chatStore.messagesToAgent(props.conversationId, task), transcript.messages.value)
     .map((message) => ({ key: message.id, content: message.content }));
 });

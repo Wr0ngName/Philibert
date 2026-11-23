@@ -1058,6 +1058,37 @@ describe('ClaudeCodeService', () => {
       });
     });
 
+    // The renderer shows a message left for a running agent until the agent
+    // reads it; it learns of one from this field of the call's result.
+    it("passes on which running agent a SendMessage left its message for", async () => {
+      const agent = 'af63b7bc536371432';
+      mockQuery.mockReturnValue(createMockQueryIterator([
+        {
+          type: 'assistant',
+          message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_send', name: 'SendMessage', input: { to: agent, message: 'Also check X' } }] },
+          parent_tool_use_id: null,
+        },
+        {
+          type: 'user',
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_send', content: 'queued' }] },
+          parent_tool_use_id: null,
+          // As CLI 2.1.280 answers it (measured).
+          tool_use_result: { success: true, message: `Message queued for delivery to ${agent} at its next tool round.`, pin: { id: agent, name: agent, ref: '535ebe' } },
+        },
+        { type: 'result', subtype: 'success' },
+      ]));
+
+      await service.sendMessage(TEST_CONV_ID, 'Hi', '/home/user');
+
+      await vi.waitFor(() => {
+        expect(mockSend).toHaveBeenCalledWith(
+          IPC_CHANNELS.CLAUDE_TOOL_RESULT,
+          TEST_CONV_ID,
+          expect.objectContaining({ toolUseBlockId: 'toolu_send', queuedForAgent: agent }),
+        );
+      });
+    });
+
     it('should handle system messages', async () => {
       const mockIterator = createMockQueryIterator([
         { type: 'system', subtype: 'status', status: 'Compacting context...' },
