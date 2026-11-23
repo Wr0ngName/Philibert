@@ -1209,8 +1209,15 @@ onUnmounted(() => {
  * on every slice; the top and bottom are closed and rounded only on the
  * first and last. The result is continuous because the rows are adjacent in
  * normal flow with no margin between them.
+ *
+ * flow-root keeps every margin of what a slice holds inside it: the header's
+ * own, the last paragraph's of the text. A slice with no padding or border at
+ * that edge let them through, and they opened a gap between the rows, outside
+ * the bubble, breaking its sides — and, being margins, out of the row heights
+ * the window is measured from (see .row-gap).
  */
 .turn-slice {
+  display: flow-root;
   padding-left: calc(var(--chat-line-height, 1.6) * 0.6rem);
   padding-right: calc(var(--chat-line-height, 1.6) * 0.6rem);
 }

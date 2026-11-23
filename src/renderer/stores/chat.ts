@@ -1141,6 +1141,17 @@ export const useChatStore = defineStore('chat', () => {
     if (state) state.pendingTruncation = null;
   }
 
+  /**
+   * A note from Claude Code — the model a session starts on, a compaction —
+   * in the discussion on screen, where it happened in the turn.
+   *
+   * A turn's reply is started, empty, as the message is sent, and a session's
+   * first note (the model it chose) comes before any of its text. Put after
+   * that empty reply, the note left it above, the reply then written there,
+   * and the turn's activity row under the note, read as a second empty reply.
+   * So a note before the reply's first word goes above it; one after closes
+   * the text so far, as a tool call does, and the rest is written below it.
+   */
   function addSystemMessage(content: string): ChatMessage {
     const message: ChatMessage = {
       id: generateId(ID_PREFIXES.MESSAGE),
@@ -1148,6 +1159,18 @@ export const useChatStore = defineStore('chat', () => {
       content,
       timestamp: Date.now(),
     };
+    const conversationId = currentConversationId.value;
+    const state = conversationId ? conversationStates.value.get(conversationId) : undefined;
+    const sink = conversationId ? messageSink(conversationId) : null;
+    if (conversationId && state?.streamingMessageId && sink) {
+      const reply = sink.at(-1);
+      if (reply?.id === state.streamingMessageId && !reply.content.trim() && !state.currentStreamingContent.trim()) {
+        sink.splice(sink.length - 1, 0, message);
+        state.arrivals += 1;
+        return message;
+      }
+      splitStreamingForTool(conversationId);
+    }
     addMessage(message);
     return message;
   }
