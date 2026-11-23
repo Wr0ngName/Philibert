@@ -11,13 +11,9 @@ shows it too. Earlier notes are in this file at their tag
 (`git show v0.31.0:RELEASE_NOTES.md`). Each bullet on one line: the app shows
 a line break inside a bullet as one.
 
-## 0.32.0
+## 0.32.1
 
-- **Claude works as in Claude Code, in your git repositories**: Philibert used to start Claude with no system prompt beyond one line; in a folder that is a git repository, Claude now gets Claude Code's own, with its guidance on tools, git, tasks and answers. Elsewhere it still does not. Choose "Always" or "Never" in Settings → Discussions → Instructions, or for one project in its settings.
-- **Your own instructions to Claude**: write instructions for every discussion in Settings → Discussions, and for one project in its settings; they are told to Claude after the system prompt. Changes apply to the discussions you start afterwards.
-- **Fixed: the model line on every message**: with no model pinned, each message you sent repeated "Model: … (chosen by Claude Code)" in the discussion; it is said once, when Claude starts, above its reply instead of between an empty reply and a second one.
-- **Fixed: gaps in the sides of Claude's replies**: the border of a reply broke under its header and above its spinner; it now runs unbroken.
-- **Project settings stand apart**: Settings lists the general settings first, then each of your projects under its own name, so it is always clear whether a setting applies everywhere or to one project only.
-- **One click to a project's settings**: the gear next to the folder at the top of the files panel opens the settings of that project; clicking the folder's path still changes the folder.
-- **Only the projects you work in**: the projects listed are those with a discussion that is not archived, the one you are in first, marked "Current project"; a project whose discussions are all archived comes back once you bring one back.
-- **Fixed: opening a discussion could move it to another folder**: a discussion Claude had not answered yet was saved in the folder you opened it from, instead of its own.
+- **Send a task to the background yourself**: while Claude waits on a command or an agent, its details now have "Send to background", next to "Stop task". Claude stops waiting and carries on; the task keeps running in the background tasks list. No need to wait for its timeout any more.
+- **Details follow a command into the background**: when a command you are looking at moves to the background, by its timeout or by that button, its details switch to the task view by themselves, where its output is. You no longer have to close and reopen them.
+- **Messages to an agent, shown until it reads them**: when Claude sends a message to an agent that is still working, the agent's details show it under its transcript ("1 sent · … reads it at its next step"), as the box above the composer does for yours. Once the agent reads it, it joins the agent's transcript.
+- **Fixed: "compacting" shown several times**: a long compaction added a "compacting" line every 30 seconds; it now shows one.
