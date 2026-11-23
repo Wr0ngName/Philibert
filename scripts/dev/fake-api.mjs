@@ -1,0 +1,108 @@
+#!/usr/bin/env node
+/**
+ * A stand-in for Anthropic's Messages API, for the development app
+ * (`app.mjs start --fake-api`): every message gets a reply streamed as the
+ * API streams one — a few words at a time, so the app shows it arriving —
+ * and every request is logged, one JSON line each, for a look at what the
+ * CLI sent (its system prompt, its messages).
+ *
+ *   node scripts/dev/fake-api.mjs <port> <log file>
+ *
+ * Nothing reaches Anthropic, and no key is checked. A development tool:
+ * nothing here is part of the app or its packages.
+ */
+
+import { appendFileSync } from 'node:fs';
+import http from 'node:http';
+
+const [port, logFile] = process.argv.slice(2);
+if (!port || !logFile) {
+  console.error('usage: fake-api.mjs <port> <log file>');
+  process.exit(1);
+}
+
+/** Between two pieces of a streamed reply: slow enough to watch it arrive. */
+const PIECE_DELAY_MS = 120;
+let replies = 0;
+
+function replyText(request) {
+  const last = request.messages?.at(-1);
+  const asked = typeof last?.content === 'string'
+    ? last.content
+    : (last?.content ?? []).filter((block) => block.type === 'text').map((block) => block.text).join(' ');
+  replies += 1;
+  // Paragraphs enough to fill the window, as a real answer often does:
+  // scrolling while a reply arrives is part of what there is to see.
+  const paragraph = 'This text arrives a few words at a time, as a real reply streams, '
+    + 'so the discussion shows it being written before the turn ends.';
+  return [`Fake reply ${replies}, to "${asked.replace(/\s+/g, ' ').slice(-60)}".`, ...Array.from({ length: 8 }, (_, i) => `${i + 1}. ${paragraph}`)].join('\n\n');
+}
+
+function usage(text) {
+  return { input_tokens: 10, output_tokens: Math.ceil(text.length / 4), cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+}
+
+function message(request, text) {
+  return {
+    id: `msg_fake_${replies}`,
+    type: 'message',
+    role: 'assistant',
+    model: request.model ?? 'claude-fake',
+    content: [{ type: 'text', text }],
+    stop_reason: 'end_turn',
+    stop_sequence: null,
+    usage: usage(text),
+  };
+}
+
+async function stream(response, request, text) {
+  response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+  const send = (event, data) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const started = message(request, text);
+  send('message_start', { type: 'message_start', message: { ...started, content: [], stop_reason: null, usage: { ...usage(''), output_tokens: 1 } } });
+  send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+  const pieces = text.match(/\S+\s*/g) ?? [text];
+  for (let i = 0; i < pieces.length; i += 3) {
+    send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: pieces.slice(i, i + 3).join('') } });
+    await new Promise((resolve) => setTimeout(resolve, PIECE_DELAY_MS));
+  }
+  send('content_block_stop', { type: 'content_block_stop', index: 0 });
+  send('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: usage(text) });
+  send('message_stop', { type: 'message_stop' });
+  response.end();
+}
+
+const server = http.createServer((request, response) => {
+  let body = '';
+  request.on('data', (chunk) => (body += chunk));
+  request.on('end', () => {
+    let parsed = {};
+    try {
+      parsed = body ? JSON.parse(body) : {};
+    } catch {
+      // Logged as it came.
+    }
+    appendFileSync(logFile, JSON.stringify({ at: new Date().toISOString(), method: request.method, url: request.url, body: parsed }) + '\n');
+
+    const url = request.url ?? '';
+    if (request.method === 'POST' && url.startsWith('/v1/messages') && !url.includes('count_tokens')) {
+      const text = replyText(parsed);
+      if (parsed.stream) {
+        void stream(response, parsed, text);
+      } else {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify(message(parsed, text)));
+      }
+      return;
+    }
+    if (url.includes('count_tokens')) {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ input_tokens: 10 }));
+      return;
+    }
+    response.writeHead(404, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ type: 'error', error: { type: 'not_found_error', message: `the fake API has no ${url}` } }));
+  });
+});
+
+server.listen(Number(port), '127.0.0.1', () => console.log(`fake API on http://127.0.0.1:${port}`));
