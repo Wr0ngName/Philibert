@@ -16,6 +16,9 @@
  * long, a five-second step at a time; `tell agent: <text>` has Claude send
  * the latest agent that text (SendMessage), which it reads at its next step.
  *
+ * A compaction (`/compact`) takes COMPACTION_SECONDS: past the 30 s after
+ * which Claude Code says again that it is compacting, as a long one does.
+ *
  *   node scripts/dev/fake-api.mjs <port> <log file>
  *
  * Nothing reaches Anthropic, and no key is checked. A development tool:
@@ -66,6 +69,14 @@ function lastAsked(request, pattern) {
   const blocks = typeof last.content === 'string' ? [{ type: 'text', text: last.content }] : last.content;
   if (blocks.some((block) => block.type === 'tool_result')) return null;
   return blocks.filter((block) => block.type === 'text').map((block) => pattern.exec(block.text)).find(Boolean) ?? null;
+}
+
+/** How long a compaction's summary takes to come. */
+const COMPACTION_SECONDS = 65;
+
+/** Whether this is the request for a compaction's summary (CLI 2.1.280: its last message's opening words). */
+function isCompaction(request) {
+  return lastAsked(request, /^CRITICAL: Respond with TEXT ONLY\./) !== null;
 }
 
 /** What only a development agent's own requests carry: its prompt, which says how long it works. */
@@ -158,6 +169,10 @@ const server = http.createServer((request, response) => {
     const url = request.url ?? '';
     if (request.method === 'POST' && url.startsWith('/v1/messages') && !url.includes('count_tokens')) {
       // Only Claude's own turns have tools: the CLI's side requests (a title) have none.
+      if (parsed.stream && isCompaction(parsed)) {
+        setTimeout(() => void stream(response, parsed, '<summary>A development discussion, summarised.</summary>'), COMPACTION_SECONDS * 1000);
+        return;
+      }
       const call = parsed.tools?.length ? (agentCall(parsed) ?? askedCommand(parsed)) : null;
       if (call && !call.done && parsed.stream) {
         streamToolCall(response, parsed, call);
