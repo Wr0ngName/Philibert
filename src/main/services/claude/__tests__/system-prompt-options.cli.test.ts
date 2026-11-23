@@ -18,8 +18,6 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import http from 'node:http';
-import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -27,57 +25,39 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { SystemPromptChoice } from '../../../../shared/system-prompt';
+import {
+  BUNDLED_CLI, cliEnvironment, startFakeAnthropic, type FakeAnthropic,
+} from '../../__tests__/support/fake-anthropic';
 import { REAL_DISK_TEST_TIMEOUT_MS } from '../../__tests__/support/real-disk';
 import { cliSystemPromptArgs, sdkSystemPrompt } from '../system-prompt-options';
 
-/** The binary the app runs in development: ClaudeCliPaths.getBundledCliPaths. */
-const CLI = path.resolve(__dirname, '../../../../../node_modules/@anthropic-ai/claude-code/bin/claude.exe');
 const INSTRUCTIONS = 'Answer in French.\n"Quoted" and on two lines.';
 
-let server: http.Server;
-let baseUrl: string;
+let api: FakeAnthropic;
 let root: string;
 /** The system prompt of the request each run sent, by run. */
 const sent = new Map<string, string[]>();
 
 beforeAll(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'philibert-system-prompt-'));
-  server = http.createServer((request, response) => {
-    let body = '';
-    request.on('data', (chunk) => (body += chunk));
-    request.on('end', () => {
-      const run = request.headers['x-test-run'] ?? new URL(request.url ?? '', 'http://x').searchParams.get('run');
-      if (request.url?.startsWith('/v1/messages') && !request.url.includes('count_tokens') && typeof run === 'string' && !sent.has(run)) {
-        const system = JSON.parse(body).system as { text: string }[];
-        // The first block bills the request: not part of the prompt.
-        sent.set(run, system.map((block) => block.text).filter((text) => !text.startsWith('x-anthropic-billing-header')));
-      }
-      response.writeHead(400, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'test server' } }));
-    });
+  api = await startFakeAnthropic(({ run, body }) => {
+    if (run && !sent.has(run)) {
+      const system = body.system as { text: string }[];
+      // The first block bills the request: not part of the prompt.
+      sent.set(run, system.map((block) => block.text).filter((text) => !text.startsWith('x-anthropic-billing-header')));
+    }
+    return 400;
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await api.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
 /** An environment of its own for a run, its requests marked with the run's name. */
 function environment(run: string): Record<string, string> {
-  const home = path.join(root, run);
-  fs.mkdirSync(path.join(home, 'work'), { recursive: true });
-  return {
-    PATH: process.env.PATH ?? '',
-    HOME: home,
-    CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
-    ANTHROPIC_API_KEY: 'sk-ant-api03-fake-key-for-tests',
-    ANTHROPIC_BASE_URL: baseUrl,
-    ANTHROPIC_CUSTOM_HEADERS: `x-test-run: ${run}`,
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-  };
+  return cliEnvironment(root, run, api.baseUrl);
 }
 
 async function viaSdk(run: string, choice: SystemPromptChoice): Promise<string[]> {
@@ -93,7 +73,7 @@ async function viaSdk(run: string, choice: SystemPromptChoice): Promise<string[]
         env,
         maxTurns: 1,
         abortController,
-        pathToClaudeCodeExecutable: CLI,
+        pathToClaudeCodeExecutable: BUNDLED_CLI,
         ...(systemPrompt !== undefined ? { systemPrompt } : {}),
       },
     });
@@ -112,7 +92,7 @@ async function viaCli(run: string, choice: SystemPromptChoice): Promise<string[]
   const args = cliSystemPromptArgs(choice, file);
   if (args) fs.writeFileSync(file, choice.instructions);
   await new Promise<void>((resolve) => {
-    const cli = spawn(CLI, ['--print', 'hello', '--max-turns', '1', ...(args ?? [])], {
+    const cli = spawn(BUNDLED_CLI, ['--print', 'hello', '--max-turns', '1', ...(args ?? [])], {
       cwd: path.join(env.HOME, 'work'),
       env,
       stdio: 'ignore',

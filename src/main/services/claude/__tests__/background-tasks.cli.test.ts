@@ -18,82 +18,47 @@
  */
 
 import fs from 'node:fs';
-import http from 'node:http';
-import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
 import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-/** The binary the app runs in development: ClaudeCliPaths.getBundledCliPaths. */
-const CLI = path.resolve(__dirname, '../../../../../node_modules/@anthropic-ai/claude-code/bin/claude.exe');
+import {
+  BUNDLED_CLI, cliEnvironment, startFakeAnthropic, type FakeAnthropic, type ToolCall,
+} from '../../__tests__/support/fake-anthropic';
+
 /** Long enough to still be running when moved; it ends by itself after the test. */
 const COMMAND = 'sleep 20';
 /** Words only the agent's own requests carry: its prompt. */
 const AGENT_PROMPT = 'AGENT-PROMPT wait for the build';
 const TEST_TIMEOUT_MS = 60_000;
 
-interface ToolCall { id: string; name: string; input: Record<string, unknown> }
-
 const bash = (id: string): ToolCall => ({ id, name: 'Bash', input: { command: COMMAND, description: 'Wait for the build', timeout: 600_000 } });
 // The CLI starts an agent in the background unless the call says otherwise.
 const agent: ToolCall = { id: 'toolu_agent', name: 'Agent', input: { description: 'Build watcher', prompt: AGENT_PROMPT, subagent_type: 'general-purpose', run_in_background: false } };
 
-let server: http.Server;
-let baseUrl: string;
+let api: FakeAnthropic;
 let root: string;
-
-/** A streamed reply: the given calls, or a line of text ending the turn. */
-function reply(response: http.ServerResponse, calls: ToolCall[]): void {
-  response.writeHead(200, { 'content-type': 'text/event-stream' });
-  const send = (event: string, data: object) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  send('message_start', { type: 'message_start', message: { id: 'msg_test', type: 'message', role: 'assistant', model: 'claude-sonnet-4-5', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } });
-  if (calls.length === 0) {
-    send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
-    send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Done.' } });
-    send('content_block_stop', { type: 'content_block_stop', index: 0 });
-  }
-  calls.forEach((call, index) => {
-    send('content_block_start', { type: 'content_block_start', index, content_block: { type: 'tool_use', id: call.id, name: call.name, input: {} } });
-    send('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(call.input) } });
-    send('content_block_stop', { type: 'content_block_stop', index });
-  });
-  send('message_delta', { type: 'message_delta', delta: { stop_reason: calls.length ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 5 } });
-  send('message_stop', { type: 'message_stop' });
-  response.end();
-}
 
 /** What Claude calls in each run: by the main conversation, and by its agent. */
 const scripts = new Map<string, { main: ToolCall; agent?: ToolCall }>();
 
 beforeAll(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'philibert-background-tasks-'));
-  server = http.createServer((request, response) => {
-    let body = '';
-    request.on('data', (chunk) => (body += chunk));
-    request.on('end', () => {
-      if (!request.url?.startsWith('/v1/messages') || request.url.includes('count_tokens')) {
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ input_tokens: 1 }));
-        return;
-      }
-      const sent = JSON.parse(body) as { tools?: unknown[]; messages: unknown[] };
-      const script = scripts.get(String(request.headers['x-test-run']));
-      const messages = JSON.stringify(sent.messages);
-      // A request with no tools is the CLI's own (a title): not Claude's turn.
-      if (!script || !sent.tools?.length) return reply(response, []);
-      const call = messages.includes(AGENT_PROMPT) && !messages.includes(`"${agent.id}"`) ? script.agent : script.main;
-      // Called once; once its result is in, the turn ends.
-      reply(response, call && !messages.includes(`"tool_use_id":"${call.id}"`) ? [call] : []);
-    });
+  api = await startFakeAnthropic(({ run, body }) => {
+    const script = scripts.get(run);
+    const messages = JSON.stringify(body.messages);
+    // A request with no tools is the CLI's own (a title): not Claude's turn.
+    if (!script || !body.tools?.length) return [];
+    const call = messages.includes(AGENT_PROMPT) && !messages.includes(`"${agent.id}"`) ? script.agent : script.main;
+    // Called once; once its result is in, the turn ends.
+    return call && !messages.includes(`"tool_use_id":"${call.id}"`) ? [call] : [];
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await api.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -109,8 +74,7 @@ interface Run {
 /** Run a turn whose `target` call is sent to the background once its task starts. */
 async function sendToBackground(run: string, script: { main: ToolCall; agent?: ToolCall }, target: string): Promise<Run> {
   scripts.set(run, script);
-  const home = path.join(root, run.replace(/\W+/g, '-'));
-  fs.mkdirSync(path.join(home, 'work'), { recursive: true });
+  const env = cliEnvironment(root, run, api.baseUrl);
   let close!: () => void;
   const closed = new Promise<void>((resolve) => { close = resolve; });
   async function* prompt(): AsyncGenerator<SDKUserMessage> {
@@ -120,17 +84,9 @@ async function sendToBackground(run: string, script: { main: ToolCall; agent?: T
   const conversation = query({
     prompt: prompt(),
     options: {
-      cwd: path.join(home, 'work'),
-      env: {
-        PATH: process.env.PATH ?? '',
-        HOME: home,
-        CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
-        ANTHROPIC_API_KEY: 'sk-ant-api03-fake-key-for-tests',
-        ANTHROPIC_BASE_URL: baseUrl,
-        ANTHROPIC_CUSTOM_HEADERS: `x-test-run: ${run}`,
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-      },
-      pathToClaudeCodeExecutable: CLI,
+      cwd: path.join(env.HOME, 'work'),
+      env,
+      pathToClaudeCodeExecutable: BUNDLED_CLI,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
     },
