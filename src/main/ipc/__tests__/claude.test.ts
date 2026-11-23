@@ -46,6 +46,7 @@ const mockClaudeService = {
   approveAction: vi.fn(),
   rejectAction: vi.fn(),
   abort: vi.fn(),
+  backgroundTask: vi.fn(),
   handleActionResponse: vi.fn(),
   getSlashCommands: vi.fn(),
   getModels: vi.fn(),
@@ -566,6 +567,39 @@ describe('Claude IPC handlers', () => {
       mockClaudeService.abort.mockRejectedValue(new Error('Abort failed'));
 
       await expect(handler({}, TEST_CONV_ID)).rejects.toThrow();
+    });
+  });
+
+  // ===========================================================================
+  // CLAUDE_BACKGROUND_TASK
+  // ===========================================================================
+  describe('CLAUDE_BACKGROUND_TASK handler', () => {
+    let handler: (...args: unknown[]) => unknown;
+
+    beforeEach(() => {
+      mockClaudeService.backgroundTask.mockResolvedValue(undefined);
+      handler = handlers.get(IPC_CHANNELS.CLAUDE_BACKGROUND_TASK)!;
+    });
+
+    it("sends the task of the call it names to the background", async () => {
+      await handler({}, TEST_CONV_ID, 'toolu_wait');
+
+      expect(mockClaudeService.backgroundTask).toHaveBeenCalledWith(TEST_CONV_ID, 'toolu_wait');
+    });
+
+    it.each([
+      ['no conversation', '', 'toolu_wait'],
+      ['no call', TEST_CONV_ID, ''],
+      ['a call that is not an id', TEST_CONV_ID, 42],
+    ])('refuses %s, asking nothing', async (_case, conversationId, toolUseId) => {
+      await expect(handler({}, conversationId, toolUseId)).rejects.toThrow();
+      expect(mockClaudeService.backgroundTask).not.toHaveBeenCalled();
+    });
+
+    it("passes on why the service could not, for the details to show", async () => {
+      mockClaudeService.backgroundTask.mockRejectedValue(new Error('The task is no longer running in the foreground'));
+
+      await expect(handler({}, TEST_CONV_ID, 'toolu_wait')).rejects.toThrow('The task is no longer running in the foreground');
     });
   });
 
