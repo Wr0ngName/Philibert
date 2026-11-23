@@ -2233,6 +2233,8 @@ export const IPC_CHANNELS = {
   CLAUDE_ABORT: 'claude:abort',
   /** Stop one running background task */
   CLAUDE_STOP_TASK: 'claude:stop-task',
+  /** Send one task running in the foreground to the background */
+  CLAUDE_BACKGROUND_TASK: 'claude:background-task',
   /** Read a background task's output, by task id, from a byte offset */
   CLAUDE_READ_TASK_OUTPUT: 'claude:read-task-output',
   /** An agent task's transcript, as chat messages */

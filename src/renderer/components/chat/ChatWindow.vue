@@ -20,6 +20,7 @@ import BackgroundTaskPanel from './BackgroundTaskPanel.vue';
 import ContextUsageBar from './ContextUsageBar.vue';
 import InputBox from './InputBox.vue';
 import MessageList from './MessageList.vue';
+import type { TaskActionPending } from './RunningTaskActions.vue';
 import TaskListPanel from './TaskListPanel.vue';
 import ToolDetailModal from './ToolDetailModal.vue';
 import UsageLimitBanner from './UsageLimitBanner.vue';
@@ -72,8 +73,10 @@ const taskDetailTaskId = ref<string | null>(null);
 const taskDetailTask = computed<BackgroundTask | null>(() =>
   taskDetailTaskId.value ? chatStore.findBackgroundTask(taskDetailTaskId.value) : null,
 );
-const stoppingTask = ref(false);
-const stopTaskError = ref<string | null>(null);
+/** The action on a task the details asked for and not answered yet, if one is. */
+const taskActionPending = ref<TaskActionPending>(null);
+/** Why the last action on a task failed, shown against the task. */
+const taskActionError = ref<string | null>(null);
 
 /**
  * The tool call that spawned the task the modal is showing.
@@ -130,6 +133,24 @@ const toolDetailAgent = computed<BackgroundTask | null>(() => {
 const toolDetailRunningTask = computed<BackgroundTask | null>(() => {
   const toolUse = toolDetailMessage.value?.toolUse;
   return toolUse ? chatStore.runningTaskOfCall(toolUse) : null;
+});
+
+/**
+ * The task view the open call has come to have, if it has: a command moved
+ * to the background — by its timeout, or sent there from these details.
+ *
+ * A call with a task view opens on it (showToolCall), so Tool Details shows
+ * only calls without one. One that gains it while open hands over to it on
+ * its own: its output is then in the task's output file, not in a result,
+ * and it took closing and reopening the details to get to it.
+ */
+const toolDetailTaskView = computed<string | null>(() => {
+  const message = toolDetailMessage.value;
+  return message?.toolUse ? chatStore.taskForToolCall(message.toolUse, message.timestamp)?.id ?? null : null;
+});
+
+watch(toolDetailTaskView, (taskId) => {
+  if (taskId && toolDetailOpen.value) openTaskOfToolCall(taskId);
 });
 
 /**
@@ -295,7 +316,7 @@ function openTaskDetail(taskId: string) {
 function closeTaskDetail() {
   taskDetailOpen.value = false;
   taskDetailTaskId.value = null;
-  stopTaskError.value = null;
+  taskActionError.value = null;
 }
 
 /**
@@ -306,14 +327,36 @@ function closeTaskDetail() {
  * Writing 'stopped' here would show success even when the request failed.
  */
 async function stopTaskFromDetail(taskId: string) {
-  stoppingTask.value = true;
-  stopTaskError.value = null;
+  await runTaskAction('stop', () => stopTask(taskId), 'Failed to stop task');
+}
+
+/**
+ * Send the task a call waits on to the background, from its details.
+ *
+ * Nothing is set here either: the CLI marks the task backgrounded, and that
+ * is what moves it — into the background tasks list, and a command's Tool
+ * Details over to its task view.
+ */
+async function backgroundTaskFromDetail(toolUseId: string) {
+  const conversationId = conversationsStore.currentConversationId;
+  if (!conversationId) return;
+  await runTaskAction(
+    'background',
+    () => window.electron.claude.backgroundTask(conversationId, toolUseId),
+    'Failed to send the task to the background',
+  );
+}
+
+/** One action on a task from its details: pending while asked, its failure shown. */
+async function runTaskAction(kind: Exclude<TaskActionPending, null>, action: () => Promise<void>, fallback: string) {
+  taskActionPending.value = kind;
+  taskActionError.value = null;
   try {
-    await stopTask(taskId);
+    await action();
   } catch (error) {
-    stopTaskError.value = error instanceof Error ? error.message : 'Failed to stop task';
+    taskActionError.value = error instanceof Error ? error.message : fallback;
   } finally {
-    stoppingTask.value = false;
+    taskActionPending.value = null;
   }
 }
 
@@ -377,11 +420,11 @@ function closeToolDetail() {
   toolDetailOpen.value = false;
   toolDetailMessage.value = null;
   toolDetailTranscriptAgentId.value = null;
-  stopTaskError.value = null;
+  taskActionError.value = null;
 }
 
-/** From a call's details to the details of the agent that made it. */
-function openAgentOfToolCall(taskId: string) {
+/** From a call's details to a task's: the agent that made it, or its own. */
+function openTaskOfToolCall(taskId: string) {
   closeToolDetail();
   openTaskDetail(taskId);
 }
@@ -486,10 +529,11 @@ function openAgentOfToolCall(taskId: string) {
       :origin="taskDetailOrigin"
       :parent-task="taskDetailParent"
       :spawning-tool="taskDetailSpawningTool"
-      :stopping="stoppingTask"
-      :stop-error="stopTaskError"
+      :action-pending="taskActionPending"
+      :action-error="taskActionError"
       @close="closeTaskDetail"
       @stop="stopTaskFromDetail"
+      @background="backgroundTaskFromDetail"
       @open-tool-detail="openToolDetailFor"
       @open-task-detail="openTaskDetail"
     />
@@ -505,11 +549,12 @@ function openAgentOfToolCall(taskId: string) {
       :agent="toolDetailAgent"
       :input-agents="toolDetailInputAgents"
       :running-task="toolDetailRunningTask"
-      :stopping="stoppingTask"
-      :stop-error="stopTaskError"
+      :action-pending="taskActionPending"
+      :action-error="taskActionError"
       @close="closeToolDetail"
-      @open-task-detail="openAgentOfToolCall"
+      @open-task-detail="openTaskOfToolCall"
       @stop="stopTaskFromDetail"
+      @background="backgroundTaskFromDetail"
     />
 
     <!-- Pending actions -->

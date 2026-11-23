@@ -263,6 +263,15 @@ export function isBackgroundTask(task: BackgroundTask): boolean {
 }
 
 /**
+ * Whether a task can be sent to the background: running in the foreground,
+ * its call waiting on it, and that call known — the CLI is asked to move it
+ * by the call's tool_use id.
+ */
+export function canSendToBackground(task: BackgroundTask): boolean {
+  return task.status === 'running' && task.backgrounded === false && !!task.toolUseId;
+}
+
+/**
  * The id Claude names a task by ("bjm82j1ga", an agent's "a9662ab2…"): the
  * one its output file and its messages use. Null while the task still has
  * its tool call's block id — a command started in the background has it

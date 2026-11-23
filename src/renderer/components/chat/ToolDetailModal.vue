@@ -19,11 +19,12 @@ import { toolCallLabel } from '@shared/tool-description';
 import type { BackgroundTask, MessageImage, ToolUseInfo } from '@shared/types';
 
 import { useNowTicker } from '../../composables/useNowTicker';
+import { canSendToBackground } from '../../stores/chat';
 import { formatTaskDuration, toolCallTiming } from '../../utils/task-duration';
 import type { ToolCallOutput } from '../../utils/tool-output';
 import AskUserQuestionDetails from './AskUserQuestionDetails.vue';
+import RunningTaskActions, { type TaskActionPending } from './RunningTaskActions.vue';
 import StartedBy from './StartedBy.vue';
-import StopTaskButton from './StopTaskButton.vue';
 import ToolCallView from './ToolCallView.vue';
 import Icon from '../shared/Icon.vue';
 import Modal from '../shared/Modal.vue';
@@ -52,10 +53,10 @@ interface Props {
    * command in the foreground has a task too, only it is not shown as one.
    */
   runningTask?: BackgroundTask | null;
-  /** A stop was asked for and has not been answered yet. */
-  stopping?: boolean;
-  /** Why the last stop failed. */
-  stopError?: string | null;
+  /** The action on the command asked for and not answered yet, if one is. */
+  actionPending?: TaskActionPending;
+  /** Why the last action on the command failed. */
+  actionError?: string | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -66,8 +67,8 @@ const props = withDefaults(defineProps<Props>(), {
   agent: null,
   inputAgents: () => ({}),
   runningTask: null,
-  stopping: false,
-  stopError: null,
+  actionPending: null,
+  actionError: null,
 });
 
 const timing = computed(() => {
@@ -88,6 +89,8 @@ const emit = defineEmits<{
   (e: 'open-task-detail', taskId: string): void;
   /** Stop the command the call is waiting on. */
   (e: 'stop', taskId: string): void;
+  /** Send the command to the background, by the call's tool_use id. */
+  (e: 'background', toolUseId: string): void;
 }>();
 
 const outputContent = ref<string | null>(null);
@@ -259,14 +262,16 @@ const output = computed((): ToolCallOutput | null => {
         @open-agent="emit('open-task-detail', $event)"
       />
 
-      <!-- A command the call is still waiting on can be stopped, as the
-           tasks in the background can: the CLI makes it a task of its own a
-           few seconds in, and stops it like any other. -->
-      <StopTaskButton
+      <!-- A command the call is still waiting on can be stopped, or sent
+           to the background, as the tasks in the background can be
+           stopped: the CLI makes it a task of its own a few seconds in. -->
+      <RunningTaskActions
         v-if="runningTask"
-        :stopping="stopping"
-        :stop-error="stopError"
+        :can-background="canSendToBackground(runningTask)"
+        :pending="actionPending"
+        :error="actionError"
         @stop="emit('stop', runningTask.id)"
+        @background="emit('background', runningTask.toolUseId!)"
       />
     </div>
   </Modal>

@@ -312,6 +312,25 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
     },
   );
 
+  // Send a task running in the foreground to the background, by its call
+  ipcMain.handle(
+    IPC_CHANNELS.CLAUDE_BACKGROUND_TASK,
+    async (_event, conversationId: string, toolUseId: string) => {
+      try {
+        logger.debug('IPC: claude:background-task', { conversationId, toolUseId });
+
+        ensureService(claudeService, 'ClaudeCodeService');
+        validateString(conversationId, 'Conversation ID');
+        validateString(toolUseId, 'Tool use ID');
+
+        await claudeService.backgroundTask(conversationId, toolUseId);
+      } catch (error) {
+        logger.error('Failed to send task to the background', { error, conversationId, toolUseId });
+        throw new Error(formatErrorMessage('Failed to send the task to the background', error), { cause: error });
+      }
+    },
+  );
+
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_READ_TASK_OUTPUT,
     async (_event, conversationId: string, taskId: string, sdkSessionId: unknown, fromByte: unknown) => {

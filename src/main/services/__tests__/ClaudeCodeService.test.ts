@@ -1865,6 +1865,46 @@ describe('ClaudeCodeService', () => {
   // ===========================================================================
   // Error Handling
   // ===========================================================================
+  describe('sending a task to the background', () => {
+    /** A session held open on a turn, with the SDK's backgroundTasks answering `answer`. */
+    async function sessionAnswering(answer: boolean) {
+      let release!: () => void;
+      const iterator = createPendingIterator((resolve) => { release = resolve; });
+      const backgroundTasks = vi.fn().mockResolvedValue(answer);
+      mockQuery.mockReturnValue({ ...iterator, backgroundTasks });
+      const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+      await vi.waitFor(() => expect(mockQuery).toHaveBeenCalled());
+      return {
+        backgroundTasks,
+        async end() {
+          release();
+          await sent;
+        },
+      };
+    }
+
+    it('asks the SDK to background the task of that call, and that one only', async () => {
+      const session = await sessionAnswering(true);
+
+      await service.backgroundTask(TEST_CONV_ID, 'toolu_wait');
+
+      expect(session.backgroundTasks).toHaveBeenCalledTimes(1);
+      expect(session.backgroundTasks).toHaveBeenCalledWith('toolu_wait');
+      await session.end();
+    });
+
+    it('says so when no task of that call was running in the foreground', async () => {
+      const session = await sessionAnswering(false);
+
+      await expect(service.backgroundTask(TEST_CONV_ID, 'toolu_wait')).rejects.toThrow('no longer running in the foreground');
+      await session.end();
+    });
+
+    it('says so when the conversation has no session to ask', async () => {
+      await expect(service.backgroundTask('conv-without-session', 'toolu_wait')).rejects.toThrow('no running session');
+    });
+  });
+
   describe('error handling', () => {
     beforeEach(async () => {
       await configService.setOAuthToken(

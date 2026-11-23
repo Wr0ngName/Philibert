@@ -18,7 +18,7 @@ import type { BackgroundTask, ChatMessage, ToolUseInfo } from '@shared/types';
 
 import { useNowTicker } from '../../composables/useNowTicker';
 import { useAgentTranscript, useCommandOutput } from '../../composables/useTaskDetailFeed';
-import { namedTaskId } from '../../stores/chat';
+import { canSendToBackground, namedTaskId } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { formatModelId } from '../../utils/model';
 import { formatTaskDuration } from '../../utils/task-duration';
@@ -29,8 +29,8 @@ import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
 import { heldListSource } from './message-list-source';
 import MessageList from './MessageList.vue';
+import RunningTaskActions, { type TaskActionPending } from './RunningTaskActions.vue';
 import StartedBy from './StartedBy.vue';
-import StopTaskButton from './StopTaskButton.vue';
 import ToolCallView from './ToolCallView.vue';
 
 interface Props {
@@ -48,23 +48,25 @@ interface Props {
    * its transcript instead.
    */
   spawningTool?: ToolUseInfo | null;
-  /** Whether a stop request is in flight. */
-  stopping?: boolean;
-  /** Why the last stop attempt failed, if it did. */
-  stopError?: string | null;
+  /** The action on the task asked for and not answered yet, if one is. */
+  actionPending?: TaskActionPending;
+  /** Why the last action on the task failed, if it did. */
+  actionError?: string | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   origin: null,
   parentTask: null,
   spawningTool: null,
-  stopping: false,
-  stopError: null,
+  actionPending: null,
+  actionError: null,
 });
 
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'stop', taskId: string): void;
+  /** Send the task to the background, named by the call that started it. */
+  (e: 'background', toolUseId: string): void;
   /** Show one of the task's tool calls: its message, which holds its images too. */
   (e: 'open-tool-detail', message: ChatMessage): void;
   /** Show another task — the agent that started this one, or one it started. */
@@ -362,14 +364,17 @@ const statusDisplay = computed(() => {
       />
 
 
-      <!-- Stopping a task. Only offered while it is actually running; the
-           status here is live, so the button disappears once the task ends
-           rather than offering to stop something already finished. -->
-      <StopTaskButton
+      <!-- Only offered while the task is actually running; the status here
+           is live, so the buttons go once it ends rather than offering to
+           act on something already finished — and sending it to the
+           background goes once it is there. -->
+      <RunningTaskActions
         v-if="isRunning"
-        :stopping="stopping"
-        :stop-error="stopError"
+        :can-background="canSendToBackground(task)"
+        :pending="actionPending"
+        :error="actionError"
         @stop="emit('stop', task.id)"
+        @background="emit('background', task.toolUseId!)"
       />
     </div>
   </Modal>

@@ -134,6 +134,11 @@ export interface ElectronAPI {
     /** Stop one running background task without ending the turn */
     stopTask: (conversationId: string, taskId: string) => Promise<void>;
     /**
+     * Send the task a call runs in the foreground to the background, by that
+     * call's tool_use id; fails when it is no longer in the foreground.
+     */
+    backgroundTask: (conversationId: string, toolUseId: string) => Promise<void>;
+    /**
      * A background task's output from `fromByte` on (its tail, when that is
      * more than the cap), or null when it has none to read yet.
      */

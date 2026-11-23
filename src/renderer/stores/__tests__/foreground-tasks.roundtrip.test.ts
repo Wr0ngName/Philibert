@@ -92,8 +92,16 @@ describe('foreground tasks', () => {
       .find((d) => d.textContent?.includes(title)) ?? null;
   }
 
+  function button(view: HTMLElement, text: string): HTMLButtonElement | undefined {
+    return [...view.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.includes(text));
+  }
+
   function stopButton(view: HTMLElement): HTMLButtonElement | undefined {
-    return [...view.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.includes('Stop task'));
+    return button(view, 'Stop task');
+  }
+
+  function backgroundButton(view: HTMLElement): HTMLButtonElement | undefined {
+    return button(view, 'Send to background');
   }
 
   /** Click the discussion's row for the call whose row reads `text`. */
@@ -274,6 +282,119 @@ describe('foreground tasks', () => {
       await settle(20);
       await clickCall('ls');
       expect(stopButton(dialog('Tool Details')!)).toBeUndefined();
+    });
+  });
+
+  // Asked for: a button in a running task's details that sends it to the
+  // background now, rather than waiting for its timeout to. The SDK's
+  // backgroundTasks(toolUseId) does it, by the call that started the task;
+  // the CLI then marks the task backgrounded (task_updated), measured on CLI
+  // 2.1.280 for a command, an agent and an agent's command
+  // (background-tasks.cli.test.ts).
+  describe('sending a task to the background', () => {
+    let asked: unknown[][];
+
+    beforeEach(() => {
+      asked = [];
+      mainHandlers.set('claude:background-task', (_event, ...args) => { asked.push(args); });
+    });
+
+    async function foregroundCommand(): Promise<void> {
+      call({ toolUseBlockId: 'toolu_wait', toolName: 'Bash', input: { command: 'npm run build', description: 'Build it' }, description: 'Build it' });
+      notify({ taskId: 'b-wait', status: 'running', description: 'Build it', toolUseId: 'toolu_wait', taskType: 'command', backgrounded: false });
+      await settle(20);
+    }
+
+    /** task_updated { patch: { is_backgrounded: true } }, as the handler passes it on. */
+    async function movedToBackground(taskId: string): Promise<void> {
+      notify({ taskId, status: 'running', backgrounded: true });
+      await settle(20);
+    }
+
+    it('is offered for a command running in the foreground, and asks the CLI by its call', async () => {
+      await foregroundCommand();
+      await clickCall('Build it');
+
+      backgroundButton(dialog('Tool Details')!)!.click();
+      await settle(20);
+
+      expect(asked).toEqual([[conversationId, 'toolu_wait']]);
+    });
+
+    it('moves the open details over to the task view, where its output is, once the command is there', async () => {
+      await foregroundCommand();
+      await clickCall('Build it');
+      backgroundButton(dialog('Tool Details')!)!.click();
+      await settle(20);
+
+      await movedToBackground('b-wait');
+
+      expect(dialog('Tool Details')).toBeNull();
+      const view = dialog('Task Details');
+      expect(view, 'expected the task view').not.toBeNull();
+      expect(view!.textContent).toContain('build line 1');
+      expect(backgroundButton(view!)).toBeUndefined();
+      expect(stopButton(view!)).toBeDefined();
+    });
+
+    // Reported: with Tool Details open on a command its timeout moved to the
+    // background, it took closing and reopening them to get to its output.
+    it('moves the open details over the same way when its timeout sent the command there', async () => {
+      await foregroundCommand();
+      await clickCall('Build it');
+
+      await movedToBackground('b-wait');
+
+      expect(dialog('Tool Details')).toBeNull();
+      expect(dialog('Task Details')?.textContent).toContain('build line 1');
+      expect(asked).toEqual([]);
+    });
+
+    it('is offered for an agent running in the foreground, and goes once it is in the background', async () => {
+      call({
+        toolUseBlockId: 'toolu_agent', toolName: 'Agent',
+        input: { description: 'Agent reads notes.txt', subagent_type: 'builder', prompt: AGENT_PROMPT },
+        description: 'Agent: Agent reads notes.txt',
+      });
+      notify({ taskId: 'agent-1', status: 'running', description: 'Agent reads notes.txt', toolUseId: 'toolu_agent', taskType: 'agent', agentType: 'builder', backgrounded: false });
+      await settle(20);
+      await clickCall('Agent');
+
+      backgroundButton(dialog('Task Details')!)!.click();
+      await settle(20);
+      expect(asked).toEqual([[conversationId, 'toolu_agent']]);
+
+      await movedToBackground('agent-1');
+      const view = dialog('Task Details')!;
+      expect(backgroundButton(view)).toBeUndefined();
+      expect(stopButton(view)).toBeDefined();
+      expect(panelRows()).toEqual([expect.stringContaining('Agent reads notes.txt')]);
+    });
+
+    it('is not offered for a task already in the background', async () => {
+      call({ toolUseBlockId: 'toolu_build', toolName: 'Bash', input: { command: 'npm run build', run_in_background: true }, description: 'Run: npm run build' });
+      notify({ taskId: 'b-build', toolUseId: 'toolu_build', status: 'running', description: 'npm run build', backgrounded: true });
+      await settle(20);
+      await clickCall('npm run build');
+
+      const view = dialog('Task Details')!;
+      expect(stopButton(view)).toBeDefined();
+      expect(backgroundButton(view)).toBeUndefined();
+    });
+
+    it('says why, against the task, when the CLI could not', async () => {
+      mainHandlers.set('claude:background-task', () => {
+        throw new Error('The task is no longer running in the foreground');
+      });
+      await foregroundCommand();
+      await clickCall('Build it');
+
+      backgroundButton(dialog('Tool Details')!)!.click();
+      await settle(20);
+
+      const details = dialog('Tool Details')!;
+      expect(details.textContent).toContain('The task is no longer running in the foreground');
+      expect(backgroundButton(details)?.disabled).toBe(false);
     });
   });
 

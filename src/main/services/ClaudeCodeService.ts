@@ -2088,26 +2088,53 @@ export class ClaudeCodeService {
    * Falls back to hard termination only if interrupt() itself fails.
    */
   /**
-   * Stop one running background task, leaving the session itself running.
+   * The live session whose task a per-task control acts on — stopping one, or
+   * sending one to the background.
    *
-   * Distinct from {@link abort}, which tears down the whole turn. Only the SDK
-   * path can do this: the control request goes over the session's own channel,
-   * and channel mode drives the CLI through a PTY with no such channel. A
-   * caller is told rather than silently ignored, since "nothing happened" on
-   * a kill button is the worst outcome.
+   * Only the SDK path has these controls: they are control requests over the
+   * session's own channel, and channel mode drives the CLI through a PTY with
+   * no such channel. A caller is told rather than silently ignored, since
+   * "nothing happened" on a button is the worst outcome.
    */
-  async stopBackgroundTask(conversationId: string, taskId: string): Promise<void> {
+  private sessionForTaskControl(conversationId: string, doing: string): SessionInstance {
     if (this.channelService && this.channelService.isConversationActive(conversationId)) {
-      throw new Error('Stopping a background task is not supported in channel mode');
+      throw new Error(`${doing} is not supported in channel mode`);
     }
-
     const instance = this.activeSessions.get(conversationId);
     if (!instance) {
-      throw new Error('That conversation has no running session, so its tasks cannot be stopped');
+      throw new Error(`That conversation has no running session: ${doing.toLowerCase()} needs one`);
     }
+    return instance;
+  }
 
+  /**
+   * Stop one running background task, leaving the session itself running.
+   * Distinct from {@link abort}, which tears down the whole turn.
+   */
+  async stopBackgroundTask(conversationId: string, taskId: string): Promise<void> {
+    const instance = this.sessionForTaskControl(conversationId, 'Stopping a task');
     logger.info('Stopping background task', { conversationId, taskId });
     await instance.query.stopTask(taskId);
+  }
+
+  /**
+   * Send a task running in the foreground — a command or an agent its call
+   * waits on — to the background now, rather than when its timeout comes:
+   * what Ctrl+B does in the terminal, for this one task.
+   *
+   * The task is named by the call that started it, as the SDK asks. The call
+   * then returns at once, saying the task runs in the background, and the
+   * turn goes on; the CLI marks the task backgrounded (`task_updated`), which
+   * is what moves it in the app. The SDK answers false when no foreground
+   * task has that call — it ended, or is already in the background — and the
+   * caller is told so.
+   */
+  async backgroundTask(conversationId: string, toolUseId: string): Promise<void> {
+    const instance = this.sessionForTaskControl(conversationId, 'Sending a task to the background');
+    logger.info('Sending task to the background', { conversationId, toolUseId });
+    if (!(await instance.query.backgroundTasks(toolUseId))) {
+      throw new Error('The task is no longer running in the foreground');
+    }
   }
 
   /**
