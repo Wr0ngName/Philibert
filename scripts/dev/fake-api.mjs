@@ -6,6 +6,12 @@
  * and every request is logged, one JSON line each, for a look at what the
  * CLI sent (its system prompt, its messages).
  *
+ * A message of the form `run: <command>` has Claude run that command with
+ * the Bash tool, in the foreground, then answer once its result is in — for
+ * a look at a running command (`run: sleep 120`). `run <ms>: <command>`
+ * gives the call that timeout, after which Claude Code moves the command to
+ * the background (`run 3000: sleep 60`).
+ *
  *   node scripts/dev/fake-api.mjs <port> <log file>
  *
  * Nothing reaches Anthropic, and no key is checked. A development tool:
@@ -38,6 +44,21 @@ function replyText(request) {
   return [`Fake reply ${replies}, to "${asked.replace(/\s+/g, ' ').slice(-60)}".`, ...Array.from({ length: 8 }, (_, i) => `${i + 1}. ${paragraph}`)].join('\n\n');
 }
 
+/**
+ * The command the message just sent asks for, if it is a `run: <command>`
+ * one. Only the last message of the conversation counts: once it carries the call's result, or
+ * anything else came after, the call is behind.
+ */
+function askedCommand(request) {
+  // The CLI may follow it with system messages of its own (its environment).
+  const last = request.messages?.filter((m) => m.role !== 'system').at(-1);
+  if (last?.role !== 'user') return null;
+  const blocks = typeof last.content === 'string' ? [{ type: 'text', text: last.content }] : last.content;
+  if (blocks.some((block) => block.type === 'tool_result')) return null;
+  const asked = blocks.filter((block) => block.type === 'text').map((block) => /^run(?: (\d+))?: (.+)$/m.exec(block.text)).find(Boolean);
+  return asked ? { id: `toolu_fake_${Date.now()}`, command: asked[2], timeout: Number(asked[1] ?? 600000) } : null;
+}
+
 function usage(text) {
   return { input_tokens: 10, output_tokens: Math.ceil(text.length / 4), cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
 }
@@ -53,6 +74,21 @@ function message(request, text) {
     stop_sequence: null,
     usage: usage(text),
   };
+}
+
+/** A streamed reply whose one block is a Bash call running `command`. */
+function streamToolCall(response, request, { id, command, timeout }) {
+  response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+  const send = (event, data) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  replies += 1;
+  const input = { command, description: `Run ${command}`, timeout };
+  send('message_start', { type: 'message_start', message: { ...message(request, ''), content: [], stop_reason: null, usage: { ...usage(''), output_tokens: 1 } } });
+  send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id, name: 'Bash', input: {} } });
+  send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } });
+  send('content_block_stop', { type: 'content_block_stop', index: 0 });
+  send('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: usage(command) });
+  send('message_stop', { type: 'message_stop' });
+  response.end();
 }
 
 async function stream(response, request, text) {
@@ -86,6 +122,12 @@ const server = http.createServer((request, response) => {
 
     const url = request.url ?? '';
     if (request.method === 'POST' && url.startsWith('/v1/messages') && !url.includes('count_tokens')) {
+      // Only Claude's own turns have tools: the CLI's side requests (a title) have none.
+      const command = parsed.tools?.length ? askedCommand(parsed) : null;
+      if (command && parsed.stream) {
+        streamToolCall(response, parsed, command);
+        return;
+      }
       const text = replyText(parsed);
       if (parsed.stream) {
         void stream(response, parsed, text);
