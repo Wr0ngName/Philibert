@@ -12,8 +12,6 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 
-import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
-
 /** The binary the app runs in development: ClaudeCliPaths.getBundledCliPaths. */
 export const BUNDLED_CLI = path.resolve(__dirname, '../../../../../node_modules/@anthropic-ai/claude-code/bin/claude.exe');
 
@@ -117,12 +115,3 @@ export function cliEnvironment(root: string, run: string, baseUrl: string): Reco
   };
 }
 
-/**
- * Lets Claude make every call it asks to, as the app's own permission
- * callback does once a user allows it — for runs where nobody is there to.
- *
- * Not `permissionMode: 'bypassPermissions'`: Claude Code refuses it to a
- * process running as root ("--dangerously-skip-permissions cannot be used
- * with root/sudo privileges"), which CI's jobs are.
- */
-export const allowEveryCall: CanUseTool = async (_tool, input) => ({ behavior: 'allow', updatedInput: input });

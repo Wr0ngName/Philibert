@@ -25,7 +25,7 @@ import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
-  allowEveryCall, BUNDLED_CLI, cliEnvironment, startFakeAnthropic, type FakeAnthropic, type ToolCall,
+  BUNDLED_CLI, cliEnvironment, startFakeAnthropic, type FakeAnthropic, type ToolCall,
 } from '../../__tests__/support/fake-anthropic';
 import { queuedForAgentOf } from '../SDKMessageHandler';
 import { messagesSentToAgent } from '../task-output';
@@ -108,7 +108,8 @@ async function sendToAgent(run: string, agentWorks: boolean): Promise<Sent> {
       cwd: path.join(env.HOME, 'work'),
       env,
       pathToClaudeCodeExecutable: BUNDLED_CLI,
-      canUseTool: allowEveryCall,
+      // Default permissions: these calls need none. Not bypassPermissions,
+      // which Claude Code refuses to root — as CI's jobs run.
     },
   });
 
