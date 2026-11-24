@@ -230,6 +230,25 @@ export interface SavingScreen {
 }
 
 export const CLOSE_SAVING_MESSAGE = 'Saving your discussions before closing…';
+export const UPDATE_SAVING_MESSAGE = 'Saving your discussions before updating…';
+
+/** What the app is left for: quitting, or restarting to install an update. */
+type Leaving = 'quit' | 'update';
+
+/** The guard's hold on the app's leaving, for what leaves it other than closing the window. */
+export interface CloseGuard {
+  /**
+   * Make ready to quit for an update, before it is installed: asked about as
+   * closing is when work is in flight — the installer quits the app, which
+   * stops it — then the discussions saved, as the installer may end the app
+   * without waiting for closing to save them. True once ready: the close
+   * the install brings is not asked about again. False when the user keeps
+   * working: nothing is to be installed.
+   */
+  prepareToQuitForUpdate(): Promise<boolean>;
+  /** The install did not quit the app after all: closing is asked about again. */
+  quitForUpdateAbandoned(): void;
+}
 
 /**
  * Ask before closing while work is in flight.
@@ -237,7 +256,10 @@ export const CLOSE_SAVING_MESSAGE = 'Saving your discussions before closing…';
  * Quitting ends the SDK sessions, so a turn mid-answer and any background task
  * it started are lost with no way to resume them — and nothing previously said
  * so. The prompt only appears when there is something to lose, so the ordinary
- * close stays a single click.
+ * close stays a single click. Restarting to install an update quits as well,
+ * and is asked about the same way (prepareToQuitForUpdate) — before the
+ * install, which comes before the quit: electron-updater installs (.deb) or
+ * starts the installer (NSIS), then quits.
  *
  * `close` is emitted again after the user confirms, which is why the decision
  * is latched: without that the dialog would reappear forever.
@@ -255,76 +277,99 @@ export function installCloseGuard(
   flushRenderer: () => Promise<void>,
   settleWrites: () => Promise<unknown>,
   savingScreen: SavingScreen,
-): void {
+): CloseGuard {
+  /** The window is closing, as confirmed: its `close` again goes through. */
   let closing = false;
+  /** Leaving for an update was confirmed: its close is not asked about again. */
+  let leavingConfirmed = false;
 
-  window.on('close', (event) => {
-    if (closing) return;
-
-    let summary: string | null;
+  /** What would be lost, or null when nothing; never trapping the user when this cannot be told. */
+  function runningWork(): string | null {
     try {
-      summary = describeRunningWork(getRunningWork());
+      return describeRunningWork(getRunningWork());
     } catch (error) {
       // Never trap the user in the app because the check itself failed.
       logger.warn('Could not determine running work on close', { error });
-      summary = null;
+      return null;
     }
+  }
+
+  /** Whether to go ahead and leave: asked only with work in flight. */
+  async function confirmLeaving(leaving: Leaving): Promise<boolean> {
+    const summary = runningWork();
+    if (!summary) return true;
+    logger.info('Leaving held pending confirmation', { leaving, summary });
+    const stops = `${summary.includes(' and ') ? 'them' : 'it'}`;
+    try {
+      const { response } = await dialog.showMessageBox(window, {
+        type: 'warning',
+        buttons: ['Keep working', leaving === 'quit' ? 'Quit anyway' : 'Restart anyway'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Work still in progress',
+        message: leaving === 'quit' ? 'Quit Philibert?' : 'Restart Philibert to update?',
+        detail: leaving === 'quit'
+          ? `${summary}. Quitting stops ${stops}.`
+          : `${summary}. Restarting to install the update stops ${stops}.`,
+      });
+      return response === 1;
+    } catch (error) {
+      logger.error('Close confirmation dialog failed', { error });
+      return false;
+    }
+  }
+
+  /** Save what the renderer holds and what is being written, said on screen once it is not instant. */
+  async function save(message: string): Promise<void> {
+    // Said on screen once it is not instant, so a slow save is not taken
+    // for a hang and the app killed in the middle of it.
+    let shown = false;
+    const timer = setTimeout(() => {
+      shown = true;
+      savingScreen.show(message);
+    }, MAIN_CONSTANTS.WINDOW.CLOSE_SAVING_SCREEN_DELAY_MS);
+    try {
+      await flushRenderer();
+    } catch (error) {
+      // A renderer that cannot save must not become a window that cannot
+      // close. The reason is logged; the close goes ahead.
+      logger.error('Pre-close flush failed; closing anyway', { error });
+    }
+    try {
+      await settleWrites();
+    } catch (error) {
+      logger.error('Waiting for saves before close failed; closing anyway', { error });
+    }
+    clearTimeout(timer);
+    if (shown) savingScreen.hide();
+  }
+
+  window.on('close', (event) => {
+    if (closing) return;
 
     // Held open either way: with work running the user is asked first, and
     // with none there is still unsaved state to persist.
     event.preventDefault();
 
-    const proceed = async () => {
+    void (async () => {
+      if (!leavingConfirmed && !(await confirmLeaving('quit'))) return;
       closing = true;
-      // Said on screen once it is not instant, so a slow save is not taken
-      // for a hang and the app killed in the middle of it.
-      let shown = false;
-      const timer = setTimeout(() => {
-        shown = true;
-        savingScreen.show(CLOSE_SAVING_MESSAGE);
-      }, MAIN_CONSTANTS.WINDOW.CLOSE_SAVING_SCREEN_DELAY_MS);
-      try {
-        await flushRenderer();
-      } catch (error) {
-        // A renderer that cannot save must not become a window that cannot
-        // close. The reason is logged; the close goes ahead.
-        logger.error('Pre-close flush failed; closing anyway', { error });
-      }
-      try {
-        await settleWrites();
-      } catch (error) {
-        logger.error('Waiting for saves before close failed; closing anyway', { error });
-      }
-      clearTimeout(timer);
-      if (shown) savingScreen.hide();
+      await save(CLOSE_SAVING_MESSAGE);
       window.close();
-    };
-
-    if (!summary) {
-      void proceed();
-      return;
-    }
-
-    logger.info('Close blocked pending confirmation', { summary });
-
-    void dialog
-      .showMessageBox(window, {
-        type: 'warning',
-        buttons: ['Keep working', 'Quit anyway'],
-        defaultId: 0,
-        cancelId: 0,
-        title: 'Work still in progress',
-        message: 'Quit Philibert?',
-        detail: `${summary}. Quitting stops ${summary.includes(' and ') ? 'them' : 'it'}.`,
-      })
-      .then(({ response }) => {
-        if (response !== 1) return;
-        void proceed();
-      })
-      .catch((error) => {
-        logger.error('Close confirmation dialog failed', { error });
-      });
+    })();
   });
+
+  return {
+    async prepareToQuitForUpdate() {
+      if (!(await confirmLeaving('update'))) return false;
+      leavingConfirmed = true;
+      await save(UPDATE_SAVING_MESSAGE);
+      return true;
+    },
+    quitForUpdateAbandoned() {
+      leavingConfirmed = false;
+    },
+  };
 }
 
 /**

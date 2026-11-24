@@ -11,7 +11,7 @@
 
 import { EventEmitter } from 'node:events';
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { mockApp, mockNet, mockAutoUpdater } = vi.hoisted(() => {
   /** electron-updater's autoUpdater is an EventEmitter; its listeners are kept here. */
@@ -29,6 +29,7 @@ const { mockApp, mockNet, mockAutoUpdater } = vi.hoisted(() => {
     },
     reset() { listeners.clear(); },
     checkForUpdates: vi.fn(),
+    downloadUpdate: vi.fn(),
     quitAndInstall: vi.fn(),
     requestHeaders: undefined as unknown,
     autoDownload: true,
@@ -50,7 +51,7 @@ vi.mock('electron-updater', () => ({ autoUpdater: mockAutoUpdater }));
 
 import logger from '../../utils/logger';
 import type ConfigService from '../ConfigService';
-import UpdateService, { manualInstallCommand } from '../UpdateService';
+import UpdateService, { FIRST_UPDATE_CHECK_DELAY_MS, UPDATE_CHECK_INTERVAL_MS, manualInstallCommand } from '../UpdateService';
 
 /** The GitLab releases API answering with these tags. */
 function releasesAre(tags: string[]): void {
@@ -109,8 +110,9 @@ describe('installing the downloaded update', () => {
       mockAutoUpdater.emit('error', new Error('Command pkexec exited with code 127'));
     });
 
-    expect(updates.installUpdate()).toEqual({
+    expect(await updates.installUpdate()).toEqual({
       installed: false,
+      reason: 'failed',
       error: 'Command pkexec exited with code 127',
       downloadedFile: DEB,
       installCommand: `sudo apt install '${DEB}'`,
@@ -122,18 +124,61 @@ describe('installing the downloaded update', () => {
     const updates = await downloaded();
     mockAutoUpdater.quitAndInstall.mockImplementation(() => undefined);
 
-    expect(updates.installUpdate()).toEqual({ installed: true });
+    expect(await updates.installUpdate()).toEqual({ installed: true });
   });
 
   it('stops listening for errors once the install has been asked for', async () => {
     const updates = await downloaded();
     mockAutoUpdater.quitAndInstall.mockImplementation(() => undefined);
-    updates.installUpdate();
+    await updates.installUpdate();
 
     // A later error, from another check, is not this install's.
     mockAutoUpdater.quitAndInstall.mockImplementation(() => undefined);
     mockAutoUpdater.emit('error', new Error('later'));
-    expect(updates.installUpdate()).toEqual({ installed: true });
+    expect(await updates.installUpdate()).toEqual({ installed: true });
+  });
+
+  describe('made ready to quit first (setBeforeInstall)', () => {
+    it('installs only once ready: asked and saved before, as installing quits the app', async () => {
+      const updates = await downloaded();
+      const order: string[] = [];
+      updates.setBeforeInstall(async () => { order.push('prepared'); return true; }, () => order.push('abandoned'));
+      mockAutoUpdater.quitAndInstall.mockImplementation(() => { order.push('installed'); });
+
+      expect(await updates.installUpdate()).toEqual({ installed: true });
+      expect(order).toEqual(['prepared', 'installed']);
+    });
+
+    it('installs nothing when the user keeps working', async () => {
+      const updates = await downloaded();
+      updates.setBeforeInstall(async () => false, vi.fn());
+
+      expect(await updates.installUpdate()).toEqual({ installed: false, reason: 'kept-working' });
+      expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    });
+
+    it('says the quit was abandoned when the install failed and the app stays open', async () => {
+      const updates = await downloaded();
+      const abandoned = vi.fn();
+      updates.setBeforeInstall(async () => true, abandoned);
+      mockAutoUpdater.quitAndInstall.mockImplementation(() => {
+        mockAutoUpdater.emit('error', new Error('Command pkexec exited with code 127'));
+      });
+
+      expect(await updates.installUpdate()).toMatchObject({ installed: false, reason: 'failed' });
+      expect(abandoned).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not say so when it installed', async () => {
+      const updates = await downloaded();
+      const abandoned = vi.fn();
+      updates.setBeforeInstall(async () => true, abandoned);
+      mockAutoUpdater.quitAndInstall.mockImplementation(() => undefined);
+
+      await updates.installUpdate();
+
+      expect(abandoned).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -157,22 +202,22 @@ describe('checking for an update', () => {
   it('points the updater at the newest release of the channel and reports it', async () => {
     mockAutoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: '0.25.11-rc.2' } });
 
-    const info = await service().checkForUpdates();
+    const result = await service().checkForUpdates();
 
     expect(mockAutoUpdater.setFeedURL).toHaveBeenLastCalledWith({
       provider: 'generic',
       url: 'https://dev.web.wr0ng.name/api/v4/projects/wrongname%2Fphilibert/packages/generic/releases/0.25.11-rc.2',
     });
-    expect(info?.version).toBe('0.25.11-rc.2');
+    expect(result).toEqual({ status: 'available', update: { version: '0.25.11-rc.2' } });
   });
 
   it('says so when the updater does not update this kind of install', async () => {
     const warn = vi.spyOn(logger, 'warn');
     mockAutoUpdater.checkForUpdates.mockResolvedValue(null);
 
-    const info = await service().checkForUpdates();
+    const result = await service().checkForUpdates();
 
-    expect(info).toBeNull();
+    expect(result).toEqual({ status: 'failed', reason: 'unsupported-install', version: '0.25.11-rc.2' });
     expect(warn).toHaveBeenCalledWith('The updater is not active for this install', {
       platform: process.platform,
       latestVersion: '0.25.11-rc.2',
@@ -188,7 +233,7 @@ describe('checking for an update', () => {
 
     const result = await service().checkForUpdates();
 
-    expect(result).toBeNull();
+    expect(result).toEqual({ status: 'failed', reason: 'no-feed', version: '0.25.11-rc.2' });
     expect(warn).toHaveBeenCalledWith('The release has no update feed for this platform', expect.objectContaining({
       platform: process.platform,
     }));
@@ -198,9 +243,138 @@ describe('checking for an update', () => {
   it('does not ask the updater when already on the newest release', async () => {
     releasesAre(['v0.25.10', 'v0.25.11-rc.1']);
 
-    const info = await service().checkForUpdates();
+    const result = await service().checkForUpdates();
 
-    expect(info).toBeNull();
+    expect(result).toEqual({ status: 'up-to-date', latestVersion: '0.25.11-rc.1' });
     expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it('says there is no release on the channel when there is none', async () => {
+    releasesAre([]);
+
+    expect(await service().checkForUpdates()).toEqual({ status: 'failed', reason: 'no-release' });
+  });
+
+  it('says why the check failed, with the release it found', async () => {
+    mockAutoUpdater.checkForUpdates.mockRejectedValue(new Error('net::ERR_CONNECTION_RESET'));
+
+    expect(await service().checkForUpdates())
+      .toEqual({ status: 'failed', reason: 'error', version: '0.25.11-rc.2', message: 'net::ERR_CONNECTION_RESET' });
+  });
+
+  it('asked again while it checks, joins the check under way', async () => {
+    let answer!: (value: unknown) => void;
+    mockAutoUpdater.checkForUpdates.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+    const updates = service();
+
+    const first = updates.checkForUpdates();
+    const second = updates.checkForUpdates();
+    await vi.waitFor(() => expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalled());
+    answer({ updateInfo: { version: '0.25.11-rc.2' } });
+
+    expect(await second).toEqual(await first);
+    expect(mockNet.request).toHaveBeenCalledTimes(1);
+    expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('checking once an update is downloading or downloaded', () => {
+  async function offered(): Promise<UpdateService> {
+    mockAutoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: '0.25.11-rc.2' } });
+    const updates = service();
+    await updates.checkForUpdates();
+    vi.clearAllMocks();
+    return updates;
+  }
+
+  it('says it is downloading, without checking', async () => {
+    const updates = await offered();
+    mockAutoUpdater.downloadUpdate.mockReturnValue(new Promise(() => {}));
+    void updates.downloadUpdate();
+
+    expect(await updates.checkForUpdates()).toEqual({ status: 'pending', version: '0.25.11-rc.2', downloaded: false });
+    expect(mockNet.request).not.toHaveBeenCalled();
+  });
+
+  it('says it is downloaded, without checking', async () => {
+    const updates = await offered();
+    mockAutoUpdater.emit('update-downloaded', { version: '0.25.11-rc.2', downloadedFile: '/tmp/philibert.deb' });
+
+    expect(await updates.checkForUpdates()).toEqual({ status: 'pending', version: '0.25.11-rc.2', downloaded: true });
+    expect(mockNet.request).not.toHaveBeenCalled();
+  });
+
+  it('checks again once a download failed', async () => {
+    const updates = await offered();
+    mockAutoUpdater.downloadUpdate.mockRejectedValue(new Error('net::ERR_CONNECTION_RESET'));
+    await expect(updates.downloadUpdate()).rejects.toThrow();
+    mockAutoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: '0.25.11-rc.2' } });
+
+    expect(await updates.checkForUpdates()).toEqual({ status: 'available', update: { version: '0.25.11-rc.2' } });
+  });
+});
+
+describe('checking by itself while the app runs', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockAutoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: '0.25.11-rc.2' } });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('checks shortly after starting, then every day', async () => {
+    const updates = service();
+    updates.startPeriodicChecks();
+
+    await vi.advanceTimersByTimeAsync(FIRST_UPDATE_CHECK_DELAY_MS - 1);
+    expect(mockNet.request).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mockNet.request).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS);
+    expect(mockNet.request).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS);
+    expect(mockNet.request).toHaveBeenCalledTimes(3);
+    updates.stopPeriodicChecks();
+  });
+
+  it('every day is 24 hours', () => {
+    expect(UPDATE_CHECK_INTERVAL_MS).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it('skips a day while an update is downloaded, waiting to be installed', async () => {
+    const updates = service();
+    updates.startPeriodicChecks();
+    await vi.advanceTimersByTimeAsync(FIRST_UPDATE_CHECK_DELAY_MS);
+    mockAutoUpdater.emit('update-downloaded', { version: '0.25.11-rc.2', downloadedFile: '/tmp/philibert.deb' });
+
+    await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS);
+
+    expect(mockNet.request).toHaveBeenCalledTimes(1);
+    expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+    updates.stopPeriodicChecks();
+  });
+
+  it('stops checking once stopped, as the app quits', async () => {
+    const updates = service();
+    updates.startPeriodicChecks();
+
+    updates.stopPeriodicChecks();
+    await vi.advanceTimersByTimeAsync(FIRST_UPDATE_CHECK_DELAY_MS + 2 * UPDATE_CHECK_INTERVAL_MS);
+
+    expect(mockNet.request).not.toHaveBeenCalled();
+  });
+
+  it('started again, keeps one schedule, not two', async () => {
+    const updates = service();
+    updates.startPeriodicChecks();
+    updates.startPeriodicChecks();
+
+    await vi.advanceTimersByTimeAsync(FIRST_UPDATE_CHECK_DELAY_MS + UPDATE_CHECK_INTERVAL_MS);
+
+    expect(mockNet.request).toHaveBeenCalledTimes(2);
+    updates.stopPeriodicChecks();
   });
 });

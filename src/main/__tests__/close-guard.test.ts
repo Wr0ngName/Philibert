@@ -397,3 +397,97 @@ describe('installCloseGuard', () => {
     });
   });
 });
+
+describe('restarting to install an update (prepareToQuitForUpdate)', () => {
+  it('with nothing running, saves and is ready, without asking', async () => {
+    const { win } = fakeWindow();
+    const flush = vi.fn(async () => {});
+    const writes = vi.fn(async () => {});
+    const guard = installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), flush, writes, noScreen);
+
+    expect(await guard.prepareToQuitForUpdate()).toBe(true);
+
+    expect(showMessageBox).not.toHaveBeenCalled();
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(writes).toHaveBeenCalledTimes(1);
+  });
+
+  it('with work running, asks as quitting does, saying restarting stops it', async () => {
+    const { win } = fakeWindow();
+    const flush = vi.fn(async () => {});
+    showMessageBox.mockResolvedValue({ response: 1 }); // Restart anyway
+    const guard = installCloseGuard(win as never, () => ({ turns: 1, tasks: 2 }), flush, noWrites, noScreen);
+
+    expect(await guard.prepareToQuitForUpdate()).toBe(true);
+
+    expect(showMessageBox).toHaveBeenCalledTimes(1);
+    const options = showMessageBox.mock.calls[0][1];
+    expect(options.buttons).toEqual(['Keep working', 'Restart anyway']);
+    expect(options.message).toBe('Restart Philibert to update?');
+    expect(options.detail).toBe('1 conversation still working and 2 background tasks still running. Restarting to install the update stops them.');
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('kept working, is not ready, and saves nothing', async () => {
+    const { win } = fakeWindow();
+    const flush = vi.fn(async () => {});
+    showMessageBox.mockResolvedValue({ response: 0 }); // Keep working
+    const guard = installCloseGuard(win as never, () => ({ turns: 1, tasks: 0 }), flush, noWrites, noScreen);
+
+    expect(await guard.prepareToQuitForUpdate()).toBe(false);
+
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('once ready, the close the install brings is not asked about again', async () => {
+    const { win, state, fireClose } = fakeWindow();
+    showMessageBox.mockResolvedValue({ response: 1 });
+    const guard = installCloseGuard(win as never, () => ({ turns: 1, tasks: 0 }), vi.fn(async () => {}), noWrites, noScreen);
+    await guard.prepareToQuitForUpdate();
+    showMessageBox.mockClear();
+
+    fireClose();
+    await settle();
+    await settle();
+
+    expect(showMessageBox).not.toHaveBeenCalled();
+    expect(state.closes).toBe(1);
+  });
+
+  it('abandoned, as when the install failed, closing is asked about again', async () => {
+    const { win, state, fireClose } = fakeWindow();
+    showMessageBox.mockResolvedValue({ response: 1 });
+    const guard = installCloseGuard(win as never, () => ({ turns: 1, tasks: 0 }), vi.fn(async () => {}), noWrites, noScreen);
+    await guard.prepareToQuitForUpdate();
+    guard.quitForUpdateAbandoned();
+    showMessageBox.mockClear();
+    showMessageBox.mockResolvedValue({ response: 0 }); // Keep working
+
+    fireClose();
+    await settle();
+    await settle();
+
+    expect(showMessageBox).toHaveBeenCalledTimes(1);
+    expect(state.closes).toBe(0);
+  });
+
+  it('says it saves before updating, when the save is not instant', async () => {
+    vi.useFakeTimers();
+    try {
+      const { win } = fakeWindow();
+      const shown: string[] = [];
+      let release!: () => void;
+      const flush = () => new Promise<void>((resolve) => { release = resolve; });
+      const guard = installCloseGuard(win as never, () => ({ turns: 0, tasks: 0 }), flush, noWrites, { show: (m) => shown.push(m), hide: () => {} });
+
+      const ready = guard.prepareToQuitForUpdate();
+      await vi.advanceTimersByTimeAsync(MAIN_CONSTANTS.WINDOW.CLOSE_SAVING_SCREEN_DELAY_MS);
+      release();
+
+      expect(await ready).toBe(true);
+      expect(shown).toEqual(['Saving your discussions before updating…']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

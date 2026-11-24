@@ -19,10 +19,8 @@ export function setupUpdateIPC(updateService: UpdateService): void {
       // Validate service
       ensureService(updateService, 'UpdateService');
 
-      const updateInfo = await updateService.checkForUpdates();
-
-      // updateInfo can be null if no updates available, which is valid
-      return updateInfo;
+      // What was found: an update, none, or why none could be (UpdateCheckResult).
+      return await updateService.checkForUpdates();
     } catch (error) {
       logger.error('Failed to check for updates', { error });
       throw new AppError(formatErrorMessage('Failed to check for updates', error), 'UPDATE_CHECK_FAILED', error);
@@ -45,14 +43,14 @@ export function setupUpdateIPC(updateService: UpdateService): void {
   });
 
   // Install update and restart
-  ipcMain.handle(IPC_CHANNELS.UPDATE_INSTALL, () => {
+  ipcMain.handle(IPC_CHANNELS.UPDATE_INSTALL, async () => {
     try {
       logger.debug('IPC: update:install');
 
       // Validate service
       ensureService(updateService, 'UpdateService');
 
-      return updateService.installUpdate();
+      return await updateService.installUpdate();
     } catch (error) {
       logger.error('Failed to install update', { error });
       throw new AppError(formatErrorMessage('Failed to install update', error), 'UPDATE_INSTALL_FAILED', error);

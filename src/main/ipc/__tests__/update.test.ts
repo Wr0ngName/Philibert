@@ -45,7 +45,7 @@ const mockUpdateService = {
 };
 
 // Import after mocks
-import { IPC_CHANNELS, UpdateInfo } from '../../../shared/types';
+import { IPC_CHANNELS, type UpdateCheckResult, UpdateInfo } from '../../../shared/types';
 import { AppError } from '../../errors';
 import { setupUpdateIPC } from '../update';
 
@@ -71,7 +71,7 @@ describe('Update IPC handlers', () => {
     });
 
     // Default mock implementations
-    mockUpdateService.checkForUpdates.mockResolvedValue(sampleUpdateInfo);
+    mockUpdateService.checkForUpdates.mockResolvedValue({ status: 'available', update: sampleUpdateInfo });
     mockUpdateService.downloadUpdate.mockResolvedValue(undefined);
     mockUpdateService.installUpdate.mockReturnValue(undefined);
 
@@ -104,40 +104,18 @@ describe('Update IPC handlers', () => {
       handler = handlers.get(IPC_CHANNELS.UPDATE_CHECK)!;
     });
 
-    it('should return update info when update is available', async () => {
+    it.each([
+      ['an update', { status: 'available', update: { version: '2.0.0', releaseNotes: 'Major update' } }],
+      ['none: up to date', { status: 'up-to-date', latestVersion: '1.0.0' }],
+      ['one downloading', { status: 'pending', version: '2.0.0', downloaded: false }],
+      ['why none could be found', { status: 'failed', reason: 'no-feed', version: '2.0.0' }],
+    ] as [string, UpdateCheckResult][])('answers what the check found: %s', async (_name, found) => {
+      mockUpdateService.checkForUpdates.mockResolvedValue(found);
+
       const result = await handler({});
 
       expect(mockUpdateService.checkForUpdates).toHaveBeenCalled();
-      expect(result).toEqual(sampleUpdateInfo);
-    });
-
-    it('should return null when no update is available', async () => {
-      mockUpdateService.checkForUpdates.mockResolvedValue(null);
-
-      const result = await handler({});
-
-      expect(result).toBeNull();
-    });
-
-    it('should return update info with version only', async () => {
-      mockUpdateService.checkForUpdates.mockResolvedValue({
-        version: '2.0.0',
-      });
-
-      const result = await handler({});
-
-      expect(result).toEqual({ version: '2.0.0' });
-    });
-
-    it('should return update info with release notes', async () => {
-      mockUpdateService.checkForUpdates.mockResolvedValue({
-        version: '2.0.0',
-        releaseNotes: 'Major update with many improvements',
-      });
-
-      const result = (await handler({})) as UpdateInfo;
-
-      expect(result.releaseNotes).toBe('Major update with many improvements');
+      expect(result).toEqual(found);
     });
 
     it('should throw when update service is not initialized', async () => {
@@ -242,31 +220,31 @@ describe('Update IPC handlers', () => {
       expect(result).toBeUndefined();
     });
 
-    it('should throw when update service is not initialized', () => {
+    it('should throw when update service is not initialized', async () => {
       handlers.clear();
       setupUpdateIPC(null as any);
       const nullHandler = handlers.get(IPC_CHANNELS.UPDATE_INSTALL)!;
 
       // UPDATE_INSTALL is synchronous, so errors are thrown not rejected
-      expect(() => nullHandler({})).toThrow(AppError);
+      await expect(nullHandler({})).rejects.toThrow(AppError);
     });
 
-    it('should propagate install errors', () => {
+    it('should propagate install errors', async () => {
       mockUpdateService.installUpdate.mockImplementation(() => {
         throw new Error('Installation failed');
       });
 
       // UPDATE_INSTALL is synchronous, so errors are thrown not rejected
-      expect(() => handler({})).toThrow(AppError);
+      await expect(handler({})).rejects.toThrow(AppError);
     });
 
-    it('should propagate permission errors', () => {
+    it('should propagate permission errors', async () => {
       mockUpdateService.installUpdate.mockImplementation(() => {
         throw new Error('Permission denied');
       });
 
       // UPDATE_INSTALL is synchronous, so errors are thrown not rejected
-      expect(() => handler({})).toThrow(AppError);
+      await expect(handler({})).rejects.toThrow(AppError);
     });
 
     it('should include error message in thrown error', async () => {

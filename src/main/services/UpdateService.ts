@@ -9,7 +9,7 @@
 import { BrowserWindow, app, net } from 'electron';
 import { autoUpdater, UpdateInfo as ElectronUpdateInfo, UpdateDownloadedEvent } from 'electron-updater';
 
-import { IPC_CHANNELS, UpdateChannel, UpdateInfo, UpdateInstallResult, UpdateProgress } from '../../shared/types';
+import { IPC_CHANNELS, UpdateChannel, UpdateCheckResult, UpdateInfo, UpdateInstallResult, UpdateProgress } from '../../shared/types';
 import { createSender } from '../utils/ipc-helpers';
 import logger from '../utils/logger';
 import { compareVersions, isPrerelease, parseVersion } from '../utils/version';
@@ -37,8 +37,26 @@ export function manualInstallCommand(file: string): string | null {
 }
 const PACKAGES_API = `${GITLAB_HOST}/api/v4/projects/${GITLAB_PROJECT_ID}/packages/generic/releases`;
 
+/** How long after the app starts it first checks for an update: out of the way of starting. */
+export const FIRST_UPDATE_CHECK_DELAY_MS = 5_000;
+/** How often it checks again while it runs: an app left open for days still hears of a release. */
+export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
 export class UpdateService {
-  private isCheckingForUpdates = false;
+  /** The check under way, which another asking for one joins rather than starting a second. */
+  private checking: Promise<UpdateCheckResult> | null = null;
+  /**
+   * An update being downloaded, or downloaded and waiting to be installed:
+   * while there is one, a periodic check is not made — offering the update
+   * again would reset the banner showing its progress, or its install button.
+   */
+  private pending: { version: string; downloaded: boolean } | null = null;
+  /** The version the last check offered. */
+  private offeredVersion: string | null = null;
+  /** What is done before installing, and told should the install not quit the app: setBeforeInstall. */
+  private beforeInstall: { prepare: () => Promise<boolean>; abandoned: () => void } | null = null;
+  private firstCheck: ReturnType<typeof setTimeout> | null = null;
+  private periodicCheck: ReturnType<typeof setInterval> | null = null;
   /** The release the last check offered, for its page when installing fails. */
   private offeredTag: string | null = null;
   /** Where the update was downloaded to, to install it by hand when the installer fails. */
@@ -102,6 +120,7 @@ export class UpdateService {
 
     autoUpdater.on('update-downloaded', (event: UpdateDownloadedEvent) => {
       this.downloadedFile = event.downloadedFile;
+      this.pending = { version: event.version, downloaded: true };
       logger.info('Update downloaded', { downloadedFile: event.downloadedFile });
       this.emitDownloaded();
     });
@@ -195,28 +214,60 @@ export class UpdateService {
     return bestTag;
   }
 
-  async checkForUpdates(): Promise<UpdateInfo | null> {
-    if (this.isCheckingForUpdates) {
-      logger.warn('Already checking for updates');
-      return null;
+  /**
+   * Check now for an update, at startup, every day, and when asked from the
+   * About page: what it found. One already under way is joined. Once an
+   * update is downloading or downloaded, that is what is said, and nothing
+   * is checked.
+   */
+  checkForUpdates(): Promise<UpdateCheckResult> {
+    if (this.pending) return Promise.resolve({ status: 'pending', ...this.pending });
+    if (!this.checking) {
+      this.checking = this.check().finally(() => { this.checking = null; });
     }
+    return this.checking;
+  }
 
-    this.isCheckingForUpdates = true;
+  /**
+   * Check at startup, then every UPDATE_CHECK_INTERVAL_MS while the app runs
+   * — asking nothing while an update is downloading or downloaded.
+   */
+  startPeriodicChecks(): void {
+    this.stopPeriodicChecks();
+    // With an update downloading or downloaded, the check says so and asks nothing (checkForUpdates).
+    const checkInBackground = (when: string) => {
+      void this.checkForUpdates().then((result) => logger.info('Update check', { when, status: result.status }));
+    };
+    this.firstCheck = setTimeout(() => {
+      this.firstCheck = null;
+      checkInBackground('startup');
+    }, FIRST_UPDATE_CHECK_DELAY_MS);
+    this.periodicCheck = setInterval(() => checkInBackground('periodic'), UPDATE_CHECK_INTERVAL_MS);
+  }
 
+  stopPeriodicChecks(): void {
+    if (this.firstCheck) clearTimeout(this.firstCheck);
+    if (this.periodicCheck) clearInterval(this.periodicCheck);
+    this.firstCheck = null;
+    this.periodicCheck = null;
+  }
+
+  private async check(): Promise<UpdateCheckResult> {
+    let latestVersion: string | undefined;
     try {
       const channel = await this.configService.getUpdateChannel();
       const latestTag = await this.fetchLatestReleaseTag(channel);
       if (!latestTag) {
         logger.info('No releases found on GitLab', { channel });
-        return null;
+        return { status: 'failed', reason: 'no-release' };
       }
 
-      const latestVersion = latestTag.startsWith('v') ? latestTag.slice(1) : latestTag;
+      latestVersion = latestTag.startsWith('v') ? latestTag.slice(1) : latestTag;
       const currentVersion = app.getVersion();
 
       if (compareVersions(currentVersion, latestVersion) >= 0) {
         logger.info('Already on latest version', { currentVersion, latestVersion, channel });
-        return null;
+        return { status: 'up-to-date', latestVersion };
       }
 
       this.offeredTag = latestTag;
@@ -235,21 +286,25 @@ export class UpdateService {
           platform: process.platform,
           latestVersion,
         });
-        return null;
+        return { status: 'failed', reason: 'unsupported-install', version: latestVersion };
       }
 
       if (result.updateInfo) {
+        this.offeredVersion = result.updateInfo.version;
         return {
-          version: result.updateInfo.version,
-          releaseNotes:
-            typeof result.updateInfo.releaseNotes === 'string'
-              ? result.updateInfo.releaseNotes
-              : undefined,
-          releaseDate: result.updateInfo.releaseDate,
+          status: 'available',
+          update: {
+            version: result.updateInfo.version,
+            releaseNotes:
+              typeof result.updateInfo.releaseNotes === 'string'
+                ? result.updateInfo.releaseNotes
+                : undefined,
+            releaseDate: result.updateInfo.releaseDate,
+          },
         };
       }
 
-      return null;
+      return { status: 'failed', reason: 'error', version: latestVersion, message: 'The updater found no update information' };
     } catch (error) {
       const errorMessage = (error as Error)?.message || '';
       if (errorMessage.includes('404') || errorMessage.includes('Cannot find channel')) {
@@ -259,33 +314,54 @@ export class UpdateService {
           platform: process.platform,
           error: errorMessage,
         });
-        return null;
+        return { status: 'failed', reason: 'no-feed', version: latestVersion };
       }
       logger.error('Failed to check for updates', error);
-      return null;
-    } finally {
-      this.isCheckingForUpdates = false;
+      return { status: 'failed', reason: 'error', ...(latestVersion && { version: latestVersion }), message: errorMessage };
     }
   }
 
   async downloadUpdate(): Promise<void> {
+    this.pending = { version: this.offeredVersion ?? 'unknown', downloaded: false };
     try {
       await autoUpdater.downloadUpdate();
     } catch (error) {
+      // Not downloading any more: checked again, it is offered again.
+      this.pending = null;
       logger.error('Failed to download update', error);
       throw error;
     }
   }
 
   /**
+   * What to do before installing, as installing quits the app: `prepare`
+   * asks the user when work is in flight, and saves the discussions —
+   * false when the user keeps working, and nothing is installed.
+   * `abandoned` is told when the install failed and the app stays open.
+   * The close guard's (CloseGuard), set once the window exists.
+   */
+  setBeforeInstall(prepare: () => Promise<boolean>, abandoned: () => void): void {
+    this.beforeInstall = { prepare, abandoned };
+  }
+
+  /**
    * Install the downloaded update; the app quits to let it finish.
+   *
+   * First made ready to quit (setBeforeInstall): electron-updater installs
+   * before it quits — the .deb by then installed, the Windows installer
+   * started, which ends the app — so asking or saving once it quits would
+   * come too late.
    *
    * electron-updater does not throw when the install fails: it reports an
    * `error` event during the call and the app stays open, so the button
    * that asked for it looked like it did nothing. The error is caught here
    * and handed back, with the release's page to download it from by hand.
    */
-  installUpdate(): UpdateInstallResult {
+  async installUpdate(): Promise<UpdateInstallResult> {
+    if (this.beforeInstall && !(await this.beforeInstall.prepare())) {
+      logger.info('Update install held: the user kept working');
+      return { installed: false, reason: 'kept-working' };
+    }
     logger.info('Installing update and restarting');
     let failure: Error | null = null;
     const onError = (error: Error) => { failure = error; };
@@ -296,12 +372,14 @@ export class UpdateService {
       autoUpdater.removeListener('error', onError);
     }
     if (failure === null) return { installed: true };
+    this.beforeInstall?.abandoned();
     const error = (failure as Error).message;
     logger.error('The update could not be installed', {
       error, tag: this.offeredTag, downloadedFile: this.downloadedFile,
     });
     return {
       installed: false,
+      reason: 'failed',
       error,
       downloadedFile: this.downloadedFile,
       installCommand: this.downloadedFile ? manualInstallCommand(this.downloadedFile) : null,

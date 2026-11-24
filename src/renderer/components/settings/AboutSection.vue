@@ -7,11 +7,15 @@
  * version, the whisper binary's own reported version, and the runtime's own
  * numbers. A value that could not be determined shows as "unknown" rather
  * than being hidden, because a missing component is the thing worth noticing.
+ *
+ * And a check for an update, on demand: the app checks by itself when it
+ * starts and every day, and this says what a check finds now. An update it
+ * finds is offered by the update banner, as one found by itself is.
  */
 
 import { ref, computed, watch } from 'vue';
 
-import type { AboutInfo } from '@shared/types';
+import type { AboutInfo, UpdateCheckResult } from '@shared/types';
 
 import { logger } from '../../utils/logger';
 import Button from '../shared/Button.vue';
@@ -29,6 +33,53 @@ const info = ref<AboutInfo | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const copied = ref(false);
+const checkingForUpdate = ref(false);
+/** What the last check asked for here found; null before one. */
+const updateCheck = ref<UpdateCheckResult | null>(null);
+const updateCheckError = ref<string | null>(null);
+
+async function checkForUpdate(): Promise<void> {
+  checkingForUpdate.value = true;
+  updateCheckError.value = null;
+  try {
+    updateCheck.value = await window.electron.update.check();
+  } catch (cause) {
+    updateCheck.value = null;
+    updateCheckError.value = cause instanceof Error ? cause.message : String(cause);
+    logger.error('Failed to check for updates', { error: cause });
+  } finally {
+    checkingForUpdate.value = false;
+  }
+}
+
+/** What the check found, in words. */
+const updateCheckText = computed((): string | null => {
+  if (updateCheckError.value) return `Could not check: ${updateCheckError.value}`;
+  const result = updateCheck.value;
+  if (!result) return null;
+  switch (result.status) {
+    case 'available':
+      return `Version ${result.update.version} is available: the banner at the top of the window downloads it.`;
+    case 'up-to-date':
+      return `Philibert is up to date (newest release: ${result.latestVersion}).`;
+    case 'pending':
+      return result.downloaded
+        ? `Version ${result.version} is downloaded: the banner at the top of the window installs it.`
+        : `Version ${result.version} is downloading.`;
+    case 'failed':
+      switch (result.reason) {
+        case 'no-release':
+          return 'No release was found on your update channel.';
+        case 'unsupported-install':
+          return `Version ${result.version} is out, but this installation cannot update itself: download it from the repository's releases.`;
+        case 'no-feed':
+          return `Version ${result.version} is out, but has no update for this platform yet.`;
+        case 'error':
+          return `Could not check: ${result.message || 'the update server did not answer'}.`;
+      }
+  }
+  return null;
+});
 
 // Read when the tab is shown rather than on mount: it spawns the whisper
 // binary to ask its version, which is not worth doing for a tab that may
@@ -181,6 +232,44 @@ async function copyAll(): Promise<void> {
           </dd>
         </div>
       </dl>
+    </section>
+
+    <section
+      class="pt-3 border-t border-surface-200 dark:border-surface-700 flex flex-wrap items-center gap-3"
+      data-testid="about-updates"
+    >
+      <div class="flex-1 min-w-0 text-sm">
+        <p
+          v-if="updateCheckText"
+          class="text-surface-800 dark:text-surface-200"
+          data-testid="update-check-result"
+        >
+          {{ updateCheckText }}
+        </p>
+        <p class="text-xs text-surface-500 dark:text-surface-400">
+          Philibert checks for updates when it starts, then every day.
+        </p>
+      </div>
+      <Button
+        variant="secondary"
+        size="sm"
+        :disabled="checkingForUpdate"
+        data-testid="check-for-updates"
+        @click="checkForUpdate"
+      >
+        <Spinner
+          v-if="checkingForUpdate"
+          size="xs"
+          class="mr-1"
+        />
+        <Icon
+          v-else
+          name="refresh"
+          size="xs"
+          class="mr-1"
+        />
+        {{ checkingForUpdate ? 'Checking…' : 'Check for updates' }}
+      </Button>
     </section>
 
     <section class="pt-3 border-t border-surface-200 dark:border-surface-700 flex flex-wrap items-center gap-3">

@@ -207,7 +207,7 @@ async function main(): Promise<void> {
       // Confirm before quitting while a turn or a background task is in
       // flight. Wired here because this is where the window and the service
       // that knows what is running are both in scope.
-      installCloseGuard(
+      const closeGuard = installCloseGuard(
         mainWindow,
         () => claudeService.getRunningWork(),
         () => requestRendererFlush(mainWindow),
@@ -219,6 +219,12 @@ async function main(): Promise<void> {
           },
           hide: closeSplashWindow,
         },
+      );
+      // Restarting to install an update quits too: asked about, and the
+      // discussions saved, before installing (CloseGuard).
+      updateService.setBeforeInstall(
+        () => closeGuard.prepareToQuitForUpdate(),
+        () => closeGuard.quitForUpdateAbandoned(),
       );
 
       // Close splash once main window is visible
@@ -257,11 +263,8 @@ async function main(): Promise<void> {
 
       debugLog('onReady() completed successfully');
 
-      setTimeout(() => {
-        updateService.checkForUpdates().catch((error: unknown) => {
-          logger.warn('Failed to check for updates on startup', error);
-        });
-      }, 5000);
+      // Shortly after starting, then every day while the app runs.
+      updateService.startPeriodicChecks();
     } catch (error) {
       closeSplashWindow();
       debugLog(`onReady() ERROR: ${error instanceof Error ? error.stack : String(error)}`);
@@ -309,6 +312,7 @@ async function main(): Promise<void> {
 
     // Clean up all resources
     gitService?.stopWatching();
+    updateService?.stopPeriodicChecks();
     void gitService?.credentials?.close();
     fileWatcher?.stop();
     // Best effort: an index not saved only costs re-reading, at the next

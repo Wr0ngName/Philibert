@@ -56,6 +56,7 @@ import type {
   TaskNotification,
   ToolCaptureData,
   ToolResultData,
+  UpdateCheckResult,
   UpdateInfo,
   UpdateInstallResult,
   UpdateProgress,
@@ -475,7 +476,8 @@ export interface ElectronAPI {
 
   // Update operations
   update: {
-    check: () => Promise<UpdateInfo | null>;
+    /** Check now; what was found (UpdateCheckResult). An update found is also offered through onAvailable. */
+    check: () => Promise<UpdateCheckResult>;
     download: () => Promise<void>;
     install: () => Promise<UpdateInstallResult>;
     onAvailable: (callback: (info: UpdateInfo) => void) => () => void;

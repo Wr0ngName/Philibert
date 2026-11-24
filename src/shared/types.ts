@@ -1898,6 +1898,28 @@ export interface UpdateInfo {
   releaseDate?: string;
 }
 
+/** Why a check for an update found none to offer, short of the app being up to date. */
+export type UpdateCheckFailure =
+  /** No release on the update channel. */
+  | 'no-release'
+  /** The updater does not update this kind of install (electron-updater answered null). */
+  | 'unsupported-install'
+  /** The newest release has no update feed for this platform. */
+  | 'no-feed'
+  /** The check itself failed: the network, the server. */
+  | 'error';
+
+/** What a check for an update found. */
+export type UpdateCheckResult =
+  /** A newer release, offered: the update banner shows it. */
+  | { status: 'available'; update: UpdateInfo }
+  /** On the newest release of the channel, or newer. */
+  | { status: 'up-to-date'; latestVersion: string }
+  /** An update already being downloaded, or downloaded and waiting to be installed: not checked again. */
+  | { status: 'pending'; version: string; downloaded: boolean }
+  /** None found, and why; `version` is the release found, when one was. */
+  | { status: 'failed'; reason: UpdateCheckFailure; version?: string; message?: string };
+
 /**
  * Progress information for downloading an update
  */
@@ -1908,8 +1930,11 @@ export interface UpdateInfo {
  */
 export type UpdateInstallResult =
   | { installed: true }
+  /** Asked first, with work in flight that restarting stops, the user kept working: nothing was installed. */
+  | { installed: false; reason: 'kept-working' }
   | {
     installed: false;
+    reason: 'failed';
     /** Why, as the installer said it. */
     error: string;
     /** The downloaded package, already on disk. */

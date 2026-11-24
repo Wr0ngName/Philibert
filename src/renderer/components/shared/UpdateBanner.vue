@@ -82,13 +82,14 @@ async function downloadUpdate() {
  * so this is only ever set by a failure — which used to be invisible: the
  * button just did nothing.
  */
-const installFailure = ref<Exclude<UpdateInstallResult, { installed: true }> | null>(null);
+const installFailure = ref<Extract<UpdateInstallResult, { reason: 'failed' }> | null>(null);
 const commandCopied = ref(false);
 
 async function installUpdate() {
   installFailure.value = null;
   const result = await window.electron?.update.install();
-  if (result && !result.installed) installFailure.value = result;
+  // Kept working, when asked about what restarting would stop: as before.
+  if (result && !result.installed && result.reason === 'failed') installFailure.value = result;
 }
 
 async function copyInstallCommand() {
