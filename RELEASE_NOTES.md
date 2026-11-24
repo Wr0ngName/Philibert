@@ -11,9 +11,8 @@ shows it too. Earlier notes are in this file at their tag
 (`git show v0.31.0:RELEASE_NOTES.md`). Each bullet on one line: the app shows
 a line break inside a bullet as one.
 
-## 0.32.1
+## 0.32.2
 
-- **Send a task to the background yourself**: while Claude waits on a command or an agent, its details now have "Send to background", next to "Stop task". Claude stops waiting and carries on; the task keeps running in the background tasks list. No need to wait for its timeout any more.
-- **Details follow a command into the background**: when a command you are looking at moves to the background, by its timeout or by that button, its details switch to the task view by themselves, where its output is. You no longer have to close and reopen them.
-- **Messages to an agent, shown until it reads them**: when Claude sends a message to an agent that is still working, the agent's details show it under its transcript ("1 sent · … reads it at its next step"), as the box above the composer does for yours. Once the agent reads it, it joins the agent's transcript.
-- **Fixed: "compacting" shown several times**: a long compaction added a "compacting" line every 30 seconds; it now shows one.
+- **See when a discussion runs on another system prompt**: a discussion keeps the system prompt it started with, whatever the settings say since. When your system prompt settings (Claude Code's prompt, your instructions, a project's own) no longer match a discussion's, a banner at its top says so. "Review" shows both side by side: continue as is, or start a new discussion on the new prompt when you are ready. Nothing is done to the discussion, so whatever runs in it can finish.
+- **Legacy discussions**: a discussion started before this version is marked as such, with a button to open a new one, for the latest settings to apply.
+- **Fixed: banner buttons shown as plain text**: the buttons of the warning banners (model switched, usage limit) have their color again.
