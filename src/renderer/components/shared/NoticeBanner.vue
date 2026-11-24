@@ -53,16 +53,37 @@ withDefaults(defineProps<{ variant?: 'bar' | 'card' }>(), { variant: 'card' });
   @apply px-3 py-2 rounded-lg border border-amber-200 dark:border-amber-800;
 }
 
-/* The actions are the banner user's buttons, given the banner's look. */
+/* The actions are the banner user's buttons, given the banner's look.
+   A variant (hover:, dark:) has a rule of its own: applied inside a
+   :slotted() rule, Tailwind nests it, and the nested selector loses the
+   slotted content's scope attribute — so the whole rule matched nothing, and
+   the buttons showed as bare text. */
 :slotted(.btn-sm) {
   @apply px-3 py-1 text-sm font-medium rounded-md transition-colors;
 }
 
 :slotted(.btn-amber) {
-  @apply bg-amber-600 text-white hover:bg-amber-700;
+  @apply bg-amber-600 text-white;
+}
+
+:slotted(.btn-amber:hover) {
+  @apply bg-amber-700;
 }
 
 :slotted(.btn-ghost) {
-  @apply text-surface-600 dark:text-surface-400 hover:bg-surface-200 dark:hover:bg-surface-700;
+  @apply text-surface-600;
+}
+
+:slotted(.btn-ghost:hover) {
+  @apply bg-surface-200;
+}
+
+/* The dark variant's, as main.css has it (`.dark` on an ancestor), spelled out the same way. */
+:slotted(.dark .btn-ghost) {
+  @apply text-surface-400;
+}
+
+:slotted(.dark .btn-ghost:hover) {
+  @apply bg-surface-700;
 }
 </style>
