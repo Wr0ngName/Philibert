@@ -16,7 +16,7 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { DEFAULT_CONFIG, type BackgroundTask, type ToolUseInfo } from '@shared/types';
+import { DEFAULT_CONFIG, type BackgroundTask, type ChatMessage, type ToolUseInfo } from '@shared/types';
 
 import { useSettingsStore } from '../../../stores/settings';
 import BackgroundTaskDetailModal from '../BackgroundTaskDetailModal.vue';
@@ -41,7 +41,12 @@ beforeEach(() => {
   useSettingsStore().config = { ...DEFAULT_CONFIG, modalSizes: {} };
   (window as unknown as { electron: unknown }).electron = {
     files: { read: async () => LONG },
-    claude: { readTaskOutput: async () => ({ text: LONG, nextByte: LONG.length, skippedBytes: 0 }) },
+    claude: {
+      readTaskOutput: async () => ({ text: LONG, nextByte: LONG.length, skippedBytes: 0 }),
+      getAgentTranscript: async (): Promise<ChatMessage[]> => Array.from({ length: 200 }, (_, i) => ({
+        id: `t-${i}`, role: i % 2 ? 'assistant' : 'user', content: `Message ${i} of the agent's transcript.`, timestamp: i,
+      })),
+    },
   };
 });
 
@@ -189,5 +194,39 @@ describe("Task Details' command input and output, the same view", () => {
 
     expect(Math.abs(gapBelowOutput())).toBeLessThanOrEqual(2);
     expect(dialogScrolls()).toBe(false);
+  });
+});
+
+describe("an agent's Task Details: its transcript", () => {
+  const agent: BackgroundTask = {
+    id: 'agent-1', toolUseId: 'toolu_agent', taskType: 'agent', description: 'Research',
+    status: 'completed', startedAt: 1, completedAt: 2,
+  } as BackgroundTask;
+
+  async function openedAt(height: number | null): Promise<{ transcript: number; scrolls: boolean }> {
+    useSettingsStore().config.modalSizes = height === null ? {} : { 'task-detail': { width: 900, height } };
+    wrapper = mount(BackgroundTaskDetailModal, { props: { open: true, task: agent, conversationId: 'c1' }, attachTo: document.body });
+    await flushPromises();
+    await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+    const transcript = document.querySelector<HTMLElement>('.agent-transcript')!.getBoundingClientRect().height;
+    const scrolls = dialogScrolls();
+    wrapper.unmount();
+    wrapper = null;
+    return { transcript, scrolls };
+  }
+
+  it('grows and shrinks with the dialog, the dialog itself not scrolling', async () => {
+    const taller = await openedAt(780);
+    const shorter = await openedAt(480);
+
+    expect(taller.transcript).toBeGreaterThan(shorter.transcript + 200);
+    expect(taller.scrolls).toBe(false);
+    expect(shorter.scrolls).toBe(false);
+  });
+
+  it('sized to its content, is the 60% of the window it was', async () => {
+    const { transcript } = await openedAt(null);
+
+    expect(Math.abs(transcript - 0.6 * window.innerHeight)).toBeLessThanOrEqual(2);
   });
 });
