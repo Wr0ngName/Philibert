@@ -141,6 +141,8 @@ import ConfigService from '../ConfigService';
 import agentSentMessageFixture from '../claude/__tests__/fixtures/agent-sent-message.jsonl?raw';
 import { cliTempRoot } from '../claude/task-output';
 
+import { openSession, type OpenSession } from './support/sdk-session';
+
 // Test conversation ID for multi-conversation tests
 const TEST_CONV_ID = 'test-conv-123';
 
@@ -3143,64 +3145,9 @@ describe('ClaudeCodeService', () => {
     const NEW_TOKEN =
       'sk-ant-oat01-the-new-accounts-token-also-long-enough-to-pass-validation';
 
-    /**
-     * A persistent session, driven the way the real one is: it announces its
-     * session id, then stays open between turns while the test decides when
-     * each turn ends. An iterator that simply ends makes the service tear the
-     * session down, and one that never announces an id makes the second
-     * message wait on `sessionReady` for ever — so neither can show any of
-     * this.
-     */
-    function openSession(sdkSessionId = 'sdk-session-1') {
-      const queue: unknown[] = [
-        { type: 'system', subtype: 'init', session_id: sdkSessionId },
-      ];
-      let wake: (() => void) | null = null;
-      let done = false;
-
-      const api = {
-        iterator: {
-          [Symbol.asyncIterator]: async function* () {
-            while (!done) {
-              if (queue.length === 0) {
-                await new Promise<void>((resolve) => { wake = resolve; });
-                continue;
-              }
-              yield queue.shift();
-            }
-          },
-          interrupt: vi.fn(),
-          supportedCommands: vi.fn().mockResolvedValue([]),
-          supportedModels: vi.fn().mockResolvedValue([]),
-          setModel: vi.fn().mockResolvedValue(undefined),
-          close: vi.fn(),
-        },
-        push(message: unknown) {
-          queue.push(message);
-          const w = wake;
-          wake = null;
-          w?.();
-        },
-        /** End the current turn the way the CLI does, with a human-origin result. */
-        endTurn() {
-          api.push({
-            type: 'result', subtype: 'success', session_id: sdkSessionId,
-            origin: { kind: 'human' }, num_turns: 1, duration_ms: 10,
-          });
-        },
-        close() {
-          done = true;
-          const w = wake;
-          wake = null;
-          w?.();
-        },
-      };
-      return api;
-    }
-
     /** Send a message, let the turn finish, and wait until it has. */
     async function sendAndSettle(
-      session: ReturnType<typeof openSession>,
+      session: OpenSession,
       conversationId: string,
       text: string,
       resumeSessionId?: string,

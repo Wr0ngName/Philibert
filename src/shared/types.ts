@@ -2,7 +2,7 @@
  * Shared types used across main, preload, and renderer processes
  */
 
-import type { ClaudeCodePromptMode, ProjectSystemPrompt } from './system-prompt';
+import type { ClaudeCodePromptMode, ProjectSystemPrompt, SystemPromptChoice } from './system-prompt';
 
 /**
  * Role of a message in the chat conversation
@@ -1117,6 +1117,19 @@ export interface Conversation {
   /** SDK session ID for resuming conversation context */
   sdkSessionId?: string;
   /**
+   * The system prompt Claude Code recorded for the discussion, as its first
+   * session started: what it sends from then on, on every resume and through
+   * compaction, whatever the settings say since (@shared/system-prompt).
+   * Absent on a discussion started before it was kept: it is not known.
+   */
+  recordedSystemPrompt?: SystemPromptChoice;
+  /**
+   * The settings' system prompt the user chose to go on with this discussion
+   * under, its own differing ("Continue as is"): the difference is not
+   * pointed out again until the settings change from it.
+   */
+  systemPromptKeptUnder?: SystemPromptChoice;
+  /**
    * How this discussion runs (DiscussionSettings): its own model ('' for
    * Claude Code's default), reasoning effort and thinking mode. Each is absent
    * on a discussion saved before it existed: it is given the app's setting
@@ -1261,6 +1274,10 @@ export interface ConversationUpdate {
   customTitle?: boolean;
   createdAt?: number;
   sdkSessionId?: string;
+  /** See Conversation.recordedSystemPrompt. */
+  recordedSystemPrompt?: SystemPromptChoice;
+  /** See Conversation.systemPromptKeptUnder. */
+  systemPromptKeptUnder?: SystemPromptChoice;
   /** See Conversation.model. */
   model?: string;
   effortLevel?: EffortLevel;
@@ -2241,6 +2258,8 @@ export const IPC_CHANNELS = {
   CLAUDE_STOP_TASK: 'claude:stop-task',
   /** Send one task running in the foreground to the background */
   CLAUDE_BACKGROUND_TASK: 'claude:background-task',
+  /** A new discussion's CLI recorded the system prompt it started on, for good (conversationId, SystemPromptChoice). */
+  CLAUDE_SYSTEM_PROMPT_RECORDED: 'claude:system-prompt-recorded',
   /** Read a background task's output, by task id, from a byte offset */
   CLAUDE_READ_TASK_OUTPUT: 'claude:read-task-output',
   /** An agent task's transcript, as chat messages */

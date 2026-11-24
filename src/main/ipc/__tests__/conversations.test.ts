@@ -245,6 +245,18 @@ describe('Conversations IPC handlers', () => {
       expect(mockConversationService.update).toHaveBeenCalledWith(update);
     });
 
+    it('applies an update saying what system prompt Claude Code recorded, and the one gone on under', async () => {
+      const update = {
+        ...sampleUpdate,
+        recordedSystemPrompt: { claudeCodePrompt: true, instructions: 'Be brief.' },
+        systemPromptKeptUnder: { claudeCodePrompt: false, instructions: '' },
+      };
+
+      await handler({}, update);
+
+      expect(mockConversationService.update).toHaveBeenCalledWith(update);
+    });
+
     it.each([
       ['not an object', 'not-an-object'],
       ['null', null],
@@ -261,6 +273,9 @@ describe('Conversations IPC handlers', () => {
       ['with updatedAt not a number', { ...sampleUpdate, updatedAt: 'invalid' }],
       ['with lastReceivedAt zero', { ...sampleUpdate, lastReceivedAt: 0 }],
       ['with lastReceivedAt not a number', { ...sampleUpdate, lastReceivedAt: '18:58' }],
+      ['with a recorded system prompt not a choice', { ...sampleUpdate, recordedSystemPrompt: 'claude_code' }],
+      ['with a recorded system prompt missing its instructions', { ...sampleUpdate, recordedSystemPrompt: { claudeCodePrompt: true } }],
+      ['with a system prompt gone on under not a choice', { ...sampleUpdate, systemPromptKeptUnder: { claudeCodePrompt: 'on', instructions: '' } }],
     ])('refuses an update %s, writing nothing', async (_name, invalid) => {
       // ValidationError is caught and wrapped in ConfigurationError by the handler
       await expect(handler({}, invalid)).rejects.toThrow(ConfigurationError);

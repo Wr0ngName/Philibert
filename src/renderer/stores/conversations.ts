@@ -8,6 +8,7 @@ import { ref, computed, watch } from 'vue';
 
 import { isAfter, isArchived, newestFirst } from '@shared/conversation-list';
 import { titleFromMessages } from '@shared/conversation-title';
+import type { SystemPromptChoice } from '@shared/system-prompt';
 import type {
   AutoArchiveDays,
   ChatMessage,
@@ -47,6 +48,15 @@ export const useConversationsStore = defineStore('conversations', () => {
   // SDK session IDs per conversation (for resume support)
   // This is stored in memory, not persisted - sessions are only valid for the current app session
   const sdkSessionIds = ref<Map<string, string>>(new Map());
+
+  /**
+   * The system prompt Claude Code recorded for each discussion
+   * (Conversation.recordedSystemPrompt), by id, and the settings' prompt the
+   * user chose to go on under despite it (Conversation.systemPromptKeptUnder):
+   * saved with the discussion, held as the session ids are.
+   */
+  const recordedSystemPrompts = ref<Map<string, SystemPromptChoice>>(new Map());
+  const systemPromptsKeptUnder = ref<Map<string, SystemPromptChoice>>(new Map());
 
   /**
    * Each discussion's own model, effort and thinking mode
@@ -527,6 +537,13 @@ export const useConversationsStore = defineStore('conversations', () => {
         discussionSettings.value.set(id, storedSettings(conversation));
       }
 
+      if (conversation.recordedSystemPrompt && !recordedSystemPrompts.value.has(id)) {
+        recordedSystemPrompts.value.set(id, conversation.recordedSystemPrompt);
+      }
+      if (conversation.systemPromptKeptUnder && !systemPromptsKeptUnder.value.has(id)) {
+        systemPromptsKeptUnder.value.set(id, conversation.systemPromptKeptUnder);
+      }
+
       // Restore SDK session ID from persisted data (for resume support after app restart)
       if (conversation.sdkSessionId) {
         sdkSessionIds.value.set(id, conversation.sdkSessionId);
@@ -860,6 +877,9 @@ export const useConversationsStore = defineStore('conversations', () => {
 
     // Get SDK session ID from in-memory map (for persistence)
     const sdkSessionId = sdkSessionIds.value.get(conversationId);
+    // Plain copies, as Electron copies across IPC; left out when not known, keeping what was saved.
+    const recordedSystemPrompt = recordedSystemPrompts.value.get(conversationId);
+    const systemPromptKeptUnder = systemPromptsKeptUnder.value.get(conversationId);
 
     // Use last message timestamp for ordering (so history sorts by last message, not last access)
     const lastMessageAt = tracked.length > 0
@@ -925,6 +945,8 @@ export const useConversationsStore = defineStore('conversations', () => {
       createdAt: existingConv?.createdAt || Date.now(),
       updatedAt: lastMessageAt,
       sdkSessionId,
+      ...(recordedSystemPrompt ? { recordedSystemPrompt: { ...recordedSystemPrompt } } : {}),
+      ...(systemPromptKeptUnder ? { systemPromptKeptUnder: { ...systemPromptKeptUnder } } : {}),
       // Its own settings, held since it was started or opened; one never
       // opened in this run keeps what was saved (the fields are left out).
       ...(discussionSettings.value.get(conversationId) ?? {}),
@@ -1800,6 +1822,37 @@ export const useConversationsStore = defineStore('conversations', () => {
     });
   }
 
+  /** A new session of the discussion started on a system prompt, which Claude Code records for it. */
+  function setRecordedSystemPrompt(conversationId: string, choice: SystemPromptChoice): void {
+    recordedSystemPrompts.value.set(conversationId, choice);
+  }
+
+  /**
+   * The system prompt Claude Code recorded for a discussion — held since it
+   * was opened or started, as its session id is; undefined when not known.
+   */
+  function recordedSystemPromptOf(conversationId: string): SystemPromptChoice | undefined {
+    return recordedSystemPrompts.value.get(conversationId);
+  }
+
+  /** The settings' prompt the user chose to go on under in a discussion, its own differing; undefined for none. */
+  function systemPromptKeptUnderOf(conversationId: string): SystemPromptChoice | undefined {
+    return systemPromptsKeptUnder.value.get(conversationId);
+  }
+
+  /**
+   * Go on with the discussion on screen under the settings' prompt `current`,
+   * its own differing: saved now, so a restart keeps the choice.
+   */
+  async function keepSystemPromptUnder(current: SystemPromptChoice): Promise<void> {
+    const id = currentConversationId.value;
+    if (!id) return;
+    systemPromptsKeptUnder.value.set(id, { claudeCodePrompt: current.claudeCodePrompt, instructions: current.instructions });
+    await saveCurrentConversation().catch((err) => {
+      logger.warn('Failed to save going on under the settings\' system prompt', { id, error: err });
+    });
+  }
+
   /**
    * Get SDK session ID for a conversation (for resume support)
    */
@@ -2012,6 +2065,10 @@ export const useConversationsStore = defineStore('conversations', () => {
     // SDK session management (for resume support)
     setSdkSessionId,
     getSdkSessionId,
+    setRecordedSystemPrompt,
+    recordedSystemPromptOf,
+    systemPromptKeptUnderOf,
+    keepSystemPromptUnder,
     getConversationWorkingDirectory,
     currentConversationHasSession,
 

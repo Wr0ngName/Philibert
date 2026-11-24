@@ -5,6 +5,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type { ElectronAPI } from '../shared/preload-api';
+import type { SystemPromptChoice } from '../shared/system-prompt';
 import { IPC_CHANNELS, ActionResponse, type AskUserQuestionResponse, type DiscussionSettings, type McpServerInput, type MessageImage, type ProjectPermissionEntry, type PromptDeliveryState, type RendererLogEntry, type SessionPermissionEntry, type SessionSchedule, type ToolCaptureData, type ToolResultData, type UsageLimitStop, type UsageWarning } from '../shared/types';
 
 // Create the API object that will be exposed to the renderer
@@ -247,6 +248,12 @@ const electronAPI: ElectronAPI = {
       const handler = (_event: Electron.IpcRendererEvent, conversationId: string) => callback(conversationId);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_SESSION_GONE, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_SESSION_GONE, handler);
+    },
+
+    onSystemPromptRecorded: (callback: (conversationId: string, choice: SystemPromptChoice) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, conversationId: string, choice: SystemPromptChoice) => callback(conversationId, choice);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_SYSTEM_PROMPT_RECORDED, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_SYSTEM_PROMPT_RECORDED, handler);
     },
 
     sessionExists: (sessionId: string) => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SESSION_EXISTS, sessionId),

@@ -7,6 +7,7 @@
  * can answer several runs.
  */
 
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -37,11 +38,11 @@ export interface ApiRequest {
  */
 export type ApiAnswer = ToolCall[] | number | Promise<ToolCall[]>;
 
-/** Stream `calls`, or a line of text when there are none, as the API streams a reply. */
-function stream(response: http.ServerResponse, calls: ToolCall[]): void {
+/** Stream `calls`, or a line of text when there are none, as the API streams a reply under `id`. */
+function stream(response: http.ServerResponse, calls: ToolCall[], id: string): void {
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   const send = (event: string, data: object) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  send('message_start', { type: 'message_start', message: { id: 'msg_test', type: 'message', role: 'assistant', model: 'claude-sonnet-4-5', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } });
+  send('message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model: 'claude-sonnet-4-5', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } });
   if (calls.length === 0) {
     send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
     send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Done.' } });
@@ -62,11 +63,24 @@ export interface FakeAnthropic {
   close(): Promise<void>;
 }
 
+export interface FakeAnthropicOptions {
+  /**
+   * The id of the reply to a request. A new one for each by default, as the
+   * API gives. One id for every reply of a run makes the CLI take them for
+   * a single message — so that a compaction finds nothing to keep beside its
+   * summary, and summarizes everything (CLI 2.1.280).
+   */
+  messageId?: (request: ApiRequest) => string;
+}
+
 /**
  * Serve the Messages API from `answer`. Token counts are answered by the
  * server itself, and are not passed to `answer`.
  */
-export async function startFakeAnthropic(answer: (request: ApiRequest) => ApiAnswer): Promise<FakeAnthropic> {
+export async function startFakeAnthropic(
+  answer: (request: ApiRequest) => ApiAnswer,
+  options: FakeAnthropicOptions = {},
+): Promise<FakeAnthropic> {
   const server = http.createServer((request, response) => {
     let body = '';
     request.on('data', (chunk) => (body += chunk));
@@ -79,13 +93,14 @@ export async function startFakeAnthropic(answer: (request: ApiRequest) => ApiAns
       }
       void (async () => {
         const run = String(request.headers['x-test-run'] ?? new URL(url, 'http://x').searchParams.get('run') ?? '');
-        const answered = await answer({ run, url, body: JSON.parse(body) });
+        const asked: ApiRequest = { run, url, body: JSON.parse(body) };
+        const answered = await answer(asked);
         if (typeof answered === 'number') {
           response.writeHead(answered, { 'content-type': 'application/json' });
           response.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'test server' } }));
           return;
         }
-        stream(response, answered);
+        stream(response, answered, options.messageId?.(asked) ?? `msg_${randomUUID()}`);
       })();
     });
   });

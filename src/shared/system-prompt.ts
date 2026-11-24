@@ -8,10 +8,14 @@
  * guidance on its tools, git, tasks and answers — made for working on code,
  * so it is used by default in a git repository and not elsewhere.
  *
- * The CLI records a discussion's system prompt on its first request and keeps
- * sending that record, on resume too, until the discussion is compacted
- * (`systemPromptSnapshot`, on by default where the account has it). A change
- * here applies to discussions started after it.
+ * The CLI records a discussion's system prompt on its first request and
+ * sends that record from then on: on every resume, whatever the resume asks
+ * for, and through a compaction that keeps recent messages; one that
+ * summarizes everything records anew the prompt its session started on
+ * (`systemPromptSnapshot`, on by default where the account has it; measured
+ * against CLI 2.1.280). So a change here applies to discussions started after
+ * it. One started before runs on, on its own, and says so
+ * (Conversation.recordedSystemPrompt).
  */
 
 /** Whether Claude Code's system prompt is used: in git repositories only, always, or never. */
@@ -31,6 +35,18 @@ export interface SystemPromptChoice {
   claudeCodePrompt: boolean;
   /** The instructions told after it, '' for none. */
   instructions: string;
+}
+
+/** Whether a value, as it crossed IPC or was read back, is a choice. */
+export function isSystemPromptChoice(value: unknown): value is SystemPromptChoice {
+  if (typeof value !== 'object' || value === null) return false;
+  const { claudeCodePrompt, instructions } = value as Record<string, unknown>;
+  return typeof claudeCodePrompt === 'boolean' && typeof instructions === 'string';
+}
+
+/** Whether two choices tell Claude the same. */
+export function sameSystemPrompt(a: SystemPromptChoice, b: SystemPromptChoice): boolean {
+  return a.claudeCodePrompt === b.claudeCodePrompt && a.instructions === b.instructions;
 }
 
 /** The mode a project runs under: its own if it has one, else the general one. */

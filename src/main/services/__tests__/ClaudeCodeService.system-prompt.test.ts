@@ -4,6 +4,10 @@
  * handed to the SDK. What the CLI makes of each option is pinned against the
  * real CLI in claude/__tests__/system-prompt-options.cli.test.ts.
  *
+ * And what the renderer is told the CLI recorded for a discussion, to
+ * compare with the settings: the prompt a new discussion starts on, and the
+ * one its session started on once a compaction summarized everything.
+ *
  * Real: ConfigService, GitService running git in temporary folders, and the
  * service under test. Mocked, as external boundaries: the SDK's query,
  * electron, electron-store, and `fs` for the CLI's temp root.
@@ -17,9 +21,10 @@ import { promisify } from 'node:util';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockQuery, mockStoreData } = vi.hoisted(() => ({
+const { mockQuery, mockStoreData, mockSend } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
   mockStoreData: {} as Record<string, unknown>,
+  mockSend: vi.fn(),
 }));
 
 vi.mock('electron', () => ({
@@ -78,13 +83,15 @@ vi.mock('../../utils/paths', async (importOriginal) => ({
   getUserDataPath: () => '/user-data',
 }));
 
-vi.mock('../../utils/ipc-helpers', () => ({ createSender: vi.fn(() => vi.fn()) }));
+vi.mock('../../utils/ipc-helpers', () => ({ createSender: vi.fn(() => mockSend) }));
 
+import { IPC_CHANNELS } from '../../../shared/types';
 import { createMockBrowserWindow } from '../../__tests__/setup';
 import ClaudeCodeService from '../ClaudeCodeService';
 import ConfigService from '../ConfigService';
 
 import { REAL_DISK_TEST_TIMEOUT_MS } from './support/real-disk';
+import { openSession, type OpenSession } from './support/sdk-session';
 
 // Real git, in temporary folders: given the machine's time (see real-disk).
 vi.setConfig({ testTimeout: REAL_DISK_TEST_TIMEOUT_MS });
@@ -120,6 +127,8 @@ async function systemPromptIn(folder: string): Promise<unknown> {
 
 beforeEach(async () => {
   for (const key of Object.keys(mockStoreData)) delete mockStoreData[key];
+  mockSend.mockClear();
+  mockQuery.mockReset();
   mockQuery.mockImplementation(() => endingSession());
 
   root = realFs.mkdtempSync(path.join(os.tmpdir(), 'philibert-system-prompt-'));
@@ -172,5 +181,71 @@ describe('a discussion starts', () => {
 
     expect(await systemPromptIn(repository)).toBe('Answer in French.\n\nCommit messages on one line.');
     expect(await systemPromptIn(plain)).toEqual({ type: 'preset', preset: 'claude_code', append: 'Answer in French.' });
+  });
+});
+
+describe('what the renderer is told the CLI recorded for a discussion', () => {
+  const CONVERSATION = 'conversation-recorded';
+  const FRENCH = { claudeCodePrompt: false, instructions: 'Answer in French.' };
+  const sessions: OpenSession[] = [];
+
+  const recorded = () => mockSend.mock.calls
+    .filter((call) => call[0] === IPC_CHANNELS.CLAUDE_SYSTEM_PROMPT_RECORDED && call[1] === CONVERSATION)
+    .map((call) => call[2]);
+
+  /** A first message in the plain folder, resuming the discussion or not; its session left open. */
+  async function started(resume?: string): Promise<OpenSession> {
+    const session = openSession('sdk-1');
+    sessions.push(session);
+    mockQuery.mockReturnValueOnce(session.iterator);
+    const turn = service.sendMessage(CONVERSATION, 'Hello', plain, resume);
+    await vi.waitFor(() => expect(service.isConversationActive(CONVERSATION)).toBe(true));
+    session.endTurn();
+    await turn;
+    return session;
+  }
+
+  /** A compaction, as the CLI says it happened: with what it kept beside its summary, or nothing. */
+  const compacted = (kept: Record<string, unknown>) =>
+    ({ type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'manual', pre_tokens: 10, ...kept } });
+
+  beforeEach(async () => {
+    await configService.setConfig({ claudeCodePrompt: 'off', customInstructions: FRENCH.instructions });
+  });
+
+  afterEach(() => {
+    for (const session of sessions.splice(0)) session.close();
+  });
+
+  it('is the prompt a new discussion starts on', async () => {
+    await started();
+
+    expect(recorded()).toEqual([FRENCH]);
+  });
+
+  it('is nothing for a discussion resumed: the CLI keeps what it recorded', async () => {
+    await started('sdk-1');
+
+    expect(recorded()).toEqual([]);
+  });
+
+  it('is the prompt its session started on, once a compaction summarized everything', async () => {
+    const session = await started('sdk-1');
+
+    session.push(compacted({}));
+
+    await vi.waitFor(() => expect(recorded()).toEqual([FRENCH]));
+  });
+
+  it('is nothing for a compaction that kept recent messages, which carries the record over', async () => {
+    const session = await started('sdk-1');
+
+    session.push(compacted({ preserved_segment: { head_uuid: 'h', anchor_uuid: 'a', tail_uuid: 't' } }));
+    session.push(compacted({ preserved_messages: { anchor_uuid: 'a', uuids: ['h'] } }));
+    // A message after them, said once handled: they were handled before it.
+    session.push({ type: 'system', subtype: 'status', status: 'compacting' });
+    await vi.waitFor(() => expect(mockSend.mock.calls.some((call) => call[0] === IPC_CHANNELS.CLAUDE_SYSTEM_NOTE && call[1] === CONVERSATION)).toBe(true));
+
+    expect(recorded()).toEqual([]);
   });
 });

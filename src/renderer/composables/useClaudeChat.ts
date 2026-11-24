@@ -59,6 +59,7 @@ let cleanupUsageUpdate: (() => void) | null = null;
 let cleanupActiveQueries: (() => void) | null = null;
 let cleanupSessionId: (() => void) | null = null;
 let cleanupSessionGone: (() => void) | null = null;
+let cleanupSystemPromptRecorded: (() => void) | null = null;
 let cleanupSessionPermissions: (() => void) | null = null;
 let cleanupSessionSchedules: (() => void) | null = null;
 let cleanupToolExecuted: (() => void) | null = null;
@@ -1073,6 +1074,11 @@ export function useClaudeChat() {
       conversationsStore.setSdkSessionId(conversationId, sessionId);
     });
 
+    // A new discussion's session recorded the system prompt it started on: kept with the discussion.
+    cleanupSystemPromptRecorded = window.electron.claude.onSystemPromptRecorded((conversationId, choice) => {
+      conversationsStore.setRecordedSystemPrompt(conversationId, choice);
+    });
+
     // A resume found the session gone: the discussion is archived for good.
     cleanupSessionGone = window.electron.claude.onSessionGone((conversationId) => {
       conversationsStore.markSessionGone(conversationId);
@@ -1220,6 +1226,10 @@ export function useClaudeChat() {
     if (cleanupSessionGone) {
       cleanupSessionGone();
       cleanupSessionGone = null;
+    }
+    if (cleanupSystemPromptRecorded) {
+      cleanupSystemPromptRecorded();
+      cleanupSystemPromptRecorded = null;
     }
     if (cleanupSessionSchedules) {
       cleanupSessionSchedules();

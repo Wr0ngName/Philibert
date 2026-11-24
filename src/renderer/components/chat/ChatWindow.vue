@@ -22,6 +22,7 @@ import InputBox from './InputBox.vue';
 import MessageList from './MessageList.vue';
 import type { TaskActionPending } from './RunningTaskActions.vue';
 import TaskListPanel from './TaskListPanel.vue';
+import SystemPromptBanner from './SystemPromptBanner.vue';
 import ToolDetailModal from './ToolDetailModal.vue';
 import UsageLimitBanner from './UsageLimitBanner.vue';
 import Toast from '../shared/Toast.vue';
@@ -473,6 +474,9 @@ function openTaskOfToolCall(taskId: string) {
         </div>
       </div>
     </TransitionFade>
+
+    <!-- A discussion keeps the system prompt it started with: said when the settings differ -->
+    <SystemPromptBanner />
 
     <!-- Task list panel (model's SDK todo list) -->
     <TransitionFade type="slideUp">

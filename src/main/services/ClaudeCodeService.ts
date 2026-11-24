@@ -54,6 +54,7 @@ import {
   stripContextVariant,
   stripDateSuffix,
 } from '../../shared/model-id';
+import type { SystemPromptChoice } from '../../shared/system-prompt';
 import {
   AgentInfo,
   GlobalToolStatus,
@@ -304,6 +305,12 @@ interface SessionInstance {
    * the session is replaced rather than reused.
    */
   authGeneration: number;
+  /**
+   * The system prompt the session was started with (@shared/system-prompt):
+   * what the CLI records for the discussion should it record anew — as a new
+   * discussion does, and a compaction that summarizes everything.
+   */
+  systemPrompt: SystemPromptChoice;
 }
 
 export class ClaudeCodeService {
@@ -651,6 +658,7 @@ export class ClaudeCodeService {
           this.processingSessions.delete(convId);
           this.emitActiveQueryCount();
         });
+        this.channelService.setOnSystemPromptRecorded((convId, choice) => this.emitSystemPromptRecorded(convId, choice));
       }
       this.processingSessions.add(conversationId);
       this.emitActiveQueryCount();
@@ -1168,6 +1176,11 @@ export class ClaudeCodeService {
       onSessionIdle: () => {
         this.endStrandedTurn(conversationId, 'session reported idle');
       },
+      onCompacted: (summarizedEverything: boolean) => {
+        // The CLI records the prompt anew: the one this session started on.
+        const session = this.activeSessions.get(conversationId);
+        if (summarizedEverything && session) this.emitSystemPromptRecorded(conversationId, session.systemPrompt);
+      },
       onSessionId: (sessionId: string) => {
         // Capture session ID for constructing SDKUserMessage
         const session = this.activeSessions.get(conversationId);
@@ -1376,9 +1389,12 @@ export class ClaudeCodeService {
         // Recorded now, because `authEnv` above was read now. See
         // invalidateSessionAuth.
         authGeneration: this.authGeneration,
+        systemPrompt: systemPromptChoice,
       };
       this.activeSessions.set(conversationId, session);
       this.emitActiveQueryCount();
+      // A new discussion: the CLI records the prompt it starts on, for good.
+      if (!shouldResume) this.emitSystemPromptRecorded(conversationId, systemPromptChoice);
 
       // If resuming with an explicit model preference, apply it after session initializes.
       // The first turn uses the resumed session's model; subsequent turns use the selected model.
@@ -2451,6 +2467,22 @@ export class ClaudeCodeService {
    */
   private emitUsageUpdate(conversationId: string, usage: SessionUsage): void {
     this.send(IPC_CHANNELS.CLAUDE_USAGE_UPDATE, conversationId, usage);
+  }
+
+  /**
+   * The system prompt a new discussion's session started on, for the
+   * renderer to keep with the discussion.
+   *
+   * Claude Code records it on the discussion's first request and sends that
+   * record from then on: on every resume, whatever it is asked for, and
+   * through a compaction that keeps recent messages. One that summarizes
+   * everything records the prompt anew: the one the session started on
+   * (measured against CLI 2.1.280, pinned in
+   * system-prompt-options.cli.test.ts). So it is the prompt the discussion
+   * runs on, which the renderer compares with the settings.
+   */
+  private emitSystemPromptRecorded(conversationId: string, choice: SystemPromptChoice): void {
+    this.send(IPC_CHANNELS.CLAUDE_SYSTEM_PROMPT_RECORDED, conversationId, choice);
   }
 
   /**

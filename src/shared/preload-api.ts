@@ -3,6 +3,7 @@
  */
 
 import type { ModelDownloadProgress } from './speech';
+import type { SystemPromptChoice } from './system-prompt';
 import type {
   ChatMessage,
   MessageImage,
@@ -218,6 +219,8 @@ export interface ElectronAPI {
     onSessionId: (callback: (conversationId: string, sessionId: string) => void) => () => void;
     /** A discussion's Claude Code session turned out gone: seen deleted, or found so on resuming */
     onSessionGone: (callback: (conversationId: string) => void) => () => void;
+    /** A new discussion's session started on a system prompt, which Claude Code records for it for good */
+    onSystemPromptRecorded: (callback: (conversationId: string, choice: SystemPromptChoice) => void) => () => void;
     /** Whether a Claude Code session's transcript is still on disk */
     sessionExists: (sessionId: string) => Promise<boolean>;
     /** How long Claude Code keeps sessions (`cleanupPeriodDays` in its user settings) */

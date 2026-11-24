@@ -1039,6 +1039,8 @@ export class ConversationService {
       ...(update.customTitle !== undefined ? { customTitle: update.customTitle } : {}),
       ...(update.createdAt !== undefined ? { createdAt: base.createdAt || update.createdAt } : {}),
       ...(update.sdkSessionId !== undefined ? { sdkSessionId: update.sdkSessionId } : {}),
+      ...(update.recordedSystemPrompt !== undefined ? { recordedSystemPrompt: update.recordedSystemPrompt } : {}),
+      ...(update.systemPromptKeptUnder !== undefined ? { systemPromptKeptUnder: update.systemPromptKeptUnder } : {}),
       ...(update.model !== undefined ? { model: update.model } : {}),
       ...(update.effortLevel !== undefined ? { effortLevel: update.effortLevel } : {}),
       ...(update.thinkingMode !== undefined ? { thinkingMode: update.thinkingMode } : {}),

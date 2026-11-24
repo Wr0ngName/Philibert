@@ -7,6 +7,7 @@ import * as path from 'node:path';
 
 import { app, ipcMain } from 'electron';
 
+import { isSystemPromptChoice } from '../../shared/system-prompt';
 import {
   AUTO_ARCHIVE_DAYS,
   AutoArchiveDays,
@@ -267,6 +268,11 @@ export function setupConversationIPC(
       }
       if (update.lastReceivedAt !== undefined && (typeof update.lastReceivedAt !== 'number' || update.lastReceivedAt <= 0)) {
         throw new ValidationError('Conversation lastReceivedAt must be a positive timestamp', 'lastReceivedAt', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+      }
+      for (const field of ['recordedSystemPrompt', 'systemPromptKeptUnder'] as const) {
+        if (update[field] !== undefined && !isSystemPromptChoice(update[field])) {
+          throw new ValidationError(`Conversation ${field} must be a system prompt choice`, field, ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+        }
       }
 
       logger.info('IPC: conversation:update called', {

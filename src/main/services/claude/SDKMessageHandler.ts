@@ -262,6 +262,14 @@ export interface MessageHandlerCallbacks {
    */
   onSessionIdle?: () => void;
   /**
+   * The conversation was compacted. `summarizedEverything`: into its summary
+   * alone, none of its recent messages kept beside it — after which the CLI
+   * records the system prompt anew, the one the session was started on
+   * (CLI 2.1.280, pinned in system-prompt-options.cli.test.ts); one that
+   * keeps recent messages carries the recorded prompt over.
+   */
+  onCompacted?: (summarizedEverything: boolean) => void;
+  /**
    * The CLI reports a turn starting — one the user sent, or one it began by
    * itself because a background task finished.
    */
@@ -1105,6 +1113,11 @@ export class SDKMessageHandler {
       // task_started, an agent's: 1 when the main conversation spawned it,
       // one more per agent above it.
       spawn_depth?: number;
+      // compact_boundary: what of the conversation the compaction kept (SDKCompactBoundaryMessage)
+      compact_metadata?: {
+        preserved_segment?: unknown;
+        preserved_messages?: unknown;
+      };
       // background_tasks_changed: every live task after the change
       tasks?: {
         task_id: string;
@@ -1207,6 +1220,13 @@ export class SDKMessageHandler {
         this.callbacks.onSystemNote(status);
       }
       this.status = status;
+    }
+
+    // The SDK's own words: the kept messages are "Unset when compaction
+    // summarizes everything".
+    if (systemMsg.subtype === 'compact_boundary' && systemMsg.compact_metadata) {
+      const { preserved_messages: keptMessages, preserved_segment: keptSegment } = systemMsg.compact_metadata;
+      this.callbacks.onCompacted?.(!keptMessages && !keptSegment);
     }
 
     // The CLI swapped models because a safety classifier flagged the turn.

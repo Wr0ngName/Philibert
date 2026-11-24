@@ -6,12 +6,13 @@
  * is only how they look.
  *
  * `bar` spans the window under its header, as a strip; `card` sits inside the
- * chat, above the input, as a rounded block.
+ * chat, as a rounded block. The message is one line, cut to fit, unless
+ * `wrap`: for one that explains, and must be read whole.
  */
 
 import Icon from './Icon.vue';
 
-withDefaults(defineProps<{ variant?: 'bar' | 'card' }>(), { variant: 'card' });
+withDefaults(defineProps<{ variant?: 'bar' | 'card'; wrap?: boolean }>(), { variant: 'card', wrap: false });
 </script>
 
 <template>
@@ -26,7 +27,7 @@ withDefaults(defineProps<{ variant?: 'bar' | 'card' }>(), { variant: 'card' });
         size="sm"
         class="shrink-0 text-amber-600 dark:text-amber-400"
       />
-      <span class="truncate"><slot /></span>
+      <span :class="wrap ? 'min-w-0' : 'truncate'"><slot /></span>
     </div>
     <div
       v-if="$slots.actions"

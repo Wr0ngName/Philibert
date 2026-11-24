@@ -78,6 +78,7 @@ export class ChannelService {
   private notificationService: NotificationService;
   private authValidator: AuthValidator;
   private onTurnDone: ((conversationId: string) => void) | null = null;
+  private onSystemPromptRecorded: ((conversationId: string, choice: SystemPromptChoice) => void) | null = null;
 
   // Per-tool signal: MCP resolves it when done. PTY awaits it
   // to decide whether to emit as fallback.
@@ -99,6 +100,11 @@ export class ChannelService {
 
   setOnTurnDone(callback: (conversationId: string) => void): void {
     this.onTurnDone = callback;
+  }
+
+  /** Told the prompt a new discussion's session starts on, which its CLI records for good. */
+  setOnSystemPromptRecorded(callback: (conversationId: string, choice: SystemPromptChoice) => void): void {
+    this.onSystemPromptRecorded = callback;
   }
 
   private emitDone(conversationId: string): void {
@@ -374,6 +380,8 @@ export class ChannelService {
     };
 
     this.sessions.set(conversationId, active);
+    // A new discussion: the CLI records the prompt it starts on.
+    if (!resumeSessionId) this.onSystemPromptRecorded?.(conversationId, systemPrompt);
 
     active.usageTimer = setInterval(() => {
       this.pollUsage(conversationId);
