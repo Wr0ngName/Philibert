@@ -115,6 +115,8 @@ export interface HeldList {
   workingDirectory: string;
   /** Not read yet: the list is mounted, sized, and says it is opening. */
   opening?: boolean;
+  /** When something last arrived from what is listed; null or absent when nothing has. */
+  lastReceivedAt?: number | null;
 }
 
 /**
@@ -131,9 +133,7 @@ export function heldListSource(read: () => HeldList): MessageListSource {
     // size when the messages arrive: mounted with them, it had none yet, and
     // the virtual list rendered every row of a long transcript at once.
     get opening() { return read().opening ?? false; },
-    // An agent's transcript is read once it is written: its view says how the
-    // agent is doing, so the list has no arrival time of its own to give.
-    lastReceivedAt: null,
+    get lastReceivedAt() { return read().lastReceivedAt ?? null; },
     runningTaskCount: 0,
     streamingContent: '',
     // Held in full, so it only ever grows by what arrived.

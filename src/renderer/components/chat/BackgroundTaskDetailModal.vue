@@ -21,6 +21,7 @@ import { useAgentTranscript, useCommandOutput } from '../../composables/useTaskD
 import { canSendToBackground, namedTaskId, useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { unreadMessagesToAgent } from '../../utils/agent-messages';
+import { lastReceivedInTranscript } from '../../utils/last-received';
 import { formatModelId } from '../../utils/model';
 import { formatTaskDuration } from '../../utils/task-duration';
 import { formatTokenCount } from '../../utils/token-count';
@@ -97,6 +98,7 @@ const transcriptSource = heldListSource(() => ({
   isLoading: isRunning.value,
   workingDirectory: conversationsStore.getConversationWorkingDirectory(props.conversationId) ?? '',
   opening: !transcript.loaded.value,
+  lastReceivedAt: lastReceivedInTranscript(transcript.messages.value),
 }));
 
 /** Who the transcript's assistant turns are from. */

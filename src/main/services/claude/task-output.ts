@@ -278,6 +278,9 @@ export function transcriptToMessages(
           ...call.toolUse,
           status: block.is_error ? 'failed' : 'executed',
           outputFile: storeResult(block.tool_use_id, text),
+          // When its result came back: the call's end, and something heard
+          // from the agent (its view's last-received line).
+          ...(timestamp > 0 && { completedAt: timestamp }),
         };
         if (images.length > 0) foundImages?.(call, images);
       }

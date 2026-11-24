@@ -41,6 +41,7 @@ import { mergeByTime, messagesSentToAgent, transcriptToMessages } from '../../..
 import '../../../preload/preload';
 import ChatWindow from '../../components/chat/ChatWindow.vue';
 import { TASK_FEED_INTERVAL_MS } from '../../composables/useTaskDetailFeed';
+import { lastReceivedLine } from '../../utils/last-received';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
@@ -250,6 +251,32 @@ describe('background tasks, panel and detail', () => {
     expect(transcriptReads).toBe(2);
     expect(modal.querySelectorAll('.tool-use-entry').length).toBeGreaterThan(before);
     expect(modal.textContent).toContain('Task complete');
+  });
+
+  // Asked for: the agent's view ends as the discussion does, with when it was
+  // last heard from — the agent, not the discussion.
+  it('ends with when the agent was last heard from, once it has ended: its last call coming back', async () => {
+    // Up to the foreground Bash's result, its time moved on: the line says
+    // minutes, and the fixture's call and result are in the same one.
+    const resultAt = '2026-10-26T19:42:00.000Z';
+    mainHandlers.set('claude:get-agent-transcript', () => transcriptToMessages(
+      [...transcript.slice(0, 8), { ...transcript[8], timestamp: resultAt } as SessionMessage],
+      (id) => `/results/${id}.txt`,
+    ));
+    // Opened while it runs — the panel lists running tasks only — then ended.
+    const modal = await openTask('builder');
+    notify({ taskId: 'agent-1', status: 'completed', toolUseId: 'toolu_agent' });
+    await settle(20);
+
+    const lines = [...modal.querySelectorAll('.last-received')].map((line) => line.textContent?.trim());
+    expect(lines).toEqual([lastReceivedLine(Date.parse(resultAt), Date.now(), 0)]);
+  });
+
+  it('says nothing of when it was last heard from while the agent runs, as a running discussion does not', async () => {
+    const modal = await openTask('builder');
+
+    expect(modal.querySelector('.chat-row')).not.toBeNull();
+    expect(modal.querySelector('.last-received')).toBeNull();
   });
 
   // Asked for: a message the main conversation sends a running agent waits

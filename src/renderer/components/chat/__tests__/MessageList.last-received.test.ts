@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ChatMessage } from '@shared/types';
 
 import { useChatStore } from '../../../stores/chat';
-import { lastReceivedLine } from '../../../utils/last-received';
+import { lastReceivedInTranscript, lastReceivedLine } from '../../../utils/last-received';
 import MessageList from '../MessageList.vue';
 import { heldListSource } from '../message-list-source';
 
@@ -67,16 +67,25 @@ describe("the list's last-received line", () => {
     wrapper.unmount();
   });
 
-  it("is not part of an agent's transcript", () => {
-    // The discussion's time, never the transcript's: the view of an agent
-    // says how the agent is doing.
-    chat.noteReceived('conv-1', NOW - 5 * MINUTE);
+  it("ends an agent's transcript with when the agent was last heard from, not the discussion", () => {
+    chat.noteReceived('conv-1', NOW - 2 * MINUTE);
     const source = heldListSource(() => ({
       key: 'agent-1', conversationId: 'conv-1', messages: ANSWERED, isLoading: false, workingDirectory: '',
+      lastReceivedAt: lastReceivedInTranscript(ANSWERED),
     }));
     const wrapper = mount(MessageList, { props: { source }, attachTo: document.body });
 
-    expect(wrapper.findAll('.chat-row').length).toBeGreaterThan(0);
+    expect(line(wrapper)).toBe(lastReceivedLine(NOW - 9 * MINUTE, NOW, 0));
+    wrapper.unmount();
+  });
+
+  it("is left out of an agent's transcript while the agent runs, as in a running discussion", () => {
+    const source = heldListSource(() => ({
+      key: 'agent-1', conversationId: 'conv-1', messages: ANSWERED, isLoading: true, workingDirectory: '',
+      lastReceivedAt: lastReceivedInTranscript(ANSWERED),
+    }));
+    const wrapper = mount(MessageList, { props: { source }, attachTo: document.body });
+
     expect(line(wrapper)).toBeNull();
     wrapper.unmount();
   });
@@ -112,5 +121,26 @@ describe('noteReceived', () => {
 
   it('is null for a conversation nothing has arrived in', () => {
     expect(chat.lastReceivedFor('conv-2')).toBeNull();
+  });
+});
+
+describe("when an agent was last heard from, by its transcript", () => {
+  const call = (id: string, at: number, completedAt?: number): ChatMessage => ({
+    id, role: 'assistant', content: '', timestamp: at,
+    toolUse: { actionId: id, toolName: 'Bash', description: 'Run', status: completedAt ? 'executed' : 'approved', ...(completedAt && { completedAt }) },
+  });
+
+  it("is a call's result coming back, after the call", () => {
+    expect(lastReceivedInTranscript([ANSWERED[0], call('c1', NOW - 8 * MINUTE, NOW - 3 * MINUTE)])).toBe(NOW - 3 * MINUTE);
+  });
+
+  it('is the call itself while it runs', () => {
+    expect(lastReceivedInTranscript([ANSWERED[0], call('c1', NOW - 8 * MINUTE)])).toBe(NOW - 8 * MINUTE);
+  });
+
+  it('is never what the agent was sent: its prompt, or a message written to it later', () => {
+    const sentLater: ChatMessage = { id: 'u2', role: 'user', content: 'also check X', timestamp: NOW - MINUTE };
+    expect(lastReceivedInTranscript([...ANSWERED, sentLater])).toBe(NOW - 9 * MINUTE);
+    expect(lastReceivedInTranscript([ANSWERED[0]])).toBeNull();
   });
 });

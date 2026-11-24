@@ -58,12 +58,30 @@ describe('transcriptToMessages', () => {
     expect(stored.get(read.toolUse!.toolUseBlockId!)).toContain('alpha');
   });
 
+  it("gives each call the time its result came back, as its end", () => {
+    const messages = transcriptToMessages(entries, store);
+    // The foreground Bash: called at 19:30:19.324, its result back seven seconds later.
+    const bash = messages.find((m) => m.toolUse?.toolUseBlockId === 'toolu_01DgV9kUGUrVjooLGqVKYRU3')!;
+
+    expect(bash.timestamp).toBe(Date.parse('2026-10-26T19:30:19.324Z'));
+    expect(bash.toolUse?.completedAt).toBe(Date.parse('2026-10-26T19:30:26.352Z'));
+  });
+
+  it('gives a call no end when its result has no time', () => {
+    const untimed = entries.map((entry) => ({ ...entry, timestamp: undefined }) as SessionMessage);
+    const bash = transcriptToMessages(untimed, store).find((m) => m.toolUse?.toolUseBlockId === 'toolu_01DgV9kUGUrVjooLGqVKYRU3')!;
+
+    expect(bash.toolUse?.status).toBe('executed');
+    expect(bash.toolUse).not.toHaveProperty('completedAt');
+  });
+
   it('leaves a call with no result yet as running', () => {
     // The agent is still going: its last call has not come back.
     const withoutLastResult = entries.slice(0, 8);
     const messages = transcriptToMessages(withoutLastResult, store);
 
     expect(messages.at(-1)?.toolUse?.status).toBe('approved');
+    expect(messages.at(-1)?.toolUse?.completedAt).toBeUndefined();
   });
 
   // As getSubagentMessages returned them for an agent that read a screenshot
