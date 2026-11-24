@@ -189,90 +189,95 @@ const output = computed((): ToolCallOutput | null => {
     resize-key="tool-detail"
     @close="emit('close')"
   >
-    <div
-      v-if="toolUse"
-      class="space-y-4"
-    >
-      <!-- Status & Description -->
-      <div class="flex items-start gap-3">
-        <div :class="['shrink-0 mt-0.5', statusDisplay.colorClass]">
-          <Spinner
-            v-if="inProgress"
-            size="sm"
-          />
-          <Icon
-            v-else-if="toolUse.status === 'executed'"
-            name="check-circle"
-            size="md"
-          />
-          <Icon
-            v-else
-            name="x-circle"
-            size="md"
-          />
-        </div>
-        <div class="flex-1 min-w-0">
-          <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">
-            {{ toolUse.toolName }}
-          </h3>
-          <p
-            v-if="label"
-            class="text-xs text-surface-500 dark:text-surface-400 mt-0.5"
-          >
-            {{ label }}
-          </p>
-          <div class="flex items-center gap-3 mt-1 text-xs text-surface-500 dark:text-surface-400">
-            <span :class="statusDisplay.colorClass">{{ statusDisplay.label }}</span>
-            <span v-if="duration">Duration: {{ duration }}</span>
-          </div>
-          <StartedBy
-            class="mt-1"
-            :origin="origin"
-            :agent="agent"
-            @open-agent="emit('open-task-detail', $event)"
-          />
-        </div>
-      </div>
-
-      <!-- AskUserQuestion: questions, options and the answers given, in place
-           of the raw input. -->
+    <!-- Resized, the input and output take the room given (ToolCallView's fill). -->
+    <template #default="{ sized }">
       <div
-        v-if="questions.length > 0"
-        class="space-y-3"
+        v-if="toolUse"
+        :class="sized ? 'flex flex-col gap-4 h-full' : 'space-y-4'"
       >
-        <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
-          <Icon
-            name="chat"
-            size="xs"
-          />
-          <span>{{ questions.length === 1 ? 'Question' : 'Questions' }}</span>
+        <!-- Status & Description -->
+        <div class="flex items-start gap-3 shrink-0">
+          <div :class="['shrink-0 mt-0.5', statusDisplay.colorClass]">
+            <Spinner
+              v-if="inProgress"
+              size="sm"
+            />
+            <Icon
+              v-else-if="toolUse.status === 'executed'"
+              name="check-circle"
+              size="md"
+            />
+            <Icon
+              v-else
+              name="x-circle"
+              size="md"
+            />
+          </div>
+          <div class="flex-1 min-w-0">
+            <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">
+              {{ toolUse.toolName }}
+            </h3>
+            <p
+              v-if="label"
+              class="text-xs text-surface-500 dark:text-surface-400 mt-0.5"
+            >
+              {{ label }}
+            </p>
+            <div class="flex items-center gap-3 mt-1 text-xs text-surface-500 dark:text-surface-400">
+              <span :class="statusDisplay.colorClass">{{ statusDisplay.label }}</span>
+              <span v-if="duration">Duration: {{ duration }}</span>
+            </div>
+            <StartedBy
+              class="mt-1"
+              :origin="origin"
+              :agent="agent"
+              @open-agent="emit('open-task-detail', $event)"
+            />
+          </div>
         </div>
-        <AskUserQuestionDetails
-          :questions="questions"
-          :result="questionResult"
+
+        <!-- AskUserQuestion: questions, options and the answers given, in place
+           of the raw input. -->
+        <div
+          v-if="questions.length > 0"
+          class="space-y-3"
+        >
+          <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
+            <Icon
+              name="chat"
+              size="xs"
+            />
+            <span>{{ questions.length === 1 ? 'Question' : 'Questions' }}</span>
+          </div>
+          <AskUserQuestionDetails
+            :questions="questions"
+            :result="questionResult"
+          />
+        </div>
+
+        <ToolCallView
+          :class="{ 'flex-1 min-h-0': sized }"
+          :input="questions.length > 0 ? undefined : toolUse.input"
+          :output="output"
+          :images="images"
+          :conversation-id="conversationId"
+          :agents="inputAgents"
+          :fill="sized"
+          @open-agent="emit('open-task-detail', $event)"
         />
-      </div>
 
-      <ToolCallView
-        :input="questions.length > 0 ? undefined : toolUse.input"
-        :output="output"
-        :images="images"
-        :conversation-id="conversationId"
-        :agents="inputAgents"
-        @open-agent="emit('open-task-detail', $event)"
-      />
-
-      <!-- A command the call is still waiting on can be stopped, or sent
+        <!-- A command the call is still waiting on can be stopped, or sent
            to the background, as the tasks in the background can be
            stopped: the CLI makes it a task of its own a few seconds in. -->
-      <RunningTaskActions
-        v-if="runningTask"
-        :can-background="canSendToBackground(runningTask)"
-        :pending="actionPending"
-        :error="actionError"
-        @stop="emit('stop', runningTask.id)"
-        @background="emit('background', runningTask.toolUseId!)"
-      />
-    </div>
+        <RunningTaskActions
+          v-if="runningTask"
+          :can-background="canSendToBackground(runningTask)"
+          :pending="actionPending"
+          :error="actionError"
+          @stop="emit('stop', runningTask.id)"
+          @background="emit('background', runningTask.toolUseId!)"
+        />
+      </div>
+    </template>
   </Modal>
 </template>

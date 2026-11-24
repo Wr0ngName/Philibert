@@ -355,7 +355,9 @@ const sizeClasses = {
                 customSize ? 'flex-1 min-h-0' : 'max-h-[calc(100vh-12rem)]',
               ]"
             >
-              <slot />
+              <!-- `sized`: the user gave the dialog a size, which its body
+                   fills — content made to grow can take it. -->
+              <slot :sized="customSize !== null" />
             </div>
 
             <!-- Footer -->

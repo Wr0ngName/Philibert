@@ -243,163 +243,168 @@ const statusDisplay = computed(() => {
     resize-key="task-detail"
     @close="emit('close')"
   >
-    <div
-      v-if="task"
-      class="flex flex-col gap-4 h-full"
-    >
-      <!-- Status & Description -->
-      <div class="flex items-start gap-3">
-        <div :class="['shrink-0 mt-0.5', statusDisplay.colorClass]">
-          <Spinner
-            v-if="isRunning"
-            size="sm"
-          />
-          <Icon
-            v-else-if="task.status === 'completed'"
-            name="check-circle"
-            size="md"
-          />
-          <Icon
-            v-else-if="task.status === 'failed'"
-            name="x-circle"
-            size="md"
-          />
-          <Icon
-            v-else
-            name="stop"
-            size="md"
-          />
-        </div>
-        <div class="flex-1 min-w-0">
-          <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">
-            <span
-              v-if="isAgent && task.agentType"
-              class="font-mono text-purple-600 dark:text-purple-400 mr-1"
-            >{{ task.agentType }}</span>
-            {{ task.description }}
-          </h3>
-          <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-surface-500 dark:text-surface-400">
-            <span :class="statusDisplay.colorClass">{{ statusDisplay.label }}</span>
-            <span
-              v-if="namedTaskId(task)"
-              class="task-id font-mono select-all"
-              title="The id Claude names this task by"
-            >ID: {{ namedTaskId(task) }}</span>
-            <span v-if="duration">Duration: {{ duration }}</span>
-            <!-- This agent's own model. A sub-agent runs the model named in
+    <!-- Resized, a command's input and output take the room given (ToolCallView's fill). -->
+    <template #default="{ sized }">
+      <div
+        v-if="task"
+        class="flex flex-col gap-4 h-full"
+      >
+        <!-- Status & Description -->
+        <div class="flex items-start gap-3">
+          <div :class="['shrink-0 mt-0.5', statusDisplay.colorClass]">
+            <Spinner
+              v-if="isRunning"
+              size="sm"
+            />
+            <Icon
+              v-else-if="task.status === 'completed'"
+              name="check-circle"
+              size="md"
+            />
+            <Icon
+              v-else-if="task.status === 'failed'"
+              name="x-circle"
+              size="md"
+            />
+            <Icon
+              v-else
+              name="stop"
+              size="md"
+            />
+          </div>
+          <div class="flex-1 min-w-0">
+            <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">
+              <span
+                v-if="isAgent && task.agentType"
+                class="font-mono text-purple-600 dark:text-purple-400 mr-1"
+              >{{ task.agentType }}</span>
+              {{ task.description }}
+            </h3>
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-surface-500 dark:text-surface-400">
+              <span :class="statusDisplay.colorClass">{{ statusDisplay.label }}</span>
+              <span
+                v-if="namedTaskId(task)"
+                class="task-id font-mono select-all"
+                title="The id Claude names this task by"
+              >ID: {{ namedTaskId(task) }}</span>
+              <span v-if="duration">Duration: {{ duration }}</span>
+              <!-- This agent's own model. A sub-agent runs the model named in
                  its definition when it has one and otherwise inherits the
                  main model, so it can legitimately differ from the
                  conversation's — which is shown on the usage bar instead. -->
-            <span
-              v-if="agentModel"
-              :title="`This agent ran on ${agentModel}`"
-            >Model: {{ agentModel }}</span>
-            <span
-              v-if="tokenSummary"
-              :title="tokenTitle"
-            >{{ tokenSummary }}</span>
-            <span v-if="task.toolUses !== undefined">{{ task.toolUses }} tool {{ task.toolUses === 1 ? 'use' : 'uses' }}</span>
-          </div>
-          <StartedBy
-            class="mt-1"
-            :origin="origin"
-            :agent="parentTask"
-            @open-agent="emit('open-task-detail', $event)"
-          />
-          <p
-            v-if="isRunning && task.activity"
-            class="mt-1 text-xs text-surface-600 dark:text-surface-300 truncate"
-          >
-            {{ task.activity }}
-          </p>
-          <!-- The timeout in the Input below is what backgrounded this task,
+              <span
+                v-if="agentModel"
+                :title="`This agent ran on ${agentModel}`"
+              >Model: {{ agentModel }}</span>
+              <span
+                v-if="tokenSummary"
+                :title="tokenTitle"
+              >{{ tokenSummary }}</span>
+              <span v-if="task.toolUses !== undefined">{{ task.toolUses }} tool {{ task.toolUses === 1 ? 'use' : 'uses' }}</span>
+            </div>
+            <StartedBy
+              class="mt-1"
+              :origin="origin"
+              :agent="parentTask"
+              @open-agent="emit('open-task-detail', $event)"
+            />
+            <p
+              v-if="isRunning && task.activity"
+              class="mt-1 text-xs text-surface-600 dark:text-surface-300 truncate"
+            >
+              {{ task.activity }}
+            </p>
+            <!-- The timeout in the Input below is what backgrounded this task,
                not a limit it is still under. Said here because otherwise a
                five-minute timeout next to a three-hour duration reads as a
                bug. -->
-          <p
-            v-if="autoBackgrounded"
-            class="mt-1 text-xs text-amber-600 dark:text-amber-500"
-          >
-            {{ autoBackgrounded }}
-          </p>
+            <p
+              v-if="autoBackgrounded"
+              class="mt-1 text-xs text-amber-600 dark:text-amber-500"
+            >
+              {{ autoBackgrounded }}
+            </p>
+          </div>
         </div>
-      </div>
 
-      <!-- Summary -->
-      <div
-        v-if="task.summary"
-        class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3"
-      >
-        <div class="text-xs font-medium text-surface-500 dark:text-surface-400 mb-1">
-          Summary
+        <!-- Summary -->
+        <div
+          v-if="task.summary"
+          class="bg-surface-50 dark:bg-surface-900 rounded-lg p-3"
+        >
+          <div class="text-xs font-medium text-surface-500 dark:text-surface-400 mb-1">
+            Summary
+          </div>
+          <div class="text-sm text-surface-800 dark:text-surface-200 whitespace-pre-wrap max-h-40 overflow-y-auto">
+            {{ task.summary }}
+          </div>
         </div>
-        <div class="text-sm text-surface-800 dark:text-surface-200 whitespace-pre-wrap max-h-40 overflow-y-auto">
-          {{ task.summary }}
-        </div>
-      </div>
 
-      <!-- Error -->
-      <div
-        v-if="task.error"
-        class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3"
-      >
-        <div class="text-xs font-medium text-red-500 mb-1">
-          Error
+        <!-- Error -->
+        <div
+          v-if="task.error"
+          class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3"
+        >
+          <div class="text-xs font-medium text-red-500 mb-1">
+            Error
+          </div>
+          <div class="text-sm text-red-800 dark:text-red-300 whitespace-pre-wrap font-mono">
+            {{ task.error }}
+          </div>
         </div>
-        <div class="text-sm text-red-800 dark:text-red-300 whitespace-pre-wrap font-mono">
-          {{ task.error }}
-        </div>
-      </div>
 
-      <!-- An agent: its transcript, drawn by the discussion's own list. -->
-      <div
-        v-if="isAgent"
-        class="agent-transcript"
-      >
-        <!-- Mounted while the transcript is read, not after: so it has its
+        <!-- An agent: its transcript, drawn by the discussion's own list. -->
+        <div
+          v-if="isAgent"
+          class="agent-transcript"
+        >
+          <!-- Mounted while the transcript is read, not after: so it has its
              size when the messages arrive and renders only what is in view. -->
-        <MessageList
-          :source="transcriptSource"
-          user-label="Claude"
-          :assistant-label="agentLabel"
-          opening-text="Loading the agent's transcript…"
-          empty-title="Nothing yet"
-          empty-text="The agent's prompt, messages and tool calls appear here as it works."
-          @open-tool-detail="openTranscriptTool"
-          @open-task-detail="emit('open-task-detail', $event)"
-        />
-        <DeliveringMessages
-          class="mt-3"
-          data-testid="messages-to-agent"
-          :messages="unreadMessages"
-          :reader="agentLabel"
-        />
-      </div>
+          <MessageList
+            :source="transcriptSource"
+            user-label="Claude"
+            :assistant-label="agentLabel"
+            opening-text="Loading the agent's transcript…"
+            empty-title="Nothing yet"
+            empty-text="The agent's prompt, messages and tool calls appear here as it works."
+            @open-tool-detail="openTranscriptTool"
+            @open-task-detail="emit('open-task-detail', $event)"
+          />
+          <DeliveringMessages
+            class="mt-3"
+            data-testid="messages-to-agent"
+            :messages="unreadMessages"
+            :reader="agentLabel"
+          />
+        </div>
 
-      <!-- A command: its command line and its output, followed while it
+        <!-- A command: its command line and its output, followed while it
            runs — the same view Tool Details gives a call in the discussion. -->
-      <ToolCallView
-        v-else
-        :input="commandInput"
-        :tool-name="commandToolName"
-        :output="commandOutput"
-        :live="isRunning"
-      />
+        <ToolCallView
+          v-else
+          :class="{ 'flex-1 min-h-0': sized }"
+          :input="commandInput"
+          :tool-name="commandToolName"
+          :output="commandOutput"
+          :live="isRunning"
+          :fill="sized"
+        />
 
 
-      <!-- Only offered while the task is actually running; the status here
+        <!-- Only offered while the task is actually running; the status here
            is live, so the buttons go once it ends rather than offering to
            act on something already finished — and sending it to the
            background goes once it is there. -->
-      <RunningTaskActions
-        v-if="isRunning"
-        :can-background="canSendToBackground(task)"
-        :pending="actionPending"
-        :error="actionError"
-        @stop="emit('stop', task.id)"
-        @background="emit('background', task.toolUseId!)"
-      />
-    </div>
+        <RunningTaskActions
+          v-if="isRunning"
+          :can-background="canSendToBackground(task)"
+          :pending="actionPending"
+          :error="actionError"
+          @stop="emit('stop', task.id)"
+          @background="emit('background', task.toolUseId!)"
+        />
+      </div>
+    </template>
   </Modal>
 </template>
 

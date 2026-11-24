@@ -41,6 +41,18 @@ interface Props {
    * a SendMessage call writes to. Shown as the agent, not as its id.
    */
   agents?: Record<string, BackgroundTask>;
+  /**
+   * Fit the height it is given, all of it, instead of each block stopping at
+   * a height of its own: each block as tall as its text, and when they are
+   * more than the room, each shrunk in proportion to its height — a long
+   * output gets most of it — scrolling within itself, down to 4rem. Headings
+   * and one-line values keep their height: everything is one column of its
+   * own (the sections `display: contents`), so shrinking reaches the blocks
+   * only, and a short input is not crushed by a long output. For a dialog
+   * the user resized (Modal's `sized`); without it, the blocks fit their
+   * text up to a height, as in a dialog sized to its content.
+   */
+  fill?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -50,6 +62,7 @@ const props = withDefaults(defineProps<Props>(), {
   images: undefined,
   conversationId: undefined,
   agents: () => ({}),
+  fill: false,
 });
 
 const emit = defineEmits<{
@@ -71,6 +84,20 @@ const textOnlyNamesImages = computed(() =>
 );
 
 const inputParams = computed(() => formatToolInput(props.input));
+
+/** At most this many lines, and this many characters (wrapped lines), a block's text is short. */
+const SHORT_BLOCK_LINES = 3;
+const SHORT_BLOCK_CHARS = 240;
+
+/**
+ * A block's height when filling (`fill`): a short text keeps its own — never
+ * shrunk, nor made taller than it — a longer one shrinks to share the room,
+ * down to a few lines.
+ */
+function filledBlock(text: string | null): string {
+  const short = text !== null && text.length <= SHORT_BLOCK_CHARS && text.split('\n').length <= SHORT_BLOCK_LINES;
+  return short ? 'shrink-0' : 'min-h-16';
+}
 
 /** Output text, pretty-printed when it is JSON. */
 const outputText = computed(() =>
@@ -107,10 +134,11 @@ watch(() => props.output?.kind, (kind) => {
 </script>
 
 <template>
-  <div class="space-y-4">
+  <div :class="fill ? 'flex flex-col gap-2 h-full min-h-0' : 'space-y-4'">
     <div
       v-if="inputParams.length > 0"
-      class="space-y-3"
+      :class="fill ? 'contents' : 'space-y-3'"
+      data-testid="tool-call-input"
     >
       <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
         <Icon
@@ -127,7 +155,7 @@ watch(() => props.output?.kind, (kind) => {
       <div
         v-for="param in inputParams"
         :key="param.key"
-        class="space-y-1"
+        :class="fill ? 'contents' : 'space-y-1'"
       >
         <!-- Short values on one line… -->
         <div
@@ -151,7 +179,7 @@ watch(() => props.output?.kind, (kind) => {
           <div class="text-xs font-medium text-surface-500 dark:text-surface-400">
             {{ param.label }}
           </div>
-          <div class="code-block !p-3 max-h-60 overflow-y-auto">
+          <div :class="['code-block !p-3 overflow-y-auto', fill ? filledBlock(param.value) : 'max-h-60']">
             <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap">{{ param.value }}</pre>
           </div>
         </template>
@@ -160,9 +188,10 @@ watch(() => props.output?.kind, (kind) => {
 
     <div
       v-if="output || hasImages"
-      class="space-y-2"
+      :class="fill ? 'contents' : 'space-y-2'"
+      data-testid="tool-call-output"
     >
-      <div class="text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2">
+      <div :class="['text-xs font-medium text-surface-500 dark:text-surface-400 flex items-center gap-2', { 'mt-2': fill }]">
         <Icon
           name="document"
           size="xs"
@@ -198,7 +227,7 @@ watch(() => props.output?.kind, (kind) => {
         <div
           v-else-if="output.kind === 'text' && !textOnlyNamesImages"
           ref="outputRef"
-          class="code-block !p-3 max-h-96 overflow-y-auto"
+          :class="['code-block !p-3 overflow-y-auto', fill ? filledBlock(outputText) : 'max-h-96']"
           @scroll="onOutputScroll"
         >
           <pre class="text-xs text-surface-800 dark:text-surface-200 whitespace-pre-wrap">{{ outputText }}</pre>
