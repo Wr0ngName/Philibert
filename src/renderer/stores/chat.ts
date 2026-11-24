@@ -691,6 +691,20 @@ export const useChatStore = defineStore('chat', () => {
     if (state.lastReceivedAt === null || at > state.lastReceivedAt) state.lastReceivedAt = at;
   }
 
+  /**
+   * A task notification, as something arriving in the discussion: a task it
+   * started that ended. Not a task's progress — what a running agent is doing
+   * now — nor any word of a task an agent started: that is the agent's doing,
+   * and said in its own view. Called once the notification is handled, so the
+   * task is found under the id it is now tracked by.
+   */
+  function noteTaskReceived(conversationId: string, notification: TaskNotification): void {
+    if (notification.status === 'running') return;
+    const task = trackedTask(conversationId, notification.taskId);
+    if (task?.startedByAgent || notification.startedByAgent) return;
+    noteReceived(conversationId);
+  }
+
   /** When something last arrived from Claude in a conversation; null if nothing has. */
   function lastReceivedFor(conversationId: string): number | null {
     return conversationStates.value.get(conversationId)?.lastReceivedAt ?? null;
@@ -3172,6 +3186,7 @@ export const useChatStore = defineStore('chat', () => {
     runningBackgroundTaskCount,
     noteReceived,
     lastReceivedFor,
+    noteTaskReceived,
     hasRunningBackgroundTasks,
     taskListItems,
     hasTaskListItems,

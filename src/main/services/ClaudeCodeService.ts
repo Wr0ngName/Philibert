@@ -1123,6 +1123,7 @@ export class ClaudeCodeService {
             ...(result.taskList && { taskList: result.taskList }),
             ...(result.agent && { agent: result.agent }),
             ...(result.queuedForAgent && { queuedForAgent: result.queuedForAgent }),
+            ...(result.parentToolUseId && { parentToolUseId: result.parentToolUseId }),
             ...(images && images.length > 0 && { images }),
           });
         };

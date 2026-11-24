@@ -1020,7 +1020,7 @@ export function useClaudeChat() {
         description: notification.description,
       });
       chatStore.handleTaskNotification(conversationId, notification);
-      chatStore.noteReceived(conversationId);
+      chatStore.noteTaskReceived(conversationId, notification);
       if (notification.status !== 'running') storeTaskOutcome(conversationId);
     });
 
@@ -1116,14 +1116,16 @@ export function useClaudeChat() {
     cleanupToolCapture = window.electron.claude.onToolCapture((conversationId, capture) => {
       logger.debug('Tool capture received', { conversationId, toolName: capture.toolName, blockId: capture.toolUseBlockId });
       chatStore.addAutoToolUseMessage(conversationId, capture);
-      chatStore.noteReceived(conversationId);
+      // An agent's calls are its own doing, said in its view: not something
+      // arriving in the discussion.
+      if (!capture.parentToolUseId) chatStore.noteReceived(conversationId);
     });
 
     // Handle tool result (output file written to disk)
     cleanupToolResult = window.electron.claude.onToolResult((conversationId, result) => {
       logger.debug('Tool result received', { conversationId, blockId: result.toolUseBlockId });
       chatStore.updateToolUseResult(conversationId, result);
-      chatStore.noteReceived(conversationId);
+      if (!result.parentToolUseId) chatStore.noteReceived(conversationId);
     });
 
     // Handle auth invalidation (401 from API) - refresh config so UI reacts

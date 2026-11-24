@@ -172,13 +172,45 @@ describe('when Claude was last heard from, at the end of the discussion', () => 
     expect(line()).toBe(lastReceivedLine(NOW + 7 * MINUTE, NOW + 7 * MINUTE, 0));
   });
 
+  // A background agent works on while the discussion waits. What it does is
+  // its own, said in its view (with its own last-received line): the
+  // discussion's line stays at when the discussion last heard anything.
+  const AGENT_AT_WORK: Array<[string, (id: string) => void]> = [
+    ['a call it makes', (id) => emitIpc('claude:tool-capture', id, {
+      toolUseBlockId: 'toolu_inner', toolName: 'Read', input: { file_path: '/a' }, description: 'Read /a',
+      parentToolUseId: 'toolu_agent',
+    })],
+    ['the result of its call', (id) => emitIpc('claude:tool-result', id, {
+      toolUseBlockId: 'toolu_inner', outputFile: '/tmp/out', parentToolUseId: 'toolu_agent',
+    })],
+    ['its progress', (id) => emitIpc('claude:task-notification', id, {
+      taskId: 'agent-1', status: 'running', activity: 'Reading notes.txt', toolUses: 3, toolUseId: 'toolu_agent',
+    })],
+    ['a command it started ending', (id) => {
+      emitIpc('claude:task-notification', id, {
+        taskId: 'b-inner', status: 'running', description: 'npm test', startedByAgent: true, parentTaskId: 'agent-1',
+      });
+      emitIpc('claude:task-notification', id, { taskId: 'b-inner', status: 'completed' });
+    }],
+  ];
+
+  it.each(AGENT_AT_WORK)("does not move for a background agent's work: %s", async (_what, arrive) => {
+    const id = await answered(NOW + MINUTE, NOW + MINUTE);
+    at(NOW + 7 * MINUTE);
+    arrive(id);
+    await settle(20);
+    // The time only: a task still running is counted after it.
+    expect(line()?.split(' · ')[0]).toBe(lastReceivedLine(NOW + MINUTE, NOW + 7 * MINUTE, 0));
+  });
+
   it('says how many background tasks are still running, until they are not', async () => {
     const id = await answered(NOW + MINUTE, NOW + MINUTE);
     at(NOW + 2 * MINUTE);
     emitIpc('claude:task-notification', id, { taskId: 'task-1', status: 'running', description: 'Run the build' });
     emitIpc('claude:task-notification', id, { taskId: 'task-2', status: 'running', description: 'Run the tests' });
     await settle(20);
-    expect(line()).toBe(`${lastReceivedLine(NOW + 2 * MINUTE, NOW + 2 * MINUTE, 0)} · 2 background tasks still running`);
+    // A task starting is not news of its own: its call, which comes with it, is.
+    expect(line()).toBe(`${lastReceivedLine(NOW + MINUTE, NOW + 2 * MINUTE, 0)} · 2 background tasks still running`);
 
     at(NOW + 3 * MINUTE);
     emitIpc('claude:task-notification', id, { taskId: 'task-1', status: 'completed' });

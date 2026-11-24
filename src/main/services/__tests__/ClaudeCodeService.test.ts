@@ -1091,6 +1091,44 @@ describe('ClaudeCodeService', () => {
       });
     });
 
+    // An agent's calls and their results come through the discussion's stream,
+    // tagged with the Agent call that started it (main.log: 36 such calls).
+    // The renderer tells the discussion's own from the agent's by the tag.
+    it("passes on the agent a call's result came from, and none for the discussion's own", async () => {
+      mockQuery.mockReturnValue(createMockQueryIterator([
+        {
+          type: 'assistant',
+          message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_inner', name: 'Read', input: { file_path: '/a' } }] },
+          parent_tool_use_id: 'toolu_agent',
+        },
+        {
+          type: 'user',
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_inner', content: 'alpha' }] },
+          parent_tool_use_id: 'toolu_agent',
+        },
+        {
+          type: 'assistant',
+          message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_own', name: 'Read', input: { file_path: '/b' } }] },
+          parent_tool_use_id: null,
+        },
+        {
+          type: 'user',
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_own', content: 'beta' }] },
+          parent_tool_use_id: null,
+        },
+        { type: 'result', subtype: 'success' },
+      ]));
+
+      await service.sendMessage(TEST_CONV_ID, 'Hi', '/home/user');
+
+      const results = () => mockSend.mock.calls
+        .filter(([channel]) => channel === IPC_CHANNELS.CLAUDE_TOOL_RESULT)
+        .map(([, , result]) => result as { toolUseBlockId: string; parentToolUseId?: string });
+      await vi.waitFor(() => expect(results()).toHaveLength(2));
+      expect(results().find((r) => r.toolUseBlockId === 'toolu_inner')?.parentToolUseId).toBe('toolu_agent');
+      expect(results().find((r) => r.toolUseBlockId === 'toolu_own')).not.toHaveProperty('parentToolUseId');
+    });
+
     it('should handle system messages', async () => {
       const mockIterator = createMockQueryIterator([
         { type: 'system', subtype: 'status', status: 'Compacting context...' },

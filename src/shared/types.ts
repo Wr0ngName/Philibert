@@ -182,6 +182,8 @@ export interface ToolResultData {
    * a message to a finished agent resumes it, the message its prompt.
    */
   queuedForAgent?: string;
+  /** SDK parent_tool_use_id — present on the results of calls made inside sub-agents. */
+  parentToolUseId?: string;
   /**
    * Images this tool produced — a Read of an image file, a rendered PDF page.
    * References, not bytes: they were stored in the main process before this

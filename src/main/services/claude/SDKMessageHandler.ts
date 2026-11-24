@@ -203,6 +203,8 @@ export interface HandledToolResult {
   agent?: AgentRun;
   /** A SendMessage's: the running agent it left a message for. See queuedForAgentOf. */
   queuedForAgent?: string;
+  /** The Agent call whose agent made this call, for a call made inside an agent. */
+  parentToolUseId?: string;
   /**
    * Images the tool produced, as bytes. The handler does not store them —
    * it has no conversation to store them against — so the caller writes
@@ -740,7 +742,10 @@ export class SDKMessageHandler {
       uuid?: string;
       isSynthetic?: boolean;
       origin?: { kind?: string };
+      /** Set on the results of calls an agent made (SDKUserMessage). */
+      parent_tool_use_id?: string | null;
     };
+    const parentToolUseId = userMsg.parent_tool_use_id ?? undefined;
 
     // A user message's content is a string for a typed turn and an array of
     // blocks when it carries tool results.
@@ -802,6 +807,7 @@ export class SDKMessageHandler {
             ...(cronJob && { cronJob }),
             ...(agent && { agent }),
             ...(queuedForAgent && { queuedForAgent }),
+            ...(parentToolUseId && { parentToolUseId }),
             ...(images.length > 0 && { images }),
           });
         }
