@@ -296,6 +296,34 @@ export interface ChatMessage {
    * this uuid.
    */
   turnUuid?: string;
+  /**
+   * When the conversation was rewound to a point before this message: Claude
+   * Code no longer has it, and the discussion shows it greyed. Kept rather
+   * than removed, so what happened can still be read. Never a point to
+   * rewind to. A message rewound away twice keeps the first time.
+   */
+  rewoundAt?: number;
+  /** On the prompt a rewind went back to: what that rewind did. */
+  rewind?: RewindRecord;
+}
+
+/**
+ * A rewind of the conversation, as the discussion says it happened: kept on
+ * the prompt it went back to, where the discussion draws a divider.
+ */
+export interface RewindRecord {
+  at: number;
+  /**
+   * The files restored with it; absent when files were not asked for —
+   * empty when none differed from the checkpoint.
+   */
+  files?: {
+    changed: string[];
+    insertions: number;
+    deletions: number;
+    /** Left alone as links or unreadable backups: the restore was partial. */
+    skippedLinks?: number;
+  };
 }
 
 // Tool use / Action types
@@ -1237,9 +1265,8 @@ export interface Conversation {
  * app has already shipped once.
  *
  * So writes are now expressed as this: metadata, messages to add or update
- * keyed by id, and an explicit truncation when — and only when — the user
- * really did remove history. A conversation on disk can then only grow,
- * except where something deliberately shortens it.
+ * keyed by id. A conversation on disk can only grow: a rewind marks the turns
+ * it went back over rather than removing them (ChatMessage.rewoundAt).
  */
 export interface ConversationUpdate {
   id: string;
@@ -1254,22 +1281,12 @@ export interface ConversationUpdate {
    */
   upsert: ChatMessage[];
   /**
-   * Drop this stored message and every one after it.
-   *
-   * The only way history is removed. Set by a rewind, which really does
-   * discard the turns from a point; absent on every ordinary write, so no
-   * ordinary write can shorten the file.
-   *
-   * Named from the message being discarded rather than from the last one to
-   * survive, because the renderer is holding a WINDOW: at the top of it there
-   * is no predecessor to name. Asking for "after null" used to mean "drop
-   * everything", so rewinding to the oldest turn on screen asked for the
-   * whole conversation — thousands of stored messages it was not even
-   * holding — and the only reason it did not happen is that the same rewind
-   * emptied the on-screen list and the write was skipped as having nothing to
-   * say. The rewind was silently not persisted at all.
+   * Every stored message from this one on was rewound away at `at`: marked
+   * so (ChatMessage.rewoundAt), those this update does not carry included —
+   * a window can stop short of the end of what is stored. One already marked
+   * keeps the time it was first rewound away.
    */
-  truncateFromId?: string;
+  rewound?: { fromId: string; at: number };
   workingDirectory: string;
   updatedAt: number;
   title?: string;

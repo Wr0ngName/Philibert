@@ -12,7 +12,9 @@
  * - `{"put": message}` — the message, replacing the one with its id where it
  *   stands, or added at the end when its id is new;
  * - `{"cut": id}` — the message with that id and every one after it removed,
- *   as a rewind does.
+ *   as a rewind did before it kept what it went back over (marked instead:
+ *   ChatMessage.rewoundAt). No longer written; still read, as files written
+ *   then hold them.
  *
  * Reading plays the records in order. A line that is not a whole record is
  * a write that was stopped part-way: it is skipped, and the lines after it
@@ -108,6 +110,12 @@ export class TranscriptState {
    * the content of, or gives no title.
    */
   private firstUser: { id: string; title: string | undefined } | null = null;
+  /**
+   * The messages rewound away, with their marks (ChatMessage.rewoundAt and,
+   * on the prompt rewound to, `rewind`): a rewind is never undone by a write
+   * — a copy read before it landed, say, sent back without the marks.
+   */
+  private readonly rewoundMarks = new Map<string, RewoundMarks>();
 
   get size(): number {
     return this.ids.length;
@@ -116,6 +124,20 @@ export class TranscriptState {
   /** Where a message stands, or -1. */
   indexOf(id: string): number {
     return this.positions.get(id) ?? -1;
+  }
+
+  /**
+   * The message as a write may store it: with the marks of a rewind that
+   * took it, should it come without them. Given back as it is otherwise.
+   */
+  keepRewound(message: ChatMessage): ChatMessage {
+    const marks = this.rewoundMarks.get(message.id);
+    if (!marks || (message.rewoundAt !== undefined && (message.rewind !== undefined || marks.rewind === undefined))) return message;
+    return {
+      ...message,
+      rewoundAt: message.rewoundAt ?? marks.rewoundAt,
+      ...(message.rewind ?? marks.rewind ? { rewind: message.rewind ?? marks.rewind } : {}),
+    };
   }
 
   /** Apply a put record. */
@@ -136,6 +158,9 @@ export class TranscriptState {
       outcome = 'changed';
     }
     this.fingerprints.set(message.id, fingerprint);
+    if (message.rewoundAt !== undefined) {
+      this.rewoundMarks.set(message.id, { rewoundAt: message.rewoundAt, ...(message.rewind ? { rewind: message.rewind } : {}) });
+    }
 
     if (user && (this.firstUser === null || this.firstUser.id === message.id)) {
       this.firstUser = { id: message.id, title: titleFromMessages([message]) };
@@ -156,6 +181,7 @@ export class TranscriptState {
       this.positions.delete(removed);
       this.fingerprints.delete(removed);
       this.locations.delete(removed);
+      this.rewoundMarks.delete(removed);
     }
     this.isUser.length = at;
     if (this.firstUser && !this.positions.has(this.firstUser.id)) this.firstUser = null;
@@ -190,6 +216,7 @@ export class TranscriptState {
       }),
       records: this.records,
       firstUser: this.firstUser,
+      ...(this.rewoundMarks.size > 0 ? { rewound: [...this.rewoundMarks].map(([id, marks]) => ({ id, ...marks })) } : {}),
     };
   }
 
@@ -218,6 +245,14 @@ export class TranscriptState {
     if (state.positions.size !== n) return null;
     state.records = s.records;
     state.firstUser = s.firstUser ?? null;
+    // Absent from an index written before rewinds marked: none then.
+    if (s.rewound !== undefined) {
+      if (!Array.isArray(s.rewound)) return null;
+      for (const entry of s.rewound) {
+        if (typeof entry?.id !== 'string' || typeof entry.rewoundAt !== 'number' || !state.positions.has(entry.id)) return null;
+        state.rewoundMarks.set(entry.id, { rewoundAt: entry.rewoundAt, ...(entry.rewind ? { rewind: entry.rewind } : {}) });
+      }
+    }
     return state;
   }
 }
@@ -235,7 +270,12 @@ export interface SavedTranscriptState {
   locations: Array<[number, number] | null>;
   records: number;
   firstUser: { id: string; title: string | undefined } | null;
+  /** The messages rewound away, with their marks; absent when none are. */
+  rewound?: Array<{ id: string } & RewoundMarks>;
 }
+
+/** What a rewind marks a message with. */
+type RewoundMarks = Required<Pick<ChatMessage, 'rewoundAt'>> & Pick<ChatMessage, 'rewind'>;
 
 export interface Replayed {
   messages: ChatMessage[];

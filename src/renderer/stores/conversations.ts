@@ -697,14 +697,10 @@ export const useConversationsStore = defineStore('conversations', () => {
     // buffer (see retainUnsavedMessages), which is what the next visit reads
     // in preference to the older file.
     const leaving = currentConversationId.value;
-    // Something to add, something to remove, or something held apart from the
-    // window — any of the three is a reason to write before leaving. Guarding
-    // on the on-screen list alone meant a rewind that emptied it was never
-    // written: the file kept every message and the next visit showed them all
-    // again.
+    // Something on screen, or something held apart from the window — either
+    // is a reason to write before leaving.
     const leavingHasWork = !!leaving && (
       chatStore.messages.length > 0
-      || !!chatStore.pendingTruncationFor(leaving)
       || !!chatStore.detachedTurnFor(leaving)
     );
     if (leaving && leavingHasWork) {
@@ -735,12 +731,12 @@ export const useConversationsStore = defineStore('conversations', () => {
    * would carry, so no way of changing a message can be missed.
    *
    * Known from a write that landed, and from a read of the file. Forgotten
-   * when a rewind lands: it removes messages from the file.
+   * when the conversation is deleted.
    */
   const writtenJson = new Map<string, Map<string, string>>();
   /**
    * Times each conversation's writtenJson was forgotten, so a read begun
-   * before a rewind landed cannot record messages the rewind removed.
+   * before the conversation was deleted cannot record its messages again.
    */
   const writtenEpochs = new Map<string, number>();
 
@@ -757,7 +753,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     for (const [id, json] of entries) known.set(id, json);
   }
 
-  /** Messages just read from the file: on disk as they are, unless a rewind landed meanwhile. */
+  /** Messages just read from the file: on disk as they are, unless the conversation was deleted meanwhile. */
   function noteRead(conversationId: string, messages: readonly ChatMessage[], epoch: number): void {
     if (writtenEpoch(conversationId) !== epoch) return;
     noteWritten(conversationId, messages.map((m) => [m.id, JSON.stringify(m)] as const));
@@ -848,18 +844,16 @@ export const useConversationsStore = defineStore('conversations', () => {
     messages: ChatMessage[],
     workingDirectory: string,
   ): PendingWrite {
-    // A rewind removed turns on screen; a write has to say so or they stay in
-    // the file. Read here, cleared only once the write has landed.
-    const truncation = chatStore.pendingTruncationFor(conversationId);
-    const options = truncation ? { truncateFromId: truncation.fromId } : {};
+    // A rewind marked the turns it went back over on screen; the write says
+    // so, for the stored ones beyond the window. Read here, cleared only once
+    // the write has landed.
+    const rewound = chatStore.pendingRewoundFor(conversationId);
     // Task rows are written as their tasks stand now, not as they stood when
     // the row was added.
     const tracked = chatStore.withTasksAsTracked(conversationId, messages);
-    // Only what differs from the file — all of it when the write cuts the
-    // file, which removes what it held from the cut on. Each sent message is
-    // a copy through JSON, which also strips Vue's reactivity: a proxy
-    // cannot cross IPC.
-    const known = truncation ? undefined : writtenJson.get(conversationId);
+    // Only what differs from the file. Each sent message is a copy through
+    // JSON, which also strips Vue's reactivity: a proxy cannot cross IPC.
+    const known = writtenJson.get(conversationId);
     const written: Array<readonly [string, string]> = [];
     const rawMessages: ChatMessage[] = [];
     for (const message of tracked) {
@@ -941,7 +935,7 @@ export const useConversationsStore = defineStore('conversations', () => {
         ? (existingConv?.workingDirectory || workingDirectory)
         : workingDirectory,
       upsert: rawMessages,
-      ...(options.truncateFromId ? { truncateFromId: options.truncateFromId } : {}),
+      ...(rewound ? { rewound: { ...rewound } } : {}),
       createdAt: existingConv?.createdAt || Date.now(),
       updatedAt: lastMessageAt,
       sdkSessionId,
@@ -1016,7 +1010,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     logger.info(`Saving conversation${options.logPrefix}`, {
       id: update.id,
       upsertCount: update.upsert.length,
-      truncating: update.truncateFromId ?? 'none',
+      ...(update.rewound ? { rewoundFrom: update.rewound.fromId } : {}),
       title: update.title?.slice(0, 30),
     });
 
@@ -1214,12 +1208,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       logger.debug('No current conversation ID, skipping save');
       return Promise.resolve(false);
     }
-    // Nothing to add AND nothing to remove. A rewind to the oldest turn on
-    // screen empties the list, and skipping the write for that reason meant
-    // the rewind never reached disk at all: the transcript went blank, the
-    // file kept every message, and reopening the conversation brought all of
-    // it back.
-    if (chatStore.messages.length === 0 && !chatStore.pendingTruncationFor(conversationId)) {
+    if (chatStore.messages.length === 0) {
       logger.debug('No messages to save');
       return Promise.resolve(false);
     }
@@ -1329,18 +1318,19 @@ export const useConversationsStore = defineStore('conversations', () => {
               id: conversation.id,
               upsertCount: conversation.upsert.length,
             });
-            // What it carried is on disk as sent. A cut it carried removed
-            // from the file what was known to be there: forgotten first, so
-            // the window refilled below is read after it.
-            if (conversation.truncateFromId) forgetWritten(id);
+            // What it carried is on disk as sent. Stored messages a rewind it
+            // carried marked are known as they were: sent again, they are
+            // found unchanged, the main process keeping their marks
+            // (TranscriptState.keepRewound).
             noteWritten(id, queued.pending.written);
-            // The write landed: a removal it carried has reached the file,
-            // and everything written is now on disk, so the window may be
-            // trimmed back — the only moment at which forgetting part of a
-            // conversation is safe.
-            if (conversation.truncateFromId) {
-              chatStore.clearPendingTruncation(id);
-              await refillEmptyWindow(id);
+            // The write landed: a rewind it carried has marked the file, and
+            // everything written is now on disk, so the window may be trimmed
+            // back — the only moment at which forgetting part of a
+            // conversation is safe. Not a rewind made since, which the next
+            // write carries.
+            const pendingRewound = chatStore.pendingRewoundFor(id);
+            if (conversation.rewound && pendingRewound?.fromId === conversation.rewound.fromId && pendingRewound.at === conversation.rewound.at) {
+              chatStore.clearPendingRewound(id);
             }
             // A turn collected apart from the window is stored now, so it is
             // simply what follows the window — which is what the "newer
@@ -1500,37 +1490,6 @@ export const useConversationsStore = defineStore('conversations', () => {
       return 0;
     } finally {
       loadingEarlier.value = false;
-    }
-  }
-
-  /**
-   * Put a window back on screen when a rewind has emptied it.
-   *
-   * Rewinding the oldest turn ON SCREEN is not rewinding to the start of the
-   * conversation: with a window, thousands of messages can still be stored in
-   * front of it. The transcript is left empty, and nothing can bring it back
-   * by itself — a page of history is fetched against the id at the top of the
-   * window, and there is no longer a window to take one from. What the user
-   * saw was the empty "start a conversation" state over a file holding
-   * thousands of messages, recoverable only by navigating away and back.
-   *
-   * The conversation now ends just before the turn that was rewound, so the
-   * right view is its new end, which is what opening it would show.
-   */
-  async function refillEmptyWindow(id: string): Promise<void> {
-    if (currentConversationId.value !== id) return;
-    if (chatStore.messages.length > 0) return;
-    if (chatStore.olderMessageCount === 0) return;
-
-    try {
-      const latest = await readWindow(id);
-      if (!latest || currentConversationId.value !== id) return;
-      chatStore.loadMessages(latest.conversation.messages, latest.olderCount, 0);
-      logger.info('Refilled the window after a rewind emptied it', {
-        id, held: latest.conversation.messages.length, older: latest.olderCount,
-      });
-    } catch (err) {
-      logger.error('Failed to refill the window after a rewind', { id, err });
     }
   }
 

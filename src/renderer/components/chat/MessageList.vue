@@ -21,6 +21,7 @@ import { useMidnightClock } from '../../composables/useMidnightClock';
 import { useVirtualList } from '../../composables/useVirtualList';
 import { formatTime } from '../../utils/date';
 import { lastReceivedLine } from '../../utils/last-received';
+import { rewindDividerText, skippedLinksText } from '../../utils/rewind';
 import {
   childrenByParent as buildChildrenByParent,
   descendantCounts,
@@ -288,7 +289,7 @@ function getVisibleTurnItems(group: MessageGroup): VisibleItem[] {
  */
 interface Row {
   key: string;
-  kind: 'standalone' | 'turn-header' | 'turn-item' | 'turn-spinner' | 'thinking' | 'received';
+  kind: 'standalone' | 'turn-header' | 'turn-item' | 'turn-spinner' | 'thinking' | 'received' | 'rewind';
   msg?: ChatMessage;
   depth: number;
   childCount: number;
@@ -303,6 +304,8 @@ interface Row {
   text?: string;
   /** Starts a new visual block, so it carries the gap above it. */
   startsBlock: boolean;
+  /** Rewound away: Claude no longer has it (ChatMessage.rewoundAt). Drawn greyed. */
+  rewound: boolean;
 }
 
 function blankRow(key: string, kind: Row['kind']): Row {
@@ -315,6 +318,7 @@ function blankRow(key: string, kind: Row['kind']): Row {
     bubbleFirst: false,
     bubbleLast: false,
     startsBlock: false,
+    rewound: false,
   };
 }
 
@@ -323,10 +327,19 @@ const rows = computed((): Row[] => {
 
   for (const group of messageGroups.value) {
     if (group.type === 'standalone') {
+      const message = group.messages[0];
+      // Above the prompt a rewind went back to: what the rewind did.
+      if (message.rewind) {
+        const divider = blankRow(`${message.id}:rewind`, 'rewind');
+        divider.msg = message;
+        divider.startsBlock = true;
+        out.push(divider);
+      }
       // MessageItem draws its own bubble for these, so no slicing.
-      const row = blankRow(group.messages[0].id, 'standalone');
-      row.msg = group.messages[0];
+      const row = blankRow(message.id, 'standalone');
+      row.msg = message;
       row.startsBlock = true;
+      row.rewound = message.rewoundAt !== undefined;
       out.push(row);
       continue;
     }
@@ -337,11 +350,13 @@ const rows = computed((): Row[] => {
     header.bubbleFirst = true;
     header.startsBlock = true;
     header.timestamp = group.messages[0].timestamp;
+    header.rewound = group.messages[0].rewoundAt !== undefined;
     turnRows.push(header);
 
     for (const item of getVisibleTurnItems(group)) {
       const row = blankRow(item.msg.id, 'turn-item');
       row.msg = item.msg;
+      row.rewound = item.msg.rewoundAt !== undefined;
       row.depth = item.depth;
       row.childCount = item.childCount;
       row.isExpanded = item.isExpanded;
@@ -1018,7 +1033,7 @@ onUnmounted(() => {
             v-for="row in visibleRows"
             :key="row.key"
             :ref="(el) => bindRow(row.key, el)"
-            :class="['chat-row', row.startsBlock ? 'row-gap' : '']"
+            :class="['chat-row', row.startsBlock ? 'row-gap' : '', row.rewound ? 'rewound-row' : '']"
           >
             <div
               :class="sliceClass(row)"
@@ -1083,6 +1098,40 @@ onUnmounted(() => {
                   size="sm"
                   class="text-primary-500"
                 />
+              </div>
+
+              <!-- Above the prompt a rewind went back to: from here on, the
+                   discussion is what Claude no longer has. -->
+              <div
+                v-else-if="row.kind === 'rewind' && row.msg?.rewind"
+                class="rewind-divider py-1"
+              >
+                <div class="flex items-center gap-3">
+                  <div class="flex-1 h-px bg-amber-300 dark:bg-amber-700" />
+                  <span class="flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 text-center">
+                    <Icon
+                      name="history"
+                      size="xs"
+                    />
+                    {{ rewindDividerText(row.msg.rewind, row.msg.content) }}
+                  </span>
+                  <div class="flex-1 h-px bg-amber-300 dark:bg-amber-700" />
+                </div>
+                <p class="mt-1 text-center text-xs text-surface-400 dark:text-surface-500">
+                  Claude no longer has what follows: it is kept here, greyed, to read.
+                </p>
+                <p
+                  v-if="row.msg.rewind.files && row.msg.rewind.files.changed.length > 0"
+                  class="mt-0.5 text-center text-xs text-surface-400 dark:text-surface-500 font-mono break-all"
+                >
+                  {{ row.msg.rewind.files.changed.join(', ') }}
+                </p>
+                <p
+                  v-if="skippedLinksText(row.msg.rewind)"
+                  class="mt-0.5 text-center text-xs text-amber-600 dark:text-amber-400"
+                >
+                  {{ skippedLinksText(row.msg.rewind) }}
+                </p>
               </div>
 
               <!-- When Claude was last heard from. On the right, small and
@@ -1194,6 +1243,15 @@ onUnmounted(() => {
  */
 .row-gap {
   padding-top: calc(var(--chat-line-height, 1.6) * 0.6rem);
+}
+
+/*
+ * Rewound away: still there to read, but no longer what Claude has. On the
+ * row's content, not the row, so the gap above it — padding, measured as
+ * part of the row — is not dimmed into the bubble's colour.
+ */
+.rewound-row > * {
+  opacity: 0.45;
 }
 
 .assistant-turn-header {

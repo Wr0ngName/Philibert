@@ -44,9 +44,13 @@ const failure = ref<string | null>(null);
 
 const fileName = computed(() => props.filePath?.split(/[\\/]/).pop() ?? '');
 
-/** The calls Claude made in the discussion's last turn, the one the file markers are about. */
+/**
+ * The calls Claude made in the discussion's last turn, the one the file
+ * markers are about. Not a turn rewound away: its edits were what the rewind
+ * undid.
+ */
 function lastTurnCalls(): FileWritingCall[] {
-  const messages = chatStore.messages;
+  const messages = chatStore.messages.filter((message) => message.rewoundAt === undefined);
   let start = messages.length;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];

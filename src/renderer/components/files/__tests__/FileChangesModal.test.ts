@@ -185,6 +185,20 @@ describe('outside a git repository', () => {
     expect(modal.findAll('.file-changes-patch > div').map((l) => l.text())).toEqual(['@@ Edit @@', '-a', '+b']);
   });
 
+  it("shows the edits of the last turn Claude has, not of turns rewound away: the rewind undid them", async () => {
+    fileChanges.mockResolvedValue({ source: 'not-a-repository' });
+    turn(
+      { role: 'user', content: 'first request' },
+      edit('a', 'b'),
+      { role: 'user', content: 'second request', rewoundAt: 5000 },
+      { ...edit('c', 'd'), rewoundAt: 5000 },
+    );
+
+    const modal = await show();
+
+    expect(modal.findAll('.file-changes-patch > div').map((l) => l.text())).toEqual(['@@ Edit @@', '-a', '+b']);
+  });
+
   it('says why there is nothing, when Claude made no edit to it', async () => {
     fileChanges.mockResolvedValue({ source: 'not-a-repository' });
     turn({ role: 'user', content: 'run the formatter' });

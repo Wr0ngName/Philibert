@@ -245,6 +245,14 @@ describe('Conversations IPC handlers', () => {
       expect(mockConversationService.update).toHaveBeenCalledWith(update);
     });
 
+    it('applies an update carrying a rewind', async () => {
+      const update = { ...sampleUpdate, rewound: { fromId: 'msg-2', at: Date.now() } };
+
+      await handler({}, update);
+
+      expect(mockConversationService.update).toHaveBeenCalledWith(update);
+    });
+
     it('applies an update saying what system prompt Claude Code recorded, and the one gone on under', async () => {
       const update = {
         ...sampleUpdate,
@@ -273,6 +281,11 @@ describe('Conversations IPC handlers', () => {
       ['with updatedAt not a number', { ...sampleUpdate, updatedAt: 'invalid' }],
       ['with lastReceivedAt zero', { ...sampleUpdate, lastReceivedAt: 0 }],
       ['with lastReceivedAt not a number', { ...sampleUpdate, lastReceivedAt: '18:58' }],
+      ['with a rewind not an object', { ...sampleUpdate, rewound: 'msg-2' }],
+      ['with a rewind null', { ...sampleUpdate, rewound: null }],
+      ['with a rewind from no message', { ...sampleUpdate, rewound: { at: 1000 } }],
+      ['with a rewind at no time', { ...sampleUpdate, rewound: { fromId: 'msg-2' } }],
+      ['with a rewind at time zero', { ...sampleUpdate, rewound: { fromId: 'msg-2', at: 0 } }],
       ['with a recorded system prompt not a choice', { ...sampleUpdate, recordedSystemPrompt: 'claude_code' }],
       ['with a recorded system prompt missing its instructions', { ...sampleUpdate, recordedSystemPrompt: { claudeCodePrompt: true } }],
       ['with a system prompt gone on under not a choice', { ...sampleUpdate, systemPromptKeptUnder: { claudeCodePrompt: 'on', instructions: '' } }],
@@ -280,6 +293,13 @@ describe('Conversations IPC handlers', () => {
       // ValidationError is caught and wrapped in ConfigurationError by the handler
       await expect(handler({}, invalid)).rejects.toThrow(ConfigurationError);
       expect(mockConversationService.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['null', null],
+      ['from no message', { at: 1000 }],
+    ])('says it is the rewind that is wrong, for a rewind %s', async (_name, rewound) => {
+      await expect(handler({}, { ...sampleUpdate, rewound })).rejects.toThrow(/field: rewound/);
     });
 
     it('should throw when conversation service is not initialized', async () => {

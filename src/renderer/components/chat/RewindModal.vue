@@ -21,12 +21,13 @@
 
 import { computed, ref, watch } from 'vue';
 
-import type { RewindPreview, RewindScope } from '@shared/types';
+import type { RewindPreview, RewindRecord, RewindScope } from '@shared/types';
 
 import { useChatStore } from '../../stores/chat';
 import { useConversationsStore } from '../../stores/conversations';
 import { formatTime } from '../../utils/date';
 import { logger } from '../../utils/logger';
+import { filesRewindNote, rewindDividerText } from '../../utils/rewind';
 import Modal from '../shared/Modal.vue';
 import Spinner from '../shared/Spinner.vue';
 
@@ -57,10 +58,12 @@ let previewGeneration = 0;
 /** User turns, newest first — the order someone looking to undo thinks in. */
 const userTurns = computed(() =>
   chatStore.messages
-    .filter((message) => message.role === 'user')
+    // Not a turn rewound away: Claude Code no longer has it.
+    .filter((message) => message.role === 'user' && message.rewoundAt === undefined)
     .map((message) => ({
       id: message.id,
       uuid: message.turnUuid ?? null,
+      content: message.content,
       /** Enough of the prompt to recognise it, on one line. */
       label: message.content.replace(/\s+/g, ' ').trim().slice(0, 120) || '(empty message)',
       timestamp: message.timestamp,
@@ -118,6 +121,9 @@ async function apply(): Promise<void> {
 
   isApplying.value = true;
   applyError.value = null;
+  // Read now: the window can move on while Claude Code rewinds, taking the
+  // turn off screen.
+  const prompt = userTurns.value.find((turn) => turn.uuid === uuid)?.content ?? '';
   try {
     const outcome = await window.electron.claude.applyRewind(
       conversationId, uuid, scope.value, conversationsStore.getSdkSessionId(conversationId),
@@ -127,46 +133,36 @@ async function apply(): Promise<void> {
       return;
     }
 
-    // Report what happened in the transcript rather than only closing: a
-    // restore that writes files silently is indistinguishable from one that
-    // did nothing.
-    const parts: string[] = ['## Rewound\n'];
-    if (outcome.filesChanged.length > 0) {
-      parts.push(
-        `Restored ${outcome.filesChanged.length} ` +
-          `file${outcome.filesChanged.length === 1 ? '' : 's'} ` +
-          `(+${outcome.insertions} / -${outcome.deletions}):`,
-        '',
-        ...outcome.filesChanged.map((file) => `- \`${file}\``),
-        '',
-      );
-    } else if (touchesFiles.value) {
-      parts.push('No file differed from the checkpoint, so nothing was written.\n');
+    // Said in the discussion rather than only by closing: a restore that
+    // writes files silently is indistinguishable from one that did nothing.
+    const record: RewindRecord = {
+      at: Date.now(),
+      ...(touchesFiles.value ? {
+        files: {
+          changed: outcome.filesChanged,
+          insertions: outcome.insertions,
+          deletions: outcome.deletions,
+          ...(outcome.skippedLinks ? { skippedLinks: outcome.skippedLinks } : {}),
+        },
+      } : {}),
+    };
+    // The conversation rewound: the turns it went back over stay, greyed,
+    // under a divider drawn from the record. Files alone: the conversation
+    // goes on as it was, and a note at its end says what was restored.
+    const marked = outcome.conversationRewound && chatStore.markRewound(conversationId, uuid, record);
+    if (outcome.conversationRewound && !marked) {
+      logger.warn('Rewound a turn no longer on screen: said by a note only', { conversationId, uuid });
     }
-
-    if (outcome.skippedLinks) {
-      parts.push(
-        `⚠️ ${outcome.skippedLinks} tracked ` +
-          `file${outcome.skippedLinks === 1 ? ' was' : 's were'} left alone because the path ` +
-          'is a symlink or hard link, its parent no longer resolves where it did, or its ' +
-          'backup could not be read safely. The restore was partial.\n',
-      );
+    if (!marked) {
+      chatStore.addSystemMessage(outcome.conversationRewound
+        ? `${rewindDividerText(record, prompt)}. The turns from there on are no longer Claude's.`
+        : filesRewindNote(record, prompt));
     }
-
-    if (outcome.conversationRewound) {
-      parts.push(
-        'The conversation is rewound to that turn — your next message continues from there, ' +
-          'and the turns after it are gone.\n',
-      );
-    }
-
-    // Truncate before reporting, not after: truncation drops everything from
-    // the target turn onward, which would take this summary with it.
-    if (outcome.conversationRewound) {
-      chatStore.truncateAfterUserTurn(conversationId, uuid);
-    }
-
-    chatStore.addAssistantMessage(parts.join('\n'));
+    // Written now: a rewind left for the next save was in the file a minute
+    // later, after whatever came first.
+    void conversationsStore.saveCurrentConversation().catch((err) => {
+      logger.error('Failed to save the rewind', err);
+    });
 
     emit('close');
   } catch (err) {
@@ -299,7 +295,7 @@ watch([selectedUuid, scope], () => {
             <span class="text-sm">
               <span class="text-surface-800 dark:text-surface-200">Conversation only</span>
               <span class="block text-xs text-surface-500 dark:text-surface-400">
-                Later turns are dropped; your files keep every change they made.
+                Claude forgets the later turns, which stay here greyed; your files keep every change they made.
               </span>
             </span>
           </label>

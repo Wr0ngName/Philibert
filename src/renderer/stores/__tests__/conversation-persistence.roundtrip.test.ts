@@ -600,8 +600,8 @@ describe('a conversation through the real persistence stack', () => {
     // Rewind and the save guard were each tested alone. Nothing drove a real
     // rewind and then kept talking, which is the only way to produce the shape
     // that broke: a history that keeps its opening, diverges in the middle,
-    // and ends up LONGER than what is stored. Modelled as a pure truncation —
-    // which is how the guard's own tests modelled it — it looks safe.
+    // and ends up LONGER than what is stored. A rewind now marks rather than
+    // removes, and the shape still has to land whole.
     const wrapper = mountApp();
     const id = conversations.createNewConversation();
     await settle();
@@ -622,22 +622,28 @@ describe('a conversation through the real persistence stack', () => {
     await settle();
     expect(diskContents(id)).toHaveLength(4);
 
-    // Rewind to the first turn, through the store action the modal calls.
-    chat.truncateAfterUserTurn(id, 'turn-uuid-1');
+    // Rewind to the first turn, through the store action the modal calls:
+    // every turn kept, marked.
+    chat.markRewound(id, 'turn-uuid-1', { at: 5000 });
     await settle();
-    expect(chat.messages).toHaveLength(0);
+    expect(chat.messages.map((m) => m.rewoundAt)).toEqual([5000, 5000, 5000, 5000]);
 
-    // Then carry on talking, which is what makes the next save diverge from
-    // the file mid-list rather than simply truncating it.
+    // Then carry on talking: the new turn follows the rewound ones, not rewound.
     await send(wrapper, 'asked again after the rewind');
     streamAssistant(id, 'a different answer');
     emitIpc(IPC_CHANNELS.CLAUDE_DONE, id);
     await settle();
 
     expect(diskContents(id)).toEqual([
+      'the question kept by the rewind',
+      'an answer that will be rewound away',
+      'a second question, also rewound away',
+      'and its answer',
       'asked again after the rewind',
       'a different answer',
     ]);
+    expect(onDisk(id)?.messages.map((m) => m.rewoundAt)).toEqual([5000, 5000, 5000, 5000, undefined, undefined]);
+    expect(onDisk(id)?.messages[0].rewind).toEqual({ at: 5000 });
   });
 
   it('keeps two conversations apart on disk', async () => {

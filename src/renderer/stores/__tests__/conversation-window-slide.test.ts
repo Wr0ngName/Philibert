@@ -433,139 +433,90 @@ describe('sliding the window through a long conversation', () => {
 
   describe('rewinding a conversation that is held as a window', () => {
     /**
-     * A rewind drops a user turn and everything after it, and has to say so
-     * explicitly because a write cannot shorten the stored conversation on its
-     * own. Both halves of that are dangerous with a window: the turn is found
-     * in a list that may not be the window, and "everything before the turn"
-     * is a thing the renderer may not be holding.
+     * A rewind marks a user turn and everything after it as rewound away
+     * (ChatMessage.rewoundAt), keeping them. Both halves of that are
+     * dangerous with a window: the turn is found in a list that may not be
+     * the window, and "everything after the turn" is a thing the renderer
+     * may not be holding — the stored messages past the window, and a turn
+     * held apart from it.
      */
     function userTurn(n: number, uuid: string): ChatMessage {
       return { ...message(n), role: 'user', turnUuid: uuid };
     }
 
-    it('keeps the history the window is not holding', async () => {
-      // Rewinding to the oldest turn ON SCREEN is not rewinding to the start
-      // of the conversation. The survivor was taken as "the message before it
-      // in memory", and at the top of a window there is none — which asked
-      // for the whole conversation to be truncated, thousands of stored
-      // messages included.
-      const uuid = 'turn-at-the-top';
-      chatStore.messages[0] = userTurn(
-        Number(chatStore.messages[0].id.replace('msg_', '')), uuid,
-      );
-      const firstHeld = chatStore.messages[0].id;
-      const rewoundNumber = Number(firstHeld.replace('msg_', ''));
-      // Taken before the save, because the save legitimately changes it: the
-      // window is refilled once the rewind lands, which moves messages from
-      // the older count back onto the screen.
-      const storedBeforeTheWindow = chatStore.olderMessageCount;
-      expect(storedBeforeTheWindow).toBe(rewoundNumber);
+    const AT = 5000;
+    /** Each stored message's id with whether it is marked rewound. */
+    const marksOnDisk = () => (onDisk(CONV)?.messages ?? []).map((m) => [m.id, m.rewoundAt === AT] as const);
 
-      chatStore.truncateAfterUserTurn(CONV, uuid);
+    it('keeps the history before the window, and every message from the turn on, marked', async () => {
+      // Rewinding to the oldest turn ON SCREEN is not rewinding to the start
+      // of the conversation: what is stored before the window is untouched.
+      const uuid = 'turn-at-the-top';
+      chatStore.messages[0] = userTurn(Number(chatStore.messages[0].id.replace('msg_', '')), uuid);
+      const firstHeld = Number(chatStore.messages[0].id.replace('msg_', ''));
+
+      chatStore.markRewound(CONV, uuid, { at: AT });
       await store.saveCurrentConversation();
       await settle();
 
-      const saved = onDisk(CONV);
-      // Everything before the window survives, and the rewound turn is gone.
-      expect(saved?.messages.length).toBe(storedBeforeTheWindow);
-      expect(saved?.messages[0].id).toBe('msg_0');
-      expect(saved?.messages.some((m) => m.id === firstHeld)).toBe(false);
+      const marks = marksOnDisk();
+      expect(marks).toHaveLength(TOTAL);
+      expect(marks.slice(0, firstHeld).every(([, rewound]) => !rewound)).toBe(true);
+      expect(marks.slice(firstHeld).every(([, rewound]) => rewound)).toBe(true);
+      // Nothing left the screen.
+      expect(accountedTotal()).toBe(TOTAL);
+      expectContiguous();
     });
 
-    it('discards a turn held apart from the window too', async () => {
-      // A rewind means "forget everything after this point", and a turn that
-      // arrived while the window fell short of the end is after every message
-      // in the window by definition. So it goes as well — otherwise the write
-      // that carries the rewind also carries that turn, putting the messages
-      // the rewind was told to forget straight back on the end of the file,
-      // and the badge goes on offering a jump to them.
+    it('marks the stored messages past the window, and a turn held apart from it', async () => {
+      // A rewind means "Claude no longer has anything after this point": the
+      // messages stored after the window, and a turn that arrived while the
+      // window fell short of the end, are after every message in the window.
       //
       // A turn is unwritten from the moment it arrives until a write lands,
-      // which is the state wanted here. Reaching it by failing a write would
-      // say the same thing and cost the retry machinery — a pending save with
-      // a thirty-second timeout outlives the test that started it and slows
-      // every one after it. That path has its own test.
+      // which is the state wanted here.
       await readBackUntilTailUnloads();
       chatStore.addMessage(message(TOTAL));
       // The premise: the turn really is held, and really is not on disk.
       expect(chatStore.detachedTurnFor(CONV)?.map((m) => m.id)).toEqual([`msg_${TOTAL}`]);
-      expect(onDisk(CONV)?.messages.some((m) => m.id === `msg_${TOTAL}`)).toBe(false);
+      expect(chatStore.newerMessageCount).toBeGreaterThan(0);
 
       const at = 100;
       const uuid = 'rewind-with-a-turn-pending';
       const n = Number(chatStore.messages[at].id.replace('msg_', ''));
       chatStore.messages[at] = userTurn(n, uuid);
-      const rewound = chatStore.messages[at].id;
 
-      chatStore.truncateAfterUserTurn(CONV, uuid);
+      chatStore.markRewound(CONV, uuid, { at: AT });
       await store.saveCurrentConversation();
       await settle();
 
-      // Gone from memory, and never written.
-      expect(chatStore.detachedTurnFor(CONV)).toBeNull();
-      const ids = onDisk(CONV)?.messages.map((m) => m.id) ?? [];
-      expect(ids).not.toContain(`msg_${TOTAL}`);
-      expect(ids).not.toContain(rewound);
-      expect(ids.at(-1)).toBe(`msg_${n - 1}`);
-      // And nothing is left claiming there is more to come back to.
-      expect(chatStore.newerMessageCount).toBe(0);
+      const marks = marksOnDisk();
+      expect(marks).toHaveLength(TOTAL + 1);
+      expect(marks.at(-1)).toEqual([`msg_${TOTAL}`, true]);
+      expect(marks.slice(n).every(([, rewound]) => rewound)).toBe(true);
+      expect(marks[n - 1]).toEqual([`msg_${n - 1}`, false]);
     });
 
-    it('persists a rewind that empties the window, even on the way out', async () => {
-      // Rewinding the oldest turn on screen leaves nothing on screen, and the
-      // save on the way out of a conversation was guarded on there being
-      // something on screen to save. So the rewind went nowhere: the file
-      // kept every message, and the next visit showed them all again.
+    it('persists a rewind on the way out, with no save asked for', async () => {
       const uuid = 'turn-at-the-very-top';
       const n = Number(chatStore.messages[0].id.replace('msg_', ''));
       chatStore.messages[0] = userTurn(n, uuid);
-      const rewound = chatStore.messages[0].id;
 
-      chatStore.truncateAfterUserTurn(CONV, uuid);
-      expect(chatStore.messages).toHaveLength(0);
-
+      chatStore.markRewound(CONV, uuid, { at: AT });
       // Leave without saving by hand; switching away is the flush point.
       await store.switchConversation('conv-elsewhere');
       await settle();
 
-      const ids = onDisk(CONV)?.messages.map((m) => m.id) ?? [];
-      expect(ids).not.toContain(rewound);
-      expect(ids.at(-1)).toBe(`msg_${n - 1}`);
-      expect(ids).toHaveLength(n);
+      const marks = marksOnDisk();
+      expect(marks[n]).toEqual([`msg_${n}`, true]);
+      expect(marks[n - 1]).toEqual([`msg_${n - 1}`, false]);
+      expect(marks.at(-1)?.[1]).toBe(true);
     });
 
-    it('leaves the conversation readable after a rewind empties the window', async () => {
-      // Rewinding the oldest turn ON SCREEN is not rewinding to the start of
-      // the conversation: thousands of messages can still be stored in front
-      // of it. The window is empty afterwards, and a page of history is
-      // fetched against the id at the top of the window — so with no window
-      // there is no anchor, and nothing can be loaded. The transcript shows
-      // the empty state while the file holds thousands of messages.
-      const uuid = 'turn-at-the-very-top';
-      const n = Number(chatStore.messages[0].id.replace('msg_', ''));
-      chatStore.messages[0] = userTurn(n, uuid);
-
-      chatStore.truncateAfterUserTurn(CONV, uuid);
-      await store.saveCurrentConversation();
-      await settle();
-
-      // The file kept everything before the rewind point.
-      expect(onDisk(CONV)?.messages).toHaveLength(n);
-
-      // And the user can see it: something is on screen, and the accounting
-      // adds up against what is stored.
-      expect(chatStore.messages.length).toBeGreaterThan(0);
-      expect(accountedTotal()).toBe(n);
-      expectContiguous();
-      expect(chatStore.messages.at(-1)?.id).toBe(`msg_${n - 1}`);
-    });
-
-    it('cuts the file at the turn itself, not one message early', async () => {
-      // The exact boundary, because being one out either way is invisible in
-      // the transcript and permanent in the file: one short and the rewound
-      // turn survives on disk and comes back; one long and the turn BEFORE it
-      // is destroyed. Rewinding from the middle of the window, so there is a
-      // predecessor to get wrong.
+    it('marks from the turn itself, not one message early', async () => {
+      // The exact boundary, because being one out either way is wrong where
+      // it shows: one short and the rewound turn reads as Claude's; one long
+      // and the turn BEFORE it reads as rewound away.
       const at = 200;
       const uuid = 'turn-in-the-middle';
       const n = Number(chatStore.messages[at].id.replace('msg_', ''));
@@ -573,32 +524,24 @@ describe('sliding the window through a long conversation', () => {
       const predecessor = chatStore.messages[at - 1].id;
       const rewound = chatStore.messages[at].id;
 
-      // What the write asks for, not only what the file ends up as. Asking to
-      // cut one message early is invisible in the file: the over-truncated
-      // message is still in the window being upserted, so the same write puts
-      // it straight back. The contract is what has to be right.
+      // What the write asks for, not only what the file ends up as.
       const asked: (string | undefined)[] = [];
       const original = window.electron.conversation.update;
       (window.electron.conversation as { update: typeof original }).update = async (u) => {
-        asked.push(u.truncateFromId);
+        asked.push(u.rewound?.fromId);
         return original(u);
       };
 
-      chatStore.truncateAfterUserTurn(CONV, uuid);
+      chatStore.markRewound(CONV, uuid, { at: AT });
       await store.saveCurrentConversation();
       await settle();
 
       (window.electron.conversation as { update: typeof original }).update = original;
 
       expect(asked).toEqual([rewound]);
-
-      const saved = onDisk(CONV);
-      const ids = saved?.messages.map((m) => m.id) ?? [];
-      // The message before the rewound turn is the newest thing left.
-      expect(ids.at(-1)).toBe(predecessor);
-      expect(ids).not.toContain(rewound);
-      // And exactly that much survived: everything up to and including it.
-      expect(ids).toHaveLength(chatStore.olderMessageCount + at);
+      const marks = new Map(marksOnDisk());
+      expect(marks.get(predecessor)).toBe(false);
+      expect(marks.get(rewound)).toBe(true);
     });
 
     it('rewinds the transcript, not a turn held apart from it', async () => {
@@ -615,11 +558,13 @@ describe('sliding the window through a long conversation', () => {
       chatStore.messages[at] = userTurn(n, uuid);
 
       const heldBefore = chatStore.messages.length;
-      chatStore.truncateAfterUserTurn(CONV, uuid);
+      expect(chatStore.markRewound(CONV, uuid, { at: AT })).toBe(true);
 
-      // The transcript really lost those turns.
-      expect(chatStore.messages.length).toBe(heldBefore - 3);
-      expect(chatStore.messages.some((m) => m.turnUuid === uuid)).toBe(false);
+      // The transcript's turns from there on are marked, and still there.
+      expect(chatStore.messages.length).toBe(heldBefore);
+      expect(chatStore.messages.slice(at).every((m) => m.rewoundAt === AT)).toBe(true);
+      expect(chatStore.messages.slice(0, at).some((m) => m.rewoundAt !== undefined)).toBe(false);
+      expect(chatStore.detachedTurnFor(CONV)?.every((m) => m.rewoundAt === AT)).toBe(true);
     });
   });
 

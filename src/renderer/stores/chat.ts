@@ -8,7 +8,7 @@ import { ref, computed } from 'vue';
 
 import { modifiedPathsForTool } from '@shared/file-modifications';
 import { primaryModelUsage } from '@shared/model-usage';
-import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionSchedule, SessionUsage, ToolCaptureData, TaskListItem, TaskListSnapshotItem, ToolUseInfo, ToolResultData, MessageImage, UsageLimitWait, UsageWarning } from '@shared/types';
+import type { AgentRun, ChatMessage, PendingAction, BackgroundTask, BackgroundTaskInfo, LiveBackgroundTask, TaskNotification, SessionPermissionEntry, SessionSchedule, SessionUsage, ToolCaptureData, TaskListItem, TaskListSnapshotItem, ToolUseInfo, ToolResultData, MessageImage, RewindRecord, UsageLimitWait, UsageWarning } from '@shared/types';
 
 import type { MessageToAgent } from '../utils/agent-messages';
 import { generateId, ID_PREFIXES } from '../utils/id';
@@ -201,18 +201,15 @@ export interface ConversationState {
    */
   detachedTurn: ChatMessage[];
   /**
-   * A removal of history that has happened on screen and has yet to reach
-   * disk.
+   * A rewind marked on screen whose marks have yet to reach disk.
    *
-   * Writes are upserts — they add and replace, never shorten (see
-   * ConversationUpdate) — so a rewind has to say so explicitly or the turns
-   * it dropped would stay in the file and come back on the next visit.
-   * `fromId` is the oldest message being discarded, named that way round
-   * because the on-screen list is a window and the message BEFORE the oldest
-   * one in it is not held. Cleared only once a write carrying it has
+   * The messages on screen carry their marks to the file themselves; this
+   * says the rewind to the write, so the stored messages beyond what is held
+   * — the window can stop short of the end — are marked too
+   * (ConversationUpdate.rewound). Cleared only once a write carrying it has
    * succeeded.
    */
-  pendingTruncation: { fromId: string } | null;
+  pendingRewound: { fromId: string; at: number } | null;
   /**
    * Whether the view of this conversation is sitting at the newest message.
    *
@@ -350,7 +347,7 @@ function createConversationState(): ConversationState {
     newerCount: 0,
     arrivals: 0,
     detachedTurn: [],
-    pendingTruncation: null,
+    pendingRewound: null,
     tailPinned: true,
     bufferedMessages: [],
     bufferingMessages: false,
@@ -1093,52 +1090,34 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
-   * Drop everything that came after a user turn, that turn included.
+   * Mark a user turn and everything after it as rewound away: what Claude
+   * Code no longer has once the conversation is rewound to that turn (see
+   * ClaudeCodeService.applyRewind). Kept, greyed, rather than removed, and
+   * the turn carries what the rewind did, where the discussion draws its
+   * divider. A message rewound away before keeps the time it first was.
    *
-   * Used after a conversation-scope rewind, so the transcript on screen matches
-   * the one the next session will resume with. Without this the view would keep
-   * showing turns Claude Code has been told to forget, and the user would be
-   * reading a history the model no longer has.
-   *
-   * The turn itself goes too: resumeSessionAt resumes *at* that prompt, so it
-   * is about to be replayed rather than kept.
+   * Everything after the turn: the rest of the window, a turn collected apart
+   * from it, and — through the write — the stored messages the window stops
+   * short of. False when the turn is not on screen.
    */
-  function truncateAfterUserTurn(conversationId: string, turnUuid: string): void {
+  function markRewound(conversationId: string, turnUuid: string, record: RewindRecord): boolean {
     // The transcript, not the sink: a rewind acts on what the user is reading,
     // and while a turn is collecting apart from the window the sink is that
     // turn. Searching it finds nothing and silently rewinds nothing at all.
-    const sink = windowList(conversationId);
-    if (!sink) return;
-
-    const index = sink.findIndex(
-      (message) => message.role === 'user' && message.turnUuid === turnUuid,
+    const list = windowList(conversationId);
+    if (!list) return false;
+    const index = list.findIndex(
+      (message) => message.role === 'user' && message.turnUuid === turnUuid && message.rewoundAt === undefined,
     );
-    if (index === -1) return;
+    if (index === -1) return false;
 
-    // Record what the file has to lose, named as the oldest message being
-    // discarded. A write cannot shorten a stored conversation on its own, so
-    // without this the dropped turns would survive on disk and reappear on
-    // the next visit.
-    //
-    // Naming the last SURVIVOR instead cannot work for a window: rewinding to
-    // the oldest turn on screen has no predecessor to name, and "after
-    // nothing" meant "drop the whole conversation" — including the thousands
-    // of stored messages the window was not holding.
     const state = getConversationState(conversationId);
-    state.pendingTruncation = { fromId: sink[index].id };
-
-    sink.splice(index);
-
-    // A rewind means "forget everything after this point", and everything
-    // after the window is after that point too: the stored messages the
-    // window stops short of, and a turn collected apart from it. Both go.
-    //
-    // The write carries the truncation, so the stored ones are already gone;
-    // the detached turn has to be dropped here or the SAME write puts it
-    // back, appending the messages the rewind was told to forget onto the end
-    // of the file — and until then the badge goes on offering a jump to them.
-    state.newerCount = 0;
-    state.detachedTurn = [];
+    for (const message of [...list.slice(index), ...state.detachedTurn]) {
+      message.rewoundAt ??= record.at;
+    }
+    list[index].rewind = record;
+    state.pendingRewound = { fromId: list[index].id, at: record.at };
+    return true;
   }
 
   /**
@@ -1154,22 +1133,20 @@ export const useChatStore = defineStore('chat', () => {
     return conversationStates.value.get(conversationId)?.tailPinned ?? true;
   }
 
-  /** A removal of history not yet written, if there is one. */
-  function pendingTruncationFor(
-    conversationId: string,
-  ): { fromId: string } | null {
-    return conversationStates.value.get(conversationId)?.pendingTruncation ?? null;
+  /** A rewind not yet written, if there is one. */
+  function pendingRewoundFor(conversationId: string): { fromId: string; at: number } | null {
+    return conversationStates.value.get(conversationId)?.pendingRewound ?? null;
   }
 
   /**
-   * Forget a removal once a write carrying it has landed.
+   * Forget a rewind once a write carrying it has landed.
    *
-   * Kept until then on purpose: a failed write must not quietly turn a rewind
-   * into something the file never hears about.
+   * Kept until then on purpose: a failed write must not leave the stored
+   * messages beyond the window unmarked.
    */
-  function clearPendingTruncation(conversationId: string): void {
+  function clearPendingRewound(conversationId: string): void {
     const state = conversationStates.value.get(conversationId);
-    if (state) state.pendingTruncation = null;
+    if (state) state.pendingRewound = null;
   }
 
   /**
@@ -3233,9 +3210,9 @@ export const useChatStore = defineStore('chat', () => {
     addAssistantMessage,
     addSystemMessage,
     labelUserTurn,
-    truncateAfterUserTurn,
-    pendingTruncationFor,
-    clearPendingTruncation,
+    markRewound,
+    pendingRewoundFor,
+    clearPendingRewound,
     setTailPinned,
     isTailPinned,
     startAssistantMessage,

@@ -14,7 +14,7 @@ import { computed, ref } from 'vue';
 import type { ChatMessage } from '@shared/types';
 
 import { useLocalImages } from '../../composables/useLocalImages';
-import { formatTime } from '../../utils/date';
+import { formatMoment, formatTime } from '../../utils/date';
 import { logger } from '../../utils/logger';
 import { renderMarkdown, renderUserMarkdown } from '../../utils/markdown';
 import { selectionWithin } from '../../utils/selection';
@@ -97,6 +97,11 @@ const isLongSystemMessage = computed(
 );
 
 const formattedTime = computed(() => formatTime(props.message.timestamp));
+
+/** What the "Rewound" tag of a message rewound away says on hover. */
+const rewoundTitle = computed(() => props.message.rewoundAt === undefined
+  ? ''
+  : `Rewound away ${formatMoment(props.message.rewoundAt, Date.now())}: Claude no longer has it`);
 
 const renderedContent = computed(() =>
   isUser.value
@@ -260,6 +265,11 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
       <span class="text-xs text-surface-400 dark:text-surface-500">
         {{ formattedTime }}
       </span>
+      <span
+        v-if="message.rewoundAt !== undefined"
+        class="rewound-tag ml-auto text-xs px-1.5 rounded bg-surface-200 dark:bg-surface-700 text-surface-600 dark:text-surface-300"
+        :title="rewoundTitle"
+      >Rewound</span>
     </div>
 
     <!-- Content -->

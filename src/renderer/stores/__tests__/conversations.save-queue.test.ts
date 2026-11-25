@@ -22,7 +22,7 @@
  * is the whole subject.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest';
 
 import type { ChatMessage } from '@shared/types';
 
@@ -367,25 +367,15 @@ describe('what a save reports', () => {
   it('says on screen and in the log when a save never completes', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
-    // A conversation longer than the window, opened, then rewound to the
-    // oldest turn on screen: the save that carries the rewind empties the
-    // window, and refilling it reads from the main process. That read hangs.
-    const all: ChatMessage[] = [];
-    for (let i = 0; i < 520; i += 1) {
-      all.push(i % 2 === 0
-        ? { ...message(`u${i}`), turnUuid: `turn-${i}` }
-        : { ...message(`a${i}`), role: 'assistant' });
-    }
-    chatStore.loadMessages(all);
-    expect(await store.saveCurrentConversation()).toBe(true);
-    await store.loadConversation(CONV);
-    await settle();
-    expect(chatStore.olderMessageCount).toBeGreaterThan(0);
-    const oldestOnScreen = chatStore.messages[0];
-    expect(oldestOnScreen.role).toBe('user');
-    chatStore.truncateAfterUserTurn(CONV, oldestOnScreen.turnUuid!);
-    expect(chatStore.messages).toEqual([]);
-    mainHandlers.set('conversation:get-window', () => new Promise(() => {}));
+    // A write that never answers, its timeout lifted: the fault the warning
+    // is there for — a pass that never finishes, whatever holds it. (It was
+    // reached through a rewind refilling an emptied window, a read with no
+    // timeout; a rewind no longer empties the window.)
+    const timeout = CONSTANTS.CONVERSATION.SAVE_TIMEOUT_MS;
+    (CONSTANTS.CONVERSATION as { SAVE_TIMEOUT_MS: number }).SAVE_TIMEOUT_MS = 2 ** 31 - 1; // The longest setTimeout takes: longer fires at once.
+    onTestFinished(() => { (CONSTANTS.CONVERSATION as { SAVE_TIMEOUT_MS: number }).SAVE_TIMEOUT_MS = timeout; });
+    mainHandlers.set('conversation:update', () => new Promise(() => {}));
+    chatStore.messages.push(message('m1'));
     void store.saveCurrentConversation();
     await settle(20);
 

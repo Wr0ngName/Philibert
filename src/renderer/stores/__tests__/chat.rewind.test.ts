@@ -7,9 +7,9 @@
  *   - labelUserTurn pairs the uuid a turn was sent under with the message it
  *     belongs to. Pair it with the wrong message and a rewind restores the
  *     wrong turn — it writes files, so that is not recoverable from the app.
- *   - truncateAfterUserTurn drops the turns a conversation rewind discarded.
- *     Drop one too few and the view shows history the model no longer has;
- *     one too many and the user loses a turn that still exists.
+ *   - markRewound marks the turns a conversation rewind went back over. Mark
+ *     one too few and the view shows as Claude's what it no longer has; one
+ *     too many and a turn that still exists looks gone.
  */
 
 import { setActivePinia, createPinia } from 'pinia';
@@ -87,10 +87,12 @@ describe('labelUserTurn', () => {
   });
 });
 
-describe('truncateAfterUserTurn', () => {
+describe('markRewound', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
   });
+
+  const RECORD = { at: 5000, files: { changed: ['a.ts'], insertions: 2, deletions: 1 } };
 
   function seed() {
     const store = useChatStore();
@@ -102,39 +104,64 @@ describe('truncateAfterUserTurn', () => {
     return store;
   }
 
-  it('removes the target turn and everything after it', () => {
-    // resumeSessionAt resumes *at* that prompt, so the prompt is about to be
-    // replayed rather than kept.
+  const marks = (store: ReturnType<typeof useChatStore>) => store.messages.map((m) => [m.content, m.rewoundAt]);
+
+  it('marks the target turn and everything after it, keeping them, the turn with what the rewind did', () => {
+    // The session resumes before that prompt: it goes, with all after it.
     const store = seed();
 
-    store.truncateAfterUserTurn(CONV, 'uuid-2');
+    expect(store.markRewound(CONV, 'uuid-2', RECORD)).toBe(true);
 
-    expect(store.messages.map((m) => m.content)).toEqual(['turn one', 'answer one']);
+    expect(marks(store)).toEqual([['turn one', undefined], ['answer one', undefined], ['turn two', 5000], ['answer two', 5000]]);
+    expect(store.messages[2].rewind).toEqual(RECORD);
+    expect(store.messages.filter((m) => m.rewind)).toHaveLength(1);
+    // Said to the next write, for the stored messages past the window.
+    expect(store.pendingRewoundFor(CONV)).toEqual({ fromId: store.messages[2].id, at: 5000 });
   });
 
-  it('can rewind to the very first turn, leaving nothing', () => {
+  it('can rewind to the very first turn, marking everything', () => {
     const store = seed();
 
-    store.truncateAfterUserTurn(CONV, 'uuid-1');
+    store.markRewound(CONV, 'uuid-1', RECORD);
 
-    expect(store.messages).toEqual([]);
+    expect(store.messages.every((m) => m.rewoundAt === 5000)).toBe(true);
+  });
+
+  it('keeps the time a message was first rewound away, rewound again from further back', () => {
+    const store = seed();
+    store.markRewound(CONV, 'uuid-2', RECORD);
+
+    store.markRewound(CONV, 'uuid-1', { at: 9000 });
+
+    expect(marks(store)).toEqual([['turn one', 9000], ['answer one', 9000], ['turn two', 5000], ['answer two', 5000]]);
+    expect(store.messages[2].rewind).toEqual(RECORD);
+    expect(store.messages[0].rewind).toEqual({ at: 9000 });
+  });
+
+  it('is never a turn rewound away already: Claude Code no longer has it', () => {
+    const store = seed();
+    store.markRewound(CONV, 'uuid-1', RECORD);
+
+    expect(store.markRewound(CONV, 'uuid-2', { at: 9000 })).toBe(false);
+    expect(store.messages[2].rewind).toBeUndefined();
   });
 
   it('leaves the transcript alone for an unknown id', () => {
-    // Better to show too much than to delete turns on a bad id.
+    // Better to show too much as Claude's than to grey turns on a bad id.
     const store = seed();
 
-    store.truncateAfterUserTurn(CONV, 'uuid-nope');
+    expect(store.markRewound(CONV, 'uuid-nope', RECORD)).toBe(false);
 
-    expect(store.messages).toHaveLength(4);
+    expect(store.messages.every((m) => m.rewoundAt === undefined)).toBe(true);
+    expect(store.pendingRewoundFor(CONV)).toBeNull();
   });
 
   it('leaves the transcript alone for a conversation it does not track', () => {
     const store = seed();
 
-    store.truncateAfterUserTurn('other-conversation', 'uuid-2');
+    expect(store.markRewound('other-conversation', 'uuid-2', RECORD)).toBe(false);
 
-    expect(store.messages).toHaveLength(4);
+    expect(store.messages.every((m) => m.rewoundAt === undefined)).toBe(true);
   });
 });
 

@@ -46,6 +46,7 @@ vi.mock('../../constants/app', async (importOriginal) => {
 import type { ChatMessage, Conversation, ConversationUpdate } from '../../../shared/types';
 import realLogger from '../../utils/logger';
 import { ConversationService } from '../ConversationService';
+import { messagesIndexFileOf } from '../conversation-files';
 import { recordLine } from '../conversation-log';
 
 import { REAL_DISK_TEST_TIMEOUT_MS } from './support/real-disk';
@@ -220,7 +221,7 @@ describe('a save', () => {
     const before = fs.readFileSync(messagesFile('c'), 'utf-8');
 
     await service.update({ ...base('c'), upsert: [msg('m3')] });
-    await service.update({ ...base('c'), truncateFromId: 'm2' });
+    await service.update({ ...base('c'), rewound: { fromId: 'm2', at: 1000 } });
 
     expect(fs.readFileSync(messagesFile('c'), 'utf-8').startsWith(before)).toBe(true);
   });
@@ -261,40 +262,90 @@ describe('a save', () => {
     expect(await ids('c4')).toEqual(['m1', 'm2', 'm3', 'm4']);
   });
 
-  it('truncates from a message when asked to', async () => {
-    // What a rewind does: that turn and the ones after it really are gone.
+  // A rewind marks the turns it went back over rather than removing them:
+  // still there to read, greyed (ChatMessage.rewoundAt).
+  it('marks every stored message from a rewind on as rewound, those it was not sent included', async () => {
+    // The renderer holds a window: the stored messages past it are marked here.
     await seed('c5', ['m1', 'm2', 'm3', 'm4']);
 
-    await service.update({ ...base('c5'), truncateFromId: 'm3' });
+    await service.update({ ...base('c5'), upsert: [{ ...msg('m3'), rewoundAt: 1000 }], rewound: { fromId: 'm3', at: 1000 } });
 
-    expect(await ids('c5')).toEqual(['m1', 'm2']);
+    const stored = (await whole('c5'))!.messages;
+    expect(stored.map((m) => m.id)).toEqual(['m1', 'm2', 'm3', 'm4']);
+    expect(stored.map((m) => m.rewoundAt)).toEqual([undefined, undefined, 1000, 1000]);
   });
 
-  it('truncates and then appends in one write', async () => {
-    // The rewind writes the turns that follow it in the same save.
+  it('marks and then appends in one write: what follows the rewind is not rewound', async () => {
     await seed('c6', ['m1', 'm2', 'm3']);
 
-    await service.update({ ...base('c6'), truncateFromId: 'm2', upsert: [msg('m9')] });
+    await service.update({ ...base('c6'), rewound: { fromId: 'm2', at: 1000 }, upsert: [msg('m9')] });
 
-    expect(await ids('c6')).toEqual(['m1', 'm9']);
+    const stored = (await whole('c6'))!.messages;
+    expect(stored.map((m) => [m.id, m.rewoundAt])).toEqual([['m1', undefined], ['m2', 1000], ['m3', 1000], ['m9', undefined]]);
   });
 
-  it('keeps the history when the truncation anchor is gone', async () => {
-    // "From" cannot be known without the anchor. Dropping nothing is the
-    // recoverable mistake; dropping everything is not.
+  it('keeps the time a message was first rewound away', async () => {
     await seed('c7', ['m1', 'm2', 'm3']);
+    await service.update({ ...base('c7'), rewound: { fromId: 'm3', at: 1000 } });
 
-    await service.update({ ...base('c7'), truncateFromId: 'does-not-exist' });
+    await service.update({ ...base('c7'), rewound: { fromId: 'm2', at: 2000 } });
 
-    expect(await ids('c7')).toEqual(['m1', 'm2', 'm3']);
+    expect((await whole('c7'))!.messages.map((m) => m.rewoundAt)).toEqual([undefined, 2000, 1000]);
   });
 
-  it('clears every message when the first one is the anchor', async () => {
+  it('marks nothing stored when the rewind is from a message not stored yet', async () => {
+    // A turn not saved yet: the renderer holds it, and marks it itself.
     await seed('c8', ['m1', 'm2']);
 
-    await service.update({ ...base('c8'), truncateFromId: 'm1' });
+    await service.update({ ...base('c8'), rewound: { fromId: 'not-stored', at: 1000 }, upsert: [{ ...msg('m3'), rewoundAt: 1000 }] });
 
-    expect(await ids('c8')).toEqual([]);
+    expect((await whole('c8'))!.messages.map((m) => [m.id, m.rewoundAt])).toEqual([['m1', undefined], ['m2', undefined], ['m3', 1000]]);
+  });
+
+  it('writes each rewound message once: those it carries as sent, the others marked', async () => {
+    await seed('c11', ['m1', 'm2', 'm3']);
+    const before = fs.readFileSync(messagesFile('c11'), 'utf-8').split('\n').filter(Boolean).length;
+
+    // The prompt rewound to, as the renderer sends it: with what the rewind did.
+    await service.update({ ...base('c11'), upsert: [{ ...msg('m2'), rewoundAt: 1000, rewind: { at: 1000 } }], rewound: { fromId: 'm2', at: 1000 } });
+
+    const lines = fs.readFileSync(messagesFile('c11'), 'utf-8').split('\n').filter(Boolean);
+    expect(lines.length - before).toBe(2);
+  });
+
+  it('keeps the marks of a rewind against a copy sent without them, in a later session too', async () => {
+    // A copy read before the rewind landed, sent back as it was.
+    await seed('c12', ['m1', 'm2', 'm3']);
+    await service.update({ ...base('c12'), upsert: [{ ...msg('m2'), rewoundAt: 1000, rewind: { at: 1000 } }], rewound: { fromId: 'm2', at: 1000 } });
+    await service.settleWrites();
+    // Kept in the index the next session reads instead of the whole file.
+    expect(fs.readFileSync(messagesIndexFileOf(detailsFile('c12')), 'utf-8')).toContain('"rewound"');
+
+    const later = new ConversationService(claudeConfigDir);
+    await later.update({ ...base('c12'), upsert: [msg('m2', 'sent back'), msg('m3', 'sent back')] });
+
+    const stored = (await whole('c12', later))!.messages;
+    expect(stored.map((m) => [m.content, m.rewoundAt])).toEqual([['content m1', undefined], ['sent back', 1000], ['sent back', 1000]]);
+    expect(stored[1].rewind).toEqual({ at: 1000 });
+  });
+
+  it("forgets a message's marks when a cut a rewind wrote before removed it", async () => {
+    // A file with both: marked, then cut, then the message written again.
+    await seed('c13', ['m1', 'm2']);
+    await service.update({ ...base('c13'), rewound: { fromId: 'm2', at: 1000 } });
+    fs.appendFileSync(messagesFile('c13'), `${JSON.stringify({ cut: 'm2' })}\n`);
+    const later = new ConversationService(claudeConfigDir);
+    await later.update({ ...base('c13'), upsert: [msg('m2', 'new again')] });
+
+    expect((await whole('c13', later))!.messages.map((m) => [m.content, m.rewoundAt])).toEqual([['content m1', undefined], ['new again', undefined]]);
+  });
+
+  it('keeps reading a cut a rewind wrote before it marked instead', async () => {
+    // Files written then hold `cut` records: they still remove what they did.
+    await seed('c10', ['m1', 'm2', 'm3']);
+    fs.appendFileSync(messagesFile('c10'), `${JSON.stringify({ cut: 'm2' })}\n`);
+
+    expect((await whole('c10', new ConversationService(claudeConfigDir)))!.messages.map((m) => m.id)).toEqual(['m1']);
   });
 
   it('keeps details it was not given', async () => {
@@ -848,11 +899,11 @@ describe('finding a tool call in a stored discussion', () => {
     expect((await service.findToolCall('c', 'toolu_agent'))?.toolUse?.description).toBe('Plan B, renamed');
   });
 
-  it('does not find a call rewound away', async () => {
+  it('finds a call rewound away, marked so: still in the discussion, greyed', async () => {
     await service.update({ ...base('c'), upsert: [msg('m0'), agentCall('m1'), msg('m2')] });
-    await service.update({ ...base('c'), truncateFromId: 'm1' });
+    await service.update({ ...base('c'), rewound: { fromId: 'm1', at: 1000 } });
 
-    expect(await service.findToolCall('c', 'toolu_agent')).toBeNull();
+    expect((await service.findToolCall('c', 'toolu_agent'))?.rewoundAt).toBe(1000);
   });
 
   it('finds it in a discussion still in the one-file layout', async () => {
@@ -906,12 +957,14 @@ describe('a page of a long discussion', () => {
 
   it('holds the latest version of each message, after changes, appends and a rewind', async () => {
     await service.update({ ...base('long'), upsert: [msg('m10', 'edited ten'), ...many(5, 300)] });
-    await service.update({ ...base('long'), truncateFromId: 'm302' });
+    await service.update({ ...base('long'), rewound: { fromId: 'm302', at: 1000 } });
 
     const window = await service.getWindow('long', 5);
+    expect(window?.conversation.messages.map((m) => m.rewoundAt)).toEqual([undefined, undefined, 1000, 1000, 1000]);
     const older = await service.getOlder('long', 'm12', 3);
 
-    expect(pageIds(window?.conversation ?? null)).toEqual(['m297', 'm298', 'm299', 'm300', 'm301']);
+    // Kept, marked: m302 on.
+    expect(pageIds(window?.conversation ?? null)).toEqual(['m300', 'm301', 'm302', 'm303', 'm304']);
     expect(older?.messages.map((m) => m.content)).toEqual(['message 9', 'edited ten', 'message 11']);
     expect(older?.olderCount).toBe(9);
   });
@@ -1143,7 +1196,7 @@ describe('reads and writes at once', () => {
     // A read does not wait for writes. One that read the file before a save
     // appended to it, and finished after, holds the file as it was: that
     // must not become what the next write builds on, or a rewind would not
-    // find the turn it cuts from, and keep it.
+    // find the turn it marks from.
     await seed('c', ['m1']);
     let finishRead: () => void = () => {};
     const readHeld = new Promise<void>((resolve) => { finishRead = resolve; });
@@ -1162,9 +1215,9 @@ describe('reads and writes at once', () => {
     expect((await reading).map((hit) => hit.messageId)).toEqual(['m1']);
     vi.restoreAllMocks();
 
-    await service.update({ ...base('c'), truncateFromId: 'm2' });
+    await service.update({ ...base('c'), rewound: { fromId: 'm2', at: 1000 } });
 
-    expect(await ids('c')).toEqual(['m1']);
+    expect((await whole('c'))!.messages.map((m) => [m.id, m.rewoundAt])).toEqual([['m1', undefined], ['m2', 1000], ['m3', 1000]]);
   });
 });
 

@@ -948,8 +948,8 @@ export class ConversationService {
    * conversations. The short version: a write that carries the entire message
    * list makes the file only as complete as the renderer's memory, so memory
    * can never be bounded without risking the loss this app has already
-   * shipped once. Here the stored transcript can only grow, except where
-   * `truncateFromId` says otherwise.
+   * shipped once. Here the stored transcript can only grow: a rewind marks
+   * what it went back over (`rewound`) rather than removing it.
    *
    * Upsert is positional-stable: a message already stored is replaced where it
    * is, so an edit cannot reorder history, and one that is new is appended in
@@ -964,6 +964,9 @@ export class ConversationService {
     const { id } = update;
     const file = this.getFilePath(id);
     const stored = await this.detailsForWriting(id);
+    // Read before the state is taken for writing, which the reader would
+    // otherwise build on: the stored messages a rewind went back over.
+    const rewoundStored = stored && update.rewound ? await this.storedFrom(id, update.rewound.fromId) : [];
 
     let state: TranscriptState;
     let ahead: boolean;
@@ -986,26 +989,23 @@ export class ConversationService {
 
     // The lines to append, each with the message it puts, if any.
     const batch: Array<{ line: string; putId?: string }> = [];
-    let truncated = false;
-    if (update.truncateFromId) {
-      if (state.cut(update.truncateFromId)) {
-        batch.push({ line: recordLine({ cut: update.truncateFromId }) });
-        truncated = true;
-      } else {
-        // The anchor is gone, so what "from" means cannot be known. Dropping
-        // nothing is the recoverable mistake; dropping everything is not.
-        logger.warn('Truncation anchor not found — keeping the stored history', {
-          id,
-          truncateFromId: update.truncateFromId,
-          storedCount,
-        });
-      }
-    }
+
+    // A rewind: the stored messages it went back over that this update does
+    // not carry, marked. Put before those it carries, which the renderer
+    // marked itself: a put replaces a stored message where it is, so the
+    // order they are written in changes nothing.
+    const carried = new Set(update.upsert.map((message) => message.id));
+    const marked = update.rewound
+      ? rewoundStored
+        .filter((message) => !carried.has(message.id) && message.rewoundAt === undefined)
+        .map((message) => ({ ...message, rewoundAt: update.rewound!.at }))
+      : [];
 
     let added = 0;
     let changed = 0;
     let unchanged = 0;
-    for (const message of update.upsert) {
+    for (const sent of [...marked, ...update.upsert]) {
+      const message = state.keepRewound(sent);
       const line = recordLine({ put: message });
       const outcome = state.put(message, line);
       if (outcome === 'unchanged') {
@@ -1057,7 +1057,7 @@ export class ConversationService {
       added,
       changed,
       unchanged,
-      truncated: truncated ? update.truncateFromId : 'none',
+      ...(update.rewound ? { rewoundFrom: update.rewound.fromId, markedStored: marked.length } : {}),
       resultCount: state.size,
     });
 
@@ -1217,6 +1217,23 @@ export class ConversationService {
       const end = Math.min(stop, start + Math.max(0, limit));
       return { messages: await view.load(start, end), newerCount: stop - end };
     });
+  }
+
+  /**
+   * The stored messages from `fromId` to the end, as they are in the file:
+   * none when it is not stored — a rewind to a turn not saved yet, whose
+   * messages the renderer holds and marks itself.
+   */
+  private async storedFrom(id: string, fromId: string): Promise<ChatMessage[]> {
+    const messages = await this.withView(id, async (view) => {
+      const at = view.ids.indexOf(fromId);
+      if (at === -1) {
+        logger.warn('Rewound from a message that is not stored: only the messages sent are marked', { id, fromId });
+        return [];
+      }
+      return view.load(at, view.ids.length);
+    });
+    return messages ?? [];
   }
 
   /**

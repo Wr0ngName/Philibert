@@ -275,10 +275,17 @@ export function setupConversationIPC(
         }
       }
 
+      if (update.rewound !== undefined && (
+        typeof update.rewound !== 'object' || update.rewound === null
+        || typeof update.rewound.fromId !== 'string' || typeof update.rewound.at !== 'number' || update.rewound.at <= 0
+      )) {
+        throw new ValidationError('Conversation rewound must name the message it is from and when', 'rewound', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+      }
+
       logger.info('IPC: conversation:update called', {
         id: update.id,
         upsertCount: update.upsert.length,
-        truncateFromId: update.truncateFromId,
+        ...(update.rewound ? { rewoundFrom: update.rewound.fromId } : {}),
       });
 
       await conversationService.update(update);

@@ -34,7 +34,7 @@ import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
-import { disk, diskContents, files, settle, startRealStack } from './support/real-stack';
+import { disk, diskContents, files, onDisk, settle, startRealStack } from './support/real-stack';
 
 const DIR = '/home/user/project';
 
@@ -50,6 +50,9 @@ function seed(id: string, contents: string[]): void {
   };
   files.set(`/conversations/${id}.json`, JSON.stringify(conversation));
 }
+
+/** The stored messages, in order. */
+const onDiskMessages = (id: string): ChatMessage[] => onDisk(id)?.messages ?? [];
 
 const carried = (save: ConversationUpdate | undefined) => (save?.upsert ?? []).map((m) => m.content);
 
@@ -120,25 +123,57 @@ describe('what a save carries', () => {
     expect(diskContents('conv-long')).toEqual(['one', 'two', 'three', 'four']);
   });
 
-  it('is the whole window when it carries a rewind, which removes from the file', async () => {
+  it('carries the rewind and what it marked on screen, the rest marked in the file', async () => {
     seed('conv-r', ['kept', 'rewound']);
     await store.loadConversationList();
     await store.loadConversation('conv-r');
     chat.messages[1].turnUuid = 'turn-to-rewind';
 
-    chat.truncateAfterUserTurn('conv-r', 'turn-to-rewind');
+    chat.markRewound('conv-r', 'turn-to-rewind', { at: 5000 });
     chat.addUserMessage('asked again');
     await store.saveCurrentConversation();
 
-    expect(saves[0].truncateFromId).toBe('conv-r-1');
-    expect(carried(saves[0])).toEqual(['kept', 'asked again']);
-    expect(diskContents('conv-r')).toEqual(['kept', 'asked again']);
+    expect(saves[0].rewound).toEqual({ fromId: 'conv-r-1', at: 5000 });
+    expect(carried(saves[0])).toEqual(['rewound', 'asked again']);
+    expect(diskContents('conv-r')).toEqual(['kept', 'rewound', 'asked again']);
+    expect(onDiskMessages('conv-r').map((m) => m.rewoundAt)).toEqual([undefined, 5000, undefined]);
   });
 
-  it('does not take for stored what a read found before a rewind removed it', async () => {
-    // A read answering after a rewind landed holds messages the rewind cut
-    // from the file. Taken for stored, they would never be sent again: shown
-    // on screen, absent from disk, gone at the next opening.
+  it('carries a rewind made while the one before was being written, to the next write', async () => {
+    seed('conv-twice', ['kept', 'first', 'second']);
+    await store.loadConversationList();
+    await store.loadConversation('conv-twice');
+    chat.messages[1].turnUuid = 'turn-first';
+    chat.messages[2].turnUuid = 'turn-second';
+    // The write of the first rewind, held until the second is made.
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const update = ConversationService.prototype.update;
+    vi.mocked(ConversationService.prototype.update).mockImplementationOnce(async function (this: ConversationService, u) {
+      saves.push(structuredClone(u));
+      await held;
+      return update.call(this, u);
+    });
+
+    chat.markRewound('conv-twice', 'turn-second', { at: 5000 });
+    const writing = store.saveCurrentConversation();
+    await settle();
+    chat.markRewound('conv-twice', 'turn-first', { at: 6000 });
+    release();
+    await writing;
+
+    // The first landing does not take the second with it.
+    expect(chat.pendingRewoundFor('conv-twice')).toEqual({ fromId: 'conv-twice-1', at: 6000 });
+    await store.saveCurrentConversation();
+    expect(saves.at(-1)?.rewound).toEqual({ fromId: 'conv-twice-1', at: 6000 });
+    expect(chat.pendingRewoundFor('conv-twice')).toBeNull();
+    expect(onDiskMessages('conv-twice').map((m) => m.rewoundAt)).toEqual([undefined, 6000, 5000]);
+  });
+
+  it('cannot be undone by what a read found before the rewind landed', async () => {
+    // A read answering after a rewind landed holds the messages as they were
+    // before it, unmarked. Saved back, they must not take the marks off:
+    // Claude no longer has them, whatever a late page says.
     seed('conv-race', ['kept', 'rewound', 'after']);
     await store.loadConversationList();
     await store.loadConversation('conv-race');
@@ -154,18 +189,20 @@ describe('what a save carries', () => {
     const reading = store.readWindow('conv-race');
     await settle();
 
-    chat.truncateAfterUserTurn('conv-race', 'turn-to-rewind');
+    chat.markRewound('conv-race', 'turn-to-rewind', { at: 5000 });
     await store.saveCurrentConversation();
-    expect(diskContents('conv-race')).toEqual(['kept']);
+    expect(onDiskMessages('conv-race').map((m) => m.rewoundAt)).toEqual([undefined, 5000, 5000]);
     answer();
     const stale = await reading;
 
     // The stale messages come back on screen, as a late page would put them.
     chat.loadMessages(stale!.conversation.messages);
+    expect(chat.messages.map((m) => m.rewoundAt)).toEqual([undefined, undefined, undefined]);
     await store.saveCurrentConversation();
 
-    expect(diskContents('conv-race')).toEqual(chat.messages.map((m) => m.content));
     expect(diskContents('conv-race')).toEqual(['kept', 'rewound', 'after']);
+    expect(onDiskMessages('conv-race').map((m) => m.rewoundAt)).toEqual([undefined, 5000, 5000]);
+    expect(onDiskMessages('conv-race')[1].rewind).toEqual({ at: 5000 });
   });
 
   it('carries nothing again that a failed save did not write', async () => {
