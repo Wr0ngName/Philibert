@@ -158,11 +158,15 @@ export interface ElectronAPI {
     getAgents: () => Promise<AgentInfo[]>;
     /** What a rewind to this user turn would restore. Changes nothing. */
     previewRewind: (conversationId: string, messageUuid: string) => Promise<RewindPreview>;
-    /** Restore files and/or the conversation to this user turn. */
+    /**
+     * Restore files and/or the conversation to this user turn. The session
+     * the discussion has on record finds the turn when none is running.
+     */
     applyRewind: (
       conversationId: string,
       messageUuid: string,
       scope: RewindScope,
+      sdkSessionId: string | undefined,
     ) => Promise<RewindOutcome>;
     /** Get available models */
     getModels: () => Promise<ModelInfo[]>;

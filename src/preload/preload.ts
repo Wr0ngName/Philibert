@@ -81,8 +81,8 @@ const electronAPI: ElectronAPI = {
     previewRewind: (conversationId, messageUuid) =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_REWIND_PREVIEW, conversationId, messageUuid),
 
-    applyRewind: (conversationId, messageUuid, scope) =>
-      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_REWIND_APPLY, conversationId, messageUuid, scope),
+    applyRewind: (conversationId, messageUuid, scope, sdkSessionId) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_REWIND_APPLY, conversationId, messageUuid, scope, sdkSessionId),
 
     getModels: () => ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_MODELS),
 

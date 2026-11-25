@@ -24,6 +24,7 @@ import { computed, ref, watch } from 'vue';
 import type { RewindPreview, RewindScope } from '@shared/types';
 
 import { useChatStore } from '../../stores/chat';
+import { useConversationsStore } from '../../stores/conversations';
 import { formatTime } from '../../utils/date';
 import { logger } from '../../utils/logger';
 import Modal from '../shared/Modal.vue';
@@ -40,6 +41,7 @@ const emit = defineEmits<{
 }>();
 
 const chatStore = useChatStore();
+const conversationsStore = useConversationsStore();
 
 /** Turn the rewind targets, by the uuid it was sent under. */
 const selectedUuid = ref<string | null>(null);
@@ -117,7 +119,9 @@ async function apply(): Promise<void> {
   isApplying.value = true;
   applyError.value = null;
   try {
-    const outcome = await window.electron.claude.applyRewind(conversationId, uuid, scope.value);
+    const outcome = await window.electron.claude.applyRewind(
+      conversationId, uuid, scope.value, conversationsStore.getSdkSessionId(conversationId),
+    );
     if (!outcome.ok) {
       applyError.value = outcome.error ?? 'The rewind was refused.';
       return;

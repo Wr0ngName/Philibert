@@ -106,6 +106,7 @@ import { SessionSchedules } from './claude/SessionSchedules';
 import { AgentTranscripts } from './claude/agent-transcripts';
 import { observeCanUseToolRequests, type CanUseToolRequest } from './claude/can-use-tool-requests';
 import { claudeAiConnectorAuthPage, readGlobalToolStatuses } from './claude/connectors';
+import { resumePointBefore } from './claude/rewind-point';
 import { describeSystemPrompt, sdkSystemPrompt, systemPromptFor } from './claude/system-prompt-options';
 import { attachTranscriptImages, cliTempRoot, locateTaskOutput, readTaskOutput } from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
@@ -151,6 +152,15 @@ const NO_SESSION_TO_REWIND_WITH =
   'Claude Code is not running for this conversation, and files can only be restored ' +
   'through it. Send a message first; the checkpoints of earlier turns are kept, ' +
   'including across restarts.';
+
+/**
+ * Why the conversation cannot be rewound to a turn: Claude Code's record of
+ * the session has no such prompt — the session's transcript is gone, or the
+ * turn was never recorded under the id the app gave it.
+ */
+const TURN_NOT_IN_SESSION =
+  "This turn is not in Claude Code's record of the discussion, so the conversation " +
+  'cannot be rewound to it. Nothing was changed.';
 
 /** Whether a message is sent as a slash command rather than as a prompt. */
 function isSlashCommandText(message: string): boolean {
@@ -367,10 +377,12 @@ export class ClaudeCodeService {
    */
   private catalogRequest: { generation: number; promise: Promise<SDKControlInitializeResponse | null> } | null = null;
   /**
-   * Conversations whose next session must resume at an earlier user message,
-   * set by a conversation-scope rewind and consumed when that session starts.
+   * Conversations whose next session must resume at an earlier point, set by
+   * a conversation-scope rewind and consumed when that session starts: the
+   * entry before the prompt rewound to (resumePointBefore), or null when that
+   * was the first prompt — nothing kept, the next session a new one.
    */
-  private pendingRewindPoints = new Map<string, string>();
+  private pendingRewindPoints = new Map<string, string | null>();
   private configService: ConfigService;
   /** Asked whether a discussion's folder is a git repository: see @shared/system-prompt. */
   private readonly git: Pick<GitService, 'isRepository'>;
@@ -1232,6 +1244,20 @@ export class ClaudeCodeService {
       // here means the level we log is the level that ran, and a model that
       // takes no effort gets no effort parameter at all.
       const effort = await this.resolveEffortForModel(selectedModel, settings.effortLevel);
+      // Set by a conversation-scope rewind: the session resumes at the entry
+      // before the prompt rewound to, so that prompt and everything after it
+      // leave the transcript — or, rewound to the first prompt, starts anew.
+      // Consumed here so it applies once, to the session the rewind asked
+      // for, rather than to every later session of this conversation.
+      const rewindPoint = this.pendingRewindPoints.get(conversationId);
+      const rewound = this.pendingRewindPoints.delete(conversationId);
+      if (rewound) {
+        logger.info('Starting the session where the conversation was rewound to', {
+          conversationId,
+          rewindPoint: rewindPoint ?? '(the start: a new session)',
+        });
+        if (rewindPoint === null) resumeSessionId = undefined;
+      }
       // When resuming we also call setModel() after init, because a resumed
       // session restores the model it was created with.
       const shouldResume = !!resumeSessionId;
@@ -1288,16 +1314,6 @@ export class ClaudeCodeService {
       // the first pushed message need it: it is the key the CLI echoes on this
       // turn's result, which is how that result is known to be ours.
       const firstTurnUuid = randomUUID();
-
-      // Set by a conversation-scope rewind: the session resumes at that user
-      // message, so everything after it leaves the transcript. Consumed here so
-      // it applies once, to the session the rewind asked for, rather than to
-      // every later session of this conversation.
-      const rewindPoint = this.pendingRewindPoints.get(conversationId);
-      this.pendingRewindPoints.delete(conversationId);
-      if (rewindPoint) {
-        logger.info('Resuming session at an earlier user message', { conversationId, rewindPoint });
-      }
 
       // Start query with AsyncIterable prompt — this keeps the process alive
       const queryIterator = query({
@@ -2664,15 +2680,43 @@ export class ClaudeCodeService {
    *
    * A conversation rewind does not happen here — it is a property of how the
    * next session starts. The point is recorded and the session closed; the next
-   * message resumes at that turn with everything after it dropped.
+   * message resumes before that turn, it and everything after it dropped
+   * (resumePointBefore). The point is looked up before any file is restored:
+   * a turn Claude Code has no record of refuses the whole rewind, rather
+   * than restoring files and then leaving the conversation as it was.
+   *
+   * @param sdkSessionId - The session the renderer has on record, for when
+   *   none is running: a conversation-only rewind needs none.
    */
   async applyRewind(
     conversationId: string,
     messageUuid: string,
     scope: RewindScope,
+    sdkSessionId?: string,
   ): Promise<RewindOutcome> {
     const wantsFiles = scope === 'code' || scope === 'both';
     const wantsConversation = scope === 'conversation' || scope === 'both';
+
+    let resumeAt: string | null = null;
+    if (wantsConversation) {
+      const sessionId = this.activeSessions.get(conversationId)?.sdkSessionId ?? sdkSessionId;
+      const transcript = sessionId ? findSessionTranscript(sessionId) : null;
+      const point = transcript ? await resumePointBefore(transcript, messageUuid) : undefined;
+      if (point === undefined) {
+        logger.warn('Rewind refused: the turn is not in the session transcript', {
+          conversationId, messageUuid, sessionId, transcriptFound: transcript !== null,
+        });
+        return {
+          ok: false,
+          error: TURN_NOT_IN_SESSION,
+          filesChanged: [],
+          insertions: 0,
+          deletions: 0,
+          conversationRewound: false,
+        };
+      }
+      resumeAt = point;
+    }
 
     let filesChanged: string[] = [];
     let insertions = 0;
@@ -2722,10 +2766,10 @@ export class ClaudeCodeService {
     }
 
     if (wantsConversation) {
-      this.pendingRewindPoints.set(conversationId, messageUuid);
+      this.pendingRewindPoints.set(conversationId, resumeAt);
       // Ends the session so the next message starts one with resumeSessionAt.
       this.cleanupSession(conversationId);
-      logger.info('Conversation rewind armed', { conversationId, messageUuid });
+      logger.info('Conversation rewind armed', { conversationId, messageUuid, resumeAt: resumeAt ?? '(the start: a new session)' });
     }
 
     return {

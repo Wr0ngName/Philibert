@@ -430,11 +430,14 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
   // Perform a rewind.
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_REWIND_APPLY,
-    async (_event, conversationId: string, messageUuid: string, scope: RewindScope) => {
+    async (_event, conversationId: string, messageUuid: string, scope: RewindScope, sdkSessionId?: string) => {
       try {
-        logger.info('IPC: claude:rewind-apply', { conversationId, messageUuid, scope });
+        logger.info('IPC: claude:rewind-apply', { conversationId, messageUuid, scope, hasSdkSessionId: !!sdkSessionId });
         ensureService(claudeService, 'ClaudeCodeService');
-        return await claudeService.applyRewind(conversationId, messageUuid, scope);
+        if (sdkSessionId !== undefined && typeof sdkSessionId !== 'string') {
+          throw new ValidationError('sdkSessionId must be a string', 'sdkSessionId', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
+        }
+        return await claudeService.applyRewind(conversationId, messageUuid, scope, sdkSessionId);
       } catch (error) {
         logger.error('Failed to apply rewind', { error, conversationId, messageUuid, scope });
         throw new IpcError(

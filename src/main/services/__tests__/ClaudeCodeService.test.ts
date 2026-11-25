@@ -2062,6 +2062,98 @@ describe('ClaudeCodeService', () => {
   });
 
   // ===========================================================================
+  // Rewinding the conversation
+  // ===========================================================================
+  describe('rewinding the conversation', () => {
+    // The session's transcript, as the CLI chains it (2.1.280): each entry
+    // names the one before it. "two" follows the attachment that closes the
+    // first turn.
+    const ENTRIES = [
+      { type: 'user', uuid: 'prompt-one', parentUuid: null, message: { role: 'user', content: 'one' } },
+      { type: 'assistant', uuid: 'answer-one', parentUuid: 'prompt-one', message: { role: 'assistant', content: [] } },
+      { type: 'attachment', uuid: 'end-of-one', parentUuid: 'answer-one' },
+      { type: 'user', uuid: 'prompt-two', parentUuid: 'end-of-one', message: { role: 'user', content: 'two' } },
+      { type: 'assistant', uuid: 'answer-two', parentUuid: 'prompt-two', message: { role: 'assistant', content: [] } },
+    ];
+    let configDir: string;
+
+    beforeEach(() => {
+      configDir = realFs.mkdtempSync(path.join(os.tmpdir(), 'cli-config-'));
+      const project = path.join(configDir, 'projects', 'some-project');
+      realFs.mkdirSync(project, { recursive: true });
+      realFs.writeFileSync(path.join(project, 'session-1.jsonl'), ENTRIES.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+      vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+      mockQuery.mockReturnValue(createMockQueryIterator([]));
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      realFs.rmSync(configDir, { recursive: true, force: true });
+    });
+
+    /** The options of the session the next message starts. */
+    async function nextSession(): Promise<{ resume?: string; resumeSessionAt?: string }> {
+      mockQuery.mockClear();
+      await service.sendMessage(TEST_CONV_ID, 'four', '/home/user/project', 'session-1');
+      await vi.waitFor(() => expect(mockQuery).toHaveBeenCalled());
+      return mockQuery.mock.calls[0][0].options;
+    }
+
+    it('resumes the next session before the prompt rewound to: the end of the turn kept', async () => {
+      const outcome = await service.applyRewind(TEST_CONV_ID, 'prompt-two', 'conversation', 'session-1');
+
+      expect(outcome).toMatchObject({ ok: true, conversationRewound: true });
+      const options = await nextSession();
+      expect(options.resume).toBe('session-1');
+      expect(options.resumeSessionAt).toBe('end-of-one');
+    });
+
+    it('to the first prompt, starts the next session anew: nothing to keep', async () => {
+      await service.applyRewind(TEST_CONV_ID, 'prompt-one', 'conversation', 'session-1');
+
+      const options = await nextSession();
+      expect(options.resume).toBeUndefined();
+      expect(options.resumeSessionAt).toBeUndefined();
+    });
+
+    it('only once: the session after resumes as usual', async () => {
+      await service.applyRewind(TEST_CONV_ID, 'prompt-two', 'conversation', 'session-1');
+      await nextSession();
+      // That session ends — the mock CLI says nothing and exits — and the next starts.
+      await vi.waitFor(() => expect(service.getActiveQueryCount()).toBe(0));
+
+      const options = await nextSession();
+      expect(options.resume).toBe('session-1');
+      expect(options.resumeSessionAt).toBeUndefined();
+    });
+
+    it('refuses a turn the session has no record of, before restoring any file', async () => {
+      const session = openSession('session-1');
+      const rewindFiles = vi.fn().mockResolvedValue({ canRewind: true, filesChanged: ['a.ts'], insertions: 1, deletions: 0 });
+      mockQuery.mockReturnValue({ ...session.iterator, rewindFiles });
+      await service.sendMessage(TEST_CONV_ID, 'three', '/home/user/project', 'session-1');
+      await vi.waitFor(() => expect(mockSend).toHaveBeenCalledWith(IPC_CHANNELS.CLAUDE_SESSION_ID, TEST_CONV_ID, 'session-1'));
+
+      const outcome = await service.applyRewind(TEST_CONV_ID, 'not-a-prompt-of-it', 'both');
+
+      expect(outcome.ok).toBe(false);
+      expect(outcome.error).toContain('cannot be rewound to it. Nothing was changed.');
+      expect(rewindFiles).not.toHaveBeenCalled();
+      // Nor armed: the next session resumes as usual.
+      session.close();
+      const options = await nextSession();
+      expect(options.resumeSessionAt).toBeUndefined();
+    });
+
+    it('finds the turn in the session the discussion has on record when none is running', async () => {
+      const outcome = await service.applyRewind(TEST_CONV_ID, 'prompt-two', 'conversation');
+
+      expect(outcome.ok).toBe(false);
+      expect((await service.applyRewind(TEST_CONV_ID, 'prompt-two', 'conversation', 'session-1')).ok).toBe(true);
+    });
+  });
+
+  // ===========================================================================
   // An agent's transcript, for its detail view
   // ===========================================================================
   describe('getAgentTranscript', () => {
