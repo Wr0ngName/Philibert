@@ -73,6 +73,7 @@ import { useChatStore } from '../chat';
 import { useConversationsStore } from '../conversations';
 import { useSettingsStore } from '../settings';
 
+import { gitStatus } from './support/main-git';
 import { files } from './support/real-stack';
 
 import '../../../preload/preload';
@@ -96,6 +97,8 @@ async function route(channel: string, args: unknown[]): Promise<unknown> {
       return conversationService.archivedCount(args[0] as AutoArchiveDays);
     case IPC_CHANNELS.CONVERSATION_SUMMARY:
       return conversationService.summary(args[0] as string);
+    case IPC_CHANNELS.GIT_STATUS:
+      return gitStatus(args[0] as string);
     case IPC_CHANNELS.CONFIG_GET:
       return storedConfig;
     default:

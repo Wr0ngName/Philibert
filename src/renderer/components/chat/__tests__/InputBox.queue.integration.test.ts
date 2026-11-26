@@ -26,6 +26,13 @@ const { ipcListeners, exposed, invoked } = vi.hoisted(() => ({
   invoked: [] as { channel: string; args: unknown[] }[],
 }));
 
+// git:status is answered by the real GitService (support/main-git), whose
+// logger is the main process's: it writes through Electron, which is not here.
+vi.mock('../../../../main/utils/logger', () => ({
+  default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  setLogLevel: vi.fn(),
+}));
+
 vi.mock('electron', () => ({
   contextBridge: {
     exposeInMainWorld: (_key: string, api: Record<string, unknown>) => {
@@ -36,6 +43,9 @@ vi.mock('electron', () => ({
     invoke: vi.fn(async (channel: string, ...args: unknown[]) => {
       // Copied as Electron copies them, which throws on what it cannot copy.
       invoked.push({ channel, args: structuredClone(args) });
+      if (channel === 'git:status') {
+        return (await import('../../../stores/__tests__/support/main-git')).gitStatus(args[0] as string);
+      }
       if (typeof channel === 'string' && /availability/i.test(channel)) {
         // The input asks whether dictation is available during setup and
         // reads `.available` off the answer, so undefined throws.

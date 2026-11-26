@@ -26,6 +26,13 @@ const { ipcListeners, exposed, invoked, duringTurn } = vi.hoisted(() => ({
   duringTurn: { answer: 'uuid-1' as string | null, takenBack: true },
 }));
 
+// git:status is answered by the real GitService (support/main-git), whose
+// logger is the main process's: it writes through Electron, which is not here.
+vi.mock('../../../../main/utils/logger', () => ({
+  default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  setLogLevel: vi.fn(),
+}));
+
 vi.mock('electron', () => ({
   contextBridge: {
     exposeInMainWorld: (_key: string, api: Record<string, unknown>) => {
@@ -37,6 +44,9 @@ vi.mock('electron', () => ({
       invoked.push({ channel, args: structuredClone(args) });
       if (channel === 'claude:send-during-turn') return duringTurn.answer;
       if (channel === 'claude:cancel-during-turn') return duringTurn.takenBack;
+      if (channel === 'git:status') {
+        return (await import('../../../stores/__tests__/support/main-git')).gitStatus(args[0] as string);
+      }
       if (/availability/i.test(channel)) return { available: false };
       if (/commands|models|list|queries|permissions/i.test(channel)) return [];
       return undefined;

@@ -91,6 +91,7 @@ import { useSettingsStore } from '../settings';
 
 // settle drains a whole turn of the event loop, not a count of ticks: how
 // many ticks a write takes is the persistence code's business.
+import { gitStatus } from './support/main-git';
 import { disk, diskContents, files, onDisk, sessionOnDisk, settle } from './support/real-stack';
 
 // Importing the real preload populates `exposed.api`.
@@ -132,6 +133,8 @@ async function route(channel: string, args: unknown[]): Promise<unknown> {
     case IPC_CHANNELS.CLAUDE_SESSION_EXISTS:
       // Asked before each resume: the real look, on the in-memory disk.
       return findSessionTranscript(args[0] as string) !== null;
+    case IPC_CHANNELS.GIT_STATUS:
+      return gitStatus(args[0] as string);
     case IPC_CHANNELS.CONFIG_GET:
       return storedConfig;
     case IPC_CHANNELS.CONFIG_SET:
