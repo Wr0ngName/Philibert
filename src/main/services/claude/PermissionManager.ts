@@ -643,9 +643,14 @@ export class PermissionManager {
     // command with its variables filled in and its own quoting (the line's
     // `cat "$f"` came back as `cat 'C:\…\bjm82j1ga.output'`, main.log
     // 2026-11-05), so the text is not there to find.
+    // A prefix is the CLI's `<prefix> *`, or `<prefix>:*` as it used to
+    // write it: the star last, after a space or a colon (CLI 2.1.280, its
+    // rule suggestions and matcher). A star anywhere else is the command's
+    // own — a glob, a regex such as grep's `[^/]*\.md$` (main.log,
+    // 2026-11-26 16:02:40) — and the rule is still a piece of the line.
     const isPiece = (rule: { toolName: string; ruleContent?: string }) => {
       const content = rule.ruleContent?.trim();
-      return !!content && SHELL_TOOLS.has(rule.toolName) && !content.includes('*');
+      return !!content && SHELL_TOOLS.has(rule.toolName) && !/[ :]\*$/.test(content);
     };
     const pieces = rules.filter(isPiece);
     if (pieces.length === 0 || (rules.length === 1 && this.ruleDetail(rules[0], input) === 'this exact command')) {

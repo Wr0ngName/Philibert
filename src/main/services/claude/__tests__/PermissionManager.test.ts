@@ -1174,10 +1174,28 @@ describe('PermissionManager', () => {
       expect(result.behavior).toBe('allow');
     });
 
-    it('still names a prefix the CLI suggests, which the line does not say', async () => {
-      const suggestions: PermissionUpdate[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm run:*' }], behavior: 'allow', destination: 'localSettings' }];
+    // main.log, 2026-11-26 16:02:40: one rule for the line's grep, whose
+    // regex holds a star. Taken for a prefix, it was written out in full.
+    it('counts a command of the line whose own text holds a star, a regex here', async () => {
+      const command = "git ls-files | grep -iE '(progress|status|todo|plan|notes|resume|handoff)[^/]*\\.md$'; echo ---; git status --short --ignored | grep -iE '\\.md' | head -50";
+      const rules = [{ toolName: 'Bash', ruleContent: "grep -iE '(progress|status|todo|plan|notes|resume|handoff)[^/]*\\.md$'" }];
+      const suggestions: PermissionUpdate[] = [{ type: 'addRules', rules, behavior: 'allow', destination: 'localSettings' }];
+      const { action } = await requestAndApprove('Bash', { command, description: 'List tracked and untracked status-like markdown files' }, suggestions, 'project');
+
+      const narrow = action.permissionInfo!.scopeOptions.find((o) => o.variant === 'narrow')!;
+      expect(narrow.label).toBe('Allow this command of the line in project');
+      expect(narrow.description).toBe('Allow only this command of the line for this project');
+      for (const option of action.permissionInfo!.scopeOptions) {
+        expect(option.label).not.toContain('grep');
+        expect(option.description).not.toContain('grep');
+      }
+    });
+
+    it.each(['npm run:*', 'npm run *'])('still names a prefix the CLI suggests, which the line does not say: %s', async (prefix) => {
+      // `<prefix> *` is how CLI 2.1.280 writes one; `<prefix>:*` how it used to.
+      const suggestions: PermissionUpdate[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: prefix }], behavior: 'allow', destination: 'localSettings' }];
       const { action } = await requestAndApprove('Bash', { command: 'npm run build' }, suggestions, 'project');
-      expect(action.permissionInfo!.scopeOptions.find((o) => o.variant === 'narrow')!.label).toBe('Allow Bash (npm run:*) in project');
+      expect(action.permissionInfo!.scopeOptions.find((o) => o.variant === 'narrow')!.label).toBe(`Allow Bash (${prefix}) in project`);
     });
 
     it('offers "Allow PowerShell in project" for a one-off PowerShell pipeline (main.log, 2026-10-29)', async () => {
