@@ -11,6 +11,6 @@ shows it too. Earlier notes are in this file at their tag
 (`git show v0.31.0:RELEASE_NOTES.md`). Each bullet on one line: the app shows
 a line break inside a bullet as one.
 
-## 0.32.4
+## 0.32.5
 
-- **Fixed: a new discussion went to the archive while Claude started**: leaving a discussion just after its first message, before Claude Code had started its session, listed it as archived until Claude's answer came. It now stays with the active ones.
+- **Fixed: an approval button wrote out a whole command**: when Claude asked to run a command line holding a `*` of its own (a search pattern such as `[^/]*\.md$`), the option allowing only that command in the project wrote the command out again in full. It now reads "Allow this command of the line in project", as for any other command line.
