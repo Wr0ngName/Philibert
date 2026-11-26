@@ -162,3 +162,17 @@ describe('what the renderer is told the CLI recorded for a channel discussion', 
     expect(recorded()).toEqual([]);
   });
 });
+
+describe('a channel discussion whose session runs', () => {
+  // What keeps a new discussion out of the archive while its session starts
+  // (ConversationService.setSessionRunning), in channel mode too.
+  it('is running once its terminal is started, and no longer once it ends', async () => {
+    expect(service.isSessionRunning(CONVERSATION)).toBe(false);
+
+    await service.sendMessage(CONVERSATION, 'Hello', folder);
+
+    expect(service.isSessionRunning(CONVERSATION)).toBe(true);
+    await service.abortAll();
+    expect(service.isSessionRunning(CONVERSATION)).toBe(false);
+  });
+});

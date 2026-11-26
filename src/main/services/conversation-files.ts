@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 
 import { summaryOf } from '../../shared/conversation-list';
-import type { Conversation, ConversationSummary } from '../../shared/types';
+import type { ChatMessage, Conversation, ConversationSummary } from '../../shared/types';
 
 import { parseRecord } from './conversation-log';
 
@@ -77,6 +77,23 @@ export function detailsOf(conversation: Conversation): ConversationDetails {
 }
 
 /**
+ * Whether a message is something Claude sent: its text, a call, a task, an
+ * image. Not the answer a turn starts empty for Claude's text to stream into
+ * (startAssistantMessage): saved before Claude Code said a thing — the
+ * discussion left mid-start, before its session id came — it is still empty,
+ * and taken for a reply, a discussion just started read as one whose
+ * session was lost.
+ */
+export function isClaudeReply(message: ChatMessage): boolean {
+  return message.role === 'assistant' && (
+    message.content.trim() !== ''
+    || message.toolUse !== undefined
+    || message.backgroundTask !== undefined
+    || (message.images?.length ?? 0) > 0
+  );
+}
+
+/**
  * Whether Claude has replied in a discussion: a message of Claude's is in its
  * messages file — or, for a one-file discussion not converted yet, among the
  * messages it holds. Read a piece at a time, up to the first reply, which is
@@ -85,12 +102,14 @@ export function detailsOf(conversation: Conversation): ConversationDetails {
  * What it is for: a discussion Claude replied in had a Claude Code session,
  * so one with no session id has lost it (Conversation.sessionGone) — it is
  * not one just started. A reply taken back since by a rewind still counts.
+ * The answer a turn starts empty, for Claude's text to stream into, is not a
+ * reply until something is in it (isClaudeReply).
  */
 export async function hasClaudeReply(
   detailsFile: string,
   stored: ConversationDetails & { messages?: unknown },
 ): Promise<boolean> {
-  if (isOneFileFormat(stored)) return stored.messages.some((message) => message.role === 'assistant');
+  if (isOneFileFormat(stored)) return stored.messages.some(isClaudeReply);
   let handle: fs.promises.FileHandle;
   try {
     handle = await fs.promises.open(messagesFileOf(detailsFile), 'r');
@@ -101,7 +120,7 @@ export async function hasClaudeReply(
   }
   const isReply = (line: string) => {
     const record = parseRecord(line);
-    return record !== null && 'put' in record && record.put.role === 'assistant';
+    return record !== null && 'put' in record && isClaudeReply(record.put);
   };
   try {
     // A piece at a time, split into lines: a line may end in the next piece,

@@ -2062,6 +2062,28 @@ describe('ClaudeCodeService', () => {
   });
 
   // ===========================================================================
+  // Whether a discussion's session runs: what keeps one in its first turn
+  // out of the archive (ConversationService.setSessionRunning)
+  // ===========================================================================
+  describe('isSessionRunning', () => {
+    it('is true from the send on — before Claude Code gives the session id — until the session ends', async () => {
+      const session = openSession('session-1');
+      // Not announced yet: the id comes with the first frame.
+      const silent = { ...session.iterator, [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<unknown>>(() => {}) }) };
+      mockQuery.mockReturnValueOnce(silent);
+      expect(service.isSessionRunning(TEST_CONV_ID)).toBe(false);
+
+      void service.sendMessage(TEST_CONV_ID, 'first', '/home/user/project');
+      await vi.waitFor(() => expect(mockQuery).toHaveBeenCalled());
+
+      expect(service.isSessionRunning(TEST_CONV_ID)).toBe(true);
+      expect(service.isSessionRunning('another-conversation')).toBe(false);
+      service.endConversation(TEST_CONV_ID);
+      expect(service.isSessionRunning(TEST_CONV_ID)).toBe(false);
+    });
+  });
+
+  // ===========================================================================
   // Rewinding the conversation
   // ===========================================================================
   describe('rewinding the conversation', () => {

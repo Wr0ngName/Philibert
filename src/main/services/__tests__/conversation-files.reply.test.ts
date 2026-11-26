@@ -45,6 +45,28 @@ describe('hasClaudeReply', () => {
     expect(await hasClaudeReply(detailsFile(), details)).toBe(false);
   });
 
+  it("takes no answer begun, still empty, for a reply: Claude said nothing yet", async () => {
+    // The answer a turn starts for Claude's text to stream into, saved before
+    // Claude Code said a thing.
+    messagesFile(recordLine({ put: message('user', 'q') }), recordLine({ put: { ...message('assistant', ''), isStreaming: true } }));
+    expect(await hasClaudeReply(detailsFile(), details)).toBe(false);
+  });
+
+  it.each([
+    ['text', { content: 'an answer' }],
+    ['a call', { content: '', toolUse: { actionId: 't', toolName: 'Read', description: 'Read a', status: 'executed' } }],
+    ['a task', { content: '', backgroundTask: { taskId: 'b1', description: 'Run', status: 'running' } }],
+    ['an image', { content: '', images: [{ id: 'i', mediaType: 'image/png', byteSize: 1, origin: 'tool' }] }],
+  ] as [string, Partial<ChatMessage>][])('takes an answer with %s for a reply', async (_what, fields) => {
+    messagesFile(recordLine({ put: message('user', 'q') }), recordLine({ put: { ...message('assistant', ''), ...fields } }));
+    expect(await hasClaudeReply(detailsFile(), details)).toBe(true);
+  });
+
+  it('takes no answer begun for a reply in a discussion still in the one-file layout either', async () => {
+    const stored = { ...details, messages: [message('user', 'q'), { ...message('assistant', ''), isStreaming: true }] };
+    expect(await hasClaudeReply(detailsFile(), stored)).toBe(false);
+  });
+
   it('finds none with no messages file at all', async () => {
     expect(await hasClaudeReply(detailsFile(), details)).toBe(false);
   });

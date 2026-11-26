@@ -516,6 +516,11 @@ export class ClaudeCodeService {
     return (this.liveBackgroundTasks.get(conversationId) ?? []).filter((task) => !task.ambient);
   }
 
+  /** Whether a discussion's Claude Code session runs now, in either mode. */
+  isSessionRunning(conversationId: string): boolean {
+    return this.activeSessions.has(conversationId) || (this.channelService?.isConversationActive(conversationId) ?? false);
+  }
+
   /**
    * Check if a specific conversation has an active session
    */

@@ -118,6 +118,26 @@ describe('ConversationIndex', () => {
     expect(index.summary('a')?.title).toBe(first);
   });
 
+  it("rebuilds an index from before an empty answer stopped counting as Claude's reply", async () => {
+    // Saved then, a discussion left before its session id came — only the
+    // answer begun in it — was taken for one that lost its session.
+    write(conversation('a', { messages: [
+      { id: 'a-m', role: 'user', content: 'Title a', timestamp: 1 },
+      { id: 'a-r', role: 'assistant', content: '', timestamp: 1, isStreaming: true },
+    ] }));
+    const earlier = new ConversationIndex(dir, indexFile);
+    await earlier.refresh();
+    await earlier.flush();
+    const saved = JSON.parse(fs.readFileSync(indexFile, 'utf-8'));
+    saved.version = 5;
+    saved.entries['a.json'].sessionLost = true;
+    fs.writeFileSync(indexFile, JSON.stringify(saved));
+
+    const index = new ConversationIndex(dir, indexFile);
+    await index.refresh();
+    expect(index.sessionOf('a')).toEqual({});
+  });
+
   it('rebuilds from the files when the saved index is unreadable', async () => {
     write(conversation('a'));
     fs.writeFileSync(indexFile, 'garbage');

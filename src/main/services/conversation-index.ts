@@ -58,9 +58,10 @@ interface SavedIndex {
  * Bumped when an entry's shape or content changes, so an older index is
  * rebuilt. 2: titles listed whole, where 1 kept them as saved, cut at 50.
  * 3: each entry's session id. 4: whether one with none lost it. 5: the
- * usage-limit wait in each summary.
+ * usage-limit wait in each summary. 6: an empty answer of Claude's no longer
+ * taken for a reply, for whether one lost its session (isClaudeReply).
  */
-const INDEX_VERSION = 5;
+const INDEX_VERSION = 6;
 /** Files looked at together during a refresh. */
 const STAT_BATCH = 64;
 /** Saving waits for writes to settle: a turn saves its conversation often. */

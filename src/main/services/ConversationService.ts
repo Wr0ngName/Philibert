@@ -146,6 +146,9 @@ export class ConversationService {
    * @param claudeConfigDir where Claude Code keeps its sessions, asked each
    *   time: whether a discussion's session is still there (`sessionGone`).
    */
+  /** Whether the app runs a discussion's Claude Code session now; see setSessionRunning. */
+  private sessionRunning: (id: string) => boolean = () => false;
+
   constructor(private readonly claudeConfigDir: () => string = cliConfigDir) {
     this.conversationsDir = getConversationsPath();
     this.index = new ConversationIndex(
@@ -644,6 +647,18 @@ export class ConversationService {
   }
 
   /**
+   * Tell how to know whether the app runs a discussion's Claude Code session
+   * now. Such a session is never gone, whatever is on disk: a new one's
+   * transcript is written a moment after Claude Code gives its id — about
+   * 100 ms later (measured, 2.1.280), longer on a slow disk — and a list read
+   * in between found the id with no transcript, and took the session for
+   * gone.
+   */
+  setSessionRunning(isRunning: (id: string) => boolean): void {
+    this.sessionRunning = isRunning;
+  }
+
+  /**
    * A page of the discussions list, newest first: the archived ones or the
    * others, after the cursor when one is given.
    *
@@ -671,7 +686,8 @@ export class ConversationService {
    * gone. Claude Code's sessions are listed once for all of them.
    */
   private async withSessionState(summaries: ConversationSummary[]): Promise<ConversationSummary[]> {
-    const sessions = summaries.map((summary) => this.index.sessionOf(summary.id));
+    // One whose session runs now is never gone (see setSessionRunning).
+    const sessions = summaries.map((summary) => (this.sessionRunning(summary.id) ? {} : this.index.sessionOf(summary.id)));
     // The sessions on disk are only looked for when there is one to ask about.
     const onDisk = sessions.some((session) => session.sessionId)
       ? await sessionIdsOnDisk(this.claudeConfigDir())
@@ -689,6 +705,7 @@ export class ConversationService {
    * id although Claude replied in it, so it had one and lost it.
    */
   private async isSessionGone(id: string, details: ConversationDetails): Promise<boolean> {
+    if (this.sessionRunning(id)) return false;
     if (details.sdkSessionId) return findSessionTranscript(details.sdkSessionId, this.claudeConfigDir()) === null;
     return hasClaudeReply(this.getFilePath(id), details);
   }

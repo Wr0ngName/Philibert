@@ -224,6 +224,58 @@ describe('archiving', () => {
       expect((await service.summary('kept'))?.sessionGone).toBeUndefined();
     });
 
+    describe('in a new discussion, during its first turn', () => {
+      // Reported: sent the first message, the discussion moved to the archive
+      // until Claude's answer came. Until the session id comes — seconds, as
+      // Claude Code starts — a save holds the answer begun, still empty, and
+      // no id. Once it comes, the transcript is written a moment later (about
+      // 100 ms, measured on 2.1.280): an id with no transcript meanwhile.
+      const begun = (id: string, at: number) =>
+        ({ id: `${id}-r`, role: 'assistant' as const, content: '', timestamp: at, isStreaming: true });
+      let running: Set<string>;
+
+      beforeEach(() => {
+        running = new Set();
+        service.setSessionRunning((id) => running.has(id));
+      });
+
+      /** Saved as the app saves it then: the prompt, the answer begun, the session id when it came — no transcript yet. */
+      async function savedMidStart(id: string, sessionId?: string): Promise<void> {
+        const at = Date.now();
+        const base = conversation(id, at, { sdkSessionId: undefined });
+        await service.update({ ...base, ...(sessionId ? { sdkSessionId: sessionId } : {}), upsert: [...base.messages, begun(id, at)] });
+      }
+
+      it('is not archived before its session id came: the answer begun is not a reply', async () => {
+        // Not even with no session running: nothing was said by Claude yet.
+        await savedMidStart('starting');
+
+        expect(await ids(false)).toEqual(['starting']);
+        expect((await service.getWindow('starting', 10))?.conversation.sessionGone).toBeUndefined();
+      });
+
+      it('is not archived with its session id and no transcript yet, while the session runs', async () => {
+        running.add('first-turn');
+        await savedMidStart('first-turn', 'session-first-turn');
+
+        expect(await ids(false)).toEqual(['first-turn']);
+        expect(await ids(true)).toEqual([]);
+        expect((await service.summary('first-turn'))?.sessionGone).toBeUndefined();
+        expect((await service.getWindow('first-turn', 10))?.conversation.sessionGone).toBeUndefined();
+        expect((await service.setArchived('first-turn', true)).sessionGone).toBeUndefined();
+        expect((await service.setArchived('first-turn', false)).sessionGone).toBeUndefined();
+        expect(await ids(false)).toEqual(['first-turn']);
+      });
+
+      it('is gone once its session no longer runs and left no transcript', async () => {
+        running.add('first-turn');
+        await savedMidStart('first-turn', 'session-first-turn');
+        running.delete('first-turn');
+
+        expect(await ids(true)).toEqual(['first-turn']);
+      });
+    });
+
     describe('with no session id although Claude replied in it — an older version dropped it', () => {
       const reply = (id: string, at: number) =>
         ({ id: `${id}-r`, role: 'assistant' as const, content: 'an answer', timestamp: at });

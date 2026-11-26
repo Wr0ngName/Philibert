@@ -125,6 +125,7 @@ async function main(): Promise<void> {
     const { getUserDataPath } = await import('./utils/paths');
     gitService = new GitService(new GitCredentialBroker(getUserDataPath()));
     claudeService = new ClaudeCodeService(configService, getMainWindow, notificationService, gitService);
+    conversationService.setSessionRunning((id) => claudeService.isSessionRunning(id));
     fileWatcher = new FileWatcherService();
     mcpService = new McpConfigService((args) => authService.runCli(args));
     projectPermissionService = new ProjectPermissionService();
