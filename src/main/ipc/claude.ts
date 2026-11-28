@@ -14,7 +14,7 @@
 import { ipcMain } from 'electron';
 
 import { isEffortLevel } from '../../shared/effort';
-import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionOptionVariant, PermissionScope, RewindScope, SessionPermissionEntry, IMAGE_MEDIA_TYPES, type DiscussionSettings, type MessageImage } from '../../shared/types';
+import { IPC_CHANNELS, ActionResponse, AskUserQuestionResponse, PermissionOptionVariant, PermissionScope, RewindScope, IMAGE_MEDIA_TYPES, type DiscussionSettings, type MessageImage } from '../../shared/types';
 import { IpcError, ValidationError, AppError, ERROR_CODES } from '../errors';
 import ClaudeCodeService from '../services/ClaudeCodeService';
 import { validateString, validateObject, validateBoolean, formatErrorMessage, ensureService } from '../utils/ipc-helpers';
@@ -267,7 +267,7 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
           throw new ValidationError('Invalid approved status: must be a boolean', 'approved', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
         }
 
-        claudeService.handleActionResponse(response.conversationId, response);
+        await claudeService.handleActionResponse(response.conversationId, response);
       } catch (error) {
         logger.error('Failed to handle action response', { error, response });
         throw new IpcError(formatErrorMessage('Failed to handle action response', error), IPC_CHANNELS.CLAUDE_ACTION_RESPONSE, ERROR_CODES.IPC_HANDLER_FAILED, error);
@@ -505,7 +505,7 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
       ensureService(claudeService, 'ClaudeCodeService');
       validateString(conversationId, 'Conversation ID');
       validateString(permissionId, 'Permission ID');
-      return claudeService.revokeSessionPermission(conversationId, permissionId);
+      return await claudeService.revokeSessionPermission(conversationId, permissionId);
     } catch (error) {
       logger.error('Failed to revoke session permission', { error, conversationId, permissionId });
       throw new IpcError(formatErrorMessage('Failed to revoke session permission', error), IPC_CHANNELS.CLAUDE_REVOKE_SESSION_PERMISSION, ERROR_CODES.CLAUDE_PERMISSION_FAILED, error);
@@ -518,7 +518,7 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
       logger.debug('IPC: claude:clear-session-permissions', { conversationId });
       ensureService(claudeService, 'ClaudeCodeService');
       validateString(conversationId, 'Conversation ID');
-      claudeService.clearSessionPermissions(conversationId);
+      await claudeService.clearSessionPermissions(conversationId);
     } catch (error) {
       logger.error('Failed to clear session permissions', { error, conversationId });
       throw new IpcError(formatErrorMessage('Failed to clear session permissions', error), IPC_CHANNELS.CLAUDE_CLEAR_SESSION_PERMISSIONS, ERROR_CODES.CLAUDE_PERMISSION_FAILED, error);
@@ -528,18 +528,18 @@ export function setupClaudeIPC(claudeService: ClaudeCodeService): void {
   // Seed the main-process cache from persisted per-conversation permissions
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_SEED_SESSION_PERMISSIONS,
-    async (_event, conversationId: string, entries: SessionPermissionEntry[]) => {
+    async (_event, conversationId: string, entries: unknown) => {
       try {
         logger.debug('IPC: claude:seed-session-permissions', {
           conversationId,
-          count: entries?.length ?? 0,
+          count: Array.isArray(entries) ? entries.length : 0,
         });
         ensureService(claudeService, 'ClaudeCodeService');
         validateString(conversationId, 'Conversation ID');
         if (!Array.isArray(entries)) {
           throw new Error('Entries must be an array');
         }
-        claudeService.seedSessionPermissions(conversationId, entries);
+        await claudeService.seedSessionPermissions(conversationId, entries);
       } catch (error) {
         logger.error('Failed to seed session permissions', { error, conversationId });
         throw new IpcError(

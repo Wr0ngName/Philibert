@@ -562,10 +562,6 @@ export interface PermissionSuggestionInfo {
 }
 
 /**
- * A cached session permission entry.
- * Represents a permission granted via "Always Allow" with session scope.
- */
-/**
  * Something Claude Code will do later in a discussion's session: a cron job
  * (CronCreate, /loop) or a one-shot wake-up (ScheduleWakeup). As the SDK's
  * Stop hook lists it at the end of every turn (`session_crons`), with what
@@ -598,18 +594,47 @@ export interface SessionSchedule {
   paused?: boolean;
 }
 
-export interface SessionPermissionEntry {
+interface SessionPermissionBase {
   /** Unique identifier for this cached permission */
   id: string;
-  /** The tool name this permission applies to (e.g., 'Bash', 'Write') */
-  toolName: string;
-  /** Optional rule content from the SDK */
-  ruleContent?: string;
   /** Human-readable description of the permission */
   description: string;
   /** When this permission was granted */
   grantedAt: number;
 }
+
+/**
+ * A permission granted "for this session" in a discussion, as the main
+ * process keeps it (SessionPermissionCache) and the discussion saves it.
+ *
+ * - `rule`: an allow rule, which the CLI matches: the whole tool without
+ *   `ruleContent`, otherwise only what the rule covers (`Bash(npm test *)`).
+ * - `mode`: a permission mode the session runs in (accept edits).
+ * - `directory`: a directory added to the session's working directories.
+ */
+export type SessionPermissionEntry =
+  | (SessionPermissionBase & {
+    kind: 'rule';
+    /** The tool the rule allows (e.g., 'Bash', 'WebFetch') */
+    toolName: string;
+    /** What of the tool it allows, in the CLI's rule syntax; absent for the whole tool */
+    ruleContent?: string;
+    /**
+     * A shell rule granted while the discussion ran sandboxed: it allows the
+     * commands inside the sandbox only, so it is not in force while the
+     * discussion runs without it. Absent on non-shell rules.
+     */
+    sandboxed?: boolean;
+  })
+  | (SessionPermissionBase & {
+    kind: 'mode';
+    /** The SDK permission mode, e.g. 'acceptEdits' */
+    mode: string;
+  })
+  | (SessionPermissionBase & {
+    kind: 'directory';
+    directory: string;
+  });
 
 /**
  * Which project settings file a project permission lives in.

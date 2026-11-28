@@ -12,6 +12,7 @@
  * Displayed as a shield icon with badge in the header bar.
  */
 
+import { sessionEntryTitle } from '@shared/session-permissions';
 import type { ProjectPermissionEntry } from '@shared/types';
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 
@@ -250,7 +251,7 @@ onUnmounted(() => {
               </div>
               <div class="flex-1 min-w-0">
                 <div class="text-sm font-medium text-surface-800 dark:text-surface-200">
-                  {{ perm.toolName }}
+                  {{ sessionEntryTitle(perm) }}
                 </div>
                 <div class="text-xs text-surface-500 dark:text-surface-400 truncate">
                   {{ perm.description }}

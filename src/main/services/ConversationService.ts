@@ -13,6 +13,7 @@ import path from 'node:path';
 
 import { isAfter, isArchived, newestFirst, summaryOf } from '../../shared/conversation-list';
 import { generateId, ID_PREFIXES } from '../../shared/id';
+import { normalizeSessionEntries } from '../../shared/session-permissions';
 import {
   AutoArchiveDays,
   ChatMessage,
@@ -388,7 +389,13 @@ export class ConversationService {
     }
 
     try {
-      return JSON.parse(text) as ConversationDetails | Conversation;
+      const stored = JSON.parse(text) as ConversationDetails | Conversation;
+      // Session grants saved before they had a kind are read into today's
+      // shape here, once, so everything after the read holds that shape.
+      if (stored.sessionPermissions !== undefined) {
+        stored.sessionPermissions = normalizeSessionEntries(stored.sessionPermissions);
+      }
+      return stored;
     } catch (error) {
       logger.error('Failed to read conversation', { id, error });
       throw error;

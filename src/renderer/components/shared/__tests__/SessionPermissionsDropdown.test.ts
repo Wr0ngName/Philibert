@@ -30,7 +30,7 @@ const SHARED_RULE: ProjectPermissionEntry = {
   kind: 'rule', value: 'Write', toolName: 'Write', source: 'shared',
 };
 const SESSION_GRANT: SessionPermissionEntry = {
-  id: 'perm-1', toolName: 'WebSearch', description: 'Allow WebSearch for this session', grantedAt: 0,
+  id: 'perm-1', kind: 'rule', toolName: 'WebSearch', description: 'Allow WebSearch for this session', grantedAt: 0,
 };
 
 let getProjectPermissions: ReturnType<typeof vi.fn>;

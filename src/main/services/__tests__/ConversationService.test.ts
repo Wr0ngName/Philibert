@@ -121,6 +121,30 @@ describe('the folder', () => {
   });
 });
 
+describe('session grants saved with a discussion', () => {
+  it('are read into today\'s shape, entries saved before they had a kind included', async () => {
+    await seed('c', ['m1']);
+    const details = readJson(detailsFile('c'));
+    fs.writeFileSync(detailsFile('c'), JSON.stringify({
+      ...details,
+      sessionPermissions: [
+        { id: '1', toolName: 'Bash', ruleContent: 'npm test', description: 'd', grantedAt: 1 },
+        { id: '2', toolName: 'mode:acceptEdits', description: 'd', grantedAt: 2 },
+        { id: '3', toolName: 'dir:/home/user/other', description: 'd', grantedAt: 3 },
+        { id: '4', kind: 'rule', toolName: 'Bash', sandboxed: true, description: 'd', grantedAt: 4 },
+        { not: 'an entry' },
+      ],
+    }));
+
+    expect((await whole('c'))?.sessionPermissions).toEqual([
+      { id: '1', kind: 'rule', toolName: 'Bash', ruleContent: 'npm test', description: 'd', grantedAt: 1 },
+      { id: '2', kind: 'mode', mode: 'acceptEdits', description: 'd', grantedAt: 2 },
+      { id: '3', kind: 'directory', directory: '/home/user/other', description: 'd', grantedAt: 3 },
+      { id: '4', kind: 'rule', toolName: 'Bash', sandboxed: true, description: 'd', grantedAt: 4 },
+    ]);
+  });
+});
+
 describe('what a discussion is stored as', () => {
   it('is its details in one file, and its messages, one per line, in another', async () => {
     await seed('c', ['m1', 'm2'], { sdkSessionId: 'session-1' });

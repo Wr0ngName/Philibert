@@ -1,37 +1,58 @@
 /**
  * Session Permission Cache
  *
- * Stores session-scoped permissions granted via "Always Allow" at the
- * ClaudeCodeService level. Persists across individual query() calls
- * within the same conversation.
+ * The permissions each discussion was granted "for this session": the one
+ * place they are kept, whatever session of the CLI the discussion runs in.
+ * Saved with the discussion and seeded back after the app restarts.
  *
- * Only caches session-scoped permissions. Project/global permissions
- * are handled by the SDK via settings files.
+ * It decides nothing itself. The CLI matches tool calls against the rules, as
+ * it does for every other rule (see ClaudeCodeService.syncSessionGrants):
  *
- * Handles all PermissionUpdate types from the SDK:
- * - addRules: per-tool permission rules (match by toolName)
- * - setMode: permission mode changes (acceptEdits, bypassPermissions, etc.)
- * - addDirectories: allowed directory additions
+ * - `rule` entries are given to the CLI as allow rules in its flag-settings
+ *   layer, live, so that one can be taken back while the session runs;
+ * - a `mode` entry is the permission mode the session runs in;
+ * - `directory` entries are the session's added working directories.
+ *
+ * Project/global permissions are not kept here: the CLI writes them to the
+ * settings files.
  */
 
 import type { PermissionMode, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
 
 import { generateId, ID_PREFIXES } from '../../../shared/id';
+import { cliRuleString, normalizeSessionEntries, ruleInForce, SHELL_TOOLS } from '../../../shared/session-permissions';
 import type { SessionPermissionEntry } from '../../../shared/types';
 import logger from '../../utils/logger';
 
+/**
+ * The SDK's permission modes, checked against its type both ways: a mode it
+ * adds or drops is a compile error here.
+ */
+const PERMISSION_MODES = {
+	default: true,
+	acceptEdits: true,
+	bypassPermissions: true,
+	plan: true,
+	dontAsk: true,
+	auto: true,
+} satisfies Record<PermissionMode, true>;
+
+function isPermissionMode(mode: string): mode is PermissionMode {
+	return Object.hasOwn(PERMISSION_MODES, mode);
+}
+
 type PermissionChangeCallback = (conversationId: string, permissions: SessionPermissionEntry[]) => void;
 
-/**
- * Maps SDK permission modes to the set of tool names they auto-approve.
- * Based on SDK documentation:
- * - acceptEdits: "Auto-accept file edit operations"
- * - bypassPermissions: "Bypass all permission checks"
- */
-const MODE_TOOL_MAP: Record<string, string[] | '*'> = {
-  acceptEdits: ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'],
-  bypassPermissions: '*',
-};
+/** How the session ran when a rule was granted. */
+export interface RuleGrantOptions {
+	/**
+	 * The session ran sandboxed: a shell rule granted then is marked so, and
+	 * allows nothing once the session runs without the sandbox (see
+	 * SessionPermissionEntry). Other tools' rules are not marked: the sandbox
+	 * confines shell commands only.
+	 */
+	sandboxed?: boolean;
+}
 
 export class SessionPermissionCache {
 	private cache: Map<string, SessionPermissionEntry[]> = new Map();
@@ -45,230 +66,163 @@ export class SessionPermissionCache {
 	}
 
 	/**
-	 * Add session permissions from an approved "Always Allow" action.
-	 * Only caches suggestions with session/cliArg destinations.
-	 * Handles addRules, setMode, and addDirectories permission types.
+	 * Keep what a "for this session" answer granted: the session-scoped
+	 * updates among `updates` — allow rules, a permission mode, directories.
+	 * Updates for a settings file are the CLI's to write, and removals and
+	 * deny rules grant nothing; none of those is kept.
 	 */
-	addPermissions(conversationId: string, suggestions: PermissionUpdate[]): void {
+	addPermissions(conversationId: string, updates: PermissionUpdate[], options: RuleGrantOptions = {}): void {
 		const entries = this.cache.get(conversationId) ?? [];
+		let changed = false;
 
-		for (const suggestion of suggestions) {
-			// Only cache session-scoped permissions
-			if (suggestion.destination !== 'session' && suggestion.destination !== 'cliArg') {
-				continue;
-			}
+		for (const update of updates) {
+			if (update.destination !== 'session' && update.destination !== 'cliArg') continue;
 
-			if (suggestion.type === 'addRules' || suggestion.type === 'replaceRules') {
-				this.addRuleEntries(conversationId, entries, suggestion.rules);
-			} else if (suggestion.type === 'setMode') {
-				this.addModeEntry(conversationId, entries, suggestion.mode);
-			} else if (suggestion.type === 'addDirectories') {
-				this.addDirectoryEntry(conversationId, entries, suggestion.directories);
+			if ((update.type === 'addRules' || update.type === 'replaceRules') && update.behavior === 'allow') {
+				for (const rule of update.rules) {
+					changed = this.pushRule(conversationId, entries, rule.toolName, rule.ruleContent, options) || changed;
+				}
+			} else if (update.type === 'setMode') {
+				changed = this.pushMode(conversationId, entries, update.mode) || changed;
+			} else if (update.type === 'addDirectories') {
+				for (const directory of update.directories) {
+					changed = this.pushDirectory(conversationId, entries, directory) || changed;
+				}
 			}
-			// removeRules and removeDirectories are not cached (they revoke)
 		}
 
+		if (!changed) return;
 		this.cache.set(conversationId, entries);
 		this.notifyChange(conversationId);
 	}
 
 	/**
-	 * Add entries from addRules/replaceRules suggestions
+	 * Keep one allow rule: the whole tool without `ruleContent`. Used when the
+	 * CLI suggested no session rule for what was allowed for the session.
+	 * Idempotent.
 	 */
-	private addRuleEntries(
-		conversationId: string,
-		entries: SessionPermissionEntry[],
-		rules: Array<{ toolName: string; ruleContent?: string }>,
-	): void {
-		for (const rule of rules) {
-			const isDuplicate = entries.some(
-				(e) => e.toolName === rule.toolName && e.ruleContent === rule.ruleContent,
-			);
-			if (isDuplicate) {
-				continue;
-			}
-
-			const entry: SessionPermissionEntry = {
-				id: generateId(ID_PREFIXES.ACTION),
-				toolName: rule.toolName,
-				ruleContent: rule.ruleContent,
-				description: `Allow ${rule.toolName} for this session`,
-				grantedAt: Date.now(),
-			};
-			entries.push(entry);
-
-			logger.info('Session permission cached (rule)', {
-				conversationId,
-				toolName: rule.toolName,
-				permissionId: entry.id,
-			});
-		}
-	}
-
-	/**
-	 * Add entries from setMode suggestions.
-	 * Expands modes like "acceptEdits" into individual tool entries.
-	 */
-	private addModeEntry(
-		conversationId: string,
-		entries: SessionPermissionEntry[],
-		mode: PermissionMode,
-	): void {
-		const tools = MODE_TOOL_MAP[mode];
-		if (!tools) {
-			// Unknown mode - store as a wildcard entry
-			logger.info('Session permission cached (unknown mode)', { conversationId, mode });
-			const isDuplicate = entries.some((e) => e.toolName === `mode:${mode}`);
-			if (!isDuplicate) {
-				entries.push({
-					id: generateId(ID_PREFIXES.ACTION),
-					toolName: `mode:${mode}`,
-					description: `Mode: ${mode} for this session`,
-					grantedAt: Date.now(),
-				});
-			}
-			return;
-		}
-
-		if (tools === '*') {
-			// bypassPermissions - add a wildcard entry
-			const isDuplicate = entries.some((e) => e.toolName === '*');
-			if (!isDuplicate) {
-				entries.push({
-					id: generateId(ID_PREFIXES.ACTION),
-					toolName: '*',
-					description: 'Bypass all permissions for this session',
-					grantedAt: Date.now(),
-				});
-				logger.info('Session permission cached (bypass all)', { conversationId });
-			}
-			return;
-		}
-
-		// Expand mode to individual tool entries
-		for (const toolName of tools) {
-			const isDuplicate = entries.some((e) => e.toolName === toolName);
-			if (isDuplicate) {
-				continue;
-			}
-			const entry: SessionPermissionEntry = {
-				id: generateId(ID_PREFIXES.ACTION),
-				toolName,
-				description: `Allow ${toolName} for this session (${mode})`,
-				grantedAt: Date.now(),
-			};
-			entries.push(entry);
-
-			logger.info('Session permission cached (mode expansion)', {
-				conversationId,
-				mode,
-				toolName,
-				permissionId: entry.id,
-			});
-		}
-	}
-
-	/**
-	 * Add entries from addDirectories suggestions.
-	 */
-	private addDirectoryEntry(
-		conversationId: string,
-		entries: SessionPermissionEntry[],
-		directories: string[],
-	): void {
-		for (const dir of directories) {
-			const toolName = `dir:${dir}`;
-			const isDuplicate = entries.some((e) => e.toolName === toolName);
-			if (isDuplicate) {
-				continue;
-			}
-			entries.push({
-				id: generateId(ID_PREFIXES.ACTION),
-				toolName,
-				description: `Allow directory: ${dir}`,
-				grantedAt: Date.now(),
-			});
-			logger.info('Session permission cached (directory)', { conversationId, dir });
-		}
-	}
-
-	/**
-	 * Add a direct session permission for a tool name.
-	 * Used when SDK doesn't provide session-scoped suggestions but user explicitly grants permission.
-	 * Idempotent: skips if an entry with the same toolName already exists.
-	 */
-	addDirectPermission(conversationId: string, toolName: string, ruleContent?: string): void {
+	addRule(conversationId: string, toolName: string, ruleContent?: string, options: RuleGrantOptions = {}): void {
 		const entries = this.cache.get(conversationId) ?? [];
+		if (!this.pushRule(conversationId, entries, toolName, ruleContent, options)) return;
+		this.cache.set(conversationId, entries);
+		this.notifyChange(conversationId);
+	}
 
-		const isDuplicate = entries.some(
-			(e) => e.toolName === toolName && e.ruleContent === ruleContent,
-		);
-		if (isDuplicate) return;
+	private pushRule(
+		conversationId: string,
+		entries: SessionPermissionEntry[],
+		toolName: string,
+		ruleContent: string | undefined,
+		options: RuleGrantOptions,
+	): boolean {
+		const content = ruleContent || undefined;
+		const sandboxed = options.sandboxed === true && SHELL_TOOLS.has(toolName);
+		const isDuplicate = entries.some((e) => e.kind === 'rule'
+			&& e.toolName === toolName && e.ruleContent === content && (e.sandboxed === true) === sandboxed);
+		if (isDuplicate) return false;
 
 		const entry: SessionPermissionEntry = {
 			id: generateId(ID_PREFIXES.ACTION),
+			kind: 'rule',
 			toolName,
-			ruleContent,
-			description: ruleContent
-				? `Allow ${toolName} (${ruleContent}) for this session`
+			...(content ? { ruleContent: content } : {}),
+			...(sandboxed ? { sandboxed: true } : {}),
+			description: content
+				? `Allow ${toolName} (${content}) for this session`
 				: `Allow ${toolName} for this session`,
 			grantedAt: Date.now(),
 		};
 		entries.push(entry);
-		this.cache.set(conversationId, entries);
-
-		logger.info('Session permission cached (direct)', {
+		logger.info('Session permission cached (rule)', {
 			conversationId,
 			toolName,
+			hasContent: content !== undefined,
+			sandboxed,
 			permissionId: entry.id,
 		});
+		return true;
+	}
 
-		this.notifyChange(conversationId);
+	/** One mode at a time: a new one replaces the one before. */
+	private pushMode(conversationId: string, entries: SessionPermissionEntry[], mode: string): boolean {
+		const existing = entries.findIndex((e) => e.kind === 'mode');
+		if (existing !== -1) {
+			const current = entries[existing];
+			if (current.kind === 'mode' && current.mode === mode) return false;
+			entries.splice(existing, 1);
+		}
+		const entry: SessionPermissionEntry = {
+			id: generateId(ID_PREFIXES.ACTION),
+			kind: 'mode',
+			mode,
+			description: `Mode: ${mode} for this session`,
+			grantedAt: Date.now(),
+		};
+		entries.push(entry);
+		logger.info('Session permission cached (mode)', { conversationId, mode, permissionId: entry.id });
+		return true;
+	}
+
+	private pushDirectory(conversationId: string, entries: SessionPermissionEntry[], directory: string): boolean {
+		if (entries.some((e) => e.kind === 'directory' && e.directory === directory)) return false;
+		const entry: SessionPermissionEntry = {
+			id: generateId(ID_PREFIXES.ACTION),
+			kind: 'directory',
+			directory,
+			description: `Allow directory: ${directory}`,
+			grantedAt: Date.now(),
+		};
+		entries.push(entry);
+		logger.info('Session permission cached (directory)', { conversationId, directory, permissionId: entry.id });
+		return true;
 	}
 
 	/**
-	 * Check if a tool use is covered by a cached session permission.
-	 * Checks:
-	 * 1. Direct toolName match (from addRules or mode expansion)
-	 * 2. Wildcard '*' match (from bypassPermissions mode)
+	 * The allow rules in force, in the CLI's rule syntax, for a session that
+	 * runs sandboxed or not (see ruleInForce).
 	 */
-	isAllowed(conversationId: string, toolName: string, _input: Record<string, unknown>): boolean {
-		const entries = this.cache.get(conversationId);
-		if (!entries || entries.length === 0) {
-			return false;
-		}
+	allowRules(conversationId: string, sandboxed: boolean): string[] {
+		return this.getPermissions(conversationId)
+			.filter((e) => ruleInForce(e, sandboxed))
+			.map((e) => (e.kind === 'rule' ? cliRuleString(e.toolName, e.ruleContent) : ''))
+			.filter((rule) => rule.length > 0);
+	}
 
-		return entries.some((e) => e.toolName === toolName || e.toolName === '*');
+	/**
+	 * The permission mode granted for the session, if one was — and is one
+	 * this SDK knows: a saved mode it does not is not passed on.
+	 */
+	mode(conversationId: string): PermissionMode | undefined {
+		const entry = this.getPermissions(conversationId).find((e) => e.kind === 'mode');
+		return entry?.kind === 'mode' && isPermissionMode(entry.mode) ? entry.mode : undefined;
+	}
+
+	/** The directories added to the session. */
+	directories(conversationId: string): string[] {
+		return this.getPermissions(conversationId)
+			.flatMap((e) => (e.kind === 'directory' ? [e.directory] : []));
 	}
 
 	/**
 	 * Revoke a specific permission by its ID.
-	 * Returns true if found and removed, false otherwise.
+	 * Returns the entry taken away, or null when there was none.
 	 */
-	revokePermission(conversationId: string, permissionId: string): boolean {
+	revokePermission(conversationId: string, permissionId: string): SessionPermissionEntry | null {
 		const entries = this.cache.get(conversationId);
-		if (!entries) {
-			return false;
-		}
+		if (!entries) return null;
 
 		const index = entries.findIndex((e) => e.id === permissionId);
-		if (index === -1) {
-			return false;
-		}
+		if (index === -1) return null;
 
 		const removed = entries.splice(index, 1)[0];
-		logger.info('Session permission revoked', {
-			conversationId,
-			permissionId,
-			toolName: removed.toolName,
-		});
+		logger.info('Session permission revoked', { conversationId, permissionId, kind: removed.kind });
 
 		if (entries.length === 0) {
 			this.cache.delete(conversationId);
 		}
 
 		this.notifyChange(conversationId);
-		return true;
+		return removed;
 	}
 
 	/**
@@ -281,36 +235,44 @@ export class SessionPermissionCache {
 
 	/**
 	 * Seed the cache for a conversation from persisted state (e.g. reloading
-	 * a saved conversation after app restart). No-op if entries already exist
-	 * for this conversation — we don't clobber in-flight grants made in the
-	 * current session with a stale on-disk snapshot.
+	 * a saved conversation after app restart), read into today's shape (see
+	 * normalizeSessionEntry). No-op if entries already exist for this
+	 * conversation — we don't clobber in-flight grants made in the current
+	 * session with a stale on-disk snapshot.
+	 *
+	 * @returns whether the cache took the entries.
 	 */
-	seed(conversationId: string, entries: SessionPermissionEntry[]): void {
-		if (!entries.length) return;
+	seed(conversationId: string, saved: unknown): boolean {
+		const entries = normalizeSessionEntries(saved);
+		if (!entries.length) return false;
 		const existing = this.cache.get(conversationId);
 		if (existing && existing.length > 0) {
-			return;
+			return false;
 		}
-		this.cache.set(conversationId, entries.map((e) => ({ ...e })));
+		this.cache.set(conversationId, entries);
 		logger.info('Session permissions seeded from persisted state', {
 			conversationId,
 			count: entries.length,
-			// Which tools: a prompt after a restart is answered by whether its
+			// Which grants: a prompt after a restart is answered by whether its
 			// tool is among them, and the count alone could not say.
-			tools: entries.map((e) => e.toolName),
+			grants: entries.map((e) => (e.kind === 'rule' ? e.toolName : e.kind)),
 		});
 		this.notifyChange(conversationId);
+		return true;
 	}
 
 	/**
 	 * Clear all permissions for a conversation.
+	 * Returns the entries taken away.
 	 */
-	clearConversation(conversationId: string): void {
+	clearConversation(conversationId: string): SessionPermissionEntry[] {
+		const removed = this.cache.get(conversationId) ?? [];
 		if (this.cache.has(conversationId)) {
 			this.cache.delete(conversationId);
 			logger.info('Session permissions cleared for conversation', { conversationId });
 			this.notifyChange(conversationId);
 		}
+		return removed;
 	}
 
 	/**

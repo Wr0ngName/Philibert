@@ -321,6 +321,18 @@ interface SessionInstance {
    * discussion does, and a compaction that summarizes everything.
    */
   systemPrompt: SystemPromptChoice;
+  /**
+   * Whether the session runs its shell commands sandboxed. Its shell grants
+   * made inside the sandbox are given to the CLI only while it is (see
+   * SessionPermissionEntry.sandboxed).
+   */
+  sandboxed: boolean;
+  /**
+   * A session grant was taken back that the CLI cannot drop from a running
+   * session — a directory: the session is started again, resuming, before
+   * its next message, so it runs without it. Says which, for the log.
+   */
+  restartForPermissions?: string;
 }
 
 export class ClaudeCodeService {
@@ -453,7 +465,7 @@ export class ClaudeCodeService {
    * Handle action response from renderer (approve/reject)
    * Routes to the correct conversation's permission manager
    */
-  handleActionResponse(conversationId: string, response: ActionResponse): void {
+  async handleActionResponse(conversationId: string, response: ActionResponse): Promise<void> {
     // Channel mode: delegate permission verdicts to ChannelService
     if (this.channelService && this.channelService.isConversationActive(conversationId)) {
       this.channelService.handlePermissionResponse(
@@ -466,7 +478,7 @@ export class ClaudeCodeService {
 
     const instance = this.activeSessions.get(conversationId);
     if (instance) {
-      instance.permissionManager.handleActionResponse(response);
+      await instance.permissionManager.handleActionResponse(response);
     } else {
       logger.warn('Cannot handle action response - no active session for conversation', {
         conversationId,
@@ -550,26 +562,84 @@ export class ClaudeCodeService {
   }
 
   /**
-   * Revoke a session permission
+   * Revoke a session permission, in the running session too: a rule at once
+   * (syncSessionGrants), a mode at once (back to the default mode), a
+   * directory from the next message on (see restartForPermissions).
    */
-  revokeSessionPermission(conversationId: string, permissionId: string): boolean {
-    return this.sessionPermissionCache.revokePermission(conversationId, permissionId);
+  async revokeSessionPermission(conversationId: string, permissionId: string): Promise<boolean> {
+    const removed = this.sessionPermissionCache.revokePermission(conversationId, permissionId);
+    if (!removed) return false;
+    await this.withdrawFromSession(conversationId, [removed]);
+    return true;
   }
 
   /**
-   * Clear all session permissions for a conversation
+   * Clear all session permissions for a conversation, in its running session too.
    */
-  clearSessionPermissions(conversationId: string): void {
-    this.sessionPermissionCache.clearConversation(conversationId);
+  async clearSessionPermissions(conversationId: string): Promise<void> {
+    const removed = this.sessionPermissionCache.clearConversation(conversationId);
+    if (removed.length > 0) await this.withdrawFromSession(conversationId, removed);
   }
 
   /**
    * Seed the cache for a conversation from persisted state (called by the
    * renderer after loading a saved conversation from disk). No-op if the
-   * cache already has entries for this conversation.
+   * cache already has entries for this conversation. A session already
+   * running for it is given the rules; a mode or directories it was not
+   * started with apply from its next start.
    */
-  seedSessionPermissions(conversationId: string, entries: SessionPermissionEntry[]): void {
-    this.sessionPermissionCache.seed(conversationId, entries);
+  async seedSessionPermissions(conversationId: string, entries: unknown): Promise<void> {
+    if (!this.sessionPermissionCache.seed(conversationId, entries)) return;
+    if (this.activeSessions.has(conversationId)) await this.syncSessionGrants(conversationId);
+  }
+
+  /**
+   * Give the running session of a discussion its session grants as they now
+   * are: every allow rule in force, in the CLI's flag-settings layer.
+   *
+   * `applyFlagSettings({ permissions })` replaces the whole `permissions`
+   * object of that layer, so the list sent is the whole list, and a rule left
+   * out of it is a rule taken away. Measured on CLI 2.1.280 (a probe that
+   * drives the bundled CLI and logs every canUseTool call):
+   *  - a rule added this way allows its command at once, mid-session;
+   *  - after `allow: []` the same command asks again;
+   *  - a command the rule does not cover still asks.
+   * Rules passed when the session starts (`settings`) are a layer of their
+   * own that this cannot clear, so session grants never go there.
+   *
+   * No session running: nothing to do — the next start applies them.
+   */
+  async syncSessionGrants(conversationId: string): Promise<void> {
+    const session = this.activeSessions.get(conversationId);
+    if (!session) return;
+    const allow = this.sessionPermissionCache.allowRules(conversationId, session.sandboxed);
+    await session.query.applyFlagSettings({ permissions: { allow } });
+    logger.info('Session grants given to the CLI', { conversationId, rules: allow.length, sandboxed: session.sandboxed });
+  }
+
+  /**
+   * Take revoked grants away from the running session, each the way the CLI
+   * allows: the rules by giving the CLI the list without them, a mode by
+   * going back to the default mode, a directory by starting the session again
+   * before its next message — the CLI has no call that drops one.
+   */
+  private async withdrawFromSession(conversationId: string, removed: SessionPermissionEntry[]): Promise<void> {
+    const session = this.activeSessions.get(conversationId);
+    if (!session) return;
+    if (removed.some((e) => e.kind === 'rule')) {
+      await this.syncSessionGrants(conversationId);
+    }
+    if (removed.some((e) => e.kind === 'mode') && !this.sessionPermissionCache.mode(conversationId)) {
+      await session.query.setPermissionMode('default');
+      logger.info('Session mode grant revoked: back to the default mode', { conversationId });
+    }
+    const directories = removed.flatMap((e) => (e.kind === 'directory' ? [e.directory] : []));
+    if (directories.length > 0) {
+      session.restartForPermissions = `directory revoked: ${directories.join(', ')}`;
+      logger.info('Session directory grant revoked: session starts again before its next message', {
+        conversationId, directories,
+      });
+    }
   }
 
   /**
@@ -736,6 +806,21 @@ export class ClaudeCodeService {
         conversationId,
         sessionGeneration: existingSession.authGeneration,
         currentGeneration: this.authGeneration,
+        willResumeSdkSession: existingSession.sdkSessionId ?? '(none yet)',
+      });
+      const resumeFrom = resumeSessionId ?? existingSession.sdkSessionId ?? undefined;
+      this.cleanupSession(conversationId);
+      return this.startNewSession(
+        conversationId, message, workingDirectory, settings, isSlashCommand, resumeFrom, images,
+      );
+    }
+
+    // A session grant was revoked that only a new start drops (a directory):
+    // replaced the same way, resuming its SDK session.
+    if (existingSession?.restartForPermissions && !existingSession.inputChannel.isClosed()) {
+      logger.info('Replacing session to drop a revoked grant', {
+        conversationId,
+        reason: existingSession.restartForPermissions,
         willResumeSdkSession: existingSession.sdkSessionId ?? '(none yet)',
       });
       const resumeFrom = resumeSessionId ?? existingSession.sdkSessionId ?? undefined;
@@ -1069,6 +1154,10 @@ export class ClaudeCodeService {
       conversationId,
       (actionId: string) => this.emitToolExecuted(conversationId, actionId),
       (text: string) => this.pushAskUserQuestionFollowUp(conversationId, text),
+      {
+        sync: () => this.syncSessionGrants(conversationId),
+        sandboxed: () => this.activeSessions.get(conversationId)?.sandboxed ?? false,
+      },
     );
 
     // Create session ready promise (resolves when we get session_id from init)
@@ -1320,6 +1409,11 @@ export class ClaudeCodeService {
       // turn's result, which is how that result is known to be ours.
       const firstTurnUuid = randomUUID();
 
+      // The session grants the CLI takes at start: the mode and directories
+      // (the rules are given once it runs, below).
+      const grantedMode = this.sessionPermissionCache.mode(conversationId);
+      const grantedDirectories = this.sessionPermissionCache.directories(conversationId);
+
       // Start query with AsyncIterable prompt — this keeps the process alive
       const queryIterator = query({
         prompt: inputChannel,
@@ -1375,6 +1469,14 @@ export class ClaudeCodeService {
           ...(systemPrompt !== undefined ? { systemPrompt } : {}),
           ...(shouldResume ? { resume: resumeSessionId } : {}),
           ...(rewindPoint ? { resumeSessionAt: rewindPoint } : {}),
+          // Granted for this session in the discussion, so kept when it starts
+          // again (after a restart of the app, a change of login): the CLI's
+          // own record of them ended with its process. bypassPermissions is
+          // only taken with the flag that says it was meant.
+          ...(grantedMode
+            ? { permissionMode: grantedMode, ...(grantedMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}) }
+            : {}),
+          ...(grantedDirectories.length > 0 ? { additionalDirectories: grantedDirectories } : {}),
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {
             return this.spawnSDKProcess(options, conversationId, (request) => permissionManager.noteCanUseToolRequest(request));
           },
@@ -1412,6 +1514,7 @@ export class ClaudeCodeService {
         // invalidateSessionAuth.
         authGeneration: this.authGeneration,
         systemPrompt: systemPromptChoice,
+        sandboxed: false,
       };
       this.activeSessions.set(conversationId, session);
       this.emitActiveQueryCount();
@@ -1471,6 +1574,20 @@ export class ClaudeCodeService {
         session_id: resumeSessionId || '',
         origin: HUMAN_ORIGIN,
       };
+
+      // The session's allow rules, before its first message, so its first
+      // tool call already has them. Measured: the CLI answers this control
+      // request before any user message has been pushed.
+      if (this.sessionPermissionCache.allowRules(conversationId, session.sandboxed).length > 0) {
+        try {
+          await this.syncSessionGrants(conversationId);
+        } catch (error) {
+          logger.warn('Could not give the session grants to a new session; its tools ask again', {
+            conversationId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
 
       inputChannel.push(userMessage);
       logger.info('Pushed first user message to new persistent session', {
@@ -2026,7 +2143,7 @@ export class ClaudeCodeService {
 
     const instance = this.activeSessions.get(conversationId);
     if (instance) {
-      instance.permissionManager.handleActionResponse({
+      await instance.permissionManager.handleActionResponse({
         conversationId,
         actionId,
         approved: true,
@@ -2054,7 +2171,7 @@ export class ClaudeCodeService {
 
     const instance = this.activeSessions.get(conversationId);
     if (instance) {
-      instance.permissionManager.handleActionResponse({
+      await instance.permissionManager.handleActionResponse({
         conversationId,
         actionId,
         approved: false,

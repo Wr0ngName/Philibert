@@ -17,6 +17,7 @@ import {
   type AskUserQuestionResultPayload,
 } from '../../../shared/ask-user-question';
 import { generateId, ID_PREFIXES } from '../../../shared/id';
+import { SHELL_TOOLS } from '../../../shared/session-permissions';
 import {
   PendingAction,
   ActionResponse,
@@ -53,9 +54,6 @@ export function comparablePath(path: string): string {
     .replace(/\/+$/, '');
 }
 
-/** The tools whose input is a command line, which the CLI writes rules for one command at a time. */
-const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
-
 /** Prefix used by Claude Code for user messages that answer an AskUserQuestion */
 export const ASK_USER_QUESTION_PREFIX = '[User answered AskUserQuestion]:';
 
@@ -71,6 +69,8 @@ interface PendingPermission {
   suggestions?: PermissionUpdate[];
   /** What the project's narrow option grants: see withProjectScopeSuggestions. */
   narrowProject?: PermissionUpdate[];
+  /** What the session's narrow option grants: see withProjectScopeSuggestions. */
+  narrowSession?: PermissionUpdate[];
   /** Allowed once at most: see PendingAction.onceOnly. */
   onceOnly?: boolean;
   /** Only the person may answer it: see noteCanUseToolRequest. */
@@ -113,6 +113,28 @@ type ToolExecutedEmitter = (actionId: string) => void;
 type AskUserQuestionFollowUpEmitter = (text: string) => void;
 
 /**
+ * What the permission manager needs from the session it answers for, to
+ * grant something "for this session".
+ */
+export interface SessionGrantHooks {
+  /**
+   * Give the CLI the session's grants as they now are (see
+   * ClaudeCodeService.syncSessionGrants). Awaited before the approved tool is
+   * let run, so that the CLI has the rule when the next call comes.
+   */
+  sync(): Promise<void>;
+  /** Whether the session runs its shell commands sandboxed. */
+  sandboxed(): boolean;
+}
+
+/** An allow rule for this session: kept by Philibert, given to the CLI by syncSessionGrants. */
+function isSessionAllowRule(update: PermissionUpdate): update is Extract<PermissionUpdate, { type: 'addRules' | 'replaceRules' }> {
+  return (update.type === 'addRules' || update.type === 'replaceRules')
+    && update.behavior === 'allow'
+    && (update.destination === 'session' || update.destination === 'cliArg');
+}
+
+/**
  * Manages tool permission requests and user approval flow
  */
 export class PermissionManager {
@@ -132,6 +154,7 @@ export class PermissionManager {
     private conversationId?: string,
     emitToolExecuted?: ToolExecutedEmitter,
     emitQuestionFollowUp?: AskUserQuestionFollowUpEmitter,
+    private sessionGrants?: SessionGrantHooks,
   ) {
     this.configService = configService;
     this.emitToolUse = emitToolUse;
@@ -195,8 +218,8 @@ export class PermissionManager {
         return this.handleAskUserQuestionRequest(actionId, input, options.signal);
       }
 
-      // Auto-approve read operations if configured — and neither this nor the
-      // session's grants below answer an ask only the person may.
+      // Auto-approve read operations if configured — but not an ask only the
+      // person may answer.
       const config = await this.configService.getConfig();
       if (!manualApprovalRequired && config.autoApproveReads && this.isReadOnlyTool(toolName)) {
         logger.debug('Auto-approving read operation', { toolName });
@@ -206,19 +229,11 @@ export class PermissionManager {
         };
       }
 
-      // Check session permission cache (persists across queries)
-      if (!manualApprovalRequired && this.sessionPermissionCache && this.conversationId) {
-        if (this.sessionPermissionCache.isAllowed(this.conversationId, toolName, input)) {
-          // Info, not debug: the line above says a permission was requested,
-          // and without this one a request answered by a session grant reads
-          // the same as one the user was asked.
-          logger.info('Session permission cache hit', { actionId, toolName, conversationId: this.conversationId });
-          return {
-            behavior: 'allow',
-            updatedInput: input,
-          };
-        }
-      }
+      // No check of the session's own grants here: the CLI has them as rules
+      // (SessionGrantHooks.sync) and matches them itself, so an ask that
+      // reaches this point is one none of them covers. Answering it from the
+      // grants by tool name allowed every command of a tool that was granted
+      // one command of it.
 
       // Create pending action for UI (include permission info from SDK suggestions)
       // When the CLI says this ask must not offer "don't ask again" — the rule
@@ -230,8 +245,9 @@ export class PermissionManager {
         : this.withProjectScopeSuggestions(toolName, options.suggestions);
       const suggestions = offered?.suggestions;
       const narrowProject = offered?.narrowProject;
+      const narrowSession = offered?.narrowSession;
       const permissionInfo = offered
-        ? this.describePermissionSuggestions(toolName, offered.suggestions, input, offered.narrowProject)
+        ? this.describePermissionSuggestions(toolName, offered.suggestions, input, offered.narrowProject, offered.narrowSession)
         : undefined;
       const permissionContext: PermissionContext | undefined =
         (options.blockedPath || options.decisionReason)
@@ -263,6 +279,7 @@ export class PermissionManager {
           reject,
           suggestions,
           ...(narrowProject ? { narrowProject } : {}),
+          ...(narrowSession ? { narrowSession } : {}),
           ...(onceOnly ? { onceOnly: true } : {}),
           ...(manualApprovalRequired ? { manualApprovalRequired: true } : {}),
         };
@@ -509,8 +526,7 @@ export class PermissionManager {
    * tool, whatever its input — remembered for the project.
    *
    * "Allow <tool> this session" allows the whole tool (handleActionResponse
-   * adds the tool to the session cache with no rule content). The project
-   * option used to pass on the CLI's own `localSettings` suggestion instead,
+   * grants the tool with no rule content). The project option used to pass on the CLI's own `localSettings` suggestion instead,
    * and for a command tool that is the exact command line: "Allow PowerShell
    * (Get-ChildItem -Force | Select-Object …) in project" saved a rule only
    * that one command would ever match. The two options granted different
@@ -540,11 +556,17 @@ export class PermissionManager {
    *
    * No project option when nothing is granted: only a deny, or a mode that
    * is not a tool grant (the plan-mode exits).
+   *
+   * The CLI's narrower rules are offered for the session too
+   * (`narrowSession`): the same rules, kept for this session only. The CLI
+   * suggests them for a settings file alone — for a command, "this command"
+   * or a prefix — so without this option the only way not to be asked again
+   * in the session was to allow the whole tool.
    */
   private withProjectScopeSuggestions(
     toolName: string,
     suggestions?: PermissionUpdate[]
-  ): { suggestions: PermissionUpdate[]; narrowProject?: PermissionUpdate[] } {
+  ): { suggestions: PermissionUpdate[]; narrowProject?: PermissionUpdate[]; narrowSession?: PermissionUpdate[] } {
     if (!suggestions || suggestions.length === 0) {
       return {
         suggestions: [{ type: 'addRules', rules: [{ toolName }], behavior: 'allow', destination: 'localSettings' }],
@@ -565,9 +587,9 @@ export class PermissionManager {
     const directories = [...new Set(local.flatMap((s) => (s.type === 'addDirectories' ? s.directories : [])))];
     if (tools.length === 0 && directories.length === 0) return { suggestions };
 
-    // "This session" grants the whole tool too — the session cache allows a
-    // tool by name, whatever rule it was cached with — so its rules go to the
-    // CLI as the whole tool, and the option is named that way. The CLI may
+    // "This session" grants the whole tool, as its label says, so its rules go
+    // to the CLI as the whole tool; the CLI's narrower rules are the
+    // session's narrow option (narrowSession). The CLI may
     // suggest a path for a file outside the project ("Read(//c/…/tasks/**)"),
     // and passing that on named the option after a rule it did not keep to.
     const isSession = (s: PermissionUpdate) => this.mapDestinationToScope(s.destination) === 'session';
@@ -597,7 +619,12 @@ export class PermissionManager {
     project.push(...projectDirectories);
     return {
       suggestions: [...kept, ...project],
-      ...(narrowRules.length > 0 ? { narrowProject: [...narrowRules, ...projectDirectories] } : {}),
+      ...(narrowRules.length > 0
+        ? {
+          narrowProject: [...narrowRules, ...projectDirectories],
+          narrowSession: narrowRules.map((rule): PermissionUpdate => ({ ...rule, destination: 'session' })),
+        }
+        : {}),
     };
   }
 
@@ -705,6 +732,7 @@ export class PermissionManager {
     suggestions: PermissionUpdate[],
     input?: Record<string, unknown>,
     narrowProject?: PermissionUpdate[],
+    narrowSession?: PermissionUpdate[],
   ): PermissionSuggestionInfo | undefined {
     const SCOPE_PRIORITY: Record<PermissionScope, number> = { session: 0, project: 1, global: 2 };
     const SCOPE_LABELS: Record<PermissionScope, string> = {
@@ -823,14 +851,7 @@ export class PermissionManager {
 
       // The project's second option: only what the CLI itself suggested.
       if (scope === 'project' && narrowProject) {
-        const narrowRules = narrowProject.flatMap((s) => (s.type === 'addRules' ? s.rules : []));
-        const what = this.rulesText(narrowRules, input);
-        scopeOptions.push({
-          scope,
-          variant: 'narrow',
-          label: `Allow ${what} in project`,
-          description: `Allow only ${what} ${SCOPE_LABELS.project}`,
-        });
+        scopeOptions.push(this.narrowOption('project', narrowProject, input));
       }
     }
 
@@ -841,6 +862,13 @@ export class PermissionManager {
         label: `Allow ${toolName} this session`,
         description: `Allow ${toolName} for this session`,
       });
+    }
+
+    // The session's second option, right after its first: the CLI's own
+    // narrower rules, for this session only.
+    if (narrowSession) {
+      const at = scopeOptions.findIndex((o) => o.scope === 'session');
+      scopeOptions.splice(at + 1, 0, this.narrowOption('session', narrowSession, input));
     }
 
     // Legacy fields: broadest scope label
@@ -868,6 +896,21 @@ export class PermissionManager {
       description,
       scope: broadestScope,
       scopeOptions,
+    };
+  }
+
+  /** A scope's narrow option: only the rules the CLI itself suggested. */
+  private narrowOption(
+    scope: 'session' | 'project',
+    narrow: PermissionUpdate[],
+    input?: Record<string, unknown>,
+  ): PermissionScopeOption {
+    const what = this.rulesText(narrow.flatMap((s) => (s.type === 'addRules' ? s.rules : [])), input);
+    return {
+      scope,
+      variant: 'narrow',
+      label: scope === 'project' ? `Allow ${what} in project` : `Allow ${what} this session`,
+      description: `Allow only ${what} ${scope === 'project' ? 'for this project' : 'for this session'}`,
     };
   }
 
@@ -1009,7 +1052,7 @@ export class PermissionManager {
   /**
    * Handle action response from renderer (approve/reject)
    */
-  handleActionResponse(response: ActionResponse): void {
+  async handleActionResponse(response: ActionResponse): Promise<void> {
     const pending = this.pendingPermissions.get(response.actionId);
     if (!pending) {
       logger.warn('No pending permission found for action', { actionId: response.actionId });
@@ -1042,32 +1085,45 @@ export class PermissionManager {
         updatedInput: response.updatedInput || pending.input,
       };
 
-      // Include permission updates if user chose "always allow"
-      if (response.alwaysAllow && pending.suggestions && pending.suggestions.length > 0) {
-        // Filter suggestions by chosen scope if specified. The project's
-        // narrow option persists the CLI's own rules instead of the whole
-        // tool, along with what any project choice includes from the session.
-        const narrow = response.chosenScope === 'project' && response.chosenVariant === 'narrow' && pending.narrowProject;
-        const filteredSuggestions = narrow
-          ? [...this.filterSuggestionsByScope(pending.suggestions, 'session'), ...pending.narrowProject!]
-          : response.chosenScope
-            ? this.filterSuggestionsByScope(pending.suggestions, response.chosenScope)
-            : pending.suggestions;
+      const granted = response.alwaysAllow ? this.grantedUpdates(pending, response) : [];
+      // The session's allow rules are Philibert's to keep and the CLI's to
+      // match: they go to the CLI's flag settings (SessionGrantHooks.sync),
+      // where they can be taken back while the session runs. Given back with
+      // the answer, the CLI kept them in its own session state, which nothing
+      // can remove a rule from — revoking one in the app left it in force.
+      // The rest — rules for a settings file, a mode, directories — goes back
+      // with the answer, for the CLI to apply.
+      const forwarded = granted.filter((u) => !isSessionAllowRule(u));
+      if (forwarded.length > 0) result.updatedPermissions = forwarded;
 
-        result.updatedPermissions = filteredSuggestions;
+      const wholeTools = this.wholeToolGrants(granted);
+      if (response.alwaysAllow && this.sessionPermissionCache && this.conversationId) {
+        const sandboxed = this.sessionGrants?.sandboxed() ?? false;
+        this.sessionPermissionCache.addPermissions(this.conversationId, granted, { sandboxed });
 
-        // Cache session-scoped permissions for persistence across queries
-        // (SessionPermissionCache internally filters to session/cliArg destinations only)
-        if (this.sessionPermissionCache && this.conversationId) {
-          this.sessionPermissionCache.addPermissions(this.conversationId, filteredSuggestions);
+        // "This session" with no rule for the tool from the CLI — WebSearch,
+        // WebFetch, a request whose session suggestions are only a mode or
+        // directories: the tool itself is what the option says it allows.
+        const sessionRuleForTool = granted.some((u) => isSessionAllowRule(u)
+          && u.rules.some((r) => r.toolName === pending.toolName));
+        if (response.chosenScope === 'session' && response.chosenVariant !== 'narrow' && !sessionRuleForTool) {
+          this.sessionPermissionCache.addRule(this.conversationId, pending.toolName, undefined, { sandboxed });
+          wholeTools.add(pending.toolName);
         }
-      }
 
-      // Ensure session permission is cached even when SDK provided no session-scoped suggestions.
-      // This covers tools like WebSearch, WebFetch where the SDK may not offer session rules.
-      // addDirectPermission is idempotent (skips duplicates from SDK-provided entries above).
-      if (response.alwaysAllow && response.chosenScope === 'session' && this.sessionPermissionCache && this.conversationId) {
-        this.sessionPermissionCache.addDirectPermission(this.conversationId, pending.toolName);
+        if (this.sessionGrants) {
+          try {
+            await this.sessionGrants.sync();
+          } catch (error) {
+            // The tool was approved and runs; the grant is kept and listed, and
+            // the next call it should cover asks again rather than run unasked.
+            logger.error('Could not give the session grants to the CLI', {
+              conversationId: this.conversationId,
+              actionId: response.actionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
       }
 
       pending.resolve(result);
@@ -1075,7 +1131,7 @@ export class PermissionManager {
       // The asks still open that this grant covers are answered by it too,
       // whatever its scope.
       if (response.alwaysAllow) {
-        this.autoResolveCoveredPermissions(this.wholeToolGrants(result.updatedPermissions));
+        this.autoResolveCoveredPermissions(wholeTools);
       }
     } else {
       logger.info('Action rejected by user', {
@@ -1093,14 +1149,35 @@ export class PermissionManager {
   }
 
   /**
+   * What an "always allow" answer grants: the suggestions of the scope chosen
+   * and the narrower ones. A scope's narrow option grants the CLI's own rules
+   * instead of the whole tool — the project's along with what any project
+   * choice includes from the session, the session's alone.
+   */
+  private grantedUpdates(pending: PendingPermission, response: ActionResponse): PermissionUpdate[] {
+    if (response.chosenVariant === 'narrow') {
+      if (response.chosenScope === 'project' && pending.narrowProject) {
+        return [...this.filterSuggestionsByScope(pending.suggestions ?? [], 'session'), ...pending.narrowProject];
+      }
+      if (response.chosenScope === 'session' && pending.narrowSession) {
+        return pending.narrowSession;
+      }
+    }
+    if (!pending.suggestions || pending.suggestions.length === 0) return [];
+    return response.chosenScope
+      ? this.filterSuggestionsByScope(pending.suggestions, response.chosenScope)
+      : pending.suggestions;
+  }
+
+  /**
    * The tools an "always allow" grants whole, whatever its scope: its allow
    * rules with no rule content. A rule with content ("Bash(npm test:*)")
    * allows only what the CLI matches against it, which is not worked out
    * here, so it covers no other ask.
    */
-  private wholeToolGrants(updates: PermissionUpdate[] | undefined): Set<string> {
+  private wholeToolGrants(updates: PermissionUpdate[]): Set<string> {
     const tools = new Set<string>();
-    for (const update of updates ?? []) {
+    for (const update of updates) {
       if ((update.type === 'addRules' || update.type === 'replaceRules') && update.behavior === 'allow') {
         for (const rule of update.rules) {
           if (!rule.ruleContent) tools.add(rule.toolName);
@@ -1112,19 +1189,16 @@ export class PermissionManager {
 
   /**
    * Auto-resolve any pending permissions an "always allow" now covers: the
-   * tools it granted whole, in any scope, and whatever the session cache
-   * allows. The session cache alone was the check before, so "this session"
-   * answered the other open asks for the tool and "this project" — kept in
-   * the project's settings, not in the cache — left them waiting.
+   * tools it granted whole, in any scope. A narrower grant covers only what
+   * the CLI matches against it, and the CLI has already asked about these, so
+   * they stay for the person to answer.
    */
   private autoResolveCoveredPermissions(grantedTools: ReadonlySet<string>): void {
     const toResolve: PendingPermission[] = [];
 
     for (const [actionId, pending] of this.pendingPermissions) {
       if (pending.manualApprovalRequired) continue;
-      const cached =!!this.sessionPermissionCache && !!this.conversationId
-        && this.sessionPermissionCache.isAllowed(this.conversationId, pending.toolName, pending.input);
-      if (grantedTools.has(pending.toolName) || cached) {
+      if (grantedTools.has(pending.toolName)) {
         toResolve.push(pending);
         this.pendingPermissions.delete(actionId);
       }

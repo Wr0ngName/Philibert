@@ -521,8 +521,10 @@ describe('PermissionManager', () => {
         scope: 'project',
         scopeOptions: [
           { scope: 'session', label: 'Allow Bash this session', description: 'Allow Bash for this session' },
+          // The CLI's own narrower rule stays available as a second choice,
+          // for the session as for the project.
+          { scope: 'session', variant: 'narrow', label: 'Allow Bash (git:*) this session', description: 'Allow only Bash (git:*) for this session' },
           { scope: 'project', label: 'Allow Bash in project', description: 'Allow Bash for this project' },
-          // The CLI's own narrower rule stays available as a second choice.
           { scope: 'project', variant: 'narrow', label: 'Allow Bash (git:*) in project', description: 'Allow only Bash (git:*) for this project' },
         ],
       });
@@ -1041,9 +1043,9 @@ describe('PermissionManager', () => {
         { scope: 'session', label: 'Allow Read this session', description: 'Allow Read for this session' },
         { scope: 'project', label: 'Allow Read in project', description: 'Allow Read for this project' },
       ]);
-      expect(result.updatedPermissions).toEqual([
-        { type: 'addRules', rules: [{ toolName: 'Read' }], behavior: 'allow', destination: 'session' },
-      ]);
+      // The session's rule is Philibert's to keep and give the CLI as a
+      // rule it can take back: not handed back with the answer.
+      expect(result.updatedPermissions).toBeUndefined();
     });
 
     it('names a path the CLI suggests for the project "this folder" or "this file", never in full', async () => {
@@ -1054,6 +1056,7 @@ describe('PermissionManager', () => {
         'project',
       );
       expect(folder.action.permissionInfo?.scopeOptions.filter(o => o.variant === 'narrow')).toEqual([
+        { scope: 'session', variant: 'narrow', label: 'Allow Read (this folder) this session', description: 'Allow only Read (this folder) for this session' },
         { scope: 'project', variant: 'narrow', label: 'Allow Read (this folder) in project', description: 'Allow only Read (this folder) for this project' },
       ]);
 
@@ -1063,7 +1066,7 @@ describe('PermissionManager', () => {
         [{ type: 'addRules', rules: [{ toolName: 'Edit', ruleContent: '//home/user/project/src/a.ts' }], behavior: 'allow', destination: 'localSettings' }],
         'project',
       );
-      expect(file.action.permissionInfo?.scopeOptions.find(o => o.variant === 'narrow')?.label).toBe('Allow Edit (this file) in project');
+      expect(file.action.permissionInfo?.scopeOptions.find(o => o.scope === 'project' && o.variant === 'narrow')?.label).toBe('Allow Edit (this file) in project');
     });
 
     // Reported: Monitor's card offered "Allow Bash for this project", and
@@ -1082,6 +1085,7 @@ describe('PermissionManager', () => {
 
       expect(action.permissionInfo?.scopeOptions.map(o => o.label)).toEqual([
         'Allow Monitor this session',
+        'Allow this exact command this session',
         'Allow Monitor in project',
         'Allow this exact command in project',
       ]);
@@ -1157,7 +1161,7 @@ describe('PermissionManager', () => {
       const suggestions: PermissionUpdate[] = [{ type: 'addRules', rules, behavior: 'allow', destination: 'localSettings' }];
       const { action, result } = await requestAndApprove('Bash', { command, description: 'Wait for the checkout and merge to finish', run_in_background: true }, suggestions, 'project');
 
-      const narrow = action.permissionInfo!.scopeOptions.find((o) => o.variant === 'narrow')!;
+      const narrow = action.permissionInfo!.scopeOptions.find((o) => o.scope === 'project' && o.variant === 'narrow')!;
       expect(narrow.label).toBe('Allow these 4 commands of the line in project');
       expect(narrow.description).toBe('Allow only these 4 commands of the line for this project');
       for (const option of action.permissionInfo!.scopeOptions) {
@@ -1182,7 +1186,7 @@ describe('PermissionManager', () => {
       const suggestions: PermissionUpdate[] = [{ type: 'addRules', rules, behavior: 'allow', destination: 'localSettings' }];
       const { action } = await requestAndApprove('Bash', { command, description: 'List tracked and untracked status-like markdown files' }, suggestions, 'project');
 
-      const narrow = action.permissionInfo!.scopeOptions.find((o) => o.variant === 'narrow')!;
+      const narrow = action.permissionInfo!.scopeOptions.find((o) => o.scope === 'project' && o.variant === 'narrow')!;
       expect(narrow.label).toBe('Allow this command of the line in project');
       expect(narrow.description).toBe('Allow only this command of the line for this project');
       for (const option of action.permissionInfo!.scopeOptions) {
@@ -1195,7 +1199,10 @@ describe('PermissionManager', () => {
       // `<prefix> *` is how CLI 2.1.280 writes one; `<prefix>:*` how it used to.
       const suggestions: PermissionUpdate[] = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: prefix }], behavior: 'allow', destination: 'localSettings' }];
       const { action } = await requestAndApprove('Bash', { command: 'npm run build' }, suggestions, 'project');
-      expect(action.permissionInfo!.scopeOptions.find((o) => o.variant === 'narrow')!.label).toBe(`Allow Bash (${prefix}) in project`);
+      expect(action.permissionInfo!.scopeOptions.filter((o) => o.variant === 'narrow').map((o) => o.label)).toEqual([
+        `Allow Bash (${prefix}) this session`,
+        `Allow Bash (${prefix}) in project`,
+      ]);
     });
 
     it('offers "Allow PowerShell in project" for a one-off PowerShell pipeline (main.log, 2026-10-29)', async () => {
@@ -1211,6 +1218,7 @@ describe('PermissionManager', () => {
       // Short labels: the command is never repeated in a button.
       expect(action.permissionInfo?.scopeOptions).toEqual([
         { scope: 'session', label: 'Allow PowerShell this session', description: 'Allow PowerShell for this session' },
+        { scope: 'session', variant: 'narrow', label: 'Allow this exact command this session', description: 'Allow only this exact command for this session' },
         { scope: 'project', label: 'Allow PowerShell in project', description: 'Allow PowerShell for this project' },
         { scope: 'project', variant: 'narrow', label: 'Allow this exact command in project', description: 'Allow only this exact command for this project' },
       ]);
@@ -1286,285 +1294,191 @@ describe('PermissionManager', () => {
   });
 
   describe('session permission cache integration', () => {
-    it('should auto-approve when tool is in session cache (no emit to renderer)', async () => {
-      // Create real SessionPermissionCache
-      const cache = new SessionPermissionCache();
-      const conversationId = 'conv-1';
+    const sessionBash: PermissionUpdate[] = [{
+      type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow', destination: 'session',
+    }];
 
-      // Pre-populate cache with Bash permission
-      cache.addPermissions(conversationId, [
-        {
-          type: 'addRules',
-          rules: [{ toolName: 'Bash' }],
-          behavior: 'allow',
-          destination: 'session',
-        },
+    /** A manager with the session hooks, and the ask it was given, open. */
+    async function askWithHooks(options: {
+      suggestions?: PermissionUpdate[];
+      sync?: () => Promise<void>;
+      sandboxed?: boolean;
+      toolName?: string;
+      input?: Record<string, unknown>;
+    } = {}) {
+      const cache = new SessionPermissionCache();
+      const sync = vi.fn(options.sync ?? (async () => {}));
+      const pm = new PermissionManager(
+        mockConfigService,
+        emitToolUse,
+        cache,
+        'conv-1',
+        undefined,
+        undefined,
+        { sync, sandboxed: () => options.sandboxed ?? false },
+      );
+      const result = pm.createCanUseToolCallback()(options.toolName ?? 'Bash', options.input ?? { command: 'ls' }, {
+        signal: new AbortController().signal,
+        toolUseID: 'test-id',
+        requestId: 'test-request-id',
+        suggestions: options.suggestions,
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(capturedAction).not.toBeNull();
+      return { cache, sync, pm, result, actionId: capturedAction!.id };
+    }
+
+    it('asks although the session has a grant for the tool: the CLI matches the grants, and it asked', async () => {
+      // Answering from the grants by tool name allowed every command of a
+      // tool that was granted one command of it.
+      const cache = new SessionPermissionCache();
+      cache.addRule('conv-1', 'Bash', 'npm test *');
+      cache.addRule('conv-1', 'Write');
+      const pm = new PermissionManager(mockConfigService, emitToolUse, cache, 'conv-1');
+
+      void pm.createCanUseToolCallback()('Bash', { command: 'rm -rf build' }, {
+        signal: new AbortController().signal, toolUseID: 't', requestId: 'r', suggestions: undefined,
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(capturedAction?.toolName).toBe('Bash');
+
+      capturedAction = null;
+      void pm.createCanUseToolCallback()('Write', { file_path: '/t.txt', content: 'x' }, {
+        signal: new AbortController().signal, toolUseID: 't2', requestId: 'r2', suggestions: undefined,
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      // Reassigned by the emitter, which narrowing cannot see.
+      expect((capturedAction as PendingAction | null)?.toolName).toBe('Write');
+    });
+
+    it('keeps a session grant, gives it to the CLI before the tool runs, and not back with the answer', async () => {
+      let finishSync!: () => void;
+      const { cache, sync, pm, result, actionId } = await askWithHooks({
+        suggestions: sessionBash,
+        sync: () => new Promise<void>((resolve) => { finishSync = resolve; }),
+      });
+
+      let settled = false;
+      void result.then(() => { settled = true; });
+      const answered = pm.handleActionResponse({
+        conversationId: 'conv-1', actionId, approved: true, alwaysAllow: true, chosenScope: 'session',
+      });
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(cache.allowRules('conv-1', false)).toEqual(['Bash']);
+      // Not run until the CLI has the rule.
+      expect(settled).toBe(false);
+
+      finishSync();
+      await answered;
+      const allowed = await result as Extract<PermissionResult, { behavior: 'allow' }>;
+      expect(allowed.behavior).toBe('allow');
+      // Given back, the CLI would keep it where it cannot be taken back.
+      expect(allowed.updatedPermissions).toBeUndefined();
+    });
+
+    it('still gives back what the CLI applies: the mode and the directories', async () => {
+      const { cache, pm, result, actionId } = await askWithHooks({
+        suggestions: [
+          { type: 'addDirectories', directories: ['/home/u'], destination: 'session' },
+          { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+          { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'touch /home/u/x' }], behavior: 'allow', destination: 'localSettings' },
+        ],
+      });
+
+      await pm.handleActionResponse({ conversationId: 'conv-1', actionId, approved: true, alwaysAllow: true, chosenScope: 'session' });
+      const allowed = await result as Extract<PermissionResult, { behavior: 'allow' }>;
+
+      expect(allowed.updatedPermissions).toEqual([
+        { type: 'addDirectories', directories: ['/home/u'], destination: 'session' },
+        { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
       ]);
-
-      // Create PermissionManager with cache
-      const permissionManager = new PermissionManager(
-        mockConfigService,
-        emitToolUse,
-        cache,
-        conversationId,
-      );
-
-      const canUseTool = permissionManager.createCanUseToolCallback();
-      const signal = new AbortController().signal;
-
-      // Call canUseTool for Bash - should auto-approve from cache
-      const result = await canUseTool('Bash', { command: 'ls' }, {
-        signal,
-        toolUseID: 'test-id',
-        requestId: 'test-request-id',
-        suggestions: undefined,
-      });
-
-      // Should allow immediately without emitting action
-      expect(result!.behavior).toBe('allow');
-      expect(capturedAction).toBeNull(); // No action emitted
+      // And keeps them, with the whole tool the option says it allows.
+      expect(cache.mode('conv-1')).toBe('acceptEdits');
+      expect(cache.directories('conv-1')).toEqual(['/home/u']);
+      expect(cache.allowRules('conv-1', false)).toEqual(['Bash']);
     });
 
-    it('should prompt user when tool is NOT in cache', async () => {
-      const cache = new SessionPermissionCache();
-      const conversationId = 'conv-1';
+    it('keeps only the command for the session\'s narrow option, not the tool', async () => {
+      const { cache, pm, result, actionId } = await askWithHooks({
+        input: { command: 'npm test' },
+        suggestions: [
+          { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+          { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test *' }], behavior: 'allow', destination: 'localSettings' },
+        ],
+      });
+      const narrow = capturedAction!.permissionInfo!.scopeOptions.find((o) => o.scope === 'session' && o.variant === 'narrow');
+      expect(narrow?.label).toBe('Allow Bash (npm test *) this session');
 
-      // Pre-populate cache with Bash only
-      cache.addPermissions(conversationId, [
-        {
-          type: 'addRules',
-          rules: [{ toolName: 'Bash' }],
-          behavior: 'allow',
-          destination: 'session',
-        },
+      await pm.handleActionResponse({
+        conversationId: 'conv-1', actionId, approved: true, alwaysAllow: true, chosenScope: 'session', chosenVariant: 'narrow',
+      });
+      const allowed = await result as Extract<PermissionResult, { behavior: 'allow' }>;
+
+      expect(cache.allowRules('conv-1', false)).toEqual(['Bash(npm test *)']);
+      // No mode either: the narrow option grants the command alone.
+      expect(cache.mode('conv-1')).toBeUndefined();
+      expect(allowed.updatedPermissions).toBeUndefined();
+    });
+
+    it('keeps only the CLI\'s rule for the session\'s narrow option when it names another tool than the one asking', async () => {
+      // Monitor asks with a Bash rule for its command (CLI 2.1.280), which
+      // covers it; the whole of Monitor is not what the narrow option says.
+      const command = 'node -e "1"';
+      const { cache, pm, actionId } = await askWithHooks({
+        toolName: 'Monitor',
+        input: { command, description: 'tick', timeout_ms: 5000 },
+        suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: command }], behavior: 'allow', destination: 'localSettings' }],
+      });
+
+      await pm.handleActionResponse({
+        conversationId: 'conv-1', actionId, approved: true, alwaysAllow: true, chosenScope: 'session', chosenVariant: 'narrow',
+      });
+
+      expect(cache.allowRules('conv-1', false)).toEqual(['Bash(node -e "1")']);
+    });
+
+    it('marks a shell grant made while the session runs sandboxed', async () => {
+      const { cache, pm, actionId } = await askWithHooks({ suggestions: sessionBash, sandboxed: true });
+      await pm.handleActionResponse({ conversationId: 'conv-1', actionId, approved: true, alwaysAllow: true, chosenScope: 'session' });
+      expect(cache.getPermissions('conv-1')).toMatchObject([{ kind: 'rule', toolName: 'Bash', sandboxed: true }]);
+      expect(cache.allowRules('conv-1', false)).toEqual([]);
+    });
+
+    it('lets the approved tool run when the CLI could not be given the grant', async () => {
+      const { cache, pm, result, actionId } = await askWithHooks({
+        suggestions: sessionBash,
+        sync: async () => { throw new Error('control request failed'); },
+      });
+      await pm.handleActionResponse({ conversationId: 'conv-1', actionId, approved: true, alwaysAllow: true, chosenScope: 'session' });
+      expect((await result)?.behavior).toBe('allow');
+      expect(cache.allowRules('conv-1', false)).toEqual(['Bash']);
+    });
+
+    it.each([
+      ['false', false],
+      ['absent', undefined],
+    ])('keeps nothing and gives the CLI nothing when "always" is %s', async (_label, alwaysAllow) => {
+      const { cache, sync, pm, result, actionId } = await askWithHooks({ suggestions: sessionBash });
+      await pm.handleActionResponse({
+        conversationId: 'conv-1', actionId, approved: true, ...(alwaysAllow !== undefined ? { alwaysAllow } : {}),
+      });
+      expect((await result)?.behavior).toBe('allow');
+      expect(cache.getPermissions('conv-1')).toEqual([]);
+      expect(sync).not.toHaveBeenCalled();
+    });
+
+    it('keeps nothing for the project scope alone: the CLI writes it to the settings file', async () => {
+      const { cache, pm, result, actionId } = await askWithHooks({
+        suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow', destination: 'projectSettings' }],
+      });
+      await pm.handleActionResponse({ conversationId: 'conv-1', actionId, approved: true, alwaysAllow: true, chosenScope: 'project' });
+      const allowed = await result as Extract<PermissionResult, { behavior: 'allow' }>;
+      expect(allowed.updatedPermissions).toEqual([
+        { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow', destination: 'localSettings' },
       ]);
-
-      const permissionManager = new PermissionManager(
-        mockConfigService,
-        emitToolUse,
-        cache,
-        conversationId,
-      );
-
-      const canUseTool = permissionManager.createCanUseToolCallback();
-      const signal = new AbortController().signal;
-
-      // Request Write tool - not in cache
-      canUseTool('Write', { file_path: '/test.txt', content: 'hello' }, {
-        signal,
-        toolUseID: 'test-id',
-        requestId: 'test-request-id',
-        suggestions: undefined,
-      });
-
-      await new Promise(resolve => setImmediate(resolve));
-
-      // Should emit action (prompt user)
-      expect(capturedAction).not.toBeNull();
-      expect(capturedAction?.toolName).toBe('Write');
-    });
-
-    it('should cache session permission when user clicks always allow', async () => {
-      const cache = new SessionPermissionCache();
-      const conversationId = 'conv-1';
-
-      const permissionManager = new PermissionManager(
-        mockConfigService,
-        emitToolUse,
-        cache,
-        conversationId,
-      );
-
-      const canUseTool = permissionManager.createCanUseToolCallback();
-      const abortController = new AbortController();
-
-      const suggestions: PermissionUpdate[] = [
-        {
-          type: 'addRules',
-          rules: [{ toolName: 'Bash' }],
-          behavior: 'allow',
-          destination: 'session',
-        },
-      ];
-
-      // Call canUseTool (don't await - it returns pending promise)
-      const promise = canUseTool('Bash', { command: 'ls' }, {
-        signal: abortController.signal,
-        toolUseID: 'test-id',
-        requestId: 'test-request-id',
-        suggestions,
-      });
-
-      // Wait for action to be emitted
-      await new Promise(resolve => setImmediate(resolve));
-
-      expect(capturedAction).not.toBeNull();
-      const actionId = capturedAction!.id;
-
-      // User approves with alwaysAllow
-      permissionManager.handleActionResponse({
-        conversationId,
-        actionId,
-        approved: true,
-        alwaysAllow: true,
-      });
-
-      // Wait for promise to resolve
-      const result = await promise;
-
-      expect(result!.behavior).toBe('allow');
-
-      // Verify cache now has the permission
-      expect(cache.isAllowed(conversationId, 'Bash', {})).toBe(true);
-    });
-
-    it('should NOT cache when alwaysAllow is false', async () => {
-      const cache = new SessionPermissionCache();
-      const conversationId = 'conv-1';
-
-      const permissionManager = new PermissionManager(
-        mockConfigService,
-        emitToolUse,
-        cache,
-        conversationId,
-      );
-
-      const canUseTool = permissionManager.createCanUseToolCallback();
-      const abortController = new AbortController();
-
-      const suggestions: PermissionUpdate[] = [
-        {
-          type: 'addRules',
-          rules: [{ toolName: 'Bash' }],
-          behavior: 'allow',
-          destination: 'session',
-        },
-      ];
-
-      const promise = canUseTool('Bash', { command: 'ls' }, {
-        signal: abortController.signal,
-        toolUseID: 'test-id',
-        requestId: 'test-request-id',
-        suggestions,
-      });
-
-      await new Promise(resolve => setImmediate(resolve));
-
-      expect(capturedAction).not.toBeNull();
-      const actionId = capturedAction!.id;
-
-      // User approves WITHOUT alwaysAllow
-      permissionManager.handleActionResponse({
-        conversationId,
-        actionId,
-        approved: true,
-        alwaysAllow: false,
-      });
-
-      await promise;
-
-      // Cache should NOT have permission
-      expect(cache.isAllowed(conversationId, 'Bash', {})).toBe(false);
-    });
-
-    it('should NOT cache when alwaysAllow is undefined', async () => {
-      const cache = new SessionPermissionCache();
-      const conversationId = 'conv-1';
-
-      const permissionManager = new PermissionManager(
-        mockConfigService,
-        emitToolUse,
-        cache,
-        conversationId,
-      );
-
-      const canUseTool = permissionManager.createCanUseToolCallback();
-      const abortController = new AbortController();
-
-      const suggestions: PermissionUpdate[] = [
-        {
-          type: 'addRules',
-          rules: [{ toolName: 'Bash' }],
-          behavior: 'allow',
-          destination: 'session',
-        },
-      ];
-
-      const promise = canUseTool('Bash', { command: 'ls' }, {
-        signal: abortController.signal,
-        toolUseID: 'test-id',
-        requestId: 'test-request-id',
-        suggestions,
-      });
-
-      await new Promise(resolve => setImmediate(resolve));
-
-      expect(capturedAction).not.toBeNull();
-      const actionId = capturedAction!.id;
-
-      // User approves WITHOUT alwaysAllow field
-      permissionManager.handleActionResponse({
-        conversationId,
-        actionId,
-        approved: true,
-      });
-
-      await promise;
-
-      // Cache should NOT have permission
-      expect(cache.isAllowed(conversationId, 'Bash', {})).toBe(false);
-    });
-
-    it('should NOT cache non-session (project/global) permissions', async () => {
-      const cache = new SessionPermissionCache();
-      const conversationId = 'conv-1';
-
-      const permissionManager = new PermissionManager(
-        mockConfigService,
-        emitToolUse,
-        cache,
-        conversationId,
-      );
-
-      const canUseTool = permissionManager.createCanUseToolCallback();
-      const abortController = new AbortController();
-
-      const suggestions: PermissionUpdate[] = [
-        {
-          type: 'addRules',
-          rules: [{ toolName: 'Bash' }],
-          behavior: 'allow',
-          destination: 'projectSettings', // Project scope, not session
-        },
-      ];
-
-      const promise = canUseTool('Bash', { command: 'ls' }, {
-        signal: abortController.signal,
-        toolUseID: 'test-id',
-        requestId: 'test-request-id',
-        suggestions,
-      });
-
-      await new Promise(resolve => setImmediate(resolve));
-
-      expect(capturedAction).not.toBeNull();
-      const actionId = capturedAction!.id;
-
-      // User approves with alwaysAllow
-      permissionManager.handleActionResponse({
-        conversationId,
-        actionId,
-        approved: true,
-        alwaysAllow: true,
-      });
-
-      const result = await promise;
-
-      // Permission should be approved for this request
-      expect(result!.behavior).toBe('allow');
-
-      // But cache should NOT have permission (SessionPermissionCache filters project/global)
-      expect(cache.isAllowed(conversationId, 'Bash', {})).toBe(false);
+      expect(cache.getPermissions('conv-1')).toEqual([]);
     });
 
     it('should auto-resolve other pending permissions after always-allow updates cache', async () => {
@@ -2043,17 +1957,12 @@ describe('PermissionManager', () => {
       const result = await pending as Extract<PermissionResult, { behavior: 'allow' }>;
       expect(result.behavior).toBe('allow');
       expect(result.updatedPermissions).toBeUndefined();
-      expect(cache.isAllowed('conv-1', 'Bash', {})).toBe(false);
+      expect(cache.getPermissions('conv-1')).toEqual([]);
     });
 
-    it("is asked although the session's grant of the tool answers its other asks", async () => {
+    it("is asked although the session has a grant of the tool", async () => {
       const manager = new PermissionManager(mockConfigService, emitToolUse, sessionBashCache('conv-1'), 'conv-1');
       const canUseTool = manager.createCanUseToolCallback();
-
-      // The grant still answers an ordinary ask with the same arguments.
-      const ordinary = await canUseTool('Bash', DANGER_INPUT, { ...dangerOptions(), toolUseID: 'toolu_plain' });
-      expect(ordinary?.behavior).toBe('allow');
-      expect(capturedAction).toBeNull();
 
       await cliWrites(manager, RAW_REQUEST);
       void canUseTool('Bash', DANGER_INPUT, dangerOptions());

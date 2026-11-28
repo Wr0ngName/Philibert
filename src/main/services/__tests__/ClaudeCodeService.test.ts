@@ -3778,6 +3778,154 @@ describe('ClaudeCodeService', () => {
       });
     });
   });
+
+  // ===========================================================================
+  // Session grants: kept by the app, matched by the CLI
+  // ===========================================================================
+  describe('session grants in the running session', () => {
+    /** A session held open after its init, as a persistent one is; its canUseTool captured. */
+    function heldSession() {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const iterator = {
+        [Symbol.asyncIterator]: async function* (): AsyncGenerator<Record<string, unknown>> {
+          yield { type: 'system', subtype: 'init', session_id: 'session-a', slash_commands: [] };
+          await held;
+          yield { type: 'result', subtype: 'success' };
+        },
+        interrupt: vi.fn(),
+        supportedCommands: vi.fn().mockResolvedValue([]),
+        supportedModels: vi.fn().mockResolvedValue([]),
+        setModel: vi.fn().mockResolvedValue(undefined),
+        applyFlagSettings: vi.fn().mockResolvedValue(undefined),
+        setMaxThinkingTokens: vi.fn().mockResolvedValue(undefined),
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn(),
+      };
+      const captured: { canUseTool?: (...args: unknown[]) => Promise<unknown>; options?: Record<string, unknown> } = {};
+      mockQuery.mockImplementation(({ options }) => {
+        captured.canUseTool = options.canUseTool;
+        captured.options = options;
+        return iterator;
+      });
+      return { iterator, release, captured };
+    }
+
+    const signal = () => ({ aborted: false, addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    const toolUses = () => mockSend.mock.calls.filter((call) => call[0] === IPC_CHANNELS.CLAUDE_TOOL_USE).map((call) => call[2]);
+
+    async function start() {
+      const session = heldSession();
+      const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { ...session, sent };
+    }
+
+    it('gives the CLI a rule allowed for the session before the tool runs, and only then lets it run', async () => {
+      const { iterator, release, captured, sent } = await start();
+      let finishApply!: () => void;
+      iterator.applyFlagSettings.mockImplementationOnce(() => new Promise<void>((resolve) => { finishApply = resolve; }));
+
+      const asked = captured.canUseTool!('Bash', { command: 'npm test' }, {
+        signal: signal(),
+        suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test *' }], behavior: 'allow', destination: 'localSettings' }],
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      const [action] = toolUses();
+      let settled = false;
+      void asked.then(() => { settled = true; });
+
+      const approved = service.approveAction(TEST_CONV_ID, action.id, undefined, true, 'session', 'narrow');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(iterator.applyFlagSettings).toHaveBeenCalledWith({ permissions: { allow: ['Bash(npm test *)'] } });
+      expect(settled).toBe(false);
+
+      finishApply();
+      await approved;
+      expect(await asked).toMatchObject({ behavior: 'allow' });
+      expect((await asked as { updatedPermissions?: unknown }).updatedPermissions).toBeUndefined();
+      release();
+      await sent;
+    });
+
+    it('takes a revoked rule away from the running session at once', async () => {
+      const { iterator, release, sent } = await start();
+      service.seedSessionPermissions(TEST_CONV_ID, [
+        { id: 'a', kind: 'rule', toolName: 'Bash', ruleContent: 'npm test *', description: '', grantedAt: 1 },
+        { id: 'b', kind: 'rule', toolName: 'WebSearch', description: '', grantedAt: 2 },
+      ]);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(iterator.applyFlagSettings).toHaveBeenLastCalledWith({ permissions: { allow: ['Bash(npm test *)', 'WebSearch'] } });
+
+      expect(await service.revokeSessionPermission(TEST_CONV_ID, 'a')).toBe(true);
+      expect(iterator.applyFlagSettings).toHaveBeenLastCalledWith({ permissions: { allow: ['WebSearch'] } });
+
+      await service.clearSessionPermissions(TEST_CONV_ID);
+      expect(iterator.applyFlagSettings).toHaveBeenLastCalledWith({ permissions: { allow: [] } });
+      release();
+      await sent;
+    });
+
+    it('puts the session back in the default mode when its mode grant is revoked', async () => {
+      const { iterator, release, sent } = await start();
+      await service.seedSessionPermissions(TEST_CONV_ID, [{ id: 'm', kind: 'mode', mode: 'acceptEdits', description: '', grantedAt: 1 }]);
+
+      await service.revokeSessionPermission(TEST_CONV_ID, 'm');
+
+      expect(iterator.setPermissionMode).toHaveBeenCalledWith('default');
+      release();
+      await sent;
+    });
+
+    it('starts the session again, resuming it, before the next message after a directory is revoked', async () => {
+      const first = await start();
+      await service.seedSessionPermissions(TEST_CONV_ID, [{ id: 'd', kind: 'directory', directory: '/home/other', description: '', grantedAt: 1 }]);
+      await service.revokeSessionPermission(TEST_CONV_ID, 'd');
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+
+      const second = heldSession();
+      const next = service.sendMessage(TEST_CONV_ID, 'Again', '/home/user');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(second.captured.options?.resume).toBe('session-a');
+      expect(second.captured.options).not.toHaveProperty('additionalDirectories');
+      first.release();
+      second.release();
+      await Promise.all([first.sent, next]);
+    });
+
+    it('starts a session with the grants the discussion holds: mode, directories, then rules before the first message', async () => {
+      await service.seedSessionPermissions(TEST_CONV_ID, [
+        { id: 'r', kind: 'rule', toolName: 'Bash', ruleContent: 'touch "(x) y"', description: '', grantedAt: 1 },
+        { id: 'm', kind: 'mode', mode: 'acceptEdits', description: '', grantedAt: 2 },
+        { id: 'd', kind: 'directory', directory: '/home/other', description: '', grantedAt: 3 },
+      ]);
+      const { iterator, release, captured, sent } = await start();
+
+      expect(captured.options).toMatchObject({ permissionMode: 'acceptEdits', additionalDirectories: ['/home/other'] });
+      expect(captured.options).not.toHaveProperty('allowDangerouslySkipPermissions');
+      // Never through the start's settings: a layer applyFlagSettings cannot clear.
+      expect(captured.options).not.toHaveProperty('settings');
+      expect(iterator.applyFlagSettings).toHaveBeenCalledWith({ permissions: { allow: ['Bash(touch "\\(x\\) y")'] } });
+      release();
+      await sent;
+    });
+
+    it('asks for a tool the session was granted another command of', async () => {
+      const { release, captured, sent } = await start();
+      await service.seedSessionPermissions(TEST_CONV_ID, [
+        { id: 'r', kind: 'rule', toolName: 'Bash', ruleContent: 'npm test *', description: '', grantedAt: 1 },
+      ]);
+
+      void captured.canUseTool!('Bash', { command: 'rm -rf build' }, { signal: signal(), suggestions: [] });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(toolUses()).toMatchObject([{ toolName: 'Bash' }]);
+      release();
+      await sent;
+    });
+  });
 });
 
 // ===========================================================================

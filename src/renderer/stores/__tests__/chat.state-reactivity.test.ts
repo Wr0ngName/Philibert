@@ -17,7 +17,7 @@ import type { SessionPermissionEntry } from '../../../shared/types';
 import { useChatStore } from '../chat';
 
 const GRANT: SessionPermissionEntry = {
-  id: 'perm-1', toolName: 'WebSearch', description: 'Allow WebSearch for this session', grantedAt: 0,
+  id: 'perm-1', kind: 'rule', toolName: 'WebSearch', description: 'Allow WebSearch for this session', grantedAt: 0,
 };
 
 beforeEach(() => {

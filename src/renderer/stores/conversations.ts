@@ -575,8 +575,8 @@ export const useConversationsStore = defineStore('conversations', () => {
 
       // Restore persisted session permissions ("Always allow for this session")
       // so grants survive across app restarts. Seed both the renderer store
-      // and the main-process cache — the latter is what actually short-circuits
-      // permission prompts on the next tool use. Skip if the in-memory store
+      // and the main-process cache — the latter is what the CLI is given as
+      // the session's rules when it starts. Skip if the in-memory store
       // already has entries (a background-running conversation stays authoritative).
       if (stateForUsage.sessionPermissions.length === 0 && conversation.sessionPermissions?.length) {
         chatStore.updateSessionPermissions(id, conversation.sessionPermissions);
