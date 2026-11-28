@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { cliRuleString, normalizeSessionEntry, ruleInForce, sessionEntryTitle } from '../session-permissions';
+import { cliRuleString, entryInForce, normalizeSessionEntry, sessionEntryTitle } from '../session-permissions';
 import type { SessionPermissionEntry } from '../types';
 
 describe('cliRuleString', () => {
@@ -33,6 +33,8 @@ describe('normalizeSessionEntry', () => {
   it('keeps a mode or a directory of today\'s shape, and drops one with nothing in it', () => {
     expect(normalizeSessionEntry({ id: 'm', kind: 'mode', mode: 'plan', description: '', grantedAt: 1 }))
       .toEqual({ id: 'm', kind: 'mode', mode: 'plan', description: '', grantedAt: 1 });
+    expect(normalizeSessionEntry({ id: 'd', kind: 'directory', directory: '/h', description: '', grantedAt: 1, sandboxed: true }))
+      .toEqual({ id: 'd', kind: 'directory', directory: '/h', description: '', grantedAt: 1, sandboxed: true });
     expect(normalizeSessionEntry({ id: 'm', kind: 'mode', mode: '' })).toBeNull();
     expect(normalizeSessionEntry({ id: 'd', kind: 'directory', directory: '' })).toBeNull();
     expect(normalizeSessionEntry({ id: 'x', toolName: 'mode:' })).toBeNull();
@@ -43,18 +45,21 @@ describe('normalizeSessionEntry', () => {
   });
 });
 
-describe('ruleInForce', () => {
+describe('entryInForce', () => {
   const rule = (sandboxed?: boolean): SessionPermissionEntry => ({
     id: 'r', kind: 'rule', toolName: 'Bash', description: '', grantedAt: 0, ...(sandboxed ? { sandboxed } : {}),
   });
 
-  it('holds a rule granted outside the sandbox either way, and one granted inside only inside', () => {
-    expect([ruleInForce(rule(), false), ruleInForce(rule(), true)]).toEqual([true, true]);
-    expect([ruleInForce(rule(true), false), ruleInForce(rule(true), true)]).toEqual([false, true]);
+  it('holds a grant made outside the sandbox either way, and one made inside only inside', () => {
+    expect([entryInForce(rule(), false), entryInForce(rule(), true)]).toEqual([true, true]);
+    expect([entryInForce(rule(true), false), entryInForce(rule(true), true)]).toEqual([false, true]);
   });
 
-  it('is never true of a mode or a directory', () => {
-    expect(ruleInForce({ id: 'm', kind: 'mode', mode: 'acceptEdits', description: '', grantedAt: 0 }, true)).toBe(false);
+  it('holds a mode or a directory made inside the sandbox only inside, as a rule', () => {
+    const mode: SessionPermissionEntry = { id: 'm', kind: 'mode', mode: 'acceptEdits', description: '', grantedAt: 0, sandboxed: true };
+    const directory: SessionPermissionEntry = { id: 'd', kind: 'directory', directory: '/home/u', description: '', grantedAt: 0, sandboxed: true };
+    expect([entryInForce(mode, false), entryInForce(mode, true), entryInForce(directory, false), entryInForce(directory, true)])
+      .toEqual([false, true, false, true]);
   });
 });
 

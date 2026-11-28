@@ -272,6 +272,64 @@ describe('ConfigService', () => {
   });
 
   // ===========================================================================
+  // Shell sandbox
+  // ===========================================================================
+  describe('sandbox', () => {
+    const realPlatform = process.platform;
+    const onPlatform = (platform: string) => Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+    afterEach(() => onPlatform(realPlatform));
+
+    it('starts new discussions sandboxed on Linux and macOS, when never set', async () => {
+      for (const platform of ['linux', 'darwin']) {
+        onPlatform(platform);
+        await service.ensureInitialized();
+        expect((await service.getConfig()).sandbox).toEqual({ enabledByDefault: true, allowedDomains: [], allowWrite: [] });
+      }
+    });
+
+    it('starts them unsandboxed on Windows, where the sandbox needs a setup of its own first', async () => {
+      onPlatform('win32');
+      await service.ensureInitialized();
+
+      expect((await service.getConfig()).sandbox.enabledByDefault).toBe(false);
+      expect((await service.getSandboxPreferences()).enabledByDefault).toBe(false);
+    });
+
+    it('keeps a default set by the user over the platform\'s', async () => {
+      onPlatform('win32');
+      await service.ensureInitialized();
+      await service.setConfig({ sandbox: { enabledByDefault: true, allowedDomains: [], allowWrite: [] } });
+
+      expect((await service.getSandboxPreferences()).enabledByDefault).toBe(true);
+    });
+
+    it('stores the lists as the sandbox takes them: trimmed, once each, only hosts and absolute paths', async () => {
+      await service.ensureInitialized();
+      await service.setConfig({
+        sandbox: {
+          enabledByDefault: false,
+          allowedDomains: [' example.com ', 'example.com', '*.npmjs.org', 'https://evil.test/x', ''],
+          allowWrite: ['~/.npm', 'relative/dir', '/srv/cache', '/srv/cache'],
+        },
+      });
+
+      expect(mockStoreData.get('sandbox')).toEqual({
+        enabledByDefault: false,
+        allowedDomains: ['example.com', '*.npmjs.org'],
+        allowWrite: ['~/.npm', '/srv/cache'],
+      });
+    });
+
+    it('reads a damaged stored value as far as it holds, the rest from the default', async () => {
+      onPlatform('linux');
+      mockStoreData.set('sandbox', { enabledByDefault: 'yes', allowedDomains: ['ok.example', 42] });
+      await service.ensureInitialized();
+
+      expect(await service.getSandboxPreferences()).toEqual({ enabledByDefault: true, allowedDomains: ['ok.example'], allowWrite: [] });
+    });
+  });
+
+  // ===========================================================================
   // Working Directory
   // ===========================================================================
   describe('workingDirectory', () => {

@@ -155,6 +155,8 @@ export interface ChannelSessionOptions {
   effortLevel: EffortLevel | null;
   /** Claude Code's prompt or not, and the instructions after it: see @shared/system-prompt. */
   systemPrompt: SystemPromptChoice;
+  /** The CLI's `sandbox` settings the session runs under (cliSandboxSettings). */
+  sandbox: Record<string, unknown>;
   resumeSessionId?: string;
   onFatalError?: ChannelSessionErrorCallback;
   onPtyError?: ChannelSessionErrorCallback;
@@ -174,6 +176,7 @@ export class ChannelSession {
   private thinkingMode: ThinkingMode;
   private effortLevel: EffortLevel | null;
   private readonly systemPrompt: SystemPromptChoice;
+  readonly sandbox: Record<string, unknown>;
   private onFatalError?: ChannelSessionErrorCallback;
   private onPtyError?: ChannelSessionErrorCallback;
   private onPermissionRequest?: ChannelSessionPermissionCallback;
@@ -201,6 +204,7 @@ export class ChannelSession {
     this.thinkingMode = options.thinkingMode;
     this.effortLevel = options.effortLevel;
     this.systemPrompt = options.systemPrompt;
+    this.sandbox = options.sandbox;
     this.resumeSessionId = options.resumeSessionId || null;
     this.onFatalError = options.onFatalError;
     this.onPtyError = options.onPtyError;
@@ -277,6 +281,13 @@ export class ChannelSession {
       args.push(...systemPromptArgs);
     }
 
+    // The sandbox, in the flag-settings layer (--settings): above the user's
+    // own settings, as the SDK's `sandbox` option is. Not in the
+    // settings.local.json above, which a user's own sandbox settings outrank.
+    const sandboxSettingsPath = path.join(this.sessionDir, 'sandbox-settings.json');
+    fs.writeFileSync(sandboxSettingsPath, JSON.stringify({ sandbox: this.sandbox }, null, 2) + '\n');
+    args.push('--settings', sandboxSettingsPath);
+
     if (this.resumeSessionId) {
       args.push('--resume', this.resumeSessionId);
     }
@@ -299,6 +310,7 @@ export class ChannelSession {
       cwd,
       claudeCli: this.claudeCliPath,
       model: this.model,
+      sandboxed: this.sandbox.enabled === true,
       resumeSessionId: this.resumeSessionId?.slice(0, 20) || null,
       ...describeSystemPrompt(this.systemPrompt),
     });
@@ -843,6 +855,11 @@ export class ChannelSession {
         });
       }
     }, 1000);
+  }
+
+  /** The CLI session it runs, once known: what a session started in its place resumes. */
+  get sessionId(): string | null {
+    return this.discoverSessionId() ?? this.resumeSessionId;
   }
 
   private discoverSessionId(): string | null {

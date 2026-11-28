@@ -1395,8 +1395,8 @@ describe('PermissionManager', () => {
         { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
       ]);
       // And keeps them, with the whole tool the option says it allows.
-      expect(cache.mode('conv-1')).toBe('acceptEdits');
-      expect(cache.directories('conv-1')).toEqual(['/home/u']);
+      expect(cache.mode('conv-1', false)).toBe('acceptEdits');
+      expect(cache.directories('conv-1', false)).toEqual(['/home/u']);
       expect(cache.allowRules('conv-1', false)).toEqual(['Bash']);
     });
 
@@ -1418,7 +1418,7 @@ describe('PermissionManager', () => {
 
       expect(cache.allowRules('conv-1', false)).toEqual(['Bash(npm test *)']);
       // No mode either: the narrow option grants the command alone.
-      expect(cache.mode('conv-1')).toBeUndefined();
+      expect(cache.mode('conv-1', false)).toBeUndefined();
       expect(allowed.updatedPermissions).toBeUndefined();
     });
 
@@ -1444,6 +1444,25 @@ describe('PermissionManager', () => {
       await pm.handleActionResponse({ conversationId: 'conv-1', actionId, approved: true, alwaysAllow: true, chosenScope: 'session' });
       expect(cache.getPermissions('conv-1')).toMatchObject([{ kind: 'rule', toolName: 'Bash', sandboxed: true }]);
       expect(cache.allowRules('conv-1', false)).toEqual([]);
+    });
+
+    // Measured in the app: "Allow Bash (…/home) this session" inside the
+    // sandbox grants the CLI's acceptEdits and home folder with the rule;
+    // kept for every session, they let `touch ~/x` through unasked once the
+    // discussion left the sandbox.
+    it('ties the mode and directories a sandboxed shell grant comes with to the sandbox too', async () => {
+      const { cache, pm, actionId } = await askWithHooks({
+        sandboxed: true,
+        input: { command: 'touch /home/u/x' },
+        suggestions: [
+          { type: 'addDirectories', directories: ['/home/u'], destination: 'session' },
+          { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+        ],
+      });
+      await pm.handleActionResponse({ conversationId: 'conv-1', actionId, approved: true, alwaysAllow: true, chosenScope: 'session' });
+
+      expect([cache.mode('conv-1', true), cache.directories('conv-1', true)]).toEqual(['acceptEdits', ['/home/u']]);
+      expect([cache.mode('conv-1', false), cache.directories('conv-1', false), cache.allowRules('conv-1', false)]).toEqual([undefined, [], []]);
     });
 
     it('lets the approved tool run when the CLI could not be given the grant', async () => {

@@ -64,7 +64,7 @@ import { setupClaudeIPC } from '../claude';
 // Test conversation ID used across tests
 const TEST_CONV_ID = 'test-conv-123';
 /** The discussion's own model, effort and thinking, which every send now says. */
-const SETTINGS: DiscussionSettings = { model: 'claude-haiku-4-5-20251001', effortLevel: 'low', thinkingMode: 'disabled' };
+const SETTINGS: DiscussionSettings = { model: 'claude-haiku-4-5-20251001', effortLevel: 'low', thinkingMode: 'disabled', sandboxed: true };
 
 describe('Claude IPC handlers', () => {
   let handlers: Map<string, (...args: unknown[]) => unknown>;
@@ -158,6 +158,14 @@ describe('Claude IPC handlers', () => {
       await expect(handler({}, TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, { ...SETTINGS, thinkingMode: 'always' }))
         .rejects.toThrow(IpcError);
       await expect(handler({}, TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, { ...SETTINGS, model: undefined }))
+        .rejects.toThrow(IpcError);
+      expect(mockClaudeService.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('refuses settings that do not say whether the discussion is sandboxed', async () => {
+      await expect(handler({}, TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, { ...SETTINGS, sandboxed: undefined }))
+        .rejects.toThrow(IpcError);
+      await expect(handler({}, TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, { ...SETTINGS, sandboxed: 'no' }))
         .rejects.toThrow(IpcError);
       expect(mockClaudeService.sendMessage).not.toHaveBeenCalled();
     });

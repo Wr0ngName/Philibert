@@ -150,9 +150,20 @@ describe('ClaudeCodeService', () => {
   let service: ClaudeCodeService;
   let configService: ConfigService;
   let mockWindow: ReturnType<typeof createMockBrowserWindow>;
+  const originalPath = process.env.PATH;
+  /**
+   * bubblewrap and socat, as the sandbox looks for them on the PATH: put
+   * first on it, so a sandboxed discussion starts whatever this machine has
+   * installed (sandboxDependencies).
+   */
+  const sandboxTools = realFs.mkdtempSync(path.join(os.tmpdir(), 'philibert-sandbox-tools-'));
+  for (const tool of ['bwrap', 'socat']) {
+    realFs.writeFileSync(path.join(sandboxTools, tool), '#!/bin/sh\n', { mode: 0o755 });
+  }
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    process.env.PATH = [sandboxTools, originalPath].join(path.delimiter);
     // Clear store data between tests
     for (const k of Object.keys(mockStoreData)) delete mockStoreData[k];
 
@@ -172,6 +183,7 @@ describe('ClaudeCodeService', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    process.env.PATH = originalPath;
   });
 
   // ===========================================================================
@@ -2425,7 +2437,7 @@ describe('ClaudeCodeService', () => {
     });
 
     describe("a discussion's own settings", () => {
-      const HAIKU: DiscussionSettings = { model: 'claude-haiku-4-5-20251001', effortLevel: 'low', thinkingMode: 'disabled' };
+      const HAIKU: DiscussionSettings = { model: 'claude-haiku-4-5-20251001', effortLevel: 'low', thinkingMode: 'disabled', sandboxed: true };
 
       /** A session that stays open after its first frames — its init by default — as a persistent one does. */
       function openSession(frames: Record<string, unknown>[] = [{ type: 'system', subtype: 'init', session_id: 'session-a', slash_commands: [] }]) {
@@ -3820,6 +3832,257 @@ describe('ClaudeCodeService', () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       return { ...session, sent };
     }
+
+    describe('in the shell sandbox', () => {
+      const SANDBOXED: DiscussionSettings = { model: '', effortLevel: 'high', thinkingMode: 'auto', sandboxed: true };
+      const UNSANDBOXED: DiscussionSettings = { ...SANDBOXED, sandboxed: false };
+      const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+      it('starts a sandboxed discussion confined, its escapes refused and its commands still asked', async () => {
+        await configService.setConfig({ sandbox: { enabledByDefault: true, allowedDomains: ['example.com'], allowWrite: ['/srv/cache'] } });
+        const { release, captured } = heldSession();
+        const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, SANDBOXED);
+        await tick();
+
+        expect(captured.options?.sandbox).toEqual({
+          enabled: true,
+          failIfUnavailable: true,
+          allowUnsandboxedCommands: false,
+          autoAllowBashIfSandboxed: false,
+          network: { allowedDomains: ['example.com'] },
+          filesystem: { allowWrite: ['/srv/cache'] },
+        });
+        release();
+        await sent;
+      });
+
+      it('starts an unsandboxed discussion with the sandbox off, whatever the user\'s own settings say', async () => {
+        const { release, captured } = heldSession();
+        const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, UNSANDBOXED);
+        await tick();
+
+        expect(captured.options?.sandbox).toEqual({ enabled: false });
+        release();
+        await sent;
+      });
+
+      it('starts a new discussion sandboxed by default on Linux, from the app setting', async () => {
+        const { release, captured } = heldSession();
+        const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user');
+        await tick();
+
+        expect(captured.options?.sandbox).toMatchObject({ enabled: true });
+        release();
+        await sent;
+      });
+
+      it('does not start a sandboxed discussion whose sandbox cannot run, and says what to install', async () => {
+        process.env.PATH = realFs.mkdtempSync(path.join(os.tmpdir(), 'philibert-no-tools-'));
+
+        await service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, SANDBOXED);
+
+        expect(mockQuery).not.toHaveBeenCalled();
+        const errors = mockSend.mock.calls.filter((call) => call[0] === IPC_CHANNELS.CLAUDE_ERROR).map((call) => call[2]);
+        expect(errors).toEqual([expect.stringContaining('bwrap and socat are not installed')]);
+        expect(errors[0]).toContain('turn the sandbox off for this discussion');
+      });
+
+      /** A sandboxed session running, then the next message sent with the settings given; the session that takes it. */
+      async function nextMessageWith(settings: DiscussionSettings) {
+        const first = heldSession();
+        const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, SANDBOXED);
+        await tick();
+        const second = heldSession();
+        const again = service.sendMessage(TEST_CONV_ID, 'Next', '/home/user', undefined, undefined, settings);
+        await tick();
+        const done = async () => {
+          first.release();
+          second.release();
+          await Promise.all([sent.catch(() => {}), again.catch(() => {})]);
+        };
+        return { first, second, done };
+      }
+
+      it('starts the session again, resuming it, when the discussion leaves the sandbox', async () => {
+        const { first, second, done } = await nextMessageWith(UNSANDBOXED);
+
+        // Its turn is the new session's, and still counted as running.
+        const running = mockSend.mock.calls.filter((call) => call[0] === IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES).at(-1);
+        expect(running?.[4]).toEqual([TEST_CONV_ID]);
+        expect(mockQuery).toHaveBeenCalledTimes(2);
+        expect(first.iterator.close).toHaveBeenCalled();
+        expect(second.captured.options).toMatchObject({ resume: 'session-a', sandbox: { enabled: false } });
+        await done();
+      });
+
+      // Measured in the app: the replaced session's message loop ended as the
+      // new one started, and cleaned up the new one — killing its CLI.
+      it('leaves the new session running when the one it replaced winds down', async () => {
+        const { first, second, done } = await nextMessageWith(UNSANDBOXED);
+        const dones = () => mockSend.mock.calls.filter((call) => call[0] === IPC_CHANNELS.CLAUDE_DONE && call[1] === TEST_CONV_ID).length;
+        const donesBefore = dones();
+
+        first.release();
+        await tick();
+
+        expect(second.iterator.close).not.toHaveBeenCalled();
+        // Nor is the new session's turn, still running, said to be over.
+        expect(dones()).toBe(donesBefore);
+        const running = mockSend.mock.calls.filter((call) => call[0] === IPC_CHANNELS.CLAUDE_ACTIVE_QUERIES).at(-1);
+        expect(running?.[4]).toEqual([TEST_CONV_ID]);
+        const third = heldSession();
+        const after = service.sendMessage(TEST_CONV_ID, 'Third', '/home/user', undefined, undefined, UNSANDBOXED);
+        await tick();
+        expect(mockQuery).toHaveBeenCalledTimes(2);
+        third.release();
+        await done();
+        await after.catch(() => {});
+      });
+
+      it('keeps the session when nothing of its sandbox changed', async () => {
+        const { done } = await nextMessageWith(SANDBOXED);
+
+        expect(mockQuery).toHaveBeenCalledTimes(1);
+        await done();
+      });
+
+      it('starts it again too when the sites it may reach change', async () => {
+        const first = heldSession();
+        const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, SANDBOXED);
+        await tick();
+
+        await configService.setConfig({ sandbox: { enabledByDefault: true, allowedDomains: ['example.org'], allowWrite: [] } });
+        const second = heldSession();
+        const again = service.sendMessage(TEST_CONV_ID, 'Next', '/home/user', undefined, undefined, SANDBOXED);
+        await tick();
+
+        expect(mockQuery).toHaveBeenCalledTimes(2);
+        expect(second.captured.options?.sandbox).toMatchObject({ network: { allowedDomains: ['example.org'] } });
+        first.release();
+        second.release();
+        await Promise.all([sent.catch(() => {}), again.catch(() => {})]);
+      });
+
+      it('approves a sandboxed command that asked to leave the sandbox without the request, and says so on its card', async () => {
+        const { release, captured } = heldSession();
+        const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, SANDBOXED);
+        await tick();
+
+        const asked = captured.canUseTool!('Bash', { command: 'touch ~/x', dangerouslyDisableSandbox: true }, { signal: signal() });
+        await new Promise((resolve) => setImmediate(resolve));
+        const [action] = toolUses();
+        expect(action.shell).toEqual({ sandboxed: true, escapeRefused: true });
+        expect(action.input).toEqual({ command: 'touch ~/x' });
+
+        await service.approveAction(TEST_CONV_ID, action.id);
+        expect(await asked).toEqual({ behavior: 'allow', updatedInput: { command: 'touch ~/x' } });
+        release();
+        await sent;
+      });
+
+      it('passes the request on, and says the command is unrestricted, in a discussion out of the sandbox', async () => {
+        const { release, captured } = heldSession();
+        const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, UNSANDBOXED);
+        await tick();
+
+        const asked = captured.canUseTool!('Bash', { command: 'touch ~/x', dangerouslyDisableSandbox: true }, { signal: signal() });
+        await new Promise((resolve) => setImmediate(resolve));
+        const [action] = toolUses();
+        expect(action.shell).toEqual({ sandboxed: false });
+
+        await service.approveAction(TEST_CONV_ID, action.id);
+        expect(await asked).toEqual({ behavior: 'allow', updatedInput: { command: 'touch ~/x', dangerouslyDisableSandbox: true } });
+        release();
+        await sent;
+      });
+
+      it('grants a host asked for by a sandboxed command as its WebFetch domain rule, nothing broader', async () => {
+        const { iterator, release, captured } = heldSession();
+        const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, SANDBOXED);
+        await tick();
+
+        const asked = captured.canUseTool!('SandboxNetworkAccess', { host: 'example.com' }, {
+          signal: signal(),
+          suggestions: [{ type: 'addRules', rules: [{ toolName: 'WebFetch', ruleContent: 'domain:example.com' }], behavior: 'allow', destination: 'localSettings' }],
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        const [action] = toolUses();
+        expect(action.description).toBe('Network access: example.com');
+        expect(action.networkHost).toBe('example.com');
+        expect(action.permissionInfo.scopeOptions.map((o: { scope: string; variant?: string }) => [o.scope, o.variant ?? null]))
+          .toEqual([['session', null], ['project', null]]);
+
+        await service.approveAction(TEST_CONV_ID, action.id, undefined, true, 'session');
+        expect(iterator.applyFlagSettings).toHaveBeenLastCalledWith({ permissions: { allow: ['WebFetch(domain:example.com)'] } });
+        expect((await asked as { updatedPermissions?: unknown }).updatedPermissions).toBeUndefined();
+        expect(service.getSessionPermissions(TEST_CONV_ID).map((e) => e.kind === 'rule' && e.toolName)).toEqual(['WebFetch']);
+        release();
+        await sent;
+      });
+
+      it('saves a host for the project as the same rule, given back for the CLI to write', async () => {
+        const { release, captured } = heldSession();
+        const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, SANDBOXED);
+        await tick();
+
+        const asked = captured.canUseTool!('SandboxNetworkAccess', { host: 'example.com' }, { signal: signal() });
+        await new Promise((resolve) => setImmediate(resolve));
+        const [action] = toolUses();
+
+        await service.approveAction(TEST_CONV_ID, action.id, undefined, true, 'project');
+        expect((await asked as { updatedPermissions?: unknown }).updatedPermissions).toEqual([
+          { type: 'addRules', rules: [{ toolName: 'WebFetch', ruleContent: 'domain:example.com' }], behavior: 'allow', destination: 'localSettings' },
+        ]);
+        release();
+        await sent;
+      });
+
+      it('starts an unsandboxed session without the mode and directories granted inside the sandbox', async () => {
+        const grants = [
+          { id: 'm', kind: 'mode', mode: 'acceptEdits', description: '', grantedAt: 1, sandboxed: true },
+          { id: 'd', kind: 'directory', directory: '/home/user', description: '', grantedAt: 1, sandboxed: true },
+        ];
+        await service.seedSessionPermissions(TEST_CONV_ID, grants);
+        const out = heldSession();
+        const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user/project', undefined, undefined, UNSANDBOXED);
+        await tick();
+        expect(out.captured.options).not.toHaveProperty('permissionMode');
+        expect(out.captured.options).not.toHaveProperty('additionalDirectories');
+
+        // Back in the sandbox: started again, with them.
+        const inside = heldSession();
+        const again = service.sendMessage(TEST_CONV_ID, 'Next', '/home/user/project', undefined, undefined, SANDBOXED);
+        await tick();
+        expect(mockQuery).toHaveBeenCalledTimes(2);
+        expect(inside.captured.options).toMatchObject({ permissionMode: 'acceptEdits', additionalDirectories: ['/home/user'] });
+        out.release();
+        inside.release();
+        await Promise.all([sent.catch(() => {}), again.catch(() => {})]);
+      });
+
+      it('gives the CLI the shell rules granted inside the sandbox only while the discussion runs in it', async () => {
+        const first = heldSession();
+        const sent = service.sendMessage(TEST_CONV_ID, 'Hello', '/home/user', undefined, undefined, SANDBOXED);
+        await tick();
+        const asked = first.captured.canUseTool!('Bash', { command: 'make' }, { signal: signal() });
+        await new Promise((resolve) => setImmediate(resolve));
+        const [action] = toolUses();
+        await service.approveAction(TEST_CONV_ID, action.id, undefined, true, 'session');
+        await asked;
+        expect(first.iterator.applyFlagSettings).toHaveBeenLastCalledWith({ permissions: { allow: ['Bash'] } });
+        expect(service.getSessionPermissions(TEST_CONV_ID)).toMatchObject([{ kind: 'rule', toolName: 'Bash', sandboxed: true }]);
+
+        const second = heldSession();
+        const again = service.sendMessage(TEST_CONV_ID, 'Next', '/home/user', undefined, undefined, UNSANDBOXED);
+        await tick();
+
+        expect(mockQuery).toHaveBeenCalledTimes(2);
+        expect(second.iterator.applyFlagSettings).not.toHaveBeenCalled();
+        first.release();
+        second.release();
+        await Promise.all([sent.catch(() => {}), again.catch(() => {})]);
+      });
+    });
 
     it('gives the CLI a rule allowed for the session before the tool runs, and only then lets it run', async () => {
       const { iterator, release, captured, sent } = await start();

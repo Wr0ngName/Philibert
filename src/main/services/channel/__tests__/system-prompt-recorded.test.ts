@@ -117,6 +117,7 @@ const FRENCH: SystemPromptChoice = { claudeCodePrompt: false, instructions: 'Ans
 
 let root: string;
 let folder: string;
+const originalPath = process.env.PATH;
 let configService: ConfigService;
 let service: ClaudeCodeService;
 
@@ -132,6 +133,12 @@ beforeEach(async () => {
   folder = path.join(root, 'plain');
   fs.mkdirSync(folder);
   paths.sessions = path.join(root, 'sessions');
+  // bubblewrap and socat, as the sandbox looks for them: first on the PATH,
+  // so a sandboxed discussion starts whatever this machine has installed.
+  const tools = path.join(root, 'bin');
+  fs.mkdirSync(tools);
+  for (const tool of ['bwrap', 'socat']) fs.writeFileSync(path.join(tools, tool), '#!/bin/sh\n', { mode: 0o755 });
+  process.env.PATH = [tools, originalPath].join(path.delimiter);
 
   configService = new ConfigService();
   await configService.ensureInitialized();
@@ -143,6 +150,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  process.env.PATH = originalPath;
   await service.abortAll();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -174,5 +182,41 @@ describe('a channel discussion whose session runs', () => {
     expect(service.isSessionRunning(CONVERSATION)).toBe(true);
     await service.abortAll();
     expect(service.isSessionRunning(CONVERSATION)).toBe(false);
+  });
+});
+
+describe("a channel discussion's sandbox", () => {
+  const SANDBOXED = { model: '', effortLevel: 'high', thinkingMode: 'auto', sandboxed: true } as const;
+  /** The sandbox a terminal was started under, from the settings file it was given. */
+  const sandboxOf = (args: string[]) => JSON.parse(fs.readFileSync(args[args.indexOf('--settings') + 1], 'utf-8')).sandbox;
+
+  it('starts its terminal again, resuming, when the discussion leaves the sandbox', async () => {
+    await service.sendMessage(CONVERSATION, 'Hello', folder, undefined, undefined, SANDBOXED);
+    expect(sandboxOf(terminals[0].args)).toMatchObject({ enabled: true });
+
+    await service.sendMessage(CONVERSATION, 'Next', folder, 'sdk-1', undefined, { ...SANDBOXED, sandboxed: false });
+
+    expect(terminals).toHaveLength(2);
+    expect(terminals[0].killed).toBe(true);
+    expect(terminals[1].args).toEqual(expect.arrayContaining(['--resume', 'sdk-1']));
+    expect(sandboxOf(terminals[1].args)).toEqual({ enabled: false });
+  });
+
+  it('keeps its terminal while its sandbox is the same', async () => {
+    await service.sendMessage(CONVERSATION, 'Hello', folder, undefined, undefined, SANDBOXED);
+    await service.sendMessage(CONVERSATION, 'Next', folder, 'sdk-1', undefined, SANDBOXED);
+
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0].killed).toBe(false);
+  });
+
+  it('does not start a sandboxed discussion whose sandbox cannot run, and says what to install', async () => {
+    process.env.PATH = path.join(root, 'nothing-here');
+
+    await service.sendMessage(CONVERSATION, 'Hello', folder, undefined, undefined, SANDBOXED);
+
+    expect(terminals).toHaveLength(0);
+    const errors = mockSend.mock.calls.filter((call) => call[0] === IPC_CHANNELS.CLAUDE_ERROR).map((call) => call[2]);
+    expect(errors).toEqual([expect.stringContaining('bwrap and socat are not installed')]);
   });
 });

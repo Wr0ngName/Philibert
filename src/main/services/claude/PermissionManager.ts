@@ -17,6 +17,7 @@ import {
   type AskUserQuestionResultPayload,
 } from '../../../shared/ask-user-question';
 import { generateId, ID_PREFIXES } from '../../../shared/id';
+import { networkRuleContent, SANDBOX_NETWORK_TOOL } from '../../../shared/sandbox';
 import { SHELL_TOOLS } from '../../../shared/session-permissions';
 import {
   PendingAction,
@@ -52,6 +53,22 @@ export function comparablePath(path: string): string {
     .replace(/^\/([a-zA-Z])\//, (_, drive: string) => `/${drive.toLowerCase()}/`)
     .replace(/\/\*+$/, '')
     .replace(/\/+$/, '');
+}
+
+/**
+ * What a network ask from a sandboxed command can grant: the host, for the
+ * session or the project, as the WebFetch domain rule the CLI suggests for
+ * it and opens the host for (P14) — the session's kept by Philibert and
+ * given to the CLI as its other session rules are. Nothing broader: neither
+ * a rule for the asking tool (P15) nor for WebFetch as a whole (P16) opens
+ * any host, so a "the whole tool" option would grant nothing it says.
+ */
+function networkHostSuggestions(host: string): PermissionUpdate[] {
+  const rules = [{ toolName: 'WebFetch', ruleContent: networkRuleContent(host) }];
+  return [
+    { type: 'addRules', rules, behavior: 'allow', destination: 'session' },
+    { type: 'addRules', rules, behavior: 'allow', destination: 'localSettings' },
+  ];
 }
 
 /** Prefix used by Claude Code for user messages that answer an AskUserQuestion */
@@ -229,6 +246,21 @@ export class PermissionManager {
         };
       }
 
+      // In a sandboxed discussion a command cannot leave the sandbox
+      // (allowUnsandboxedCommands: false): asked to, the CLI runs it inside
+      // all the same (P12, P19). The flag is taken off what is approved, and
+      // the card says so, rather than approving a request that reads as
+      // "outside" and runs inside.
+      const sandboxed = this.sessionGrants?.sandboxed() ?? false;
+      const isShell = SHELL_TOOLS.has(toolName);
+      const escapeRefused = sandboxed && isShell && input.dangerouslyDisableSandbox === true;
+      if (escapeRefused) {
+        input = Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'dangerouslyDisableSandbox'));
+      }
+      const networkHost = toolName === SANDBOX_NETWORK_TOOL && typeof input.host === 'string' && input.host
+        ? input.host
+        : undefined;
+
       // No check of the session's own grants here: the CLI has them as rules
       // (SessionGrantHooks.sync) and matches them itself, so an ask that
       // reaches this point is one none of them covers. Answering it from the
@@ -242,7 +274,9 @@ export class PermissionManager {
       // more.
       const offered = onceOnly
         ? undefined
-        : this.withProjectScopeSuggestions(toolName, options.suggestions);
+        : networkHost
+          ? { suggestions: networkHostSuggestions(networkHost) }
+          : this.withProjectScopeSuggestions(toolName, options.suggestions);
       const suggestions = offered?.suggestions;
       const narrowProject = offered?.narrowProject;
       const narrowSession = offered?.narrowSession;
@@ -257,7 +291,12 @@ export class PermissionManager {
           }
           : undefined;
       const created = this.createPendingAction(actionId, toolName, input, permissionInfo, permissionContext);
-      const action = created && onceOnly ? { ...created, onceOnly: true } : created;
+      const action = created && {
+        ...created,
+        ...(onceOnly ? { onceOnly: true } : {}),
+        ...(isShell ? { shell: { sandboxed, ...(escapeRefused ? { escapeRefused: true } : {}) } } : {}),
+        ...(networkHost ? { networkHost, description: `Network access: ${networkHost}` } : {}),
+      };
       if (!action) {
         logger.warn('Could not create action for tool', { toolName });
         return {
@@ -1099,14 +1138,17 @@ export class PermissionManager {
       const wholeTools = this.wholeToolGrants(granted);
       if (response.alwaysAllow && this.sessionPermissionCache && this.conversationId) {
         const sandboxed = this.sessionGrants?.sandboxed() ?? false;
-        this.sessionPermissionCache.addPermissions(this.conversationId, granted, { sandboxed });
+        this.sessionPermissionCache.addPermissions(this.conversationId, granted, { sandboxed, askingTool: pending.toolName });
 
         // "This session" with no rule for the tool from the CLI — WebSearch,
         // WebFetch, a request whose session suggestions are only a mode or
         // directories: the tool itself is what the option says it allows.
         const sessionRuleForTool = granted.some((u) => isSessionAllowRule(u)
           && u.rules.some((r) => r.toolName === pending.toolName));
-        if (response.chosenScope === 'session' && response.chosenVariant !== 'narrow' && !sessionRuleForTool) {
+        // Not for a network ask: a rule for SandboxNetworkAccess opens no host
+        // (P15); its options grant the host's WebFetch rule (networkHostSuggestions).
+        if (response.chosenScope === 'session' && response.chosenVariant !== 'narrow' && !sessionRuleForTool
+          && pending.toolName !== SANDBOX_NETWORK_TOOL) {
           this.sessionPermissionCache.addRule(this.conversationId, pending.toolName, undefined, { sandboxed });
           wholeTools.add(pending.toolName);
         }

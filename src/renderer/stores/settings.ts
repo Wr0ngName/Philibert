@@ -5,6 +5,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, toRaw } from 'vue';
 
+import { cleanSandboxPreferences, type SandboxPreferences } from '@shared/sandbox';
 import type { ClaudeCodePromptMode, ProjectSystemPrompt } from '@shared/system-prompt';
 import type { AppConfig, AutoArchiveDays, CompletionNotifications, EffortLevel, ExecutionMode, LogLevel, ModalSize, SidebarLayout, ThinkingMode, UpdateChannel, UsageLimitWaitDays, WhisperModelId } from '@shared/types';
 import { DEFAULT_CONFIG } from '@shared/types';
@@ -43,6 +44,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const switchModelsOnFlag = computed(() => config.value.switchModelsOnFlag);
   const strictModelEnforcement = computed(() => config.value.strictModelEnforcement);
   const autoContinueAtUsageLimit = computed(() => config.value.autoContinueAtUsageLimit);
+  const sandbox = computed(() => config.value.sandbox);
   const usageLimitWaitDays = computed(() => config.value.usageLimitWaitDays);
   const needsSetup = computed(() => !workingDirectory.value || !hasAuth.value);
   const isDarkMode = computed(() => {
@@ -200,6 +202,11 @@ export const useSettingsStore = defineStore('settings', () => {
     await saveConfig({ autoContinueAtUsageLimit: enabled });
   }
 
+  /** The shell sandbox's preferences, kept as the sandbox takes them (cleanSandboxPreferences). */
+  async function setSandbox(preferences: SandboxPreferences): Promise<void> {
+    await saveConfig({ sandbox: cleanSandboxPreferences(preferences) });
+  }
+
   async function setUsageLimitWaitDays(days: UsageLimitWaitDays): Promise<void> {
     await saveConfig({ usageLimitWaitDays: days });
   }
@@ -331,6 +338,7 @@ export const useSettingsStore = defineStore('settings', () => {
     switchModelsOnFlag,
     strictModelEnforcement,
     autoContinueAtUsageLimit,
+    sandbox,
     usageLimitWaitDays,
     isDarkMode,
     needsSetup,
@@ -369,6 +377,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setSwitchModelsOnFlag,
     setStrictModelEnforcement,
     setAutoContinueAtUsageLimit,
+    setSandbox,
     applyTheme,
     applyFontSize,
     applyLineHeight,

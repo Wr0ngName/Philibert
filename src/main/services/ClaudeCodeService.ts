@@ -54,6 +54,7 @@ import {
   stripContextVariant,
   stripDateSuffix,
 } from '../../shared/model-id';
+import { cliSandboxSettings } from '../../shared/sandbox';
 import type { SystemPromptChoice } from '../../shared/system-prompt';
 import {
   AgentInfo,
@@ -107,6 +108,7 @@ import { AgentTranscripts } from './claude/agent-transcripts';
 import { observeCanUseToolRequests, type CanUseToolRequest } from './claude/can-use-tool-requests';
 import { claudeAiConnectorAuthPage, readGlobalToolStatuses } from './claude/connectors';
 import { resumePointBefore } from './claude/rewind-point';
+import { missingSandboxTools, sandboxUnavailableNotice } from './claude/sandboxDependencies';
 import { describeSystemPrompt, sdkSystemPrompt, systemPromptFor } from './claude/system-prompt-options';
 import { attachTranscriptImages, cliTempRoot, locateTaskOutput, readTaskOutput } from './claude/task-output';
 import { writeToolResultFile } from './claude/tool-result-file';
@@ -328,6 +330,13 @@ interface SessionInstance {
    */
   sandboxed: boolean;
   /**
+   * The sandbox settings the CLI was started with (cliSandboxSettings), as
+   * JSON: a discussion whose sandbox, allowed hosts or writable folders
+   * differ by its next message is started again on them, resuming — a
+   * running sandbox is not changed in place.
+   */
+  sandboxKey: string;
+  /**
    * A session grant was taken back that the CLI cannot drop from a running
    * session — a directory: the session is started again, resuming, before
    * its next message, so it runs without it. Says which, for the log.
@@ -380,6 +389,12 @@ export class ClaudeCodeService {
   private accountRequest: { generation: number; promise: Promise<ClaudeAccount | null> } | null = null;
   // Cached slash commands (shared across all sessions)
   private cachedSlashCommands: SlashCommandInfo[] = [];
+  /**
+   * Each conversation's CLI process, the last one spawned: a process that
+   * exits after a newer one was started for the conversation (its session
+   * replaced) has nothing left to report to it. See setupProcessLogging.
+   */
+  private readonly currentProcesses = new Map<string, ChildProcess>();
   // Cached subagent list (shared across all sessions)
   private cachedAgents: AgentInfo[] = [];
   /**
@@ -629,7 +644,7 @@ export class ClaudeCodeService {
     if (removed.some((e) => e.kind === 'rule')) {
       await this.syncSessionGrants(conversationId);
     }
-    if (removed.some((e) => e.kind === 'mode') && !this.sessionPermissionCache.mode(conversationId)) {
+    if (removed.some((e) => e.kind === 'mode') && !this.sessionPermissionCache.mode(conversationId, session.sandboxed)) {
       await session.query.setPermissionMode('default');
       logger.info('Session mode grant revoked: back to the default mode', { conversationId });
     }
@@ -718,7 +733,13 @@ export class ClaudeCodeService {
       model: await this.configService.getSelectedModel(),
       effortLevel: await this.configService.getEffortLevel(),
       thinkingMode: await this.configService.getThinkingMode(),
+      sandboxed: (await this.configService.getSandboxPreferences()).enabledByDefault,
     };
+  }
+
+  /** The sandbox settings a session of these discussion settings runs under: see cliSandboxSettings. */
+  private async sandboxSettingsFor(settings: DiscussionSettings) {
+    return cliSandboxSettings(settings.sandboxed, await this.configService.getSandboxPreferences());
   }
 
   /** sendMessage, returning the uuid the message went under whatever it was. */
@@ -809,22 +830,29 @@ export class ClaudeCodeService {
         willResumeSdkSession: existingSession.sdkSessionId ?? '(none yet)',
       });
       const resumeFrom = resumeSessionId ?? existingSession.sdkSessionId ?? undefined;
-      this.cleanupSession(conversationId);
+      this.retireSession(conversationId);
       return this.startNewSession(
         conversationId, message, workingDirectory, settings, isSlashCommand, resumeFrom, images,
       );
     }
 
-    // A session grant was revoked that only a new start drops (a directory):
-    // replaced the same way, resuming its SDK session.
-    if (existingSession?.restartForPermissions && !existingSession.inputChannel.isClosed()) {
-      logger.info('Replacing session to drop a revoked grant', {
+    // A session grant was revoked that only a new start drops (a directory),
+    // or the discussion's sandbox changed: replaced the same way, resuming
+    // its SDK session.
+    const restartReason = existingSession && !existingSession.inputChannel.isClosed()
+      ? existingSession.restartForPermissions
+        ?? (existingSession.sandboxKey !== JSON.stringify(await this.sandboxSettingsFor(settings))
+          ? `sandbox changed: ${settings.sandboxed ? 'sandboxed' : 'not sandboxed'}`
+          : undefined)
+      : undefined;
+    if (existingSession && restartReason) {
+      logger.info('Replacing session to run under changed permissions', {
         conversationId,
-        reason: existingSession.restartForPermissions,
+        reason: restartReason,
         willResumeSdkSession: existingSession.sdkSessionId ?? '(none yet)',
       });
       const resumeFrom = resumeSessionId ?? existingSession.sdkSessionId ?? undefined;
-      this.cleanupSession(conversationId);
+      this.retireSession(conversationId);
       return this.startNewSession(
         conversationId, message, workingDirectory, settings, isSlashCommand, resumeFrom, images,
       );
@@ -840,7 +868,7 @@ export class ClaudeCodeService {
         logger.warn('Failed to apply the discussion settings to its session, will start new session', {
           conversationId, error,
         });
-        this.cleanupSession(conversationId);
+        this.retireSession(conversationId);
         return this.startNewSession(conversationId, message, workingDirectory, settings, isSlashCommand, resumeSessionId, images);
       }
       // Reuse existing session — push message to channel
@@ -850,7 +878,7 @@ export class ClaudeCodeService {
     // If there's a dead session, clean it up first
     if (existingSession) {
       logger.info('Cleaning up dead session before starting new one', { conversationId });
-      this.cleanupSession(conversationId);
+      this.retireSession(conversationId);
     }
 
     // Create new persistent session
@@ -1143,6 +1171,18 @@ export class ClaudeCodeService {
     images?: MessageImage[],
   ): Promise<string | null> {
     const selectedModel = settings.model;
+
+    // A sandbox that cannot start: said in the app's words, before the CLI
+    // says it in its own (see sandboxDependencies).
+    const missingTools = settings.sandboxed ? missingSandboxTools(process.platform, process.env.PATH ?? '') : [];
+    if (missingTools.length > 0) {
+      logger.warn('Sandboxed discussion not started: sandbox tools missing', { conversationId, missingTools });
+      this.processingSessions.delete(conversationId);
+      this.emitActiveQueryCount();
+      this.emitError(conversationId, sandboxUnavailableNotice(missingTools));
+      return null;
+    }
+
     // Create abort controller for this session
     const abortController = new AbortController();
 
@@ -1156,7 +1196,7 @@ export class ClaudeCodeService {
       (text: string) => this.pushAskUserQuestionFollowUp(conversationId, text),
       {
         sync: () => this.syncSessionGrants(conversationId),
-        sandboxed: () => this.activeSessions.get(conversationId)?.sandboxed ?? false,
+        sandboxed: () => settings.sandboxed,
       },
     );
 
@@ -1366,6 +1406,7 @@ export class ClaudeCodeService {
         isSlashCommand,
         model: selectedModel || '(SDK default)',
         thinkingMode,
+        sandboxed: settings.sandboxed,
         effort: effort ?? '(none — model takes no effort)',
         activeSessions: this.activeSessions.size,
         hasResumeSessionId: !!resumeSessionId,
@@ -1411,8 +1452,9 @@ export class ClaudeCodeService {
 
       // The session grants the CLI takes at start: the mode and directories
       // (the rules are given once it runs, below).
-      const grantedMode = this.sessionPermissionCache.mode(conversationId);
-      const grantedDirectories = this.sessionPermissionCache.directories(conversationId);
+      const grantedMode = this.sessionPermissionCache.mode(conversationId, settings.sandboxed);
+      const grantedDirectories = this.sessionPermissionCache.directories(conversationId, settings.sandboxed);
+      const sandbox = await this.sandboxSettingsFor(settings);
 
       // Start query with AsyncIterable prompt — this keeps the process alive
       const queryIterator = query({
@@ -1477,6 +1519,8 @@ export class ClaudeCodeService {
             ? { permissionMode: grantedMode, ...(grantedMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}) }
             : {}),
           ...(grantedDirectories.length > 0 ? { additionalDirectories: grantedDirectories } : {}),
+          // Where its shell commands may write and connect: see cliSandboxSettings.
+          sandbox,
           spawnClaudeCodeProcess: (options: SpawnOptions): SpawnedProcess => {
             return this.spawnSDKProcess(options, conversationId, (request) => permissionManager.noteCanUseToolRequest(request));
           },
@@ -1514,7 +1558,8 @@ export class ClaudeCodeService {
         // invalidateSessionAuth.
         authGeneration: this.authGeneration,
         systemPrompt: systemPromptChoice,
-        sandboxed: false,
+        sandboxed: settings.sandboxed,
+        sandboxKey: JSON.stringify(sandbox),
       };
       this.activeSessions.set(conversationId, session);
       this.emitActiveQueryCount();
@@ -1618,10 +1663,17 @@ export class ClaudeCodeService {
     queryIterator: Query,
     messageHandler: SDKMessageHandler,
   ): Promise<void> {
+    // The session this loop reads, and no other: a session started in its
+    // place — resuming after a change of login, a revoked directory, a
+    // changed sandbox — is registered under the same conversation id while
+    // this one winds down. Measured in the app: the replaced session's loop
+    // ended as the new one started, and cleaned the new one up — its CLI was
+    // killed (exit 143) and the message sent to it went unanswered.
+    const ownSession = () => this.activeSessions.get(conversationId)?.query === queryIterator;
     try {
       for await (const sdkMessage of queryIterator) {
         // Check if session was cleaned up while processing
-        if (!this.activeSessions.has(conversationId)) {
+        if (!ownSession()) {
           logger.debug('Session was cleaned up, stopping message loop', { conversationId });
           break;
         }
@@ -1738,14 +1790,21 @@ export class ClaudeCodeService {
 
       // Generator exhausted — session ended (process exited). Nothing further
       // can arrive, so a turn still marked busy here would spin forever.
-      logger.info('Persistent session message loop ended', { conversationId });
-      this.endStrandedTurn(conversationId, 'message stream ended');
+      logger.info('Persistent session message loop ended', { conversationId, replaced: !ownSession() && this.activeSessions.has(conversationId) });
+      // A session replaced has no turn of its own left: the one running is the new session's.
+      if (ownSession()) this.endStrandedTurn(conversationId, 'message stream ended');
     } catch (error) {
-      this.handleQueryError(conversationId, error as Error, messageHandler);
+      if (ownSession()) {
+        this.handleQueryError(conversationId, error as Error, messageHandler);
+      } else {
+        logger.info('A replaced session ended with an error, not reported', {
+          conversationId, error: error instanceof Error ? error.message : String(error),
+        });
+      }
     } finally {
-      // Clean up the session when the loop ends
-      // (only if still registered — abort may have already cleaned up)
-      if (this.activeSessions.has(conversationId)) {
+      // Clean up the session when the loop ends — this loop's own only
+      // (abort may have cleaned it up already; another may have replaced it).
+      if (ownSession()) {
         this.cleanupSession(conversationId);
       }
     }
@@ -1884,6 +1943,7 @@ export class ClaudeCodeService {
    * Set up logging for the spawned process
    */
   private setupProcessLogging(childProcess: ChildProcess, conversationId: string): void {
+    this.currentProcesses.set(conversationId, childProcess);
     let stderrData = '';
     if (childProcess.stderr) {
       childProcess.stderr.on('data', (data) => {
@@ -1905,7 +1965,11 @@ export class ClaudeCodeService {
     });
 
     childProcess.on('exit', (code, signal) => {
-      if (code !== 0 && code !== null && signal !== 'SIGTERM' && signal !== 'SIGINT') {
+      const current = this.currentProcesses.get(conversationId) === childProcess;
+      if (current) this.currentProcesses.delete(conversationId);
+      if (!current) {
+        logger.debug('A replaced SDK process exited', { conversationId, code, signal, pid: childProcess.pid });
+      } else if (code !== 0 && code !== null && signal !== 'SIGTERM' && signal !== 'SIGINT') {
         logger.warn('SDK process exited unexpectedly', {
           conversationId,
           code,
@@ -2064,6 +2128,19 @@ export class ClaudeCodeService {
     });
 
     return { ended: idle.length, deferred };
+  }
+
+  /**
+   * End a conversation's session to start another in its place, for the
+   * message being sent: cleaned up, with the conversation still counted as
+   * running — cleanupSession takes it out of processingSessions, and the
+   * turn that message starts is the new session's. Left out, the turn ran
+   * uncounted: shown as not running, and outside the cap on concurrent runs.
+   */
+  private retireSession(conversationId: string): void {
+    this.cleanupSession(conversationId);
+    this.processingSessions.add(conversationId);
+    this.emitActiveQueryCount();
   }
 
   private cleanupSession(conversationId: string): void {

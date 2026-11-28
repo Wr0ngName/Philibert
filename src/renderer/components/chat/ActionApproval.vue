@@ -7,6 +7,7 @@
 
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
+import { SANDBOXED_SHELL_SUMMARY, UNSANDBOXED_SHELL_SUMMARY } from '@shared/sandbox';
 import type { PendingAction, FileEditDetails, BashCommandDetails, GenericToolDetails, PermissionOptionVariant, PermissionScope, PermissionScopeOption, PermissionContext } from '@shared/types';
 import type { IconName } from '../shared/Icon.vue';
 
@@ -44,6 +45,42 @@ const broadestScopeOption = computed(() => {
   const broad = scopeOptions.value.filter((o) => !o.variant);
   return broad.length > 0 ? broad[broad.length - 1] : null;
 });
+
+/**
+ * What allowing a shell tool whole at this scope lets through, when it is
+ * more than the sandbox keeps in: a grant for this session in a discussion
+ * running unsandboxed, or one saved for the project or everywhere — those
+ * outlive this discussion's sandbox, and apply as well to discussions that
+ * run without one. Null when the option needs no confirming: a narrow one
+ * (this command), a session grant inside the sandbox, or a tool that is not
+ * a shell.
+ */
+function broadShellGrant(option: PermissionScopeOption): string | null {
+  const shell = props.action.shell;
+  if (!shell || option.variant) return null;
+  const tool = props.action.toolName;
+  if (option.scope === 'session') {
+    return shell.sandboxed
+      ? null
+      : `This lets Claude run any ${tool} command in this discussion without asking, unsandboxed: it can read, change or delete anything your account can, anywhere on this computer.`;
+  }
+  const where = option.scope === 'project' ? 'in every discussion of this project' : 'in every discussion';
+  return `This lets Claude run any ${tool} command ${where} without asking — saved, not only for this discussion. In a discussion running unsandboxed, that means anything your account can do, anywhere on this computer.`;
+}
+
+/** The option waiting for a second click, with what it lets through. */
+const confirming = ref<{ option: PermissionScopeOption; warning: string } | null>(null);
+
+/** Allow at an option's scope; one that grants a shell broadly asks to be confirmed first (broadShellGrant). */
+function choose(option: PermissionScopeOption): void {
+  const warning = broadShellGrant(option);
+  if (warning && confirming.value?.option !== option) {
+    confirming.value = { option, warning };
+    return;
+  }
+  confirming.value = null;
+  emit('approve', props.action.id, true, option.scope, option.variant);
+}
 
 /** Fallback label when no scope options */
 const fallbackAlwaysAllowLabel = computed(() => {
@@ -94,7 +131,7 @@ function handleKeydown(event: KeyboardEvent) {
     // Shift+Enter = broadest scope always allow
     event.preventDefault();
     if (broadestScopeOption.value) {
-      emit('approve', props.action.id, true, broadestScopeOption.value.scope);
+      choose(broadestScopeOption.value);
     } else {
       emit('approve', props.action.id, true);
     }
@@ -103,23 +140,23 @@ function handleKeydown(event: KeyboardEvent) {
     emit('approve', props.action.id, false);
   } else if (event.key === 's' && hasScopeOptions.value) {
     // 's' = allow for session
-    const sessionOption = scopeOptions.value.find((o) => o.scope === 'session');
+    const sessionOption = scopeOptions.value.find((o) => o.scope === 'session' && !o.variant);
     if (sessionOption) {
       event.preventDefault();
-      emit('approve', props.action.id, true, 'session');
+      choose(sessionOption);
     }
   } else if (event.key === 'p' && hasScopeOptions.value) {
     // 'p' = allow for project
-    const projectOption = scopeOptions.value.find((o) => o.scope === 'project');
+    const projectOption = scopeOptions.value.find((o) => o.scope === 'project' && !o.variant);
     if (projectOption) {
       event.preventDefault();
-      emit('approve', props.action.id, true, 'project');
+      choose(projectOption);
     }
   } else if (event.key === 'A' && !event.shiftKey) {
     // Capital A = broadest scope always allow
     event.preventDefault();
     if (broadestScopeOption.value) {
-      emit('approve', props.action.id, true, broadestScopeOption.value.scope);
+      choose(broadestScopeOption.value);
     } else {
       emit('approve', props.action.id, true);
     }
@@ -309,6 +346,35 @@ const shortcutHint = computed(() => {
       </div>
     </div>
 
+    <!-- How a shell command runs: in the sandbox, or anywhere -->
+    <div
+      v-if="action.shell"
+      :class="['rounded-lg p-2.5 mb-2 text-xs border', action.shell.sandboxed
+        ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+        : 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-800 dark:text-red-300']"
+      data-testid="shell-sandbox-banner"
+    >
+      <div>{{ action.shell.sandboxed ? SANDBOXED_SHELL_SUMMARY : UNSANDBOXED_SHELL_SUMMARY }}</div>
+      <div
+        v-if="action.shell.escapeRefused"
+        class="mt-1"
+        data-testid="shell-escape-refused"
+      >
+        Claude asked to run this outside the sandbox. This discussion does not allow that, so it runs inside.
+        To let commands out, turn the sandbox off for this discussion in its permissions menu (the shield).
+      </div>
+    </div>
+
+    <!-- A sandboxed command asking for a host -->
+    <div
+      v-if="action.networkHost"
+      class="rounded-lg p-2.5 mb-2 text-xs border bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300"
+      data-testid="network-host-banner"
+    >
+      A sandboxed command wants to connect to <span class="font-mono">{{ action.networkHost }}</span>.
+      Allowing it for the session or project lets this discussion's commands, and web fetches, reach that host.
+    </div>
+
     <!-- Permission context (why this was triggered) -->
     <div
       v-if="hasPermissionContext"
@@ -454,6 +520,33 @@ const shortcutHint = computed(() => {
       </div>
     </div>
 
+    <!-- A broad shell grant, waiting for a second click -->
+    <div
+      v-if="confirming"
+      class="rounded-lg p-2.5 mb-2 text-xs border bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-800 dark:text-red-300"
+      role="alert"
+      data-testid="broad-shell-confirm"
+    >
+      <div>{{ confirming.warning }}</div>
+      <div class="flex gap-2 justify-end mt-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          @click="confirming = null"
+        >
+          Cancel
+        </Button>
+        <Button
+          variant="danger"
+          size="sm"
+          data-testid="broad-shell-confirm-yes"
+          @click="choose(confirming.option)"
+        >
+          {{ confirming.option.label }}
+        </Button>
+      </div>
+    </div>
+
     <!-- Actions -->
     <div class="flex gap-2 justify-end items-center flex-wrap">
       <Button
@@ -480,7 +573,7 @@ const shortcutHint = computed(() => {
           size="sm"
           :title="option.description"
           :aria-label="`${option.label} - ${option.description}`"
-          @click="emit('approve', action.id, true, option.scope, option.variant)"
+          @click="choose(option)"
         >
           <span
             :class="['inline-block w-2 h-2 rounded-full mr-1.5', scopeDotClass(option.scope)]"

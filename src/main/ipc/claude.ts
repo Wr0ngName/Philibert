@@ -23,7 +23,7 @@ import logger from '../utils/logger';
 /** A discussion's own settings, as a send carries them: every field there and known. */
 function validateDiscussionSettings(settings: unknown): asserts settings is DiscussionSettings {
   validateObject(settings, 'Discussion settings');
-  const { model, effortLevel, thinkingMode } = settings as Record<string, unknown>;
+  const { model, effortLevel, thinkingMode, sandboxed } = settings as Record<string, unknown>;
   validateString(model, 'Model', { allowEmpty: true });
   if (!isEffortLevel(effortLevel)) {
     throw new ValidationError(`Unknown effort level: ${String(effortLevel)}`, 'effortLevel', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
@@ -31,6 +31,7 @@ function validateDiscussionSettings(settings: unknown): asserts settings is Disc
   if (thinkingMode !== 'auto' && thinkingMode !== 'disabled') {
     throw new ValidationError(`Unknown thinking mode: ${String(thinkingMode)}`, 'thinkingMode', ERROR_CODES.VALIDATION_TYPE_MISMATCH);
   }
+  validateBoolean(sandboxed, 'Sandboxed');
 }
 
 /**

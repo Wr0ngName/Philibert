@@ -6,6 +6,7 @@
 import { safeStorage, dialog } from 'electron';
 
 import { DEFAULT_EFFORT, isEffortLevel } from '../../shared/effort';
+import { cleanSandboxPreferences, defaultSandboxPreferences, type SandboxPreferences } from '../../shared/sandbox';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE } from '../../shared/speech';
 import { AppConfig, AuthMethod, CompletionNotifications, DEFAULT_CONFIG, EffortLevel, ExecutionMode, LogLevel, ThinkingMode, UpdateChannel, WhisperModelId } from '../../shared/types';
 import { ConfigurationError, ERROR_CODES } from '../errors';
@@ -49,6 +50,7 @@ interface StoredConfig {
   switchModelsOnFlag: boolean;
   strictModelEnforcement: boolean;
   autoContinueAtUsageLimit: boolean;
+  sandbox?: SandboxPreferences;
 }
 
 /**
@@ -189,7 +191,32 @@ export class ConfigService {
       ...storedConfig,
       apiKey,
       oauthToken,
+      sandbox: this.sandboxPreferencesFrom(storedConfig.sandbox),
     };
+  }
+
+  /**
+   * The sandbox preferences as stored, cleaned; the platform's default for a
+   * config that never set them (sandboxOnByDefault). Read whole: a stored
+   * value missing a list, or holding entries the sandbox does not take, is
+   * given the rest from the default rather than handed to the CLI as it is.
+   */
+  private sandboxPreferencesFrom(stored: unknown): SandboxPreferences {
+    const fallback = defaultSandboxPreferences(process.platform);
+    if (!stored || typeof stored !== 'object') return fallback;
+    const s = stored as Partial<Record<keyof SandboxPreferences, unknown>>;
+    const list = (v: unknown, d: string[]) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : d);
+    return cleanSandboxPreferences({
+      enabledByDefault: typeof s.enabledByDefault === 'boolean' ? s.enabledByDefault : fallback.enabledByDefault,
+      allowedDomains: list(s.allowedDomains, fallback.allowedDomains),
+      allowWrite: list(s.allowWrite, fallback.allowWrite),
+    });
+  }
+
+  /** The sandbox preferences: see sandboxPreferencesFrom. */
+  async getSandboxPreferences(): Promise<SandboxPreferences> {
+    await this.ensureInitialized();
+    return this.sandboxPreferencesFrom(this.store?.get('sandbox'));
   }
 
   /**
@@ -200,6 +227,8 @@ export class ConfigService {
     if (!this.store) throw new ConfigurationError('Store not initialized', ERROR_CODES.CONFIG_SAVE_FAILED);
 
     const { apiKey, oauthToken, ...rest } = config;
+    // Stored as the sandbox will take it, whatever the caller sent.
+    if (rest.sandbox !== undefined) rest.sandbox = this.sandboxPreferencesFrom(rest.sandbox);
 
     // Store API key securely if provided
     if (apiKey !== undefined) {

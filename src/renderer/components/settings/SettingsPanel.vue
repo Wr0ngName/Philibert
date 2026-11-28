@@ -16,6 +16,7 @@ import type { AutoArchiveDays, CompletionNotifications, ExecutionMode, LogLevel,
 import { AUTO_ARCHIVE_DAYS, CLAUDE_DEFAULT_SESSION_RETENTION_DAYS, DEFAULT_CONFIG, SESSION_RETENTION_STOPS, USAGE_LIMIT_WAIT_DAYS } from '@shared/types';
 import type { SettingsTab } from '@shared/settings-tabs';
 import { GENERAL_SETTINGS_TABS, SETTINGS_TABS } from '@shared/settings-tabs';
+import { isSandboxDomain, isSandboxPath } from '@shared/sandbox';
 import { DEFAULT_WHISPER_MODEL, WHISPER_AUTO_LANGUAGE, WHISPER_MODELS } from '@shared/speech';
 import type { ClaudeCodePromptMode } from '@shared/system-prompt';
 import { ref, computed, nextTick, watch, onMounted } from 'vue';
@@ -214,6 +215,19 @@ const localExecutionMode = ref<ExecutionMode>('sdk');
 const localSpeechEnabled = ref(false);
 const localSpeechModel = ref<WhisperModelId>(DEFAULT_WHISPER_MODEL);
 const localSpeechLanguage = ref(WHISPER_AUTO_LANGUAGE);
+const localSandboxDefault = ref(DEFAULT_CONFIG.sandbox.enabledByDefault);
+/** The sandbox's lists as edited: one entry a line. */
+const localSandboxDomains = ref('');
+const localSandboxWrite = ref('');
+const isWindows = window.electron.platform === 'win32';
+
+/** A list as typed, one entry a line, blank lines left out. */
+function sandboxLines(text: string): string[] {
+  return text.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+}
+/** The lines the sandbox would not take: said under the box, and not saved. */
+const invalidSandboxDomains = computed(() => sandboxLines(localSandboxDomains.value).filter((d) => !isSandboxDomain(d)));
+const invalidSandboxWrite = computed(() => sandboxLines(localSandboxWrite.value).filter((p) => !isSandboxPath(p)));
 const authFormRef = ref<InstanceType<typeof AuthForm>>();
 
 /** Whether this build ships a whisper binary, and which models are cached. */
@@ -441,6 +455,9 @@ function loadFromConfig(): void {
   localSpeechEnabled.value = saved.speechEnabled;
   localSpeechModel.value = saved.speechModel;
   localSpeechLanguage.value = saved.speechLanguage;
+  localSandboxDefault.value = saved.sandbox.enabledByDefault;
+  localSandboxDomains.value = saved.sandbox.allowedDomains.join('\n');
+  localSandboxWrite.value = saved.sandbox.allowWrite.join('\n');
 }
 
 // Sync with the store whenever the config changes
@@ -491,6 +508,11 @@ async function saveSettings() {
   await settingsStore.setCompletionNotifications(localCompletionNotifications.value);
   await settingsStore.setAutoContinueAtUsageLimit(localAutoContinueAtUsageLimit.value);
   await settingsStore.setUsageLimitWaitDays(localUsageLimitWaitDays.value);
+  await settingsStore.setSandbox({
+    enabledByDefault: localSandboxDefault.value,
+    allowedDomains: sandboxLines(localSandboxDomains.value),
+    allowWrite: sandboxLines(localSandboxWrite.value),
+  });
   await settingsStore.setUpdateChannel(localUpdateChannel.value);
   const effectiveMode = config.value.authMethod === 'oauth' ? localExecutionMode.value : 'sdk';
   await settingsStore.setExecutionMode(effectiveMode);
@@ -785,6 +807,96 @@ function cancel() {
                 instructions-label="Instructions for every discussion"
                 instructions-hint="Told to Claude after the system prompt, in every project. A project can add its own, in its settings."
               />
+            </div>
+          </div>
+
+          <!-- The shell sandbox -->
+          <div data-testid="sandbox-settings">
+            <label class="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-2">
+              Shell sandbox
+            </label>
+            <div class="p-3 rounded-lg border border-surface-300 dark:border-surface-600 space-y-4">
+              <div class="flex items-center justify-between gap-4">
+                <div class="flex-1">
+                  <div class="text-sm font-medium text-surface-700 dark:text-surface-300">
+                    Sandbox new discussions
+                  </div>
+                  <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
+                    Sandboxed, Claude's shell commands (Bash, PowerShell) can change files only inside the discussion's
+                    folder and the folders below, and reach only the sites below or those you allow when asked — the
+                    operating system enforces it. Not sandboxed, they run as you and can change anything your account
+                    can, anywhere on this computer. Each discussion can be switched in its permissions menu (the shield).
+                  </div>
+                  <div
+                    v-if="isWindows"
+                    class="text-xs text-amber-700 dark:text-amber-300 mt-1"
+                    data-testid="sandbox-windows-note"
+                  >
+                    On Windows the sandbox needs a one-time setup first: run <code>/sandbox install</code> in Claude Code
+                    in a terminal (it asks for administrator rights). Until then, a sandboxed discussion cannot start.
+                  </div>
+                  <div
+                    v-else
+                    class="text-xs text-surface-500 dark:text-surface-400 mt-1"
+                  >
+                    On Linux it needs bubblewrap and socat installed (for example: <code>sudo apt install bubblewrap socat</code>).
+                  </div>
+                </div>
+                <ToggleSwitch
+                  v-model="localSandboxDefault"
+                  label="Toggle sandboxing new discussions"
+                />
+              </div>
+              <div>
+                <label
+                  for="sandbox-domains"
+                  class="block text-sm text-surface-700 dark:text-surface-300 mb-1"
+                >
+                  Sites sandboxed commands may reach without asking
+                </label>
+                <textarea
+                  id="sandbox-domains"
+                  v-model="localSandboxDomains"
+                  rows="3"
+                  class="input-base font-mono text-xs"
+                  placeholder="registry.npmjs.org&#10;*.github.com"
+                />
+                <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
+                  One a line: a host name, or <code>*.</code> and a domain for its subdomains.
+                </div>
+                <div
+                  v-if="invalidSandboxDomains.length > 0"
+                  class="text-xs text-red-600 dark:text-red-400 mt-1"
+                  role="alert"
+                >
+                  Not a host name, and not saved: {{ invalidSandboxDomains.join(', ') }}
+                </div>
+              </div>
+              <div>
+                <label
+                  for="sandbox-write"
+                  class="block text-sm text-surface-700 dark:text-surface-300 mb-1"
+                >
+                  Other folders sandboxed commands may write to
+                </label>
+                <textarea
+                  id="sandbox-write"
+                  v-model="localSandboxWrite"
+                  rows="3"
+                  class="input-base font-mono text-xs"
+                  placeholder="~/.npm&#10;~/.cache"
+                />
+                <div class="text-xs text-surface-500 dark:text-surface-400 mt-1">
+                  One a line: an absolute path, or one starting with <code>~/</code>. It must exist already.
+                </div>
+                <div
+                  v-if="invalidSandboxWrite.length > 0"
+                  class="text-xs text-red-600 dark:text-red-400 mt-1"
+                  role="alert"
+                >
+                  Not an absolute path, and not saved: {{ invalidSandboxWrite.join(', ') }}
+                </div>
+              </div>
             </div>
           </div>
 

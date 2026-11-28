@@ -20,7 +20,7 @@
 import type { PermissionMode, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
 
 import { generateId, ID_PREFIXES } from '../../../shared/id';
-import { cliRuleString, normalizeSessionEntries, ruleInForce, SHELL_TOOLS } from '../../../shared/session-permissions';
+import { cliRuleString, entryInForce, normalizeSessionEntries, SHELL_TOOLS } from '../../../shared/session-permissions';
 import type { SessionPermissionEntry } from '../../../shared/types';
 import logger from '../../utils/logger';
 
@@ -43,15 +43,24 @@ function isPermissionMode(mode: string): mode is PermissionMode {
 
 type PermissionChangeCallback = (conversationId: string, permissions: SessionPermissionEntry[]) => void;
 
-/** How the session ran when a rule was granted. */
+/** How the session ran when something was granted, and for which tool's ask. */
 export interface RuleGrantOptions {
 	/**
-	 * The session ran sandboxed: a shell rule granted then is marked so, and
-	 * allows nothing once the session runs without the sandbox (see
-	 * SessionPermissionEntry). Other tools' rules are not marked: the sandbox
-	 * confines shell commands only.
+	 * The session ran sandboxed. A shell rule granted then is marked so, and
+	 * so is all that is granted in answer to a shell command's ask — its mode
+	 * and directories (`askingTool`): each is in force inside the sandbox only
+	 * (SessionPermissionEntry.sandboxed). Other tools' rules, and what other
+	 * tools' asks grant, are not marked: the sandbox confines shell commands
+	 * only.
 	 */
 	sandboxed?: boolean;
+	/** The tool whose ask the grant answers. */
+	askingTool?: string;
+}
+
+/** Whether a mode or directory granted with these options is the sandbox's only. */
+function sandboxOnly(options: RuleGrantOptions): boolean {
+	return options.sandboxed === true && !!options.askingTool && SHELL_TOOLS.has(options.askingTool);
 }
 
 export class SessionPermissionCache {
@@ -83,10 +92,10 @@ export class SessionPermissionCache {
 					changed = this.pushRule(conversationId, entries, rule.toolName, rule.ruleContent, options) || changed;
 				}
 			} else if (update.type === 'setMode') {
-				changed = this.pushMode(conversationId, entries, update.mode) || changed;
+				changed = this.pushMode(conversationId, entries, update.mode, sandboxOnly(options)) || changed;
 			} else if (update.type === 'addDirectories') {
 				for (const directory of update.directories) {
-					changed = this.pushDirectory(conversationId, entries, directory) || changed;
+					changed = this.pushDirectory(conversationId, entries, directory, sandboxOnly(options)) || changed;
 				}
 			}
 		}
@@ -143,64 +152,78 @@ export class SessionPermissionCache {
 		return true;
 	}
 
-	/** One mode at a time: a new one replaces the one before. */
-	private pushMode(conversationId: string, entries: SessionPermissionEntry[], mode: string): boolean {
+	/**
+	 * One mode at a time: a new one replaces the one before — unless it is the
+	 * same mode, already in force at least as widely (sandbox only, or not).
+	 */
+	private pushMode(conversationId: string, entries: SessionPermissionEntry[], mode: string, sandboxed: boolean): boolean {
 		const existing = entries.findIndex((e) => e.kind === 'mode');
 		if (existing !== -1) {
 			const current = entries[existing];
-			if (current.kind === 'mode' && current.mode === mode) return false;
+			if (current.kind === 'mode' && current.mode === mode && (!current.sandboxed || sandboxed)) return false;
 			entries.splice(existing, 1);
 		}
 		const entry: SessionPermissionEntry = {
 			id: generateId(ID_PREFIXES.ACTION),
 			kind: 'mode',
 			mode,
+			...(sandboxed ? { sandboxed: true } : {}),
 			description: `Mode: ${mode} for this session`,
 			grantedAt: Date.now(),
 		};
 		entries.push(entry);
-		logger.info('Session permission cached (mode)', { conversationId, mode, permissionId: entry.id });
+		logger.info('Session permission cached (mode)', { conversationId, mode, sandboxed, permissionId: entry.id });
 		return true;
 	}
 
-	private pushDirectory(conversationId: string, entries: SessionPermissionEntry[], directory: string): boolean {
-		if (entries.some((e) => e.kind === 'directory' && e.directory === directory)) return false;
+	/** A directory, once; given again beyond the sandbox, it replaces the grant that was the sandbox's only. */
+	private pushDirectory(conversationId: string, entries: SessionPermissionEntry[], directory: string, sandboxed: boolean): boolean {
+		const existing = entries.findIndex((e) => e.kind === 'directory' && e.directory === directory);
+		if (existing !== -1) {
+			if (!entries[existing].sandboxed || sandboxed) return false;
+			entries.splice(existing, 1);
+		}
 		const entry: SessionPermissionEntry = {
 			id: generateId(ID_PREFIXES.ACTION),
 			kind: 'directory',
 			directory,
+			...(sandboxed ? { sandboxed: true } : {}),
 			description: `Allow directory: ${directory}`,
 			grantedAt: Date.now(),
 		};
 		entries.push(entry);
-		logger.info('Session permission cached (directory)', { conversationId, directory, permissionId: entry.id });
+		logger.info('Session permission cached (directory)', { conversationId, directory, sandboxed, permissionId: entry.id });
 		return true;
 	}
 
 	/**
 	 * The allow rules in force, in the CLI's rule syntax, for a session that
-	 * runs sandboxed or not (see ruleInForce).
+	 * runs sandboxed or not (see entryInForce).
 	 */
 	allowRules(conversationId: string, sandboxed: boolean): string[] {
-		return this.getPermissions(conversationId)
-			.filter((e) => ruleInForce(e, sandboxed))
-			.map((e) => (e.kind === 'rule' ? cliRuleString(e.toolName, e.ruleContent) : ''))
-			.filter((rule) => rule.length > 0);
+		return this.inForce(conversationId, sandboxed)
+			.flatMap((e) => (e.kind === 'rule' ? [cliRuleString(e.toolName, e.ruleContent)] : []));
 	}
 
 	/**
-	 * The permission mode granted for the session, if one was — and is one
-	 * this SDK knows: a saved mode it does not is not passed on.
+	 * The permission mode granted for a session that runs sandboxed or not, if
+	 * one was — and is one this SDK knows: a saved mode it does not is not
+	 * passed on.
 	 */
-	mode(conversationId: string): PermissionMode | undefined {
-		const entry = this.getPermissions(conversationId).find((e) => e.kind === 'mode');
+	mode(conversationId: string, sandboxed: boolean): PermissionMode | undefined {
+		const entry = this.inForce(conversationId, sandboxed).find((e) => e.kind === 'mode');
 		return entry?.kind === 'mode' && isPermissionMode(entry.mode) ? entry.mode : undefined;
 	}
 
-	/** The directories added to the session. */
-	directories(conversationId: string): string[] {
-		return this.getPermissions(conversationId)
+	/** The directories added to a session that runs sandboxed or not. */
+	directories(conversationId: string, sandboxed: boolean): string[] {
+		return this.inForce(conversationId, sandboxed)
 			.flatMap((e) => (e.kind === 'directory' ? [e.directory] : []));
+	}
+
+	/** The grants in force for a session that runs sandboxed or not. */
+	private inForce(conversationId: string, sandboxed: boolean): SessionPermissionEntry[] {
+		return this.getPermissions(conversationId).filter((e) => entryInForce(e, sandboxed));
 	}
 
 	/**

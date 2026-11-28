@@ -1068,6 +1068,7 @@ export class ConversationService {
       ...(update.model !== undefined ? { model: update.model } : {}),
       ...(update.effortLevel !== undefined ? { effortLevel: update.effortLevel } : {}),
       ...(update.thinkingMode !== undefined ? { thinkingMode: update.thinkingMode } : {}),
+      ...(update.sandboxed !== undefined ? { sandboxed: update.sandboxed } : {}),
       ...(update.executionMode !== undefined ? { executionMode: update.executionMode } : {}),
       ...(update.lastSessionUsage !== undefined ? { lastSessionUsage: update.lastSessionUsage } : {}),
       ...(update.lastReceivedAt !== undefined ? { lastReceivedAt: update.lastReceivedAt } : {}),

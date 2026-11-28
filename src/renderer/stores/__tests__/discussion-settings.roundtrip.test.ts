@@ -90,8 +90,12 @@ async function turn(prompt: string): Promise<string> {
   return id;
 }
 
-const run = (model: string, effortLevel: DiscussionSettings['effortLevel'], thinkingMode: DiscussionSettings['thinkingMode']) =>
-  ({ model, effortLevel, thinkingMode });
+const run = (
+  model: string,
+  effortLevel: DiscussionSettings['effortLevel'],
+  thinkingMode: DiscussionSettings['thinkingMode'],
+  sandboxed = true,
+): DiscussionSettings => ({ model, effortLevel, thinkingMode, sandboxed });
 
 describe("a discussion's model, effort and thinking", () => {
   it('are not changed by what is picked in another discussion', async () => {
@@ -176,5 +180,55 @@ describe("a discussion's model, effort and thinking", () => {
     await turn('still there?');
     expect(sends.at(-1)).toEqual(['legacy', 'still there?', run(HAIKU, 'low', 'disabled')]);
     expect(onDisk('legacy')).toMatchObject(run(HAIKU, 'low', 'disabled'));
+  });
+});
+
+describe("a discussion's sandbox", () => {
+  it('is its own: taking one out of it leaves the others, and the default for new ones, in it', async () => {
+    await store.setCurrentSettings({ model: HAIKU, effortLevel: 'low', thinkingMode: 'auto' });
+    store.createNewConversation();
+    const a = await turn('in a');
+    await store.setCurrentSettings({ sandboxed: false });
+
+    store.createNewConversation();
+    const b = await turn('in b');
+
+    await store.switchConversation(a);
+    await settle(20);
+    await turn('a again');
+
+    expect(sends).toEqual([
+      [a, 'in a', run(HAIKU, 'low', 'auto')],
+      [b, 'in b', run(HAIKU, 'low', 'auto')],
+      [a, 'a again', run(HAIKU, 'low', 'auto', false)],
+    ]);
+    expect(settings.sandbox.enabledByDefault).toBe(true);
+  });
+
+  it('is saved with the discussion, and kept after a restart', async () => {
+    store.createNewConversation();
+    const id = await turn('hello');
+    await store.setCurrentSettings({ sandboxed: false });
+    await settle(20);
+
+    expect(onDisk(id)).toMatchObject({ sandboxed: false });
+
+    unmountApp();
+    setActivePinia(createPinia());
+    const fresh = useConversationsStore();
+    useSettingsStore().config.workingDirectory = DIR;
+    await fresh.loadConversationList();
+    await fresh.loadConversation(id);
+    await settle(20);
+
+    expect(fresh.settingsOf(id).sandboxed).toBe(false);
+  });
+
+  it('starts a new discussion on the default, as it is set in Settings', async () => {
+    await settings.setSandbox({ enabledByDefault: false, allowedDomains: [], allowWrite: [] });
+    store.createNewConversation();
+    const id = await turn('hello');
+
+    expect(sends).toEqual([[id, 'hello', expect.objectContaining({ sandboxed: false })]]);
   });
 });

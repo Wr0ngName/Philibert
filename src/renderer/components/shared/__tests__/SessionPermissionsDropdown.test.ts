@@ -153,3 +153,65 @@ describe('SessionPermissionsDropdown project permissions', () => {
     expect(wrapper.find('[data-testid="open-project-settings"]').exists()).toBe(false);
   });
 });
+
+describe('SessionPermissionsDropdown sandbox', () => {
+  const SHELL_IN_SANDBOX: SessionPermissionEntry = {
+    id: 'perm-s', kind: 'rule', toolName: 'Bash', description: 'Allow Bash for this session', grantedAt: 0, sandboxed: true,
+  };
+  const MODE_IN_SANDBOX: SessionPermissionEntry = {
+    id: 'perm-m', kind: 'mode', mode: 'acceptEdits', description: '', grantedAt: 0, sandboxed: true,
+  };
+  const SHELL_UNRESTRICTED: SessionPermissionEntry = {
+    id: 'perm-u', kind: 'rule', toolName: 'PowerShell', ruleContent: 'Get-ChildItem', description: '', grantedAt: 0,
+  };
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (globalThis as unknown as { window: Record<string, unknown> }).window.electron = {
+      claude: {
+        getSessionPermissions: vi.fn().mockResolvedValue([SHELL_IN_SANDBOX, SHELL_UNRESTRICTED, SESSION_GRANT, MODE_IN_SANDBOX]),
+        revokeSessionPermission: vi.fn(),
+        getProjectPermissions: vi.fn().mockResolvedValue([]),
+        revokeProjectPermission: vi.fn(),
+      },
+      config: { set: vi.fn().mockResolvedValue(undefined) },
+      files: { onChange: vi.fn(() => () => {}) },
+    } as never;
+    useSettingsStore().config.workingDirectory = PROJECT;
+    useConversationsStore().currentConversationId = 'conv-1';
+    useChatStore().setCurrentConversation('conv-1');
+  });
+
+  const reaches = (wrapper: ReturnType<typeof mount>) =>
+    wrapper.findAll('[data-testid="shell-reach"]').map((badge) => badge.text());
+
+  it('shows the discussion sandboxed, and every shell grant as reaching only inside it', async () => {
+    const wrapper = await mountOpen();
+
+    expect((wrapper.get('[data-testid="sandbox-toggle"]').element as HTMLInputElement).checked).toBe(true);
+    expect(reaches(wrapper)).toEqual(['sandboxed', 'sandboxed']);
+    expect(wrapper.get('[data-testid="permissions-shield"]').classes()).not.toContain('text-red-500');
+  });
+
+  it('takes this discussion out of the sandbox, leaving the default for new ones as it was', async () => {
+    const wrapper = await mountOpen();
+
+    await wrapper.get('[data-testid="sandbox-toggle"]').setValue(false);
+    await flushPromises();
+
+    expect(useConversationsStore().settingsOf('conv-1').sandboxed).toBe(false);
+    expect(useSettingsStore().sandbox.enabledByDefault).toBe(true);
+    expect(window.electron.config.set).not.toHaveBeenCalled();
+  });
+
+  it('out of the sandbox, marks a grant made inside it inactive and one made outside it unrestricted, and the shield red', async () => {
+    const wrapper = await mountOpen();
+
+    await wrapper.get('[data-testid="sandbox-toggle"]').setValue(false);
+    await flushPromises();
+
+    expect(reaches(wrapper)).toEqual(['inactive', 'unrestricted', 'inactive']);
+    expect(wrapper.get('[data-testid="permissions-shield"]').classes()).toContain('text-red-500');
+    expect(wrapper.get('[data-testid="permissions-shield"]').attributes('title')).toContain('not sandboxed');
+  });
+});

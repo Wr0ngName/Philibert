@@ -14,6 +14,7 @@
 
 import { ASK_USER_QUESTION_TOOL } from '../../../shared/ask-user-question';
 import type { EffortResolver } from '../../../shared/effort';
+import { cliSandboxSettings } from '../../../shared/sandbox';
 import type { SystemPromptChoice } from '../../../shared/system-prompt';
 import type {
   AskUserQuestionAction,
@@ -31,6 +32,7 @@ import { ClaudeCliPaths, ChannelPaths } from '../../utils/resourcePaths';
 import type ConfigService from '../ConfigService';
 import type NotificationService from '../NotificationService';
 import { AuthValidator, ASK_USER_QUESTION_PREFIX } from '../claude';
+import { missingSandboxTools, sandboxUnavailableNotice } from '../claude/sandboxDependencies';
 import { parseGenericToolInput, buildGenericToolDescription } from '../claude/tool-input-parser';
 
 import {
@@ -83,6 +85,7 @@ export class ChannelService {
   // Per-tool signal: MCP resolves it when done. PTY awaits it
   // to decide whether to emit as fallback.
   private mcpSignals = new Map<string, McpSignal>();
+  private readonly configService: ConfigService;
 
   constructor(
     configService: ConfigService,
@@ -96,6 +99,7 @@ export class ChannelService {
     this.resolveEffort = resolveEffort;
     this.resolveSystemPrompt = resolveSystemPrompt;
     this.authValidator = new AuthValidator(configService);
+    this.configService = configService;
   }
 
   setOnTurnDone(callback: (conversationId: string) => void): void {
@@ -142,7 +146,10 @@ export class ChannelService {
    * @param settings the discussion's own model, effort and thinking mode
    *   (DiscussionSettings): what a session started for it runs. A channel
    *   session already running keeps what it started with, as it always has
-   *   in this mode: they apply from the next session it starts.
+   *   in this mode: they apply from the next session it starts. Its
+   *   sandbox is the exception: a session whose sandbox differs from the
+   *   discussion's is started again, resuming, so its commands are never
+   *   less or more confined than the discussion says.
    */
   async sendMessage(
     conversationId: string,
@@ -155,11 +162,19 @@ export class ChannelService {
       const bridge = await this.ensureBridge();
 
       let active = this.sessions.get(conversationId);
-      if (!active || !active.session.isRunning) {
+      const sandbox = cliSandboxSettings(settings.sandboxed, await this.configService.getSandboxPreferences());
+      if (active?.session.isRunning && JSON.stringify(active.session.sandbox) !== JSON.stringify(sandbox)) {
+        const resumeFrom = resumeSessionId ?? active.session.sessionId ?? undefined;
+        logger.info('Restarting channel session: its sandbox changed', {
+          conversationId, sandboxed: settings.sandboxed, resumeFrom: resumeFrom?.slice(0, 20) ?? null,
+        });
+        await this.cleanupActiveSession(conversationId);
+        active = await this.createSession(conversationId, workingDirectory, bridge, settings, sandbox, resumeFrom);
+      } else if (!active || !active.session.isRunning) {
         if (active) {
           void this.cleanupActiveSession(conversationId);
         }
-        active = await this.createSession(conversationId, workingDirectory, bridge, settings, resumeSessionId);
+        active = await this.createSession(conversationId, workingDirectory, bridge, settings, sandbox, resumeSessionId);
       }
 
       bridge.pushMessage(conversationId, message);
@@ -316,6 +331,7 @@ export class ChannelService {
     workingDirectory: string,
     bridge: ChannelBridge,
     settings: DiscussionSettings,
+    sandbox: Record<string, unknown>,
     resumeSessionId?: string,
   ): Promise<ActiveChannelSession> {
     const selectedModel = settings.model;
@@ -325,6 +341,10 @@ export class ChannelService {
         'Claude CLI not found. Channel mode requires the Claude CLI to be installed.',
       );
     }
+
+    // A sandbox that cannot start: said in the app's words (sandboxDependencies).
+    const missingTools = settings.sandboxed ? missingSandboxTools(process.platform, process.env.PATH ?? '') : [];
+    if (missingTools.length > 0) throw new Error(sandboxUnavailableNotice(missingTools));
 
     const channelServerScript = ChannelPaths.getChannelServerScript();
     if (!channelServerScript) {
@@ -350,6 +370,7 @@ export class ChannelService {
       thinkingMode,
       effortLevel,
       systemPrompt,
+      sandbox,
       resumeSessionId,
       onSessionId: (convId, sessionId) => {
         this.send(IPC_CHANNELS.CLAUDE_SESSION_ID, convId, sessionId);

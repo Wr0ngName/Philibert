@@ -43,6 +43,7 @@ export function normalizeSessionEntry(raw: unknown): SessionPermissionEntry | nu
     id: e.id,
     description: typeof e.description === 'string' ? e.description : '',
     grantedAt: typeof e.grantedAt === 'number' ? e.grantedAt : 0,
+    ...(e.sandboxed === true ? { sandboxed: true } : {}),
   };
 
   if (e.kind === 'mode') {
@@ -70,7 +71,6 @@ export function normalizeSessionEntry(raw: unknown): SessionPermissionEntry | nu
     kind: 'rule',
     toolName: e.toolName,
     ...(typeof e.ruleContent === 'string' && e.ruleContent ? { ruleContent: e.ruleContent } : {}),
-    ...(e.sandboxed === true ? { sandboxed: true } : {}),
   };
 }
 
@@ -81,11 +81,12 @@ export function normalizeSessionEntries(raw: unknown): SessionPermissionEntry[] 
 }
 
 /**
- * Whether a rule is in force for a session that runs sandboxed or not: a
- * shell rule granted inside the sandbox allows nothing outside it.
+ * Whether a grant is in force for a session that runs sandboxed or not: one
+ * made inside the sandbox for a shell command grants nothing outside it
+ * (SessionPermissionEntry.sandboxed).
  */
-export function ruleInForce(entry: SessionPermissionEntry, sandboxed: boolean): boolean {
-  return entry.kind === 'rule' && (!entry.sandboxed || sandboxed);
+export function entryInForce(entry: SessionPermissionEntry, sandboxed: boolean): boolean {
+  return !entry.sandboxed || sandboxed;
 }
 
 /** What the permissions list names an entry by. */

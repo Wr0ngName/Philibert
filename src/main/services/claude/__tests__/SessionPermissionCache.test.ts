@@ -97,7 +97,7 @@ describe('SessionPermissionCache', () => {
 
     it('keeps directories', () => {
       cache.addPermissions('c1', [{ type: 'addDirectories', directories: ['/a', '/b'], destination: 'session' }]);
-      expect(cache.directories('c1')).toEqual(['/a', '/b']);
+      expect(cache.directories('c1', false)).toEqual(['/a', '/b']);
     });
 
     it('keeps each grant once', () => {
@@ -177,16 +177,56 @@ describe('SessionPermissionCache', () => {
     });
   });
 
+  describe('grants made inside the sandbox for a shell command', () => {
+    const shellAsk = (sandboxed: boolean) => ({ sandboxed, askingTool: 'Bash' });
+    const broad: PermissionUpdate[] = [
+      { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow', destination: 'session' },
+      { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
+      { type: 'addDirectories', directories: ['/home/u'], destination: 'session' },
+    ];
+
+    it('are in force inside the sandbox only: the rule, the mode and the directories that came with it', () => {
+      cache.addPermissions('c1', broad, shellAsk(true));
+
+      expect(cache.getPermissions('c1').map((e) => [e.kind, e.sandboxed])).toEqual([['rule', true], ['mode', true], ['directory', true]]);
+      expect([cache.allowRules('c1', true), cache.mode('c1', true), cache.directories('c1', true)]).toEqual([['Bash'], 'acceptEdits', ['/home/u']]);
+      expect([cache.allowRules('c1', false), cache.mode('c1', false), cache.directories('c1', false)]).toEqual([[], undefined, []]);
+    });
+
+    it('are in force either way when made outside the sandbox', () => {
+      cache.addPermissions('c1', broad, shellAsk(false));
+
+      expect([cache.allowRules('c1', false), cache.mode('c1', false), cache.directories('c1', false)]).toEqual([['Bash'], 'acceptEdits', ['/home/u']]);
+    });
+
+    it('are not tied to the sandbox when another tool asked: the sandbox does not confine it', () => {
+      cache.addPermissions('c1', broad.slice(1), { sandboxed: true, askingTool: 'Edit' });
+
+      expect([cache.mode('c1', false), cache.directories('c1', false)]).toEqual(['acceptEdits', ['/home/u']]);
+    });
+
+    it('are widened, not doubled, when given again outside the sandbox', () => {
+      cache.addPermissions('c1', broad, shellAsk(true));
+      cache.addPermissions('c1', broad, shellAsk(false));
+
+      expect(cache.getPermissions('c1').filter((e) => e.kind !== 'rule').map((e) => [e.kind, e.sandboxed ?? false]))
+        .toEqual([['mode', false], ['directory', false]]);
+      cache.addPermissions('c1', broad, shellAsk(true));
+      expect(cache.getPermissions('c1').filter((e) => e.kind !== 'rule')).toHaveLength(2);
+      expect([cache.mode('c1', false), cache.directories('c1', false)]).toEqual(['acceptEdits', ['/home/u']]);
+    });
+  });
+
   describe('mode', () => {
     it('is the mode granted', () => {
       cache.addPermissions('c1', [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }]);
-      expect(cache.mode('c1')).toBe('acceptEdits');
+      expect(cache.mode('c1', false)).toBe('acceptEdits');
     });
 
     it('is nothing for a saved mode this SDK does not know', () => {
       cache.seed('c1', [{ id: 'm', kind: 'mode', mode: 'someFutureMode', description: '', grantedAt: 1 }]);
       expect(cache.getPermissions('c1')).toHaveLength(1);
-      expect(cache.mode('c1')).toBeUndefined();
+      expect(cache.mode('c1', false)).toBeUndefined();
     });
   });
 

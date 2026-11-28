@@ -56,6 +56,7 @@ vi.mock('../../../utils/resourcePaths', () => ({
 
 vi.mock('node-pty', () => ({ spawn: spawnPty }));
 
+import { cliSandboxSettings, defaultSandboxPreferences } from '../../../../shared/sandbox';
 import type { SystemPromptChoice } from '../../../../shared/system-prompt';
 import { ChannelSession } from '../ChannelSession';
 
@@ -78,7 +79,10 @@ afterEach(async () => {
 });
 
 /** The CLI's arguments for a session started with the choice. */
-async function startWith(systemPrompt: SystemPromptChoice): Promise<string[]> {
+async function startWith(
+  systemPrompt: SystemPromptChoice,
+  sandbox: Record<string, unknown> = cliSandboxSettings(false, defaultSandboxPreferences('linux')),
+): Promise<string[]> {
   session = new ChannelSession({
     conversationId: CONVERSATION,
     workingDirectory: root,
@@ -92,6 +96,7 @@ async function startWith(systemPrompt: SystemPromptChoice): Promise<string[]> {
     thinkingMode: 'auto',
     effortLevel: null,
     systemPrompt,
+    sandbox,
   });
   await session.start();
   expect(spawnPty).toHaveBeenCalledTimes(1);
@@ -102,6 +107,31 @@ const promptFile = () => path.join(sessions.root, CONVERSATION, 'system-prompt.m
 const INSTRUCTIONS = '"Answer in French" and\nkeep it short.';
 
 describe('a channel session starts the CLI', () => {
+  it('under the discussion\'s sandbox, given in the flag-settings layer', async () => {
+    const sandbox = cliSandboxSettings(true, { enabledByDefault: true, allowedDomains: ['example.com'], allowWrite: ['/srv/cache'] });
+    const args = await startWith({ claudeCodePrompt: true, instructions: '' }, sandbox);
+
+    const settingsFile = args[args.indexOf('--settings') + 1];
+    expect(settingsFile).toBe(path.join(sessions.root, CONVERSATION, 'sandbox-settings.json'));
+    expect(JSON.parse(fs.readFileSync(settingsFile, 'utf-8'))).toEqual({
+      sandbox: {
+        enabled: true,
+        failIfUnavailable: true,
+        allowUnsandboxedCommands: false,
+        autoAllowBashIfSandboxed: false,
+        network: { allowedDomains: ['example.com'] },
+        filesystem: { allowWrite: ['/srv/cache'] },
+      },
+    });
+  });
+
+  it('unsandboxed, saying so rather than leaving it to the user\'s own settings', async () => {
+    const args = await startWith({ claudeCodePrompt: true, instructions: '' });
+
+    const settingsFile = args[args.indexOf('--settings') + 1];
+    expect(JSON.parse(fs.readFileSync(settingsFile, 'utf-8'))).toEqual({ sandbox: { enabled: false } });
+  });
+
   it("on its own prompt, with no flag, when it is Claude Code's and there are no instructions", async () => {
     const args = await startWith({ claudeCodePrompt: true, instructions: '' });
 

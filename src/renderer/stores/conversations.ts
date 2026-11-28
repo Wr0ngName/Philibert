@@ -59,7 +59,7 @@ export const useConversationsStore = defineStore('conversations', () => {
   const systemPromptsKeptUnder = ref<Map<string, SystemPromptChoice>>(new Map());
 
   /**
-   * Each discussion's own model, effort and thinking mode
+   * Each discussion's own model, effort, thinking mode and sandbox
    * (DiscussionSettings), by id: given to every send in it, so what is picked
    * in one discussion never reaches another. Held as the session ids are — a
    * discussion just started is not in `conversations` until it is saved —
@@ -70,7 +70,12 @@ export const useConversationsStore = defineStore('conversations', () => {
   /** The app's settings: what a new discussion starts with, and an old one is given. */
   function appSettings(): DiscussionSettings {
     const settings = useSettingsStore();
-    return { model: settings.selectedModel, effortLevel: settings.effortLevel, thinkingMode: settings.thinkingMode };
+    return {
+      model: settings.selectedModel,
+      effortLevel: settings.effortLevel,
+      thinkingMode: settings.thinkingMode,
+      sandboxed: settings.sandbox.enabledByDefault,
+    };
   }
 
   /** A stored discussion's settings; each one it was saved without is the app's. */
@@ -80,6 +85,7 @@ export const useConversationsStore = defineStore('conversations', () => {
       model: conversation.model ?? app.model,
       effortLevel: conversation.effortLevel ?? app.effortLevel,
       thinkingMode: conversation.thinkingMode ?? app.thinkingMode,
+      sandboxed: conversation.sandboxed ?? app.sandboxed,
     };
   }
 
@@ -1836,9 +1842,12 @@ export const useConversationsStore = defineStore('conversations', () => {
     currentConversationId.value ? settingsOf(currentConversationId.value) : appSettings());
 
   /**
-   * Change the model, effort or thinking mode of the discussion on screen.
-   * Saved with it, and as the app's too: a discussion started next starts on
-   * the last ones picked. Another discussion keeps its own.
+   * Change the model, effort, thinking mode or sandbox of the discussion on
+   * screen. Saved with it; the model, effort and thinking mode as the app's
+   * too, so a discussion started next starts on the last ones picked. The
+   * sandbox is not: taking one discussion out of it must not take the next
+   * ones out as well — the default is a setting of its own. Another
+   * discussion keeps its own.
    */
   async function setCurrentSettings(change: Partial<DiscussionSettings>): Promise<void> {
     const id = currentConversationId.value;
@@ -2031,7 +2040,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     getConversationWorkingDirectory,
     currentConversationHasSession,
 
-    // Each discussion's own model, effort and thinking mode
+    // Each discussion's own model, effort, thinking mode and sandbox
     settingsOf,
     currentSettings,
     setCurrentSettings,

@@ -10,10 +10,16 @@
  * Session grants and local project entries can be revoked individually. Shared
  * project entries (`settings.json`, usually committed) are listed read-only.
  * Displayed as a shield icon with badge in the header bar.
+ *
+ * It also holds the discussion's sandbox: whether its shell commands run
+ * confined to its folder or not (DiscussionSettings.sandboxed), and so which
+ * of its shell grants are in force and how far they reach. The shield turns
+ * red while the discussion runs unsandboxed.
  */
 
-import { sessionEntryTitle } from '@shared/session-permissions';
-import type { ProjectPermissionEntry } from '@shared/types';
+import { SANDBOXED_SHELL_SUMMARY, UNSANDBOXED_SHELL_SUMMARY } from '@shared/sandbox';
+import { SHELL_TOOLS, sessionEntryTitle } from '@shared/session-permissions';
+import type { ProjectPermissionEntry, SessionPermissionEntry } from '@shared/types';
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 
 import { useChatStore } from '../../stores/chat';
@@ -44,6 +50,42 @@ const hasSessionPermissions = computed(() => chatStore.hasSessionPermissions);
 const hasProjectPermissions = computed(() => projectPermissions.value.length > 0);
 const permissionCount = computed(() => chatStore.sessionPermissionCount + projectPermissions.value.length);
 const hasPermissions = computed(() => permissionCount.value > 0);
+
+/** Whether a discussion is open whose sandbox can be set (with none, there is nothing to set it on). */
+const hasDiscussion = computed(() => !!conversationsStore.currentConversationId);
+const sandboxed = computed(() => conversationsStore.currentSettings.sandboxed);
+
+/** Run the discussion's shell commands in the sandbox or not, from its next message on. */
+async function setSandboxed(value: boolean): Promise<void> {
+  try {
+    await conversationsStore.setCurrentSettings({ sandboxed: value });
+  } catch (err) {
+    logger.error('Failed to change the discussion sandbox', { error: err });
+  }
+}
+
+/**
+ * How far a session grant reaches, as its badge says. Out of the sandbox, a
+ * grant made inside it for a shell command — its rule, or the mode and
+ * directories that came with it — is "inactive": not given to the session
+ * (entryInForce). A shell rule otherwise reaches inside the sandbox while
+ * the discussion runs in it ("sandboxed"), anywhere while it does not
+ * ("unrestricted"). Null for any other grant: the sandbox does not confine it.
+ */
+function shellReach(perm: SessionPermissionEntry): { label: string; title: string; tone: string } | null {
+  if (!sandboxed.value && perm.sandboxed) {
+    return {
+      label: 'inactive',
+      title: 'Granted inside the sandbox: not in force while this discussion runs unsandboxed. What it allowed asks again.',
+      tone: 'bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300',
+    };
+  }
+  if (perm.kind !== 'rule' || !SHELL_TOOLS.has(perm.toolName)) return null;
+  if (sandboxed.value) {
+    return { label: 'sandboxed', title: SANDBOXED_SHELL_SUMMARY, tone: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300' };
+  }
+  return { label: 'unrestricted', title: UNSANDBOXED_SHELL_SUMMARY, tone: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300' };
+}
 
 /** Settings → Project: this project's tools and what it allows without asking. */
 function openProjectSettings(): void {
@@ -158,10 +200,12 @@ onUnmounted(() => {
     <!-- Shield button with badge -->
     <button
       class="btn-icon relative"
-      :class="{ 'bg-surface-200 dark:bg-surface-700': isOpen }"
-      :title="hasPermissions
+      :class="{ 'bg-surface-200 dark:bg-surface-700': isOpen, 'text-red-500 dark:text-red-400': hasDiscussion && !sandboxed }"
+      :title="(hasPermissions
         ? `${permissionCount} permission${permissionCount !== 1 ? 's' : ''} active`
-        : 'No active permissions'"
+        : 'No active permissions')
+        + (hasDiscussion && !sandboxed ? ' — shell commands not sandboxed' : '')"
+      data-testid="permissions-shield"
       @click.stop="toggleDropdown"
     >
       <svg
@@ -199,6 +243,33 @@ onUnmounted(() => {
           </h3>
           <p class="text-xs text-surface-500 dark:text-surface-400 mt-0.5">
             Granted for this conversation and project
+          </p>
+        </div>
+
+        <!-- The discussion's sandbox -->
+        <div
+          v-if="hasDiscussion"
+          class="px-3 py-2 border-b border-surface-200 dark:border-surface-700"
+          data-testid="sandbox-section"
+        >
+          <label class="flex items-center justify-between gap-2 cursor-pointer">
+            <span class="text-sm font-medium text-surface-800 dark:text-surface-200">Sandbox shell commands</span>
+            <input
+              type="checkbox"
+              class="shrink-0"
+              data-testid="sandbox-toggle"
+              :checked="sandboxed"
+              @change="setSandboxed(($event.target as HTMLInputElement).checked)"
+            >
+          </label>
+          <p
+            :class="['text-xs mt-1', sandboxed ? 'text-surface-500 dark:text-surface-400' : 'text-red-600 dark:text-red-400']"
+            data-testid="sandbox-summary"
+          >
+            {{ sandboxed ? SANDBOXED_SHELL_SUMMARY : UNSANDBOXED_SHELL_SUMMARY }}
+          </p>
+          <p class="text-xs text-surface-400 dark:text-surface-500 mt-0.5">
+            For this discussion only, from its next message.
           </p>
         </div>
 
@@ -250,8 +321,14 @@ onUnmounted(() => {
                 />
               </div>
               <div class="flex-1 min-w-0">
-                <div class="text-sm font-medium text-surface-800 dark:text-surface-200">
-                  {{ sessionEntryTitle(perm) }}
+                <div class="text-sm font-medium text-surface-800 dark:text-surface-200 flex items-center gap-1.5">
+                  <span class="truncate">{{ sessionEntryTitle(perm) }}</span>
+                  <span
+                    v-if="shellReach(perm)"
+                    :class="['shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-sm', shellReach(perm)!.tone]"
+                    :title="shellReach(perm)!.title"
+                    data-testid="shell-reach"
+                  >{{ shellReach(perm)!.label }}</span>
                 </div>
                 <div class="text-xs text-surface-500 dark:text-surface-400 truncate">
                   {{ perm.description }}

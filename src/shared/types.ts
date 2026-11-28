@@ -2,6 +2,7 @@
  * Shared types used across main, preload, and renderer processes
  */
 
+import type { SandboxPreferences } from './sandbox';
 import type { ClaudeCodePromptMode, ProjectSystemPrompt, SystemPromptChoice } from './system-prompt';
 
 /**
@@ -601,6 +602,15 @@ interface SessionPermissionBase {
   description: string;
   /** When this permission was granted */
   grantedAt: number;
+  /**
+   * Granted while the discussion ran sandboxed, in answer to a shell command
+   * (Bash, PowerShell): it is in force inside the sandbox only, so not while
+   * the discussion runs without it (entryInForce). A shell rule allows
+   * commands that were confined when it was given; a mode or a directory
+   * given with it — the CLI's "accept edits" and the folder the command
+   * wrote to — let such commands change files unasked once out of it.
+   */
+  sandboxed?: boolean;
 }
 
 /**
@@ -619,12 +629,6 @@ export type SessionPermissionEntry =
     toolName: string;
     /** What of the tool it allows, in the CLI's rule syntax; absent for the whole tool */
     ruleContent?: string;
-    /**
-     * A shell rule granted while the discussion ran sandboxed: it allows the
-     * commands inside the sandbox only, so it is not in force while the
-     * discussion runs without it. Absent on non-shell rules.
-     */
-    sandboxed?: boolean;
   })
   | (SessionPermissionBase & {
     kind: 'mode';
@@ -697,6 +701,27 @@ interface BaseAction {
    * (the SDK's `suppressAlwaysAllowRule`).
    */
   onceOnly?: boolean;
+  /** Set for a shell command (Bash, PowerShell): how it will run. See ShellRunContext. */
+  shell?: ShellRunContext;
+  /**
+   * Set when a sandboxed command asks to reach a host not allowed yet
+   * (SANDBOX_NETWORK_TOOL): the host.
+   */
+  networkHost?: string;
+}
+
+/**
+ * How a shell command the card asks about will run: in the discussion's
+ * sandbox (only its folder writable, only allowed hosts reachable) or not
+ * (as the user, anywhere on the computer). See @shared/sandbox.
+ */
+export interface ShellRunContext {
+  sandboxed: boolean;
+  /**
+   * Claude asked to run it outside the sandbox (`dangerouslyDisableSandbox`).
+   * A sandboxed discussion does not allow that: it runs inside all the same.
+   */
+  escapeRefused?: boolean;
 }
 
 /**
@@ -940,6 +965,13 @@ export interface DiscussionSettings {
   model: string;
   effortLevel: EffortLevel;
   thinkingMode: ThinkingMode;
+  /**
+   * Whether its shell commands (Bash, PowerShell) run in the sandbox: able to
+   * change files only inside its folder and reach only the hosts allowed
+   * (@shared/sandbox). The app's `sandbox.enabledByDefault` is what a new
+   * discussion starts with; changing one discussion's leaves it as it is.
+   */
+  sandboxed: boolean;
 }
 
 /**
@@ -1102,6 +1134,8 @@ export interface AppConfig {
   customInstructions: string;
   /** Each project's own system prompt settings, by folder; a folder not listed follows the general ones. */
   projectSystemPrompts: Record<string, ProjectSystemPrompt>;
+  /** The shell sandbox: whether new discussions start in it, and what it lets commands do (@shared/sandbox). */
+  sandbox: SandboxPreferences;
 }
 
 /**
@@ -1147,6 +1181,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   claudeCodePrompt: 'auto',
   customInstructions: '',
   projectSystemPrompts: {},
+  // What the renderer holds until the stored config is read. The main
+  // process gives the platform's own default (sandboxOnByDefault) for a
+  // config that never set one: off on Windows.
+  sandbox: { enabledByDefault: true, allowedDomains: [], allowWrite: [] },
 };
 
 // Conversation types
@@ -1193,6 +1231,12 @@ export interface Conversation {
   model?: string;
   effortLevel?: EffortLevel;
   thinkingMode?: ThinkingMode;
+  /**
+   * Whether its shell commands run sandboxed (DiscussionSettings.sandboxed).
+   * Absent on a discussion saved before it existed: it is given the app's
+   * default when opened, as the settings above are.
+   */
+  sandboxed?: boolean;
   /**
    * Execution mode this conversation was started in. The SDK and channel CLI
    * keep separate session stores, so a conversation started in one mode can't
@@ -1326,6 +1370,7 @@ export interface ConversationUpdate {
   model?: string;
   effortLevel?: EffortLevel;
   thinkingMode?: ThinkingMode;
+  sandboxed?: boolean;
   executionMode?: ExecutionMode;
   lastSessionUsage?: SessionUsage;
   lastReceivedAt?: number;
