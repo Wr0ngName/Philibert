@@ -108,6 +108,7 @@ vi.mock('../../../utils/ipc-helpers', () => ({ createSender: vi.fn(() => mockSen
 
 import type { SystemPromptChoice } from '../../../../shared/system-prompt';
 import { IPC_CHANNELS } from '../../../../shared/types';
+import { useInstalledSandboxTools } from '../../../../test-setup/sandbox-tools';
 import { createMockBrowserWindow } from '../../../__tests__/setup';
 import ClaudeCodeService from '../../ClaudeCodeService';
 import ConfigService from '../../ConfigService';
@@ -117,13 +118,14 @@ const FRENCH: SystemPromptChoice = { claudeCodePrompt: false, instructions: 'Ans
 
 let root: string;
 let folder: string;
-const originalPath = process.env.PATH;
 let configService: ConfigService;
 let service: ClaudeCodeService;
 
 const recorded = () => mockSend.mock.calls
   .filter((call) => call[0] === IPC_CHANNELS.CLAUDE_SYSTEM_PROMPT_RECORDED && call[1] === CONVERSATION)
   .map((call) => call[2]);
+
+useInstalledSandboxTools();
 
 beforeEach(async () => {
   for (const key of Object.keys(mockStoreData)) delete mockStoreData[key];
@@ -133,12 +135,6 @@ beforeEach(async () => {
   folder = path.join(root, 'plain');
   fs.mkdirSync(folder);
   paths.sessions = path.join(root, 'sessions');
-  // bubblewrap and socat, as the sandbox looks for them: first on the PATH,
-  // so a sandboxed discussion starts whatever this machine has installed.
-  const tools = path.join(root, 'bin');
-  fs.mkdirSync(tools);
-  for (const tool of ['bwrap', 'socat']) fs.writeFileSync(path.join(tools, tool), '#!/bin/sh\n', { mode: 0o755 });
-  process.env.PATH = [tools, originalPath].join(path.delimiter);
 
   configService = new ConfigService();
   await configService.ensureInitialized();
@@ -150,7 +146,6 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  process.env.PATH = originalPath;
   await service.abortAll();
   fs.rmSync(root, { recursive: true, force: true });
 });

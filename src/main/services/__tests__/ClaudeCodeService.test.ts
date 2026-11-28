@@ -135,6 +135,7 @@ vi.mock('../../utils/ipc-helpers', () => ({
 import { SESSION_GONE_NOTICE } from '../../../shared/conversation-list';
 import { familyKeyOf, isSameModel, modelVersionRank } from '../../../shared/model-id';
 import { type DiscussionSettings, IPC_CHANNELS } from '../../../shared/types';
+import { useInstalledSandboxTools } from '../../../test-setup/sandbox-tools';
 import { createMockBrowserWindow } from '../../__tests__/setup';
 import ClaudeCodeService, { RESUME_FAILED_NOTICE } from '../ClaudeCodeService';
 import ConfigService from '../ConfigService';
@@ -150,20 +151,10 @@ describe('ClaudeCodeService', () => {
   let service: ClaudeCodeService;
   let configService: ConfigService;
   let mockWindow: ReturnType<typeof createMockBrowserWindow>;
-  const originalPath = process.env.PATH;
-  /**
-   * bubblewrap and socat, as the sandbox looks for them on the PATH: put
-   * first on it, so a sandboxed discussion starts whatever this machine has
-   * installed (sandboxDependencies).
-   */
-  const sandboxTools = realFs.mkdtempSync(path.join(os.tmpdir(), 'philibert-sandbox-tools-'));
-  for (const tool of ['bwrap', 'socat']) {
-    realFs.writeFileSync(path.join(sandboxTools, tool), '#!/bin/sh\n', { mode: 0o755 });
-  }
+  useInstalledSandboxTools();
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    process.env.PATH = [sandboxTools, originalPath].join(path.delimiter);
     // Clear store data between tests
     for (const k of Object.keys(mockStoreData)) delete mockStoreData[k];
 
@@ -183,7 +174,6 @@ describe('ClaudeCodeService', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
-    process.env.PATH = originalPath;
   });
 
   // ===========================================================================

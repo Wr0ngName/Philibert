@@ -86,6 +86,7 @@ vi.mock('../../utils/paths', async (importOriginal) => ({
 vi.mock('../../utils/ipc-helpers', () => ({ createSender: vi.fn(() => mockSend) }));
 
 import { IPC_CHANNELS } from '../../../shared/types';
+import { useInstalledSandboxTools } from '../../../test-setup/sandbox-tools';
 import { createMockBrowserWindow } from '../../__tests__/setup';
 import ClaudeCodeService from '../ClaudeCodeService';
 import ConfigService from '../ConfigService';
@@ -124,6 +125,8 @@ async function systemPromptIn(folder: string): Promise<unknown> {
   const { options } = mockQuery.mock.calls[0]![0];
   return 'systemPrompt' in options ? options.systemPrompt : 'left out';
 }
+
+useInstalledSandboxTools();
 
 beforeEach(async () => {
   for (const key of Object.keys(mockStoreData)) delete mockStoreData[key];
